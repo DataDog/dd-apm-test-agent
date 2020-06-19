@@ -29,3 +29,34 @@ To format the code:
 
     lein cljfmt check
     lein cljfmt fix
+
+## Tracer setup
+
+```python
+
+# TODO add ignore args to snapshot
+def snapshot(f):
+    import json
+    import pytest
+
+    from ddtrace.compat import httplib
+    from ddtrace import tracer
+
+    def wrapper(*args, **kwargs):
+        test_id = "tests.contrib.redis.test"
+        try:
+            tracer.writer.api._headers["X-Datadog-Test-Token"] = test_id
+            return f(*args, **kwargs)
+        finally:
+            tracer.writer.flush_queue()
+            del tracer.writer.api._headers["X-Datadog-Test-Token"]
+            conn = httplib.HTTPConnection(tracer.writer.api.hostname, tracer.writer.api.port)
+            conn.request("GET", "/test/snapshot", {}, {
+                "X-Datadog-Test-Token": test_id,
+            })
+            r = conn.getresponse()
+            if r.status != 200:
+                msg = r.read().decode()
+                pytest.fail(msg, pytrace=False)
+    return wrapper
+```

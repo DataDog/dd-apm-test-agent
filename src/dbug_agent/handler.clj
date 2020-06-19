@@ -12,13 +12,14 @@
   ; stores the raw traces for a test token
   (atom {} :validator (fn [db] true)))
 
-(add-watch trace-db
-           :logger
-           (fn [key watched old-state new-state]
-             (println new-state)))
+; (add-watch trace-db
+;            :logger
+;            (fn [key watched old-state new-state]
+;              (println (keys new-state))))
 
 (defn db-add-traces
   [token traces]
+  (println (format "[%s] received %s traces" token (count traces)))
   (swap! trace-db update-in [token] concat traces)
   traces)
 
@@ -64,25 +65,32 @@
         parsed-traces (parse-traces raw-traces)]
     raw-traces))
 
+
 (defn mw-encoding [handler]
   (fn [req]
     (let [encoding (get-in req [:headers "content-type"])
-          raw-body (get req :body)
+          raw-body (:body req)
           body (cond
                  (= encoding "application/msgpack") (msg/unpack raw-body)
                  (= encoding "application/json") nil  ; TODO support json
                  :else nil)]
-
       (handler (assoc req :body body)))))
 
+
+(defn mw-token [handler]
+  (fn [req]
+      (handler (assoc req :token (get-in req [:headers "x-datadog-test-token"] "none")))))
+
+
 (defn handle-traces [req]
-  (let [token (get-in req [:headers "x-datadog-test-token"] "none")
-        traces (get req :body)]
+  (let [token (:token req)
+        traces (:body req)]
     (db-add-traces token traces)
     {:status 200 :headers {"Content-Type" "application/json"} :body "\"OK\""}))
 
+
 (defn handle-check [req]
-  (let [token (get-in req [:headers "x-datadog-test-token"] "none")]
+  (let [token (:token req)]
     (try
       (let
        [traces (trace-check token)]
@@ -90,13 +98,27 @@
       (catch clojure.lang.ExceptionInfo e
         {:status 500 :headers {"Content-Type" "application/json"} :body (.getMessage e)}))))
 
+
+(defn handle-snapshot [req]
+  (let [token (:token req)]
+    (try
+      (let
+        [traces (trace-check token)]
+         {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
+      (catch clojure.lang.ExceptionInfo e
+        {:status 500 :headers {"Content-Type" "text/plain"} :body (.getMessage e)}))))
+
+
 (defroutes app-routes
-  (mw-encoding (PUT "/v0.4/traces" [] handle-traces))
-  (GET "/test/check" [] handle-check)
+  (mw-token (mw-encoding (PUT "/v0.4/traces" [] handle-traces)))
+  (mw-token (GET "/test/check" [] handle-check))
+  (mw-token (GET "/test/snapshot" [] handle-snapshot))
   (route/not-found "Not Found"))
+
 
 (def app
   (wrap-defaults app-routes api-defaults))
+
 
 (def reloadable-app
   (wrap-reload #'app))
