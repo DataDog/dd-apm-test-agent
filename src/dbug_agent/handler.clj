@@ -5,6 +5,13 @@
             [ring.middleware.defaults :refer [wrap-defaults api-defaults]]
             [ring.middleware.reload :refer [wrap-reload]]))
 
+
+(def snapdir (or (System/getenv "SNAPSHOT_DIR") "snaps"))
+
+(defn snappath [snap] (format "%s/%s.snap" snapdir snap))
+(defn snapexists [snap] (.exists (clojure.java.io/as-file (snappath snap))))
+
+
 (defn trace-db-validator [db] true)
 
 (def trace-db
@@ -66,6 +73,34 @@
     raw-traces))
 
 
+;; calculate a similarity score between two traces used to match traces
+(defn similarity-score [t1 t2]
+  (- 0
+     ;; penalize 5 * the difference in the number of traces
+     (if-let [diff (Math/abs (- (count t1) (count t2)))] (* 5 diff) 0)
+
+     ;; compare root spans
+   )
+  )
+
+(defn trace->spanmap [trace] (reduce #(assoc %1 (%2 "span_id") %2) {} trace))
+
+(defn raw->tree
+  ([trace] (raw->tree trace (trace->spanmap trace)))
+  ([trace spanmap] (println spanmap))
+  )
+
+
+;; TODO: add ignore tags
+(defn compare-traces [act-traces ref-traces]
+  (let [act-trees (map raw->tree act-traces)
+        ref-trees (map raw->tree ref-traces)
+        ; score-mapping (fold () )
+        ]
+    (println act-trees)
+    )
+  )
+
 (defn mw-encoding [handler]
   (fn [req]
     (let [encoding (get-in req [:headers "content-type"])
@@ -103,8 +138,19 @@
   (let [token (:token req)]
     (try
       (let
-        [traces (trace-check token)]
-         {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
+        [act-traces (trace-check token)]
+        (if (snapexists token)
+          ;; snapshot exists, do the comparison
+          (let
+            [ref-traces (slurp (snappath token))]
+            (compare-traces act-traces ref-traces)
+            {:status 500 :headers {"Content-Type" "text/plain"} :body (str token)})
+
+          ;; snapshot does not exist so write the traces
+          (do
+            (spit (snappath token) (with-out-str (pr act-traces)))
+            {:status 500 :headers {"Content-Type" "text/plain"} :body "OK"})
+            ))
       (catch clojure.lang.ExceptionInfo e
         {:status 500 :headers {"Content-Type" "text/plain"} :body (.getMessage e)}))))
 
