@@ -98,9 +98,10 @@
 (defn raw->tree
   ([trace]
    (let
-     [addchild (fn [mp span]
+     [span< (fn [s1 s2] (< (s1 "start") (s2 "start")))
+      addchild (fn [mp span]
                  (let [pid (span "parent_id")]
-                   (assoc mp pid (conj (get mp pid []) span))))
+                   (assoc mp pid (conj (get mp pid (sorted-set-by span<)) span))))
       childrenmap (reduce addchild {} trace)]
      (raw->tree trace childrenmap)))
   ([trace childrenmap] (pprint childrenmap)))
