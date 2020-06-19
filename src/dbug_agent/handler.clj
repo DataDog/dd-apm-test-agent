@@ -3,7 +3,8 @@
             [compojure.route :as route]
             [msgpack.core :as msg]
             [ring.middleware.defaults :refer [wrap-defaults api-defaults]]
-            [ring.middleware.reload :refer [wrap-reload]]))
+            [ring.middleware.reload :refer [wrap-reload]])
+  (:use clojure.pprint))
 
 
 (def snapdir (or (System/getenv "SNAPSHOT_DIR") "snaps"))
@@ -29,6 +30,12 @@
   (println (format "[%s] received %s traces" token (count traces)))
   (swap! trace-db update-in [token] concat traces)
   traces)
+
+(defn db-rm-traces
+  [token]
+  (println (format "[%s] clearing traces" token))
+  (swap! trace-db dissoc token))
+
 
 (defn parse-spans
   ; parses spans into traces
@@ -85,10 +92,22 @@
 
 (defn trace->spanmap [trace] (reduce #(assoc %1 (%2 "span_id") %2) {} trace))
 
+
+;; converts a raw trace (list of spans) to a [span children]
+;; tree representation
 (defn raw->tree
-  ([trace] (raw->tree trace (trace->spanmap trace)))
-  ([trace spanmap] (println spanmap))
-  )
+  ([trace]
+   (let
+     [addchild (fn [mp span]
+                 (let [pid (span "parent_id")]
+                   (assoc mp pid (conj (get mp pid []) span))))
+      childrenmap (reduce addchild {} trace)]
+     (raw->tree trace childrenmap)))
+  ([trace childrenmap] (pprint childrenmap)))
+
+
+(defn tree->str [[span children]]
+  (str (span "name") "\n" (tree->str children)))
 
 
 ;; TODO: add ignore tags
@@ -97,7 +116,8 @@
         ref-trees (map raw->tree ref-traces)
         ; score-mapping (fold () )
         ]
-    (println act-trees)
+    ; (println act-trees)
+    (doall act-trees)
     )
   )
 
@@ -133,6 +153,9 @@
       (catch clojure.lang.ExceptionInfo e
         {:status 500 :headers {"Content-Type" "application/json"} :body (.getMessage e)}))))
 
+(defn handle-clear [req]
+  (let [token (:token req)]
+    (db-rm-traces token)))
 
 (defn handle-snapshot [req]
   (let [token (:token req)]
@@ -144,20 +167,22 @@
           (let
             [ref-traces (slurp (snappath token))]
             (compare-traces act-traces ref-traces)
-            {:status 500 :headers {"Content-Type" "text/plain"} :body (str token)})
+            {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
 
           ;; snapshot does not exist so write the traces
           (do
             (spit (snappath token) (with-out-str (pr act-traces)))
-            {:status 500 :headers {"Content-Type" "text/plain"} :body "OK"})
-            ))
+            {:status 500 :headers {"Content-Type" "text/plain"} :body "OK :)"})))
       (catch clojure.lang.ExceptionInfo e
-        {:status 500 :headers {"Content-Type" "text/plain"} :body (.getMessage e)}))))
+        ;; TODO? write log file with a bunch of useful information
+        {:status 500 :headers {"Content-Type" "text/plain"} :body (.getMessage e)})
+      (finally (db-rm-traces token)))))
 
 
 (defroutes app-routes
   (mw-token (mw-encoding (PUT "/v0.4/traces" [] handle-traces)))
   (mw-token (GET "/test/check" [] handle-check))
+  (mw-token (GET "/test/clear" [] handle-clear))
   (mw-token (GET "/test/snapshot" [] handle-snapshot))
   (route/not-found "Not Found"))
 
