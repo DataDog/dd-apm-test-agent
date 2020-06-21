@@ -61,3 +61,19 @@ def snapshot(f):
                 pytest.fail(msg, pytrace=False)
     return wrapper
 ```
+
+
+## Features
+
+### Sanity Checks
+
+- Empty traces
+- ID collisions
+- Multiple root spans
+- Inconsistent trace id in a trace
+- [TODO] All referenced spans exist
+
+
+### Snapshot testing
+
+- Trace matching

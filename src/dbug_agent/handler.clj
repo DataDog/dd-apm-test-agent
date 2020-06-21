@@ -172,6 +172,7 @@
           (render-shape childmap (next-row childmap spans))))
   ))
 
+
 (defn diff-shape
   ([act exp]
    (diff-shape (:childmap act) [(trace-root act)]
@@ -184,7 +185,7 @@
        :else (diff-shape actmap (next-row actmap actspans)
                          expmap (next-row expmap expspans)))
      :else
-     (throw (ex-info (format "Shape difference.\nExpected shape:\n%sGot shape:\n%s" (render-shape expmap) (render-shape actmap)) {})))))
+     (throw (ex-info (format "Shape difference.\nExpected shape:\n%s\nGot shape:\n%s" (render-shape expmap) (render-shape actmap)) {})))))
 
 (defn diff-traces [act exp]
   (do
@@ -246,8 +247,8 @@
           (let
            [ref-traces (read-string (slurp (snappath token)))]
             (compare-traces act-traces ref-traces)
+            (println (format "[%s] tests passed!" token))
             {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
-
           ;; snapshot does not exist so write the traces
           (do
             (spit (snappath token) (with-out-str (pprint act-traces)))
