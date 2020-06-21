@@ -210,8 +210,8 @@
 
           ;; snapshot does not exist so write the traces
           (do
-            (spit (snappath token) (with-out-str (pr act-traces)))
-            {:status 500 :headers {"Content-Type" "text/plain"} :body "OK :)"})))
+            (spit (snappath token) (with-out-str (pprint act-traces)))
+            {:status 200 :headers {"Content-Type" "text/plain"} :body "OK :)"})))
       (catch clojure.lang.ExceptionInfo e
         ;; TODO? write log file with a bunch of useful information
         {:status 500 :headers {"Content-Type" "text/plain"} :body (.getMessage e)})
