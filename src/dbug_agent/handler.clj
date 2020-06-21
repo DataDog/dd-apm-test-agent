@@ -183,7 +183,8 @@
        (= (count actspans) 0) nil
        :else (diff-shape actmap (next-row actmap actspans)
                          expmap (next-row expmap expspans)))
-     :else (throw (ex-info "Shape difference" {})))))
+     :else
+     (throw (ex-info (format "Shape difference.\nExpected shape:\n%sGot shape:\n%s" (render-shape expmap) (render-shape actmap)) {})))))
 
 (defn diff-traces [act exp]
   (do
