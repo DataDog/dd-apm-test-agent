@@ -72,6 +72,7 @@ def snapshot(f):
 - Multiple root spans
 - Inconsistent trace id in a trace
 - [TODO] All referenced spans exist
+- Required metadata
 
 
 ### Snapshot testing

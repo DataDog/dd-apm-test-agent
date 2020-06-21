@@ -222,29 +222,77 @@
   (do
     (def act-ig (span-ignore act ignores))
     (def exp-ig (span-ignore exp ignores))
-    (def res (diff act-ig exp-ig))
-     ; res (diff ig-act ig-exp)]
-    ; TODO: check that ignored tags are present on each span
-    (when (not (empty? (first res)))
-      ; TODO: indicate ignored keys, erroneous keys
-      (throw (ex-info (format "Span data mismatch.\nActual:\n%s\nExpected:\n%s" (span->str act) (span->str exp)) {}))
+    ; Check that attributes are all present and their values match
+    (defn merge-keys [span]
+      (let
+        [merged (merge
+                  span
+                  (reduce-kv (fn [m k v] (assoc m (format "meta.%s" k) v)) {} (span "meta"))
+                  (reduce-kv (fn [m k v] (assoc m (format "metrics.%s" k) v)) {} (span "metrics")))]
+        (apply dissoc merged ["metrics" "meta"])))
+
+    (def act-merge (merge-keys act))
+    (def exp-merge (merge-keys exp))
+    (def all-keys (set (concat (keys act-merge) (keys exp-merge))))
+    (def requires ["name"
+                   "service"
+                   "span_id"
+                   "trace_id"
+                   "duration"
+                   "start"
+                   "error"
+                   ])
+
+    (def results
+      (for [k (set (concat (keys act-merge) (keys exp-merge) requires))
+            :let [in-act (contains? act-merge k)
+                  in-exp (contains? exp-merge k)
+                  act-val (act-merge k)
+                  exp-val (exp-merge k)
+                  ignored (contains? ignores k)
+                  required (contains? requires k)
+                  [result reason]
+                  (cond
+                    (and in-act (not in-exp))
+                    [:failed (format "Key '%s' not expected." k)]
+                    (and (not in-act) in-exp)
+                    [:failed (format "Key '%s' in expected not actual." k)]
+                    (and (not ignored) (not= act-val exp-val))
+                    [:failed (format "Value mismatch for '%s'. Expected: '%s' got '%s' " k exp-val act-val)]
+                    :else [:passed ""])
+                  ]]
+        {:key k
+          :ignored ignored
+          :required required
+          :in-act in-act
+          :act-val act-val
+          :in-exp in-exp
+          :exp-val exp-val
+          :result result
+          :reason reason}))
+
+    (def errors (filter #(= (:result %) :failed) results))
+    (def human-errors (clojure.string/join "\n" (map #(str "❌ " (:reason %)) errors)))
+
+    (when (not (empty? errors))
+      (throw (ex-info (format "Span data mismatch.\n%s\n\nActual:\n%s\nExpected:\n%s" human-errors (span->str act) (span->str exp)) {}))
       )))
 
 (defn diff-spans [act exp]
   (let [act-bfs (trace-flatten-bfs act)
         exp-bfs (trace-flatten-bfs exp)
-        diff-span (partial diff-span ["span_id"
+        diff-span (partial diff-span (set ["span_id"
                                       "trace_id"
                                       "parent_id"
                                       "duration"
                                       "start"
-                                      "system.pid"
-                                      "runtime-id"])
+                                      "metrics.system.pid"
+                                      "meta.runtime-id"]))
         ]
-    (map diff-span act-bfs exp-bfs)))
+    (doall (map diff-span act-bfs exp-bfs))))
 
 (defn diff-traces [act exp]
-  (doseq []
+  (do
     ; check the shape of the trace
     (diff-shape act exp)
 
