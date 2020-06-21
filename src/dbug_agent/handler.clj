@@ -96,7 +96,7 @@
 (defn spans->trace [spans] {:spans spans :childmap (spans->childmap spans)})
 (defn trace-root [trace] (first (get (:childmap trace) nil)))
 (defn trace-count [trace] (count (:spans trace)))
-; (defn trace->str [trace] (str (span "name") "\n" (tree->str children)))
+(defn trace->str [trace] (with-out-str (pprint (:spans trace))))
 (defn trace-id [trace] ((trace-root trace) "trace_id"))
 
 (defn span-similarity [s1 s2]
@@ -143,14 +143,17 @@
       (def unmatched-t1-ids
         (set (map #(-> % :t1 trace-id) (filter #(not (contains? % :t2)) matches))))
       (when (not (empty? unmatched-t1-ids))
-        (throw (ex-info (format "Unmatched actual traces\n%s" unmatched-t1-ids) {})))
+        (def traces (filter #(contains? unmatched-t1-ids (trace-id %)) t1s))
+        (def fmt-traces (clojure.string/join "\n" (map trace->str traces)))
+        (throw (ex-info (format "Unmatched actual traces:\n%s" fmt-traces) {})))
 
       (def t2-ids (set (map trace-id t2s)))
       (def matched-t2-ids (set (map #(-> % :t2 trace-id) matches)))
       (def unmatched-t2-ids (set/difference t2-ids matched-t2-ids))
       (when (not (empty? unmatched-t2-ids))
-        (throw (ex-info (format "Did not receive expected traces\n%s" unmatched-t2-ids) {}))))))
-
+        (def traces (filter #(contains? unmatched-t2-ids (trace-id %)) t2s))
+        (def fmt-traces (clojure.string/join "\n" (map trace->str traces)))
+        (throw (ex-info (format "Did not receive expected traces:\n%s" fmt-traces) {}))))))
 
 ;; TODO: add ignore tags
 (defn compare-traces [act-traces ref-traces]
