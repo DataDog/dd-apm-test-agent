@@ -1,10 +1,18 @@
 (ns dbug-agent.handler
-  (:require [compojure.core :refer :all]
+  (:require [clojure.set :as set]
+            [compojure.core :refer :all]
             [compojure.route :as route]
             [msgpack.core :as msg]
             [ring.middleware.defaults :refer [wrap-defaults api-defaults]]
             [ring.middleware.reload :refer [wrap-reload]])
   (:use clojure.pprint))
+
+(defn map-reduce
+  ([f acc l] (map-reduce f acc l []))
+  ([f acc l lp]
+   (if (empty? l) lp
+       (let [[acc x] (f acc (first l))]
+         (map-reduce f acc (rest l) (conj lp x))))))
 
 (def snapdir (or (System/getenv "SNAPSHOT_DIR") "snaps"))
 
@@ -77,9 +85,6 @@
     raw-traces))
 
 (defn spans->childmap [spans]
-  ; (println "WTF")
-  ; (println spans)
-  ; (println "ENDWTF")
   (let
    [span< (fn [s1 s2] (< (s1 "start") (s2 "start")))
     addchild (fn [mp span]
@@ -96,14 +101,9 @@
 
 (defn span-similarity [s1 s2]
   (- 0
-     ;(do (println s1) 0)
-     ;(do (println "") 0)
-     ;(do (println s2) 0)
-     ; (do (println "S1" s1) 0)
-     ; (do (println "S2" s2) 0)
-     ; (do (println (s1 "resource") (s2 "resource")) 0)
      (if (= (s1 "name") (s2 "name")) 0 1)
      (if (= (s1 "service") (s2 "service")) 0 1)
+     (if (= (s1 "error") (s2 "error")) 0 1)
      (if (= (s1 "resource") (s2 "resource")) 0 1)))
 
 ;; calculate a similarity score between two traces used to match traces
@@ -118,28 +118,50 @@
      (* -1 (span-similarity (trace-root t1) (trace-root t2)))))
 
 (defn match-traces [t1s t2s]
-  (let [scores
-        (map
-          (fn [t1]
-            (reduce
-              (fn [st t2]
-                (let [new-score (trace-similarity t1 t2)]
-                  (cond (> new-score (:score st)) {:score new-score :trace t2}
-                        (< new-score (:score st)) st
-                        :else (throw (ex-info (format "%s" (:score st)) {}))))) {:score -500000 :trace nil} t2s)) t1s)]
-    scores))
+  ; attempts to match traces
+  (let [t2-match
+        (fn [avail-t2s t1]
+          (let
+           [match (reduce
+                   (fn [{score :score cur-t2 :t2 avail-t2s :avail-t2s :as st} t2]
+                     (let [new-score (trace-similarity t1 t2)]
+                       (cond (not (contains? avail-t2s (trace-id t2))) st
+                             (or (nil? score) (> new-score score))
+                             {:score new-score
+                              :t1 t1
+                              :t2 t2
+                              :avail-t2s
+                              (disj
+                               (if (nil? cur-t2) avail-t2s (conj avail-t2s (trace-id cur-t2)))
+                               (trace-id t2))}
+                             (< new-score score) st
+                             :else (throw (ex-info "TODO" {}))))) {:avail-t2s avail-t2s} t2s)]
+            [(:avail-t2s match) match]))
+        matches (map-reduce t2-match (set (map trace-id t2s)) t1s)]
+
+    ;; check for any unmatched traces
+    (do
+      (def t1-ids (set (map trace-id t1s)))
+      (def matched-t1-ids (set (map #(-> % :t1 trace-id) matches)))
+      (def unmatched-t1-ids (set/difference t1-ids matched-t1-ids))
+      (def t2-ids (set (map trace-id t2s)))
+      (def matched-t2-ids (set (map #(-> % :t2 trace-id) matches)))
+      (def unmatched-t2-ids (set/difference t2-ids matched-t2-ids))
+      (when (or (not (empty? unmatched-t1-ids))
+                (not (empty? unmatched-t2-ids)))
+        (throw (ex-info (format "Unmatched traces! %s %s" unmatched-t1-ids unmatched-t2-ids) {}))))))
 
 
 ;; TODO: add ignore tags
 
 
-(defn compare-traces [raw-act-traces raw-ref-traces]
-  (let [act-traces (map spans->trace raw-act-traces)
-        ref-traces (map spans->trace raw-ref-traces)
+(defn compare-traces [act-traces ref-traces]
+  (let [act-traces (map spans->trace act-traces)
+        ref-traces (map spans->trace ref-traces)
         matched-traces (match-traces act-traces ref-traces)
         ; score-mapping (fold () )
         ]
-    (println matched-traces)))
+    nil))
 
 (defn mw-encoding [handler]
   (fn [req]
@@ -183,9 +205,6 @@
           ;; snapshot exists, do the comparison
           (let
            [ref-traces (read-string (slurp (snappath token)))]
-            ; (println (first ref-traces))
-            ; (println (first (first ref-traces)))
-            ; (println ((first (first ref-traces)) "name"))
             (compare-traces act-traces ref-traces)
             {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
 
