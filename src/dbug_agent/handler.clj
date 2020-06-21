@@ -60,26 +60,31 @@
        (throw (ex-info (format "Empty traces from client") {})))
 
      ;; checks done on each raw trace that was received
-     (defn raw-trace-check [raw-trace]
-       (let [trace-ids (set (map #(% "trace_id") raw-trace))
-             span-ids (map #(% "span_id") raw-trace)]
+     (defn trace-check [trace]
+       (let [trace-ids (set (map #(% "trace_id") trace))
+             span-ids (map #(% "span_id") trace)]
 
          ;; ensure no collisions in span ids
          (when (not= (count span-ids) (count (set span-ids)))
-           (throw (ex-info (format "Collision in span ids for trace trace") {})))
+           (throw (ex-info "Collision in span ids for trace trace" {})))
+
+         ;; ensure only one root span
+         (def roots (filter (fn [s] (nil? (s "parent_id"))) trace))
+         (when (not= (count roots) 1)
+           (throw (ex-info "Multiple root spans in trace" {})))
 
          ;; check for mismatching trace ids in a trace
          (when (> (count trace-ids) 1)
            (throw (ex-info (format "Multiple trace ids in trace %s" trace-ids) {})))))
-     (doall (map raw-trace-check raw-traces))
 
      ;; collect traces together since traces can be fragmented
      (def traces (parse-spans (reduce concat raw-traces)))
+     (doall (map trace-check raw-traces))
 
-     ;; check that all referenced spans exist (TODO distributed tracing issues?)
+     ;; TODO: check that all referenced spans exist (maybe distributed tracing issues?)
      traces)))
 
-(defn trace-check [token]
+(defn check-traces [token]
   (let [raw-traces (or (@trace-db token) (throw (ex-info (format "Token '%s' not found" token) {})))
         parsed-traces (parse-traces raw-traces)]
     raw-traces))
@@ -98,6 +103,8 @@
 (defn trace-count [trace] (count (:spans trace)))
 (defn trace->str [trace] (with-out-str (pprint (:spans trace))))
 (defn trace-id [trace] ((trace-root trace) "trace_id"))
+(defn next-row [cmap cs]
+  (reduce concat (map (fn [s] (cmap (s "span_id"))) cs)))
 
 (defn span-similarity [s1 s2]
   (- 0
@@ -153,14 +160,47 @@
       (when (not (empty? unmatched-t2-ids))
         (def traces (filter #(contains? unmatched-t2-ids (trace-id %)) t2s))
         (def fmt-traces (clojure.string/join "\n" (map trace->str traces)))
-        (throw (ex-info (format "Did not receive expected traces:\n%s" fmt-traces) {}))))))
+        (throw (ex-info (format "Did not receive expected traces:\n%s" fmt-traces) {})))
+      matches)))
+
+(defn render-shape
+  ([childmap] (render-shape childmap (childmap nil)))
+  ([childmap spans]
+   (if (empty? spans)
+     ""
+     (str (count spans) "\n"
+          (render-shape childmap (next-row childmap spans))))
+  ))
+
+(defn diff-shape
+  ([act exp]
+   (diff-shape (:childmap act) [(trace-root act)]
+               (:childmap exp) [(trace-root exp)]))
+  ([actmap actspans expmap expspans]
+   (cond
+     (= (count actspans) (count expspans))
+     (cond
+       (= (count actspans) 0) nil
+       :else (diff-shape actmap (next-row actmap actspans)
+                         expmap (next-row expmap expspans)))
+     :else (throw (ex-info "Shape difference" {})))))
+
+(defn diff-traces [act exp]
+  (do
+    ; check the shape of the trace
+    (diff-shape act exp)
+    ))
+
+(defn diff-matches [matches]
+  (map (fn [match] (diff-traces (:t1 match) (:t2 match))) matches))
 
 ;; TODO: add ignore tags
 (defn compare-traces [act-traces ref-traces]
   (let [act-traces (map spans->trace act-traces)
         ref-traces (map spans->trace ref-traces)
-        matched-traces (match-traces act-traces ref-traces)]
-    nil))
+        matched-traces (match-traces act-traces ref-traces)
+        diffed-traces (diff-matches matched-traces)]
+    (println diffed-traces)))
 
 (defn mw-encoding [handler]
   (fn [req]
@@ -186,7 +226,7 @@
   (let [token (:token req)]
     (try
       (let
-       [traces (trace-check token)]
+       [traces (check-traces token)]
         {:status 200 :headers {"Content-Type" "application/json"} :body traces})
       (catch clojure.lang.ExceptionInfo e
         {:status 500 :headers {"Content-Type" "application/json"} :body (.getMessage e)}))))
@@ -199,7 +239,7 @@
   (let [token (:token req)]
     (try
       (let
-       [act-traces (trace-check token)]
+       [act-traces (check-traces token)]
         (if (snapexists token)
           ;; snapshot exists, do the comparison
           (let
