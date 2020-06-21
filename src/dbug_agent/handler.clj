@@ -275,7 +275,7 @@
     (def human-errors (clojure.string/join "\n" (map #(str "❌ " (:reason %)) errors)))
 
     (when (not (empty? errors))
-      (throw (ex-info (format "Span data mismatch.\n%s\n\nActual:\n%s\nExpected:\n%s" human-errors (span->str act) (span->str exp)) {}))
+      (throw (ex-info (format "Span data mismatch.\n%s" human-errors) {}))
       )))
 
 (defn diff-spans [act exp]
@@ -289,16 +289,23 @@
                                       "metrics.system.pid"
                                       "meta.runtime-id"]))
         ]
-    (doall (map diff-span act-bfs exp-bfs))))
+    (try
+      (doall (map diff-span act-bfs exp-bfs))
+      (catch clojure.lang.ExceptionInfo e
+        (let [msg (.getMessage e)]
+          (throw (ex-info (format "At expected span:\n%s\nActual span:\n%s\n%s" (span->str exp) (span->str act) msg) {})))))))
 
 (defn diff-traces [act exp]
-  (do
-    ; check the shape of the trace
-    (diff-shape act exp)
-
-    ; actually diff the spans now
-    (diff-spans act exp)
-    ))
+  (try
+    (do
+      ; check the shape of the trace
+      (diff-shape act exp)
+      ; actually diff the spans now
+      (diff-spans act exp))
+    (catch clojure.lang.ExceptionInfo e
+      ; Prepend trace context info
+      (let [msg (.getMessage e)]
+        (throw (ex-info (format "At expected trace:\n%s\nActual trace:\n%s\n%s" (trace->str exp) (trace->str act) msg) {}))))))
 
 (defn diff-matches [matches]
   (map (fn [match] (diff-traces (:t1 match) (:t2 match))) matches))
@@ -361,7 +368,7 @@
             (spit (snappath token) (with-out-str (pprint act-traces)))
             {:status 200 :headers {"Content-Type" "text/plain"} :body "OK :)"})))
       (catch clojure.lang.ExceptionInfo e
-        (let [msg (str (.getMessage e) "\nSee '" (snappath token) "' for the expected traces.")]
+        (let [msg (str (.getMessage e) "\n\nSnapfile: '" (snappath token))]
         {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
       (finally (db-rm-traces token)))))
 

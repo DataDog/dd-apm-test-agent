@@ -43,8 +43,10 @@ def snapshot(f):
     from ddtrace import tracer
 
     def wrapper(*args, **kwargs):
-        # TODO: need class name here too
-        test_id = "{}.{}".format(__name__, f.__name__)
+        if len(args) == 1:
+            self = args[0]
+
+        test_id = "{}.{}.{}".format(__name__, self.__class__.__name__, f.__name__)
         try:
             tracer.writer.api._headers["X-Datadog-Test-Token"] = test_id
             return f(*args, **kwargs)
