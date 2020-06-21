@@ -212,8 +212,8 @@
             (spit (snappath token) (with-out-str (pprint act-traces)))
             {:status 200 :headers {"Content-Type" "text/plain"} :body "OK :)"})))
       (catch clojure.lang.ExceptionInfo e
-        ;; TODO? write log file with a bunch of useful information
-        {:status 500 :headers {"Content-Type" "text/plain"} :body (.getMessage e)})
+        (let [msg (str (.getMessage e) "\nSee '" (snappath token) "' for the expected traces.")]
+        {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
       (finally (db-rm-traces token)))))
 
 (defroutes app-routes
