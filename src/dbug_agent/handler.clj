@@ -103,13 +103,12 @@
   (- 0
      (if (= (s1 "name") (s2 "name")) 0 1)
      (if (= (s1 "service") (s2 "service")) 0 1)
+     (if (= (s1 "type") (s2 "type")) 0 1)
      (if (= (s1 "error") (s2 "error")) 0 1)
      (if (= (s1 "resource") (s2 "resource")) 0 1)))
 
-;; calculate a similarity score between two traces used to match traces
-
-
 (defn trace-similarity [t1 t2]
+  ; Calculate a similarity score between two traces used to match traces
   (- 0
      ;; penalize the difference in the number of traces
      (Math/abs (- (trace-count t1) (trace-count t2)))
@@ -118,14 +117,14 @@
      (* -1 (span-similarity (trace-root t1) (trace-root t2)))))
 
 (defn match-traces [t1s t2s]
-  ; attempts to match traces
+  ; Attempts to match traces based on their similarity
   (let [t2-match
         (fn [avail-t2s t1]
           (let
            [match (reduce
                    (fn [{score :score cur-t2 :t2 avail-t2s :avail-t2s :as st} t2]
                      (let [new-score (trace-similarity t1 t2)]
-                       (cond (not (contains? avail-t2s (trace-id t2))) st
+                       (cond (not (contains? avail-t2s (trace-id t2))) (assoc st :t1 t1)
                              (or (nil? score) (> new-score score))
                              {:score new-score
                               :t1 t1
@@ -134,33 +133,30 @@
                               (disj
                                (if (nil? cur-t2) avail-t2s (conj avail-t2s (trace-id cur-t2)))
                                (trace-id t2))}
-                             (< new-score score) st
+                             (< new-score score) (assoc st :t1 t1)
                              :else (throw (ex-info "TODO" {}))))) {:avail-t2s avail-t2s} t2s)]
             [(:avail-t2s match) match]))
         matches (map-reduce t2-match (set (map trace-id t2s)) t1s)]
 
-    ;; check for any unmatched traces
+    ; Check for any unmatched traces
     (do
-      (def t1-ids (set (map trace-id t1s)))
-      (def matched-t1-ids (set (map #(-> % :t1 trace-id) matches)))
-      (def unmatched-t1-ids (set/difference t1-ids matched-t1-ids))
+      (def unmatched-t1-ids
+        (set (map #(-> % :t1 trace-id) (filter #(not (contains? % :t2)) matches))))
+      (when (not (empty? unmatched-t1-ids))
+        (throw (ex-info (format "Unmatched actual traces\n%s" unmatched-t1-ids) {})))
+
       (def t2-ids (set (map trace-id t2s)))
       (def matched-t2-ids (set (map #(-> % :t2 trace-id) matches)))
       (def unmatched-t2-ids (set/difference t2-ids matched-t2-ids))
-      (when (or (not (empty? unmatched-t1-ids))
-                (not (empty? unmatched-t2-ids)))
-        (throw (ex-info (format "Unmatched traces! %s %s" unmatched-t1-ids unmatched-t2-ids) {}))))))
+      (when (not (empty? unmatched-t2-ids))
+        (throw (ex-info (format "Did not receive expected traces\n%s" unmatched-t2-ids) {}))))))
 
 
 ;; TODO: add ignore tags
-
-
 (defn compare-traces [act-traces ref-traces]
   (let [act-traces (map spans->trace act-traces)
         ref-traces (map spans->trace ref-traces)
-        matched-traces (match-traces act-traces ref-traces)
-        ; score-mapping (fold () )
-        ]
+        matched-traces (match-traces act-traces ref-traces)]
     nil))
 
 (defn mw-encoding [handler]
