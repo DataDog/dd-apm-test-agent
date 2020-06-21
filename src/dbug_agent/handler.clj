@@ -6,12 +6,10 @@
             [ring.middleware.reload :refer [wrap-reload]])
   (:use clojure.pprint))
 
-
 (def snapdir (or (System/getenv "SNAPSHOT_DIR") "snaps"))
 
 (defn snappath [snap] (format "%s/%s.snap" snapdir snap))
 (defn snapexists [snap] (.exists (clojure.java.io/as-file (snappath snap))))
-
 
 (defn trace-db-validator [db] true)
 
@@ -35,7 +33,6 @@
   [token]
   (println (format "[%s] clearing traces" token))
   (swap! trace-db dissoc token))
-
 
 (defn parse-spans
   ; parses spans into traces
@@ -79,48 +76,70 @@
         parsed-traces (parse-traces raw-traces)]
     raw-traces))
 
+(defn spans->childmap [spans]
+  ; (println "WTF")
+  ; (println spans)
+  ; (println "ENDWTF")
+  (let
+   [span< (fn [s1 s2] (< (s1 "start") (s2 "start")))
+    addchild (fn [mp span]
+               (let [pid (span "parent_id")]
+                 (assoc mp pid (conj (get mp pid (sorted-set-by span<)) span))))
+    childrenmap (reduce addchild {} spans)]
+    childrenmap))
+
+(defn spans->trace [spans] {:spans spans :childmap (spans->childmap spans)})
+(defn trace-root [trace] (first (get (:childmap trace) nil)))
+(defn trace-count [trace] (count (:spans trace)))
+; (defn trace->str [trace] (str (span "name") "\n" (tree->str children)))
+(defn trace-id [trace] ((trace-root trace) "trace_id"))
+
+(defn span-similarity [s1 s2]
+  (- 0
+     ;(do (println s1) 0)
+     ;(do (println "") 0)
+     ;(do (println s2) 0)
+     ; (do (println "S1" s1) 0)
+     ; (do (println "S2" s2) 0)
+     ; (do (println (s1 "resource") (s2 "resource")) 0)
+     (if (= (s1 "name") (s2 "name")) 0 1)
+     (if (= (s1 "service") (s2 "service")) 0 1)
+     (if (= (s1 "resource") (s2 "resource")) 0 1)))
 
 ;; calculate a similarity score between two traces used to match traces
-(defn similarity-score [t1 t2]
+
+
+(defn trace-similarity [t1 t2]
   (- 0
-     ;; penalize 5 * the difference in the number of traces
-     (if-let [diff (Math/abs (- (count t1) (count t2)))] (* 5 diff) 0)
+     ;; penalize the difference in the number of traces
+     (Math/abs (- (trace-count t1) (trace-count t2)))
 
      ;; compare root spans
-   )
-  )
+     (* -1 (span-similarity (trace-root t1) (trace-root t2)))))
 
-(defn trace->spanmap [trace] (reduce #(assoc %1 (%2 "span_id") %2) {} trace))
-
-
-;; converts a raw trace (list of spans) to a [span children]
-;; tree representation
-(defn raw->tree
-  ([trace]
-   (let
-     [span< (fn [s1 s2] (< (s1 "start") (s2 "start")))
-      addchild (fn [mp span]
-                 (let [pid (span "parent_id")]
-                   (assoc mp pid (conj (get mp pid (sorted-set-by span<)) span))))
-      childrenmap (reduce addchild {} trace)]
-     (raw->tree trace childrenmap)))
-  ([trace childrenmap] (pprint childrenmap)))
-
-
-(defn tree->str [[span children]]
-  (str (span "name") "\n" (tree->str children)))
+(defn match-traces [t1s t2s]
+  (let [scores
+        (map
+          (fn [t1]
+            (reduce
+              (fn [st t2]
+                (let [new-score (trace-similarity t1 t2)]
+                  (cond (> new-score (:score st)) {:score new-score :trace t2}
+                        (< new-score (:score st)) st
+                        :else (throw (ex-info (format "%s" (:score st)) {}))))) {:score -500000 :trace nil} t2s)) t1s)]
+    scores))
 
 
 ;; TODO: add ignore tags
-(defn compare-traces [act-traces ref-traces]
-  (let [act-trees (map raw->tree act-traces)
-        ref-trees (map raw->tree ref-traces)
+
+
+(defn compare-traces [raw-act-traces raw-ref-traces]
+  (let [act-traces (map spans->trace raw-act-traces)
+        ref-traces (map spans->trace raw-ref-traces)
+        matched-traces (match-traces act-traces ref-traces)
         ; score-mapping (fold () )
         ]
-    ; (println act-trees)
-    (doall act-trees)
-    )
-  )
+    (println matched-traces)))
 
 (defn mw-encoding [handler]
   (fn [req]
@@ -128,22 +147,19 @@
           raw-body (:body req)
           body (cond
                  (= encoding "application/msgpack") (msg/unpack raw-body)
-                 (= encoding "application/json") nil  ; TODO support json
+                 (= encoding "application/json") nil  ; TODO support json?
                  :else nil)]
       (handler (assoc req :body body)))))
 
-
 (defn mw-token [handler]
   (fn [req]
-      (handler (assoc req :token (get-in req [:headers "x-datadog-test-token"] "none")))))
-
+    (handler (assoc req :token (get-in req [:headers "x-datadog-test-token"] "none")))))
 
 (defn handle-traces [req]
   (let [token (:token req)
         traces (:body req)]
     (db-add-traces token traces)
     {:status 200 :headers {"Content-Type" "application/json"} :body "\"OK\""}))
-
 
 (defn handle-check [req]
   (let [token (:token req)]
@@ -162,11 +178,14 @@
   (let [token (:token req)]
     (try
       (let
-        [act-traces (trace-check token)]
+       [act-traces (trace-check token)]
         (if (snapexists token)
           ;; snapshot exists, do the comparison
           (let
-            [ref-traces (slurp (snappath token))]
+           [ref-traces (read-string (slurp (snappath token)))]
+            ; (println (first ref-traces))
+            ; (println (first (first ref-traces)))
+            ; (println ((first (first ref-traces)) "name"))
             (compare-traces act-traces ref-traces)
             {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
 
@@ -179,7 +198,6 @@
         {:status 500 :headers {"Content-Type" "text/plain"} :body (.getMessage e)})
       (finally (db-rm-traces token)))))
 
-
 (defroutes app-routes
   (mw-token (mw-encoding (PUT "/v0.4/traces" [] handle-traces)))
   (mw-token (GET "/test/check" [] handle-check))
@@ -187,10 +205,8 @@
   (mw-token (GET "/test/snapshot" [] handle-snapshot))
   (route/not-found "Not Found"))
 
-
 (def app
   (wrap-defaults app-routes api-defaults))
-
 
 (def reloadable-app
   (wrap-reload #'app))
