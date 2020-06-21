@@ -5,7 +5,9 @@
             [msgpack.core :as msg]
             [ring.middleware.defaults :refer [wrap-defaults api-defaults]]
             [ring.middleware.reload :refer [wrap-reload]])
-  (:use clojure.pprint))
+  (:use [clojure.pprint]
+        [clojure.data])
+  )
 
 (defn map-reduce
   ([f acc l] (map-reduce f acc l []))
@@ -102,9 +104,30 @@
 (defn trace-root [trace] (first (get (:childmap trace) nil)))
 (defn trace-count [trace] (count (:spans trace)))
 (defn trace->str [trace] (with-out-str (pprint (:spans trace))))
+(defn span->str [span] (with-out-str (pprint span)))
 (defn trace-id [trace] ((trace-root trace) "trace_id"))
 (defn next-row [cmap cs]
   (reduce concat (map (fn [s] (cmap (s "span_id"))) cs)))
+(defn trace-flatten-bfs
+  [trace]
+  (let [cmap (:childmap trace)
+        root (trace-root trace)
+        flattened
+        ((fn flat [spans res]
+           (if (empty? spans) res
+             (flat (next-row cmap spans)
+                   (concat res spans))))
+               [root] [])
+        ]
+    flattened))
+; (defn trace-fold
+;   ([f initacc trace]
+;    (let
+;      [cmap (:childmap trace)
+;       res ((fn fold [f acc span] ) initacc)
+;       ]
+;      res
+;      )))
 
 (defn span-similarity [s1 s2]
   (- 0
@@ -172,7 +195,7 @@
           (render-shape childmap (next-row childmap spans))))
   ))
 
-
+;; TODO: better visualization
 (defn diff-shape
   ([act exp]
    (diff-shape (:childmap act) [(trace-root act)]
@@ -185,12 +208,48 @@
        :else (diff-shape actmap (next-row actmap actspans)
                          expmap (next-row expmap expspans)))
      :else
-     (throw (ex-info (format "Shape difference.\nExpected shape:\n%s\nGot shape:\n%s" (render-shape expmap) (render-shape actmap)) {})))))
+     (throw (ex-info (format "Trace shape difference.\nExpected shape:\n%s\nGot shape:\n%s" (render-shape expmap) (render-shape actmap)) {})))))
+
+(defn span-ignore [span ignores]
+  (let
+    [span (apply dissoc span ignores)
+     span (update span "meta" #(apply dissoc % ignores))
+     span (update span "metrics" #(apply dissoc % ignores))
+     ]
+    span))
+
+(defn diff-span [ignores act exp]
+  (do
+    (def act-ig (span-ignore act ignores))
+    (def exp-ig (span-ignore exp ignores))
+    (def res (diff act-ig exp-ig))
+     ; res (diff ig-act ig-exp)]
+    ; TODO: check that ignored tags are present on each span
+    (when (not (empty? (first res)))
+      ; TODO: indicate ignored keys, erroneous keys
+      (throw (ex-info (format "Span data mismatch.\nActual:\n%s\nExpected:\n%s" (span->str act) (span->str exp)) {}))
+      )))
+
+(defn diff-spans [act exp]
+  (let [act-bfs (trace-flatten-bfs act)
+        exp-bfs (trace-flatten-bfs exp)
+        diff-span (partial diff-span ["span_id"
+                                      "trace_id"
+                                      "parent_id"
+                                      "duration"
+                                      "start"
+                                      "system.pid"
+                                      "runtime-id"])
+        ]
+    (map diff-span act-bfs exp-bfs)))
 
 (defn diff-traces [act exp]
-  (do
+  (doseq []
     ; check the shape of the trace
     (diff-shape act exp)
+
+    ; actually diff the spans now
+    (diff-spans act exp)
     ))
 
 (defn diff-matches [matches]
@@ -202,7 +261,7 @@
         ref-traces (map spans->trace ref-traces)
         matched-traces (match-traces act-traces ref-traces)
         diffed-traces (diff-matches matched-traces)]
-    (println diffed-traces)))
+    (pprint diffed-traces)))
 
 (defn mw-encoding [handler]
   (fn [req]
