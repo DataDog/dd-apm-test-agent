@@ -293,39 +293,40 @@
     (when (not (empty? errors))
       (throw (ex-info (format "At expected span:\n%s\nReceived actual span:\n%s\nSpan data mismatch.\n%s" (span->str exp) (span->str act) human-errors) {})))))
 
-(defn diff-spans [act exp]
+(defn diff-spans [act exp ignores]
   (let [act-bfs (trace-flatten-bfs act)
         exp-bfs (trace-flatten-bfs exp)
-        diff-span (partial diff-span (set ["span_id"
-                                           "trace_id"
-                                           "parent_id"
-                                           "duration"
-                                           "start"
-                                           "metrics.system.pid"
-                                           "meta.runtime-id"]))]
+        diff-span
+        (partial diff-span
+                 (set (concat ignores ["span_id"
+                       "trace_id"
+                       "parent_id"
+                       "duration"
+                       "start"
+                       "metrics.system.pid"
+                       "meta.runtime-id"])))]
     (doall (map diff-span act-bfs exp-bfs))))
 
-(defn diff-traces [act exp]
+(defn diff-traces [act exp ignores]
   (try
     (do
       ; check the shape of the trace
       (diff-shape act exp)
       ; actually diff the spans now
-      (diff-spans act exp))
+      (diff-spans act exp ignores))
     (catch clojure.lang.ExceptionInfo e
       ; Prepend trace context info
       (let [msg (.getMessage e)]
         (throw (ex-info (format "At expected trace:\n%s\nReceived actual trace:\n%s\n%s" (trace->str exp) (trace->str act) msg) {}))))))
 
-(defn diff-matches [matches]
-  (map (fn [match] (diff-traces (:t1 match) (:t2 match))) matches))
+(defn diff-matches [matches ignores]
+  (map (fn [match] (diff-traces (:t1 match) (:t2 match) ignores)) matches))
 
-;; TODO: add ignore tags
-(defn compare-traces [act-traces ref-traces]
+(defn compare-traces [act-traces ref-traces ignores]
   (let [act-traces (map spans->trace act-traces)
         ref-traces (map spans->trace ref-traces)
         matched-traces (match-traces act-traces ref-traces)
-        diffed-traces (diff-matches matched-traces)]
+        diffed-traces (diff-matches matched-traces ignores)]
     (pprint diffed-traces)))
 
 (defn mw-encoding [handler]
@@ -363,7 +364,7 @@
 
 (defn handle-snapshot [req]
   (let [token (:token req)
-        ignores (get (:params req) :ignores)]
+        ignores (clojure.string/split (get (:params req) :ignores "") #",")]
     (try
       (let
        [act-traces (check-traces token)]
@@ -371,7 +372,7 @@
           ;; snapshot exists, do the comparison
           (let
            [ref-traces (read-string (slurp (snappath token)))]
-            (compare-traces act-traces ref-traces)
+            (compare-traces act-traces ref-traces ignores)
             (println (format "[%s] tests passed!" token))
             {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
           ;; snapshot does not exist so write the traces
