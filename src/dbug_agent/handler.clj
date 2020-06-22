@@ -6,8 +6,7 @@
             [ring.middleware.defaults :refer [wrap-defaults api-defaults]]
             [ring.middleware.reload :refer [wrap-reload]])
   (:use [clojure.pprint]
-        [clojure.data])
-  )
+        [clojure.data]))
 
 (defn map-reduce
   ([f acc l] (map-reduce f acc l []))
@@ -108,6 +107,27 @@
 (defn trace-id [trace] ((trace-root trace) "trace_id"))
 (defn next-row [cmap cs]
   (reduce concat (map (fn [s] (cmap (s "span_id"))) cs)))
+(defn trace->str
+  ([trace]
+  (let [root (trace-root trace)
+        cmap (:childmap trace)
+        strace
+        ((fn dfs [span d prefix leader cprefix]
+           (let [cs (cmap (span "span_id"))
+                 nd (inc d)
+                 ncp1 (str cprefix "│ ")
+                 ncp2 (str cprefix "  ")
+                 cp (str prefix cprefix)
+                 nc (count cs)
+                 ss (cond
+                      (= nc 1) [(dfs (first cs) nd cp "└─" "  ")]
+                      (= nc 2) [(dfs (first cs) nd cp "├─" "│ ")
+                                (dfs (last cs) nd  cp "└─" "  ")]
+                      (> nc 2) (conj (map #(dfs % nd "├─" "│ ") (->> cs drop-last))
+                                     (dfs (last cs) nd "└─" "  "))
+                      :else [])]
+           (str (format "%s%s[%s]" prefix leader (span "name")) "\n" (clojure.string/join "" ss)))) root 0 "" "" "")]
+    strace)))
 (defn trace-flatten-bfs
   [trace]
   (let [cmap (:childmap trace)
@@ -115,10 +135,9 @@
         flattened
         ((fn flat [spans res]
            (if (empty? spans) res
-             (flat (next-row cmap spans)
-                   (concat res spans))))
-               [root] [])
-        ]
+               (flat (next-row cmap spans)
+                     (concat res spans))))
+         [root] [])]
     flattened))
 
 (defn span-similarity [s1 s2]
@@ -134,13 +153,14 @@
              0 (set (concat (keys (s1 "metrics")) (keys (s2 "metrics")))))))
 
 (defn trace-similarity [t1 t2]
-  ; Calculate a similarity score between two traces used to match traces
+  ; Calculate a similarity score between two traces used to match traces.
+  ; The lower the score the less similar the traces are.
   (- 0
      ; penalize the difference in the number of traces
      (Math/abs (- (trace-count t1) (trace-count t2)))
 
      (* -1 (reduce (fn [score [s1 s2]] (+ score (span-similarity s1 s2))) 0
-             (map vector (trace-flatten-bfs t1) (trace-flatten-bfs t2))))
+                   (map vector (trace-flatten-bfs t1) (trace-flatten-bfs t2))))
 
      ; compare root spans
      (* -1 (span-similarity (trace-root t1) (trace-root t2)))))
@@ -155,9 +175,7 @@
                      (let [new-score (trace-similarity t1 t2)]
                        (cond (not (contains? avail-t2s (trace-id t2))) (assoc st :t1 t1)
                              (or (nil? score) (>= new-score score))
-                             {:score new-score
-                              :t1 t1
-                              :t2 t2
+                             {:score new-score :t1 t1 :t2 t2
                               :avail-t2s
                               (disj
                                (if (nil? cur-t2) avail-t2s (conj avail-t2s (trace-id cur-t2)))
@@ -191,10 +209,9 @@
    (if (empty? spans)
      ""
      (str (count spans) "\n"
-          (render-shape childmap (next-row childmap spans))))
-  ))
+          (render-shape childmap (next-row childmap spans))))))
 
-;; TODO: better visualization
+
 (defn diff-shape
   ([act exp]
    (diff-shape (:childmap act) [(trace-root act)]
@@ -211,10 +228,9 @@
 
 (defn span-ignore [span ignores]
   (let
-    [span (apply dissoc span ignores)
-     span (update span "meta" #(apply dissoc % ignores))
-     span (update span "metrics" #(apply dissoc % ignores))
-     ]
+   [span (apply dissoc span ignores)
+    span (update span "meta" #(apply dissoc % ignores))
+    span (update span "metrics" #(apply dissoc % ignores))]
     span))
 
 (defn diff-span [ignores act exp]
@@ -224,10 +240,10 @@
     ; Check that attributes are all present and their values match
     (defn merge-keys [span]
       (let
-        [merged (merge
-                  span
-                  (reduce-kv (fn [m k v] (assoc m (format "meta.%s" k) v)) {} (span "meta"))
-                  (reduce-kv (fn [m k v] (assoc m (format "metrics.%s" k) v)) {} (span "metrics")))]
+       [merged (merge
+                span
+                (reduce-kv (fn [m k v] (assoc m (format "meta.%s" k) v)) {} (span "meta"))
+                (reduce-kv (fn [m k v] (assoc m (format "metrics.%s" k) v)) {} (span "metrics")))]
         (apply dissoc merged ["metrics" "meta"])))
 
     (def act-merge (merge-keys act))
@@ -239,8 +255,7 @@
                    "trace_id"
                    "duration"
                    "start"
-                   "error"
-                   ])
+                   "error"])
 
     (def results
       (for [k (set (concat (keys act-merge) (keys exp-merge) requires))
@@ -258,37 +273,34 @@
                     [:failed (format "Key '%s' in expected not actual." k)]
                     (and (not ignored) (not= act-val exp-val))
                     [:failed (format "Value mismatch for '%s'. Expected: '%s' got '%s' " k exp-val act-val)]
-                    :else [:passed ""])
-                  ]]
+                    :else [:passed ""])]]
         {:key k
-          :ignored ignored
-          :required required
-          :in-act in-act
-          :act-val act-val
-          :in-exp in-exp
-          :exp-val exp-val
-          :result result
-          :reason reason}))
+         :ignored ignored
+         :required required
+         :in-act in-act
+         :act-val act-val
+         :in-exp in-exp
+         :exp-val exp-val
+         :result result
+         :reason reason}))
 
     (def errors (filter #(= (:result %) :failed) results))
     (def human-errors (clojure.string/join "\n" (map #(str "❌ " (:reason %)) errors)))
 
     (when (not (empty? errors))
-      (throw (ex-info (format "At expected span:\n%s\nActual span:\n%s\nSpan data mismatch.\n%s" (span->str exp) (span->str act) human-errors) {}))
-      )))
+      (throw (ex-info (format "At expected span:\n%s\nActual span:\n%s\nSpan data mismatch.\n%s" (span->str exp) (span->str act) human-errors) {})))))
 
 (defn diff-spans [act exp]
   (let [act-bfs (trace-flatten-bfs act)
         exp-bfs (trace-flatten-bfs exp)
         diff-span (partial diff-span (set ["span_id"
-                                      "trace_id"
-                                      "parent_id"
-                                      "duration"
-                                      "start"
-                                      "metrics.system.pid"
-                                      "meta.runtime-id"]))
-        ]
-      (doall (map diff-span act-bfs exp-bfs))))
+                                           "trace_id"
+                                           "parent_id"
+                                           "duration"
+                                           "start"
+                                           "metrics.system.pid"
+                                           "meta.runtime-id"]))]
+    (doall (map diff-span act-bfs exp-bfs))))
 
 (defn diff-traces [act exp]
   (try
@@ -364,7 +376,7 @@
             {:status 200 :headers {"Content-Type" "text/plain"} :body "OK :)"})))
       (catch clojure.lang.ExceptionInfo e
         (let [msg (str (.getMessage e) "\n\nSnapfile: '" (snappath token))]
-        {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
+          {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
       (finally (db-rm-traces token)))))
 
 (defroutes app-routes
