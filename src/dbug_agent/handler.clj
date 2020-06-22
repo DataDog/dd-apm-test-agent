@@ -17,7 +17,9 @@
 
 (def snapdir (or (System/getenv "SNAPSHOT_DIR") "snaps"))
 
-(defn errf [msg] (str "\033[91m" msg "\033[0m"))
+(defn errf
+  ([msg] (str "\033[91m" msg "\033[0m"))
+  ([f msg] (if f (errf msg) msg)))
 
 (defn snappath [snap] (format "%s/%s.snap" snapdir snap))
 (defn snapexists [snap] (.exists (clojure.java.io/as-file (snappath snap))))
@@ -105,38 +107,51 @@
 (defn trace-root [trace] (first (get (:childmap trace) nil)))
 (defn trace-count [trace] (count (:spans trace)))
 (defn trace-id [trace] ((trace-root trace) "trace_id"))
+
 (defn next-row [cmap cs]
   (reduce concat (map (fn [s] (cmap (s "span_id"))) cs)))
+
 (defn trace->str
   ([trace] (trace->str trace {}))
   ([trace highlights]
-  (let [root (trace-root trace)
-        cmap (:childmap trace)
-        strace
-        ((fn dfs [span d prefix leader cprefix]
-           (let [cs (cmap (span "span_id"))
-                 nd (inc d)
-                 ncp1 (str cprefix "│ ")
-                 ncp2 (str cprefix "  ")
-                 cp (str prefix cprefix)
-                 nc (count cs)
-                 ss (cond
-                      (= nc 1) [(dfs (first cs) nd cp "└─" "  ")]
-                      (= nc 2) [(dfs (first cs) nd cp "├─" "│ ")
-                                (dfs (last cs) nd  cp "└─" "  ")]
-                      (> nc 2) (conj (map #(dfs % nd "├─" "│ ") (->> cs drop-last))
-                                     (dfs (last cs) nd "└─" "  "))
-                      :else [])
-                 restline (clojure.string/join "" ss)
-                 ishighlight (contains? highlights (span "span_id"))
-                 hl (if ishighlight
-                      (str "<------- " (:msg (highlights (span "span_id"))))
-                      "")
-                 spanline (format "%s%s[%s] %s" prefix leader (span "name") hl)
-                 spanline (if ishighlight (errf spanline) spanline)]
-             (str spanline "\n" restline)))
-         root 0 "" "" "")]
-    strace)))
+   (let [root (trace-root trace)
+         cmap (:childmap trace)
+         strace
+         ((fn dfs [span d prefix leader cprefix]
+            (let [cs (cmap (span "span_id"))
+                  nd (inc d)
+                  ncp1 (str cprefix "│ ")
+                  ncp2 (str cprefix "  ")
+                  cp (str prefix cprefix)
+                  nc (count cs)
+                  ss (cond
+                       (= nc 1) [(dfs (first cs) nd cp "└─" "  ")]
+                       (= nc 2) [(dfs (first cs) nd cp "├─" "│ ")
+                                 (dfs (last cs) nd  cp "└─" "  ")]
+                       (> nc 2) (conj (map #(dfs % nd "├─" "│ ") (->> cs drop-last))
+                                      (dfs (last cs) nd "└─" "  "))
+                       :else [])
+                  restline (clojure.string/join "" ss)
+                  ishighlight (contains? highlights (span "span_id"))
+                  hl (if ishighlight
+                       (str "<------- " (:msg (highlights (span "span_id"))))
+                       "")
+                  spanline (errf ishighlight (format "%s%s[%s] %s" prefix leader (span "name") hl))]
+              (str spanline "\n" restline)))
+          root 0 "" "" "")]
+     strace)))
+
+(defn traces->str
+  ([traces] (traces->str traces {}))
+  ([traces highlights]
+   (reduce
+    (fn [acc t]
+      (let [tid (trace-id t)
+            ishighlight (contains? highlights tid)
+            strace (trace->str t)]
+        (str "trace id: " tid "\n" (errf ishighlight strace))))
+    "" traces)))
+
 (defn trace-flatten-bfs
   [trace]
   (let [cmap (:childmap trace)
@@ -148,6 +163,7 @@
                      (concat res spans))))
          [root] [])]
     flattened))
+
 (defn span->str [span] (with-out-str (pprint span)))
 ; meta and metrics can not exist on a span if they are empty
 ; funny how we optimize that but not error or resource...
@@ -205,7 +221,7 @@
         (set (map #(-> % :t1 trace-id) (filter #(not (contains? % :t2)) matches))))
       (when (not (empty? unmatched-t1-ids))
         (def traces (filter #(contains? unmatched-t1-ids (trace-id %)) t1s))
-        (def fmt-traces (clojure.string/join "\n" (map trace->str traces)))
+        (def fmt-traces (traces->str traces))
         (throw (ex-info (format "Unmatched actual traces:\n%s" fmt-traces) {})))
 
       (def t2-ids (set (map trace-id t2s)))
@@ -213,7 +229,7 @@
       (def unmatched-t2-ids (set/difference t2-ids matched-t2-ids))
       (when (not (empty? unmatched-t2-ids))
         (def traces (filter #(contains? unmatched-t2-ids (trace-id %)) t2s))
-        (def fmt-traces (clojure.string/join "\n" (map trace->str traces)))
+        (def fmt-traces (traces->str traces))
         (throw (ex-info (format "Did not receive expected traces:\n%s" fmt-traces) {})))
       matches)))
 
@@ -224,7 +240,6 @@
      ""
      (str (count spans) "\n"
           (render-shape childmap (next-row childmap spans))))))
-
 
 (defn diff-shape
   ([act exp]
@@ -303,10 +318,11 @@
 
     (when (not (empty? errors))
       (throw (ex-info
-               (format "At expected span:\n%s\nReceived actual span:\n%s\nSpan data mismatch.\n%s"
-                       (span->str exp) (span->str act) human-errors)
-               {:act-span-id (act "span_id")
-                :exp-span-id (exp "span_id")})))))
+              (format "At expected span:\n%s\nReceived actual span:\n%s\nSpan data mismatch.\n%s"
+                      (span->str exp) (span->str act) human-errors)
+              {:act-span-id (act "span_id")
+               :exp-span-id (exp "span_id")
+               :msg "Span data mismatch"})))))
 
 (defn diff-spans [act exp ignores]
   (let [act-bfs (trace-flatten-bfs act)
@@ -314,12 +330,12 @@
         diff-span
         (partial diff-span
                  (set (concat ignores ["span_id"
-                       "trace_id"
-                       "parent_id"
-                       "duration"
-                       "start"
-                       "metrics.system.pid"
-                       "meta.runtime-id"])))]
+                                       "trace_id"
+                                       "parent_id"
+                                       "duration"
+                                       "start"
+                                       "metrics.system.pid"
+                                       "meta.runtime-id"])))]
     (doall (map diff-span act-bfs exp-bfs))))
 
 (defn diff-traces [act exp ignores]
@@ -334,23 +350,33 @@
       (let [msg (.getMessage e)
             data (ex-data e)
             act-sid (:act-span-id data)
-            exp-sid (:exp-span-id data)
-            ]
+            exp-sid (:exp-span-id data)]
         (throw (ex-info
-                 (format "At expected trace:\n%s\nReceived actual trace:\n%s\n%s"
-                         (trace->str exp) (trace->str act {act-sid {:msg "uh oh!"}}) msg)
-                 {:act-trace-id (trace-id act)
-                  :exp-trace-id (trace-id exp)}))))))
+                (format "At expected trace:\n%s\nReceived actual trace:\n%s\n%s"
+                        (trace->str exp) (trace->str act {act-sid {:msg (:msg data)}}) msg)
+                {:act-trace-id (trace-id act)
+                 :exp-trace-id (trace-id exp)}))))))
 
 (defn diff-matches [matches ignores]
   (map (fn [match] (diff-traces (:t1 match) (:t2 match) ignores)) matches))
 
-(defn compare-traces [act-traces ref-traces ignores]
+(defn compare-traces [act-traces exp-traces ignores]
   (let [act-traces (map spans->trace act-traces)
-        ref-traces (map spans->trace ref-traces)
-        matched-traces (match-traces act-traces ref-traces)
-        diffed-traces (diff-matches matched-traces ignores)]
-    (pprint diffed-traces)))
+        exp-traces (map spans->trace exp-traces)]
+    (try
+      (let [matched-traces (match-traces act-traces exp-traces)
+            diffed-traces (diff-matches matched-traces ignores)]
+        (pprint diffed-traces))
+      (catch clojure.lang.ExceptionInfo e
+      ; Prepend trace context info
+        (let [msg (.getMessage e)
+              data (ex-data e)
+              act-tid (:act-trace-id data)
+              exp-tid (:exp-trace-id data)
+              act-str (traces->str act-traces {act-tid {}})
+              exp-str (traces->str exp-traces)]
+          (throw (ex-info
+                  (format "Expected traceset:\n%s\nReceived actual traceset:\n%s\n%s" exp-str act-str msg) {})))))))
 
 (defn mw-encoding [handler]
   (fn [req]
@@ -394,8 +420,8 @@
         (if (snapexists token)
           ;; snapshot exists, do the comparison
           (let
-           [ref-traces (read-string (slurp (snappath token)))]
-            (compare-traces act-traces ref-traces ignores)
+           [exp-traces (read-string (slurp (snappath token)))]
+            (compare-traces act-traces exp-traces ignores)
             (println (format "[%s] tests passed!" token))
             {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
           ;; snapshot does not exist so write the traces
