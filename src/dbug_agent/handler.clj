@@ -102,7 +102,6 @@
 (defn spans->trace [spans] {:spans spans :childmap (spans->childmap spans)})
 (defn trace-root [trace] (first (get (:childmap trace) nil)))
 (defn trace-count [trace] (count (:spans trace)))
-(defn trace->str [trace] (with-out-str (pprint (:spans trace))))
 (defn span->str [span] (with-out-str (pprint span)))
 (defn trace-id [trace] ((trace-root trace) "trace_id"))
 (defn next-row [cmap cs]
@@ -288,7 +287,7 @@
     (def human-errors (clojure.string/join "\n" (map #(str "❌ " (:reason %)) errors)))
 
     (when (not (empty? errors))
-      (throw (ex-info (format "At expected span:\n%s\nActual span:\n%s\nSpan data mismatch.\n%s" (span->str exp) (span->str act) human-errors) {})))))
+      (throw (ex-info (format "At expected span:\n%s\nReceived actual span:\n%s\nSpan data mismatch.\n%s" (span->str exp) (span->str act) human-errors) {})))))
 
 (defn diff-spans [act exp]
   (let [act-bfs (trace-flatten-bfs act)
@@ -312,7 +311,7 @@
     (catch clojure.lang.ExceptionInfo e
       ; Prepend trace context info
       (let [msg (.getMessage e)]
-        (throw (ex-info (format "At expected trace:\n%s\nActual trace:\n%s\n%s" (trace->str exp) (trace->str act) msg) {}))))))
+        (throw (ex-info (format "At expected trace:\n%s\nReceived actual trace:\n%s\n%s" (trace->str exp) (trace->str act) msg) {}))))))
 
 (defn diff-matches [matches]
   (map (fn [match] (diff-traces (:t1 match) (:t2 match))) matches))

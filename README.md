@@ -33,8 +33,6 @@ To format the code:
 ## Tracer setup
 
 ```python
-
-# TODO add ignore args to snapshot
 def snapshot(f):
     import json
     import pytest
@@ -61,6 +59,35 @@ def snapshot(f):
             if r.status != 200:
                 msg = r.read().decode()
                 pytest.fail(msg, pytrace=False)
+    return wrapper
+def snapshot(f):
+    import json
+    import pytest
+
+    from ddtrace.compat import httplib
+    from ddtrace import tracer
+
+    def wrapper(*args, **kwargs):
+        if len(args) == 1:
+            self = args[0]
+
+        test_id = "{}.{}.{}".format(__name__, self.__class__.__name__, f.__name__)
+        conn = httplib.HTTPConnection(tracer.writer.api.hostname, tracer.writer.api.port)
+        try:
+            tracer.writer.api._headers["X-Datadog-Test-Token"] = test_id
+            ret = f(*args, **kwargs)
+            tracer.writer.flush_queue()
+            conn.request("GET", "/test/snapshot", {}, {
+                "X-Datadog-Test-Token": test_id,
+            })
+            r = conn.getresponse()
+            if r.status != 200:
+                msg = r.read().decode()
+                pytest.fail(msg, pytrace=False)
+            return ret
+        finally:
+            del tracer.writer.api._headers["X-Datadog-Test-Token"]
+            conn.close()
     return wrapper
 ```
 
