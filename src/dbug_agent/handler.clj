@@ -120,14 +120,6 @@
                [root] [])
         ]
     flattened))
-; (defn trace-fold
-;   ([f initacc trace]
-;    (let
-;      [cmap (:childmap trace)
-;       res ((fn fold [f acc span] ) initacc)
-;       ]
-;      res
-;      )))
 
 (defn span-similarity [s1 s2]
   (- 0
@@ -135,15 +127,22 @@
      (if (= (s1 "service") (s2 "service")) 0 1)
      (if (= (s1 "type") (s2 "type")) 0 1)
      (if (= (s1 "error") (s2 "error")) 0 1)
-     (if (= (s1 "resource") (s2 "resource")) 0 1)))
+     (if (= (s1 "resource") (s2 "resource")) 0 1)
+     (reduce (fn [acc k] (+ acc (if (= ((s1 "meta") k) ((s2 "meta") k)) 0 1)))
+             0 (set (concat (keys (s1 "meta")) (keys (s2 "meta")))))
+     (reduce (fn [acc k] (+ acc (if (= ((s1 "metrics") k) ((s2 "metrics") k)) 0 1)))
+             0 (set (concat (keys (s1 "metrics")) (keys (s2 "metrics")))))))
 
 (defn trace-similarity [t1 t2]
   ; Calculate a similarity score between two traces used to match traces
   (- 0
-     ;; penalize the difference in the number of traces
+     ; penalize the difference in the number of traces
      (Math/abs (- (trace-count t1) (trace-count t2)))
 
-     ;; compare root spans
+     (* -1 (reduce (fn [score [s1 s2]] (+ score (span-similarity s1 s2))) 0
+             (map vector (trace-flatten-bfs t1) (trace-flatten-bfs t2))))
+
+     ; compare root spans
      (* -1 (span-similarity (trace-root t1) (trace-root t2)))))
 
 (defn match-traces [t1s t2s]
@@ -155,7 +154,7 @@
                    (fn [{score :score cur-t2 :t2 avail-t2s :avail-t2s :as st} t2]
                      (let [new-score (trace-similarity t1 t2)]
                        (cond (not (contains? avail-t2s (trace-id t2))) (assoc st :t1 t1)
-                             (or (nil? score) (> new-score score))
+                             (or (nil? score) (>= new-score score))
                              {:score new-score
                               :t1 t1
                               :t2 t2
@@ -275,7 +274,7 @@
     (def human-errors (clojure.string/join "\n" (map #(str "❌ " (:reason %)) errors)))
 
     (when (not (empty? errors))
-      (throw (ex-info (format "Span data mismatch.\n%s" human-errors) {}))
+      (throw (ex-info (format "At expected span:\n%s\nActual span:\n%s\nSpan data mismatch.\n%s" (span->str exp) (span->str act) human-errors) {}))
       )))
 
 (defn diff-spans [act exp]
@@ -289,11 +288,7 @@
                                       "metrics.system.pid"
                                       "meta.runtime-id"]))
         ]
-    (try
-      (doall (map diff-span act-bfs exp-bfs))
-      (catch clojure.lang.ExceptionInfo e
-        (let [msg (.getMessage e)]
-          (throw (ex-info (format "At expected span:\n%s\nActual span:\n%s\n%s" (span->str exp) (span->str act) msg) {})))))))
+      (doall (map diff-span act-bfs exp-bfs))))
 
 (defn diff-traces [act exp]
   (try
