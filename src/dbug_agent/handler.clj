@@ -17,6 +17,8 @@
 
 (def snapdir (or (System/getenv "SNAPSHOT_DIR") "snaps"))
 
+(defn errf [msg] (str "\033[91m" msg "\033[0m"))
+
 (defn snappath [snap] (format "%s/%s.snap" snapdir snap))
 (defn snapexists [snap] (.exists (clojure.java.io/as-file (snappath snap))))
 
@@ -106,7 +108,8 @@
 (defn next-row [cmap cs]
   (reduce concat (map (fn [s] (cmap (s "span_id"))) cs)))
 (defn trace->str
-  ([trace]
+  ([trace] (trace->str trace {}))
+  ([trace highlights]
   (let [root (trace-root trace)
         cmap (:childmap trace)
         strace
@@ -123,8 +126,16 @@
                                 (dfs (last cs) nd  cp "└─" "  ")]
                       (> nc 2) (conj (map #(dfs % nd "├─" "│ ") (->> cs drop-last))
                                      (dfs (last cs) nd "└─" "  "))
-                      :else [])]
-           (str (format "%s%s[%s]" prefix leader (span "name")) "\n" (clojure.string/join "" ss)))) root 0 "" "" "")]
+                      :else [])
+                 restline (clojure.string/join "" ss)
+                 ishighlight (contains? highlights (span "span_id"))
+                 hl (if ishighlight
+                      (str "<------- " (:msg (highlights (span "span_id"))))
+                      "")
+                 spanline (format "%s%s[%s] %s" prefix leader (span "name") hl)
+                 spanline (if ishighlight (errf spanline) spanline)]
+             (str spanline "\n" restline)))
+         root 0 "" "" "")]
     strace)))
 (defn trace-flatten-bfs
   [trace]
@@ -275,7 +286,7 @@
                     (and (not in-act) in-exp)
                     [:failed (format "Key '%s' in expected not actual." k)]
                     (and (not ignored) (not= act-val exp-val))
-                    [:failed (format "Value mismatch for '%s'. Expected: '%s' got '%s' " k exp-val act-val)]
+                    [:failed (format "Value mismatch for '%s'. Expected '%s' got '%s' " k exp-val act-val)]
                     :else [:passed ""])]]
         {:key k
          :ignored ignored
@@ -291,7 +302,11 @@
     (def human-errors (clojure.string/join "\n" (map #(str "❌ " (:reason %)) errors)))
 
     (when (not (empty? errors))
-      (throw (ex-info (format "At expected span:\n%s\nReceived actual span:\n%s\nSpan data mismatch.\n%s" (span->str exp) (span->str act) human-errors) {})))))
+      (throw (ex-info
+               (format "At expected span:\n%s\nReceived actual span:\n%s\nSpan data mismatch.\n%s"
+                       (span->str exp) (span->str act) human-errors)
+               {:act-span-id (act "span_id")
+                :exp-span-id (exp "span_id")})))))
 
 (defn diff-spans [act exp ignores]
   (let [act-bfs (trace-flatten-bfs act)
@@ -316,8 +331,16 @@
       (diff-spans act exp ignores))
     (catch clojure.lang.ExceptionInfo e
       ; Prepend trace context info
-      (let [msg (.getMessage e)]
-        (throw (ex-info (format "At expected trace:\n%s\nReceived actual trace:\n%s\n%s" (trace->str exp) (trace->str act) msg) {}))))))
+      (let [msg (.getMessage e)
+            data (ex-data e)
+            act-sid (:act-span-id data)
+            exp-sid (:exp-span-id data)
+            ]
+        (throw (ex-info
+                 (format "At expected trace:\n%s\nReceived actual trace:\n%s\n%s"
+                         (trace->str exp) (trace->str act {act-sid {:msg "uh oh!"}}) msg)
+                 {:act-trace-id (trace-id act)
+                  :exp-trace-id (trace-id exp)}))))))
 
 (defn diff-matches [matches ignores]
   (map (fn [match] (diff-traces (:t1 match) (:t2 match) ignores)) matches))
