@@ -102,7 +102,6 @@
 (defn spans->trace [spans] {:spans spans :childmap (spans->childmap spans)})
 (defn trace-root [trace] (first (get (:childmap trace) nil)))
 (defn trace-count [trace] (count (:spans trace)))
-(defn span->str [span] (with-out-str (pprint span)))
 (defn trace-id [trace] ((trace-root trace) "trace_id"))
 (defn next-row [cmap cs]
   (reduce concat (map (fn [s] (cmap (s "span_id"))) cs)))
@@ -138,6 +137,11 @@
                      (concat res spans))))
          [root] [])]
     flattened))
+(defn span->str [span] (with-out-str (pprint span)))
+; meta and metrics can not exist on a span if they are empty
+; funny how we optimize that but not error or resource...
+(defn span-meta [span] (get span "meta" {}))
+(defn span-metrics [span] (get span "metrics" {}))
 
 (defn span-similarity [s1 s2]
   (- 0
@@ -146,10 +150,10 @@
      (if (= (s1 "type") (s2 "type")) 0 1)
      (if (= (s1 "error") (s2 "error")) 0 1)
      (if (= (s1 "resource") (s2 "resource")) 0 1)
-     (reduce (fn [acc k] (+ acc (if (= ((s1 "meta") k) ((s2 "meta") k)) 0 1)))
-             0 (set (concat (keys (s1 "meta")) (keys (s2 "meta")))))
-     (reduce (fn [acc k] (+ acc (if (= ((s1 "metrics") k) ((s2 "metrics") k)) 0 1)))
-             0 (set (concat (keys (s1 "metrics")) (keys (s2 "metrics")))))))
+     (reduce (fn [acc k] (+ acc (if (= ((span-meta s1) k) ((span-meta s2) k)) 0 1)))
+             0 (set (concat (keys (span-meta s1)) (keys (span-meta s2)))))
+     (reduce (fn [acc k] (+ acc (if (= ((span-metrics s1) k) ((span-metrics s2) k)) 0 1)))
+             0 (set (concat (keys (span-metrics s1)) (keys (span-metrics s2)))))))
 
 (defn trace-similarity [t1 t2]
   ; Calculate a similarity score between two traces used to match traces.
@@ -223,7 +227,7 @@
        :else (diff-shape actmap (next-row actmap actspans)
                          expmap (next-row expmap expspans)))
      :else
-     (throw (ex-info (format "Trace shape difference.\nExpected shape:\n%s\nGot shape:\n%s" (render-shape expmap) (render-shape actmap)) {})))))
+     (throw (ex-info (format "Trace shape difference.") {})))))
 
 (defn span-ignore [span ignores]
   (let
@@ -241,8 +245,8 @@
       (let
        [merged (merge
                 span
-                (reduce-kv (fn [m k v] (assoc m (format "meta.%s" k) v)) {} (span "meta"))
-                (reduce-kv (fn [m k v] (assoc m (format "metrics.%s" k) v)) {} (span "metrics")))]
+                (reduce-kv (fn [m k v] (assoc m (format "meta.%s" k) v)) {} (span-meta span))
+                (reduce-kv (fn [m k v] (assoc m (format "metrics.%s" k) v)) {} (span-metrics span)))]
         (apply dissoc merged ["metrics" "meta"])))
 
     (def act-merge (merge-keys act))
@@ -358,7 +362,8 @@
     (db-rm-traces token)))
 
 (defn handle-snapshot [req]
-  (let [token (:token req)]
+  (let [token (:token req)
+        ignores (get (:params req) :ignores)]
     (try
       (let
        [act-traces (check-traces token)]
