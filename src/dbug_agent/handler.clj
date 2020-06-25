@@ -127,9 +127,9 @@
                   ss (cond
                        (= nc 1) [(dfs (first cs) nd cp "└─" "  ")]
                        (= nc 2) [(dfs (first cs) nd cp "├─" "│ ")
-                                 (dfs (last cs) nd  cp "└─" "  ")]
-                       (> nc 2) (conj (map #(dfs % nd "├─" "│ ") (->> cs drop-last))
-                                      (dfs (last cs) nd "└─" "  "))
+                                 (dfs (last cs) nd cp "└─" "  ")]
+                       (> nc 2) (concat (map #(dfs % nd cp "├─" "│ ") (->> cs drop-last))
+                                      [(dfs (last cs) nd cp "└─" "  ")])
                        :else [])
                   restline (clojure.string/join "" ss)
                   ishighlight (contains? highlights (span "span_id"))
@@ -144,13 +144,16 @@
 (defn traces->str
   ([traces] (traces->str traces {}))
   ([traces highlights]
-   (reduce
-    (fn [acc t]
-      (let [tid (trace-id t)
-            ishighlight (contains? highlights tid)
-            strace (trace->str t)]
-        (str "trace id: " tid "\n" (errf ishighlight strace))))
-    "" traces)))
+   (let
+     [joined-str
+      (reduce
+        (fn [acc t]
+          (let [tid (trace-id t)
+                ishighlight (contains? highlights tid)
+                strace (trace->str t)]
+            (str acc "\n" "trace id: " tid "\n" (errf ishighlight strace))))
+        "-------------------------------------" traces)]
+     (str joined-str "-------------------------------------"))))
 
 (defn trace-flatten-bfs
   [trace]
@@ -377,7 +380,7 @@
               act-str (traces->str act-traces {act-tid {}})
               exp-str (traces->str exp-traces)]
           (throw (ex-info
-                  (format "Expected traceset:\n%s\nReceived actual traceset:\n%s\n%s" exp-str act-str msg) {})))))))
+                  (format "Expected traces:\n%s\nReceived actual traces:\n%s\n%s" exp-str act-str msg) {})))))))
 
 (defn mw-encoding [handler]
   (fn [req]
