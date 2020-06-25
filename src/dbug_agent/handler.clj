@@ -366,7 +366,8 @@
     (try
       (let [matched-traces (match-traces act-traces exp-traces)
             diffed-traces (diff-matches matched-traces ignores)]
-        (pprint diffed-traces))
+        ; need to doall to finally execute all the side-effects
+        (doall diffed-traces))
       (catch clojure.lang.ExceptionInfo e
       ; Prepend trace context info
         (let [msg (.getMessage e)

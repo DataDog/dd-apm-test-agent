@@ -100,10 +100,17 @@ def snapshot(f):
 - ID collisions
 - Multiple root spans
 - Inconsistent trace id in a trace
-- [TODO] All referenced spans exist
 - Required metadata
+- [TODO] All referenced spans exist
+- [TODO] trace header validation
 
 
 ### Snapshot testing
 
 - Trace matching
+
+
+### TODO
+
+- [ ] Flag for CI use (don't generate snapshots if they don't exist)
+- [ ] Handle integration/language versioning if snapshots are expected to differ
