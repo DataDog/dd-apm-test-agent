@@ -1,4 +1,4 @@
-# dbug-agent
+# Datadog test agent
 
 ## Features
 
@@ -33,7 +33,7 @@
 
 ## Overview
 
-### /create
+### /test/create
 
 Initiate a _synchronous_ test case. All subsequent traces received will be
 associated with the required test token provided.
@@ -43,7 +43,7 @@ associated with the required test token provided.
 Test token for a test case. This must be unique across all test cases.
 
 
-### /snapshot
+### /test/snapshot
 
 #### ?token=
 
@@ -100,7 +100,7 @@ To package as a jar:
 
     lein ring uberjar  # java -jar target/...jar
     # run the jar
-    PORT=8126 java -jar target/dbug-agent-....jar
+    PORT=8126 java -jar target/test-agent-....jar
 
 ### Formatting
 
