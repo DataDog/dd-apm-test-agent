@@ -17,8 +17,8 @@
 
 (defn long-str [& strings] (clojure.string/join "" strings))
 
-
 (def snapdir (or (System/getenv "SNAPSHOT_DIR") "snaps"))
+(def CI? (or (System/getenv "SNAPSHOT_CI") 0))
 
 (defn errf
   ([msg] (str "\033[91m" msg "\033[0m"))
@@ -414,8 +414,9 @@
 (defn handle-traces [req]
   (let [token (:token req)
         token (if (nil? token) @sync-token token)
-        traces (:body req)]
-    (println (format "[%s] received %s traces" token (count traces)))
+        traces (:body req)
+        ntraces (count traces)]
+    (println (format "[%s] received %s trace%s" token ntraces (if (> ntraces 1) "s" "")))
     (db-add-traces token traces)
     {:status 200 :headers {"Content-Type" "application/json"} :body "\"OK\""}))
 
@@ -440,7 +441,8 @@
     (try
       (let
        [act-traces (check-traces token)]
-        (if (file-exists? file)
+       (cond
+         (file-exists? file)
           ; snapshot exists, do the comparison
           (let
            [exp-traces (read-string (slurp file))]
@@ -448,6 +450,10 @@
             (compare-traces act-traces exp-traces ignores)
             (println (format "[%s] tests passed!" token))
             {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
+          CI?
+          ; else the snapshot does not exist and this is unexpected in CI
+            {:status 500 :headers {"Content-Type" "text/plain"} :body (format "No snapshots expected for '%s'" token)}
+          :else
           ; snapshot does not exist so write the traces
           (do
             (spit file (with-out-str (pprint act-traces)))
