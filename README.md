@@ -1,5 +1,23 @@
 # Datadog test agent
 
+## Usage
+
+### Local usage
+
+```bash
+docker pull kyleverhoog/dd-trace-test-agent
+
+docker run --rm\
+            -p 8126:8126\
+            -e SNAPSHOT_DIR=/snaps\
+            -v $HOME/dev/dd-trace-py/tests/snapshots:/snaps\
+            kyleverhoog/dd-trace-test-agent:latest
+```
+
+### CI usage
+
+TODO
+
 ## Features
 
 ### Sanity Checks
