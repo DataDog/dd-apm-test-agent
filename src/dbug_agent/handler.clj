@@ -24,8 +24,10 @@
   ([msg] (str "\033[91m" msg "\033[0m"))
   ([f msg] (if f (errf msg) msg)))
 
-(defn snappath [snap] (format "%s/%s.snap" snapdir snap))
-(defn snapexists [snap] (.exists (clojure.java.io/as-file (snappath snap))))
+(defn snappath
+  ([snap] (format "%s/%s.snap" snapdir snap))
+  ([dir snap] (format "%s/%s.snap" dir snap)))
+(defn file-exists? [file] (.exists (clojure.java.io/as-file file)))
 
 
 ; There are only 2 global atoms
@@ -433,24 +435,28 @@
 
 (defn handle-snapshot [req]
   (let [token (:token req)
-        file (get (:params req) :file nil)
+        dir (get (:params req) :dir snapdir)
+        file (get (:params req) :file (snappath dir token))
         ignores (clojure.string/split (get (:params req) :ignores "") #",")]
     (try
       (let
        [act-traces (check-traces token)]
-        (if (snapexists token)
+        (if (file-exists? token)
           ; snapshot exists, do the comparison
           (let
-           [exp-traces (read-string (slurp (snappath token)))]
+           [exp-traces (read-string (slurp file))]
             (compare-traces act-traces exp-traces ignores)
             (println (format "[%s] tests passed!" token))
             {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
           ; snapshot does not exist so write the traces
           (do
-            (spit (snappath token) (with-out-str (pprint act-traces)))
+            (spit file (with-out-str (pprint act-traces)))
             {:status 200 :headers {"Content-Type" "text/plain"} :body "OK :)"})))
       (catch clojure.lang.ExceptionInfo e
         (let [msg (str (.getMessage e) "\n\nSnapfile: '" (snappath token))]
+          {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
+      (catch java.io.FileNotFoundException e
+        (let [msg (str (.getMessage e) "\nTest agent error :(")]
           {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
       (finally
         (do
