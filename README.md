@@ -116,5 +116,6 @@ def snapshot(f):
 
 ### TODO
 
-- [ ] Flag for CI use (don't generate snapshots if they don't exist)
-- [ ] Handle integration/language versioning if snapshots are expected to differ
+- [ ] Flag for CI use (don't generate snapshots if they don't exist, fail if it doesn't exist)
+- [x] Handle integration/language versioning if snapshots are expected to differ
+  - this can actually just be handled by proper test case/token naming eg. test_something_redis20()

@@ -30,7 +30,7 @@
 
 ; There are only 2 global atoms
 ; - trace-db: for holding the traces for a token
-; - sync-ctx used to maintain the current synchronous test context
+; - sync-token used to maintain the current synchronous test token
 
 (def trace-db
   ; map[token, list[trace]]
@@ -39,7 +39,6 @@
 
 (defn db-add-traces
   [token traces]
-  (println (format "[%s] received %s traces" token (count traces)))
   (swap! trace-db update-in [token] concat traces)
   traces)
 
@@ -49,12 +48,12 @@
   (swap! trace-db dissoc token))
 
 
-(def sync-ctx
+(def sync-token
   ; token to be used when running tests synchronously
   (atom nil))
 
-(defn set-sync-ctx [ctx] (swap! sync-ctx (fn [cur-ctx] ctx)))
-(defn clear-sync-ctx [] (set-sync-ctx nil))
+(defn set-sync-token [token] (swap! sync-token (fn [cur-token] token)))
+(defn clear-sync-token [] (set-sync-token nil))
 
 
 (defn parse-spans
@@ -100,7 +99,7 @@
      traces)))
 
 (defn check-traces [token]
-  (let [raw-traces (or (@trace-db token) (throw (ex-info (format "Token '%s' not found" token) {})))
+  (let [raw-traces (or (@trace-db token) (throw (ex-info (format "No traces found for token '%s'." token) {})))
         parsed-traces (parse-traces raw-traces)]
     raw-traces))
 
@@ -413,7 +412,9 @@
 
 (defn handle-traces [req]
   (let [token (:token req)
+        token (if (nil? token) @sync-token token)
         traces (:body req)]
+    (println (format "[%s] received %s traces" token (count traces)))
     (db-add-traces token traces)
     {:status 200 :headers {"Content-Type" "application/json"} :body "\"OK\""}))
 
@@ -432,6 +433,7 @@
 
 (defn handle-snapshot [req]
   (let [token (:token req)
+        file (get (:params req) :file nil)
         ignores (clojure.string/split (get (:params req) :ignores "") #",")]
     (try
       (let
@@ -450,25 +452,31 @@
       (catch clojure.lang.ExceptionInfo e
         (let [msg (str (.getMessage e) "\n\nSnapfile: '" (snappath token))]
           {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
-      (finally (db-rm-traces token)))))
+      (finally
+        (do
+          ; if this was a sync test, clear the sync token
+          (when (= token @sync-token)
+              (clear-sync-token))
+          (db-rm-traces token))))))
 
 
 (defn handle-start [req]
   (try
     (let [token (get (:params req) :token nil)
-          file (get (:params req) :file nil)
-          ctx @sync-ctx]
+          curtoken @sync-token]
       (cond
         (nil? token)
           (throw
             (ex-info
-              (format "Received nil test token for test case. Did you provide the get_token query param?") {}))
-        ; (not (nil? ctx))
-        ;  (throw (ex-info (format "Previous synchronous test '%s' did not complete!" (:token ctx)) {}))
-        :else (set-sync-ctx {:token token :file file})))
+              (format "Received nil token for test case. Did you provide the token query param?") {}))
+        (not (nil? curtoken))
+         (throw (ex-info (format "Previous synchronous test '%s' did not complete!" curtoken) {}))
+        :else (set-sync-token token)))
     (catch clojure.lang.ExceptionInfo e
       (let [msg (str (.getMessage e) "\n\nFailed to start test case!\n")]
-          {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))))
+        ; clear the token for future test invocations
+        (clear-sync-token)
+        {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))))
 
 
 (defroutes app-routes
