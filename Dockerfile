@@ -1,5 +1,7 @@
 FROM clojure
 
+EXPOSE 8126
+
 RUN mkdir -p /usr/src/agent
 WORKDIR /usr/src/agent
 COPY project.clj /usr/src/agent/
