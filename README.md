@@ -109,6 +109,20 @@ To format the code:
     lein cljfmt check
     lein cljfmt fix
 
+### Docker
+
+To build (and tag) the dockerfile:
+
+```bash
+docker build --tag agent:0.01 .
+```
+
+Run the tagged image:
+
+```bash
+docker run --rm --publish 8126:3000 agent:0.01
+```
+
 
 ## Example: Python library usage
 

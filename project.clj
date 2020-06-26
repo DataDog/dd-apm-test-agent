@@ -7,7 +7,8 @@
                  [ring/ring-defaults "0.3.2"]
                  [clojure-msgpack "1.2.1"]]
   :plugins [[lein-ring "0.12.5"] [lein-cljfmt "0.6.7"]]
-  :ring {:handler test-agent.handler/app}
+  :ring {:handler test-agent.handler/app
+         :port 8126}
   :profiles
   {:dev {:dependencies [[javax.servlet/servlet-api "2.5"]
                         [ring/ring-mock "0.3.2"]

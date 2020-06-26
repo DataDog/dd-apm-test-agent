@@ -476,7 +476,7 @@
             (ex-info
               (format "Received nil token for test case. Did you provide the token query param?") {}))
         (not (nil? curtoken))
-         (throw (ex-info (format "Previous synchronous test '%s' did not complete!" curtoken) {}))
+         (println (format "WARNING: previous synchronous test '%s' did not complete!" curtoken))
         :else (set-sync-token token)))
     (catch clojure.lang.ExceptionInfo e
       (let [msg (str (.getMessage e) "\n\nFailed to start test case!\n")]
