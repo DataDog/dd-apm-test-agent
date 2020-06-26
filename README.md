@@ -29,6 +29,7 @@
 - [ ] Global exception handler for deployment
 - [ ] More verbose logging
 - [ ] Warning mechanism - diff http response code?
+- [ ] HTTPS support? (is this even supported in the real agent?)
 
 
 ## Overview
