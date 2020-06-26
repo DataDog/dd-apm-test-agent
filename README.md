@@ -94,6 +94,10 @@ def snapshot(f):
 
 ## Features
 
+### Trace-logs correlation
+
+[TODO]
+
 ### Sanity Checks
 
 - Empty traces

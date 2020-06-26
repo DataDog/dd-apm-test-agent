@@ -15,6 +15,9 @@
        (let [[acc x] (f acc (first l))]
          (map-reduce f acc (rest l) (conj lp x))))))
 
+(defn long-str [& strings] (clojure.string/join "" strings))
+
+
 (def snapdir (or (System/getenv "SNAPSHOT_DIR") "snaps"))
 
 (defn errf
@@ -24,17 +27,15 @@
 (defn snappath [snap] (format "%s/%s.snap" snapdir snap))
 (defn snapexists [snap] (.exists (clojure.java.io/as-file (snappath snap))))
 
-(defn trace-db-validator [db] true)
+
+; There are only 2 global atoms
+; - trace-db: for holding the traces for a token
+; - sync-ctx used to maintain the current synchronous test context
 
 (def trace-db
   ; map[token, list[trace]]
   ; stores the raw traces for a test token
   (atom {} :validator (fn [db] true)))
-
-; (add-watch trace-db
-;            :logger
-;            (fn [key watched old-state new-state]
-;              (println (keys new-state))))
 
 (defn db-add-traces
   [token traces]
@@ -46,6 +47,15 @@
   [token]
   (println (format "[%s] clearing traces" token))
   (swap! trace-db dissoc token))
+
+
+(def sync-ctx
+  ; token to be used when running tests synchronously
+  (atom nil))
+
+(defn set-sync-ctx [ctx] (swap! sync-ctx (fn [cur-ctx] ctx)))
+(defn clear-sync-ctx [] (set-sync-ctx nil))
+
 
 (defn parse-spans
   ; parses spans into traces
@@ -65,7 +75,7 @@
        (throw (ex-info (format "Empty traces from client") {})))
 
      ;; checks done on each raw trace that was received
-     (defn trace-check [trace]
+     (defn trace-check-invariants [trace]
        (let [trace-ids (set (map #(% "trace_id") trace))
              span-ids (map #(% "span_id") trace)]
 
@@ -84,7 +94,7 @@
 
      ;; collect traces together since traces can be fragmented
      (def traces (parse-spans (reduce concat raw-traces)))
-     (doall (map trace-check raw-traces))
+     (doall (map trace-check-invariants raw-traces))
 
      ;; TODO: check that all referenced spans exist (maybe distributed tracing issues?)
      traces)))
@@ -95,6 +105,8 @@
     raw-traces))
 
 (defn spans->childmap [spans]
+  ; converts a list of spans into a map of span id to a sorted set
+  ; of the span's children (ordered by their start)
   (let
    [span< (fn [s1 s2] (< (s1 "start") (s2 "start")))
     addchild (fn [mp span]
@@ -393,8 +405,11 @@
       (handler (assoc req :body body)))))
 
 (defn mw-token [handler]
+  ; middleware for associating a test token for a request from either the
+  ; X-Datadog-Test-Token header or token query param with that precedence.
   (fn [req]
-    (handler (assoc req :token (get-in req [:headers "x-datadog-test-token"] "none")))))
+    (handler
+      (assoc req :token (get-in req [:headers "x-datadog-test-token"] (get (:params req) :token nil))))))
 
 (defn handle-traces [req]
   (let [token (:token req)
@@ -422,13 +437,13 @@
       (let
        [act-traces (check-traces token)]
         (if (snapexists token)
-          ;; snapshot exists, do the comparison
+          ; snapshot exists, do the comparison
           (let
            [exp-traces (read-string (slurp (snappath token)))]
             (compare-traces act-traces exp-traces ignores)
             (println (format "[%s] tests passed!" token))
             {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
-          ;; snapshot does not exist so write the traces
+          ; snapshot does not exist so write the traces
           (do
             (spit (snappath token) (with-out-str (pprint act-traces)))
             {:status 200 :headers {"Content-Type" "text/plain"} :body "OK :)"})))
@@ -437,11 +452,31 @@
           {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
       (finally (db-rm-traces token)))))
 
+
+(defn handle-start [req]
+  (try
+    (let [token (get (:params req) :token nil)
+          file (get (:params req) :file nil)
+          ctx @sync-ctx]
+      (cond
+        (nil? token)
+          (throw
+            (ex-info
+              (format "Received nil test token for test case. Did you provide the get_token query param?") {}))
+        ; (not (nil? ctx))
+        ;  (throw (ex-info (format "Previous synchronous test '%s' did not complete!" (:token ctx)) {}))
+        :else (set-sync-ctx {:token token :file file})))
+    (catch clojure.lang.ExceptionInfo e
+      (let [msg (str (.getMessage e) "\n\nFailed to start test case!\n")]
+          {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))))
+
+
 (defroutes app-routes
-  (mw-token (mw-encoding (PUT "/v0.4/traces" [] handle-traces)))
   (mw-token (GET "/test/check" [] handle-check))
   (mw-token (GET "/test/clear" [] handle-clear))
   (mw-token (GET "/test/snapshot" [] handle-snapshot))
+  (mw-token (GET "/test/start" [] handle-start))
+  (mw-token (mw-encoding (PUT "/v0.4/traces" [] handle-traces)))
   (route/not-found "Not Found"))
 
 (def app
