@@ -46,7 +46,6 @@
 
 (defn db-rm-traces
   [token]
-  (println (format "[%s] clearing traces" token))
   (swap! trace-db dissoc token))
 
 
@@ -441,28 +440,35 @@
     (try
       (let
        [act-traces (check-traces token)]
-        (if (file-exists? token)
+        (if (file-exists? file)
           ; snapshot exists, do the comparison
           (let
            [exp-traces (read-string (slurp file))]
+            (println (format "[%s] read snapshot from %s" token file))
             (compare-traces act-traces exp-traces ignores)
             (println (format "[%s] tests passed!" token))
             {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
           ; snapshot does not exist so write the traces
           (do
             (spit file (with-out-str (pprint act-traces)))
+            (println (format "[%s] saved new snapshot in %s" token file))
             {:status 200 :headers {"Content-Type" "text/plain"} :body "OK :)"})))
       (catch clojure.lang.ExceptionInfo e
         (let [msg (str (.getMessage e) "\n\nSnapfile: '" (snappath token))]
+          (println (format "[%s] failed!" token))
           {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
       (catch java.io.FileNotFoundException e
         (let [msg (str (.getMessage e) "\nTest agent error :(")]
+          (println (format "[%s] failed!" token))
           {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
       (finally
         (do
           ; if this was a sync test, clear the sync token
           (when (= token @sync-token)
-              (clear-sync-token))
+            (do
+              (println (format "[%s] clearing sync token" token))
+              (clear-sync-token)))
+          (println (format "[%s] clearing traces" token))
           (db-rm-traces token))))))
 
 
