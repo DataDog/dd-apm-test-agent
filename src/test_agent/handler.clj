@@ -4,7 +4,6 @@
             [compojure.route :as route]
             [msgpack.core :as msg]
             [ring.middleware.defaults :refer [wrap-defaults api-defaults]]
-            [ring.middleware.reload :refer [wrap-reload]]
             [taoensso.timbre :as timbre
              :refer [log trace debug info warn error fatal
                      logf tracef debugf infof warnf errorf fatalf]])
@@ -494,14 +493,20 @@
             (spit file (with-out-str (pprint act-traces)))
             (infof "[%s] saved new snapshot in %s" token file)
             {:status 200 :headers {"Content-Type" "text/plain"} :body "OK :)"})))
+
+      ; Handle any custom raised exceptions.
       (catch clojure.lang.ExceptionInfo e
         (let [msg (str (.getMessage e) "\n\nSnapfile: '" (snappath token))]
           (infof "[%s] failed!" token)
           {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
-      (catch java.io.FileNotFoundException e
-        (let [msg (str (.getMessage e) "\nTest agent error :(")]
-          (errorf "[%s] failed! %s" token msg)
+
+      ; Catch all unhandled exceptions.
+      (catch Exception e
+        (let [msg "Test agent error :( Please see test agent logs for details."]
+          (errorf e "[%s] crashed!" token)
           {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
+
+      ; Final clean up for each invocation.
       (finally
         (do
           ; if this was a sync test, clear the sync token
@@ -545,5 +550,5 @@
 (def app
   (wrap-defaults app-routes api-defaults))
 
-(def reloadable-app
-  (wrap-reload #'app))
+; (def reloadable-app
+;   (wrap-reload #'app))

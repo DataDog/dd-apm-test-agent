@@ -37,9 +37,6 @@ See [Python](https://github.com/datadog/dd-trace-py).
 
 ### TODO
 
-- [ ] Flag for CI use (don't generate snapshots if they don't exist, fail if it doesn't exist)
-- [ ] Global exception handler for deployment
-- [ ] Proper logging
 - [ ] Warning mechanism - diff http response code?
 - [ ] HTTPS support? (is this even supported in the real agent?)
 - [ ] Feature flags to enable/disable checks
