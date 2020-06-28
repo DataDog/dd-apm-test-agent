@@ -31,6 +31,8 @@ See [Python](https://github.com/datadog/dd-trace-py).
 - [ ] All referenced spans exist
 - [ ] Trace header validation
 - [ ] Trace-logs correlation
+- [ ] Tag size limit
+- [ ] Type check on keys/values, eg. no strings in metrics
 
 
 ### TODO
