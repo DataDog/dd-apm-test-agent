@@ -165,6 +165,7 @@
      (when (not-empty (filter empty? raw-traces))
        (throw (ex-info (format "Empty traces from client") {})))
 
+     ; TODO: error context and formatting
      ; TODO: check trace ids consistent in trace payload
      ; TODO: check trace ids are unique
 
@@ -173,9 +174,18 @@
        (let [trace-ids (set (map #(% "trace_id") trace))
              span-ids (map #(% "span_id") trace)]
 
+         ; check span invariants
+         (defn span-check-invariants [errors span]
+           ; TODO: check required fields
+           errors)
+
+         (def span-errors (reduce span-check-invariants "" trace))
+         (when (not= span-errors "")
+           (throw (ex-info (format "Span invariants failed:\n%s" span-errors) {})))
+
          ; ensure no collisions in span ids
          (when (not= (count span-ids) (count (set span-ids)))
-           (throw (ex-info "Collision in span ids for trace trace" {})))
+           (throw (ex-info "Collision in span ids for trace" {})))
 
          ; ensure only one root span
          (def roots (filter (fn [s] (nil? (s "parent_id"))) trace))
@@ -511,8 +521,13 @@
             (ex-info
               (format "Received nil token for test case. Did you provide the token query param?") {}))
         (not (nil? curtoken))
+        (do
          (println (format "WARNING: previous synchronous test '%s' did not complete!" curtoken))
-        :else (set-sync-token token)))
+         (set-sync-token token)
+         {:status 200})
+        :else
+        (do (set-sync-token token)
+            {:status 200})))
     (catch clojure.lang.ExceptionInfo e
       (let [msg (str (.getMessage e) "\n\nFailed to start test case!\n")]
         ; clear the token for future test invocations
