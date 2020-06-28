@@ -37,6 +37,7 @@
 ; - trace-db: for holding the traces for a token
 ; - sync-token used to maintain the current synchronous test token
 
+
 (def trace-db
   ; map[token, list[trace]]
   ; stores the raw traces for a test token
@@ -51,15 +52,12 @@
   [token]
   (swap! trace-db dissoc token))
 
-
 (def sync-token
   ; token to be used when running tests synchronously
   (atom nil))
 
 (defn set-sync-token [token] (swap! sync-token (fn [cur-token] token)))
 (defn clear-sync-token [] (set-sync-token nil))
-
-
 
 (defn spans->childmap [spans]
   ; Converts a list of spans into a map of span id to a sorted set
@@ -75,9 +73,9 @@
                    ; children entry for the parent id.
                    ; This check isn't great as it'll result in O(n^2) checks of the spans.
                    (> (count (filter (fn [x] (= (x "span_id") par-id)) (get par-map span-id []))) 0)
-                     (throw (ex-info (format "Circular reference found in spans '%s' and '%s'" span-id par-id) {}))
+                   (throw (ex-info (format "Circular reference found in spans '%s' and '%s'" span-id par-id) {}))
                    :else
-                     (assoc par-map par-id (conj parent-children span)))))
+                   (assoc par-map par-id (conj parent-children span)))))
     childrenmap (reduce addchild {} spans)]
     childrenmap))
 
@@ -107,7 +105,7 @@
                        (= nc 2) [(dfs (first cs) nd cp "├─" "│ ")
                                  (dfs (last cs) nd cp "└─" "  ")]
                        (> nc 2) (concat (map #(dfs % nd cp "├─" "│ ") (->> cs drop-last))
-                                      [(dfs (last cs) nd cp "└─" "  ")])
+                                        [(dfs (last cs) nd cp "└─" "  ")])
                        :else [])
                   restline (clojure.string/join "" ss)
                   ishighlight (contains? highlights (span "span_id"))
@@ -123,14 +121,14 @@
   ([traces] (traces->str traces {}))
   ([traces highlights]
    (let
-     [joined-str
-      (reduce
-        (fn [acc t]
-          (let [tid (trace-id t)
-                ishighlight (contains? highlights tid)
-                strace (trace->str t)]
-            (str acc "\n" "trace id: " tid "\n" (errf ishighlight strace))))
-        "-------------------------------------" traces)]
+    [joined-str
+     (reduce
+      (fn [acc t]
+        (let [tid (trace-id t)
+              ishighlight (contains? highlights tid)
+              strace (trace->str t)]
+          (str acc "\n" "trace id: " tid "\n" (errf ishighlight strace))))
+      "-------------------------------------" traces)]
      (str joined-str "-------------------------------------"))))
 
 (defn trace-flatten-bfs
@@ -220,7 +218,7 @@
               data (ex-data e)
               traces-msg (if-not (nil? traces) (format "Traces: %s\n" (with-out-str (pprint raw-traces))) "")]
           (throw (ex-info
-                   (format "%s\n%s\nTrace invariant error." traces-msg msg) {})))))))
+                  (format "%s\n%s\nTrace invariant error." traces-msg msg) {})))))))
 
 (defn span-similarity [s1 s2]
   (- 0
@@ -446,7 +444,7 @@
   ; X-Datadog-Test-Token header or token query param with that precedence.
   (fn [req]
     (handler
-      (assoc req :token (get-in req [:headers "x-datadog-test-token"] (get (:params req) :token nil))))))
+     (assoc req :token (get-in req [:headers "x-datadog-test-token"] (get (:params req) :token nil))))))
 
 (defn handle-traces [req]
   (let [token (:token req)
@@ -478,8 +476,8 @@
     (try
       (let
        [act-traces (check-traces token)]
-       (cond
-         (file-exists? file)
+        (cond
+          (file-exists? file)
           ; snapshot exists, do the comparison
           (let
            [exp-traces (read-string (slurp file))]
@@ -489,7 +487,7 @@
             {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
           CI?
           ; else the snapshot does not exist and this is unexpected in CI
-            {:status 500 :headers {"Content-Type" "text/plain"} :body (format "No snapshots expected for '%s'" token)}
+          {:status 500 :headers {"Content-Type" "text/plain"} :body (format "No snapshots expected for '%s'" token)}
           :else
           ; snapshot does not exist so write the traces
           (do
@@ -514,16 +512,15 @@
           (infof "[%s] clearing traces" token)
           (db-rm-traces token))))))
 
-
 (defn handle-start [req]
   (try
     (let [token (get (:params req) :token nil)
           curtoken @sync-token]
       (cond
         (nil? token)
-          (throw
-            (ex-info
-              (format "Received nil token for test case. Did you provide the token query param?") {}))
+        (throw
+         (ex-info
+          (format "Received nil token for test case. Did you provide the token query param?") {}))
         :else
         (do
           (when-not (nil? curtoken)
@@ -536,7 +533,6 @@
         ; clear the token for future test invocations
         (clear-sync-token)
         {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))))
-
 
 (defroutes app-routes
   (mw-token (GET "/test/check" [] handle-check))
