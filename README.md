@@ -16,38 +16,32 @@ docker run --rm\
 
 ### CI usage
 
-TODO
+See [Python](https://github.com/datadog/dd-trace-py).
 
-## Features
+## Checks
 
-### Sanity Checks
-
+- Decoded properly
 - Empty traces
-- ID collisions
+- Span ID collisions
 - Multiple root spans
-- Inconsistent trace id in a trace
-- Required attributes
-- [TODO] All referenced spans exist
-- [TODO] trace header validation
-
-
-### Snapshot testing
-
-- Trace matching
-
-
-### Trace-logs correlation
-
-[TODO]
+- Circular references in spans
+- Comparison against a reference (snapshot testing)
+- [ ] Inconsistent trace id in a trace payload
+- [ ] Required attributes
+- [ ] All referenced spans exist
+- [ ] Trace header validation
+- [ ] Trace-logs correlation
 
 
 ### TODO
 
 - [ ] Flag for CI use (don't generate snapshots if they don't exist, fail if it doesn't exist)
 - [ ] Global exception handler for deployment
-- [ ] More verbose logging
+- [ ] Proper logging
 - [ ] Warning mechanism - diff http response code?
 - [ ] HTTPS support? (is this even supported in the real agent?)
+- [ ] Feature flags to enable/disable checks
+- [ ] Tests for the agent itself
 
 
 ## Overview
@@ -94,6 +88,12 @@ cases sharing a test token will be grouped.
 
 - `SNAPSHOT_DIR` [`"./snaps"`]: Directory in which snapshots will be stored.
     Can be overridden by providing the `dir` query param on `/snapshot`.
+
+- `SNAPSHOT_CI` [`0`]: Toggles CI mode for the snapshotter. Set to `1` to
+  enable. CI mode does the following:
+
+  - When snapshots are _generated_ from a test case and there is no snapshot
+    file a failure will be raised.
 
 
 ## Development
