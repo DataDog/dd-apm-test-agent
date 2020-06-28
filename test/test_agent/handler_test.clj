@@ -1,13 +1,16 @@
 (ns test-agent.handler-test
   (:require [clojure.test :refer :all]
             [ring.mock.request :as mock]
-            [test-agent.handler :refer [app]]))
+            [test-agent.handler :refer :all]))
 
-(deftest test-app
-  ; (testing "main route"
-  ;   (let [response (app (mock/request :get "/"))]
-  ;     (is (= (:status response) 200))
-  ;     (is (= (:body response) "Hello World"))))
+(deftest test-agent
+  (testing "/start no token"
+    (let [response (app (mock/request :get "/test/start?"))]
+      (is (= (:status response) 400))))
+
+  (testing "/start empty token"
+    (let [response (app (mock/request :get "/test/start?token="))]
+      (is (= (:status response) 400))))
 
   (testing "not-found route"
     (let [response (app (mock/request :get "/invalid"))]

@@ -45,7 +45,7 @@ See [Python](https://github.com/datadog/dd-trace-py).
 
 ## Overview
 
-### /test/create
+### /test/start
 
 Initiate a _synchronous_ test case. All subsequent traces received will be
 associated with the required test token provided.

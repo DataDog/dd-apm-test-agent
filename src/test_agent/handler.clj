@@ -438,13 +438,6 @@
                  :else nil)]
       (handler (assoc req :body body)))))
 
-(defn mw-token [handler]
-  ; middleware for associating a test token for a request from either the
-  ; X-Datadog-Test-Token header or token query param with that precedence.
-  (fn [req]
-    (handler
-     (assoc req :token (get-in req [:headers "x-datadog-test-token"] (get (:params req) :token nil))))))
-
 (defn handle-traces [req]
   (let [token (:token req)
         token (if (nil? token) @sync-token token)
@@ -461,7 +454,7 @@
        [traces (check-traces token)]
         {:status 200 :headers {"Content-Type" "application/json"} :body traces})
       (catch clojure.lang.ExceptionInfo e
-        {:status 500 :headers {"Content-Type" "application/json"} :body (.getMessage e)}))))
+        {:status 400 :headers {"Content-Type" "application/json"} :body (.getMessage e)}))))
 
 (defn handle-clear [req]
   (let [token (:token req)]
@@ -486,7 +479,7 @@
             {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
           CI?
           ; else the snapshot does not exist and this is unexpected in CI
-          {:status 500 :headers {"Content-Type" "text/plain"} :body (format "No snapshots expected for '%s'" token)}
+          {:status 400 :headers {"Content-Type" "text/plain"} :body (format "No snapshots expected for '%s'" token)}
           :else
           ; snapshot does not exist so write the traces
           (do
@@ -498,13 +491,7 @@
       (catch clojure.lang.ExceptionInfo e
         (let [msg (str (.getMessage e) "\n\nSnapfile: '" (snappath token))]
           (infof "[%s] failed!" token)
-          {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
-
-      ; Catch all unhandled exceptions.
-      (catch Exception e
-        (let [msg "Test agent error :( Please see test agent logs for details."]
-          (errorf e "[%s] crashed!" token)
-          {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
+          {:status 400 :headers {"Content-Type" "text/plain"} :body msg}))
 
       ; Final clean up for each invocation.
       (finally
@@ -522,7 +509,7 @@
     (let [token (get (:params req) :token nil)
           curtoken @sync-token]
       (cond
-        (nil? token)
+        (or (nil? token) (= token ""))
         (throw
          (ex-info
           (format "Received nil token for test case. Did you provide the token query param?") {}))
@@ -537,18 +524,32 @@
       (let [msg (str (.getMessage e) "\n\nFailed to start test case!\n")]
         ; clear the token for future test invocations
         (clear-sync-token)
-        {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))))
+        {:status 400 :headers {"Content-Type" "text/plain"} :body msg}))))
+
+(defn mw-token [handler]
+  ; middleware for associating a test token for a request from either the
+  ; X-Datadog-Test-Token header or token query param with that precedence.
+  (fn [req]
+    (handler
+     (assoc req :token (get-in req [:headers "x-datadog-test-token"] (get (:params req) :token nil))))))
+
+(defn mw-exc [handler]
+  ; Catch all unhandled exceptions from a handler.
+  (fn [req]
+    (try
+      (handler req)
+      (catch Exception e
+        (let [msg "Test agent error :( Please see test agent logs for details."]
+          (errorf e "[%s] crashed!" (get req :token ""))
+          {:status 500 :headers {"Content-Type" "text/plain"} :body msg})))))
 
 (defroutes app-routes
-  (mw-token (GET "/test/check" [] handle-check))
-  (mw-token (GET "/test/clear" [] handle-clear))
-  (mw-token (GET "/test/snapshot" [] handle-snapshot))
-  (mw-token (GET "/test/start" [] handle-start))
-  (mw-token (mw-encoding (PUT "/v0.4/traces" [] handle-traces)))
+  (mw-token (mw-exc (GET "/test/check" [] handle-check)))
+  (mw-token (mw-exc (GET "/test/clear" [] handle-clear)))
+  (mw-token (mw-exc (GET "/test/snapshot" [] handle-snapshot)))
+  (mw-token (mw-exc (GET "/test/start" [] handle-start)))
+  (mw-token (mw-exc (mw-encoding (PUT "/v0.4/traces" [] handle-traces))))
   (route/not-found "Not Found"))
 
 (def app
   (wrap-defaults app-routes api-defaults))
-
-; (def reloadable-app
-;   (wrap-reload #'app))
