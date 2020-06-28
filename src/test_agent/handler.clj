@@ -4,9 +4,12 @@
             [compojure.route :as route]
             [msgpack.core :as msg]
             [ring.middleware.defaults :refer [wrap-defaults api-defaults]]
-            [ring.middleware.reload :refer [wrap-reload]])
-  (:use [clojure.pprint]
-        [clojure.data]))
+            [ring.middleware.reload :refer [wrap-reload]]
+            [taoensso.timbre :as timbre
+             :refer [log trace debug info warn error fatal
+                     logf tracef debugf infof warnf errorf fatalf]])
+  (:use [clojure.data]
+        [clojure.pprint]))
 
 (defn map-reduce
   ([f acc l] (map-reduce f acc l []))
@@ -177,6 +180,7 @@
          ; check span invariants
          (defn span-check-invariants [errors span]
            ; TODO: check required fields
+           ; (defn required-check [m item])
            errors)
 
          (def span-errors (reduce span-check-invariants "" trace))
@@ -449,7 +453,7 @@
         token (if (nil? token) @sync-token token)
         traces (:body req)
         ntraces (count traces)]
-    (println (format "[%s] received %s trace%s" token ntraces (if (> ntraces 1) "s" "")))
+    (infof "[%s] received %s trace%s" token ntraces (if (> ntraces 1) "s" ""))
     (db-add-traces token traces)
     {:status 200 :headers {"Content-Type" "application/json"} :body "\"OK\""}))
 
@@ -479,9 +483,9 @@
           ; snapshot exists, do the comparison
           (let
            [exp-traces (read-string (slurp file))]
-            (println (format "[%s] read snapshot from %s" token file))
+            (infof "[%s] read snapshot from '%s'" token file)
             (compare-traces act-traces exp-traces ignores)
-            (println (format "[%s] tests passed!" token))
+            (infof "[%s] tests passed!" token)
             {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
           CI?
           ; else the snapshot does not exist and this is unexpected in CI
@@ -490,24 +494,24 @@
           ; snapshot does not exist so write the traces
           (do
             (spit file (with-out-str (pprint act-traces)))
-            (println (format "[%s] saved new snapshot in %s" token file))
+            (infof "[%s] saved new snapshot in %s" token file)
             {:status 200 :headers {"Content-Type" "text/plain"} :body "OK :)"})))
       (catch clojure.lang.ExceptionInfo e
         (let [msg (str (.getMessage e) "\n\nSnapfile: '" (snappath token))]
-          (println (format "[%s] failed!" token))
+          (infof "[%s] failed!" token)
           {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
       (catch java.io.FileNotFoundException e
         (let [msg (str (.getMessage e) "\nTest agent error :(")]
-          (println (format "[%s] failed!" token))
+          (errorf "[%s] failed! %s" token msg)
           {:status 500 :headers {"Content-Type" "text/plain"} :body msg}))
       (finally
         (do
           ; if this was a sync test, clear the sync token
           (when (= token @sync-token)
             (do
-              (println (format "[%s] clearing sync token" token))
+              (infof "[%s] clearing sync token" token)
               (clear-sync-token)))
-          (println (format "[%s] clearing traces" token))
+          (infof "[%s] clearing traces" token)
           (db-rm-traces token))))))
 
 
@@ -520,14 +524,13 @@
           (throw
             (ex-info
               (format "Received nil token for test case. Did you provide the token query param?") {}))
-        (not (nil? curtoken))
-        (do
-         (println (format "WARNING: previous synchronous test '%s' did not complete!" curtoken))
-         (set-sync-token token)
-         {:status 200})
         :else
-        (do (set-sync-token token)
-            {:status 200})))
+        (do
+          (when-not (nil? curtoken)
+            (warnf "previous synchronous test '%s' did not complete!" curtoken))
+          (infof "Setting sync token to '%s'" token)
+          (set-sync-token token)
+          {:status 200})))
     (catch clojure.lang.ExceptionInfo e
       (let [msg (str (.getMessage e) "\n\nFailed to start test case!\n")]
         ; clear the token for future test invocations
