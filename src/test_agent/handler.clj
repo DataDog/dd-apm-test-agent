@@ -18,7 +18,7 @@
 (defn long-str [& strings] (clojure.string/join "" strings))
 
 (def snapdir (or (System/getenv "SNAPSHOT_DIR") "snaps"))
-(def CI? (or (System/getenv "SNAPSHOT_CI") 0))
+(def CI? (or (System/getenv "SNAPSHOT_CI") false))
 
 (defn errf
   ([msg] (str "\033[91m" msg "\033[0m"))
@@ -67,30 +67,35 @@
       [span (first spans)]
        (parse-spans (rest spans) (assoc-in traces [(span "trace_id") (span "span_id")] span))))))
 
-(defn parse-traces
+(defn traces-invariant-check
   ([raw-traces]
    (do
-     ;; check for empty traces
+     ; check for empty traces
      (when (not-empty (filter empty? raw-traces))
        (throw (ex-info (format "Empty traces from client") {})))
 
-     ;; checks done on each raw trace that was received
+     ; TODO: check trace ids consistent in trace payload
+
      (defn trace-check-invariants [trace]
+       ; checks done on each raw trace that was received
        (let [trace-ids (set (map #(% "trace_id") trace))
              span-ids (map #(% "span_id") trace)]
 
-         ;; ensure no collisions in span ids
+         ; ensure no collisions in span ids
          (when (not= (count span-ids) (count (set span-ids)))
            (throw (ex-info "Collision in span ids for trace trace" {})))
 
-         ;; ensure only one root span
+         ; ensure only one root span
          (def roots (filter (fn [s] (nil? (s "parent_id"))) trace))
          (when (not= (count roots) 1)
            (throw (ex-info "Multiple root spans in trace" {})))
 
-         ;; check for mismatching trace ids in a trace
+         ; check for mismatching trace ids in a trace
          (when (> (count trace-ids) 1)
-           (throw (ex-info (format "Multiple trace ids in trace %s" trace-ids) {})))))
+           (throw (ex-info (format "Multiple trace ids in trace %s" trace-ids) {})))
+
+         ; build the childmap which will check for circular references
+         (def cmap (spans->childmap trace))))
 
      ;; collect traces together since traces can be fragmented
      (def traces (parse-spans (reduce concat raw-traces)))
@@ -100,18 +105,34 @@
      traces)))
 
 (defn check-traces [token]
-  (let [raw-traces (or (@trace-db token) (throw (ex-info (format "No traces found for token '%s'." token) {})))
-        parsed-traces (parse-traces raw-traces)]
-    raw-traces))
+  (let [raw-traces (or (@trace-db token) (throw (ex-info (format "No traces found for token '%s'." token) {})))]
+    (try
+      (do (traces-invariant-check raw-traces)
+          raw-traces)
+      (catch clojure.lang.ExceptionInfo e
+        (let [msg (.getMessage e)
+              data (ex-data e)
+              traces-msg (if-not (nil? traces) (format "Traces: %s\n" (with-out-str (pprint raw-traces))) "")]
+          (throw (ex-info
+                   (format "%s\n%s\nTrace invariant error." traces-msg msg) {})))))))
 
 (defn spans->childmap [spans]
-  ; converts a list of spans into a map of span id to a sorted set
+  ; Converts a list of spans into a map of span id to a sorted set
   ; of the span's children (ordered by their start)
   (let
    [span< (fn [s1 s2] (< (s1 "start") (s2 "start")))
-    addchild (fn [mp span]
-               (let [pid (span "parent_id")]
-                 (assoc mp pid (conj (get mp pid (sorted-set-by span<)) span))))
+    addchild (fn [par-map span]
+               (let [par-id (span "parent_id")
+                     span-id (span "span_id")
+                     parent-children (get par-map par-id (sorted-set-by span<))]
+                 (cond
+                   ; Check for circular references by checking (if it exists) the span's
+                   ; children entry for the parent id.
+                   ; This check isn't great as it'll result in O(n^2) checks of the spans.
+                   (> (count (filter (fn [x] (= (x "span_id") par-id)) (get par-map span-id []))) 0)
+                     (throw (ex-info (format "Circular reference found in spans '%s' and '%s'" span-id par-id) {}))
+                   :else
+                     (assoc par-map par-id (conj parent-children span)))))
     childrenmap (reduce addchild {} spans)]
     childrenmap))
 
