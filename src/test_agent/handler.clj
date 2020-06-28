@@ -57,64 +57,6 @@
 (defn clear-sync-token [] (set-sync-token nil))
 
 
-(defn parse-spans
-  ; parses spans into traces
-  ([spans] (parse-spans spans {}))
-  ([spans traces]
-   (if (empty? spans)
-     traces
-     (let
-      [span (first spans)]
-       (parse-spans (rest spans) (assoc-in traces [(span "trace_id") (span "span_id")] span))))))
-
-(defn traces-invariant-check
-  ([raw-traces]
-   (do
-     ; check for empty traces
-     (when (not-empty (filter empty? raw-traces))
-       (throw (ex-info (format "Empty traces from client") {})))
-
-     ; TODO: check trace ids consistent in trace payload
-
-     (defn trace-check-invariants [trace]
-       ; checks done on each raw trace that was received
-       (let [trace-ids (set (map #(% "trace_id") trace))
-             span-ids (map #(% "span_id") trace)]
-
-         ; ensure no collisions in span ids
-         (when (not= (count span-ids) (count (set span-ids)))
-           (throw (ex-info "Collision in span ids for trace trace" {})))
-
-         ; ensure only one root span
-         (def roots (filter (fn [s] (nil? (s "parent_id"))) trace))
-         (when (not= (count roots) 1)
-           (throw (ex-info "Multiple root spans in trace" {})))
-
-         ; check for mismatching trace ids in a trace
-         (when (> (count trace-ids) 1)
-           (throw (ex-info (format "Multiple trace ids in trace %s" trace-ids) {})))
-
-         ; build the childmap which will check for circular references
-         (def cmap (spans->childmap trace))))
-
-     ;; collect traces together since traces can be fragmented
-     (def traces (parse-spans (reduce concat raw-traces)))
-     (doall (map trace-check-invariants raw-traces))
-
-     ;; TODO: check that all referenced spans exist (maybe distributed tracing issues?)
-     traces)))
-
-(defn check-traces [token]
-  (let [raw-traces (or (@trace-db token) (throw (ex-info (format "No traces found for token '%s'." token) {})))]
-    (try
-      (do (traces-invariant-check raw-traces)
-          raw-traces)
-      (catch clojure.lang.ExceptionInfo e
-        (let [msg (.getMessage e)
-              data (ex-data e)
-              traces-msg (if-not (nil? traces) (format "Traces: %s\n" (with-out-str (pprint raw-traces))) "")]
-          (throw (ex-info
-                   (format "%s\n%s\nTrace invariant error." traces-msg msg) {})))))))
 
 (defn spans->childmap [spans]
   ; Converts a list of spans into a map of span id to a sorted set
@@ -205,6 +147,66 @@
 ; funny how we optimize that but not error or resource...
 (defn span-meta [span] (get span "meta" {}))
 (defn span-metrics [span] (get span "metrics" {}))
+
+(defn assemble-spans
+  ; Assemble spans into traces by trace-id
+  ([spans] (assemble-spans spans {}))
+  ([spans traces]
+   (if (empty? spans)
+     traces
+     (let
+      [span (first spans)]
+       (assemble-spans (rest spans) (assoc-in traces [(span "trace_id") (span "span_id")] span))))))
+
+(defn traces-invariant-check
+  ([raw-traces]
+   (do
+     ; check for empty traces
+     (when (not-empty (filter empty? raw-traces))
+       (throw (ex-info (format "Empty traces from client") {})))
+
+     ; TODO: check trace ids consistent in trace payload
+     ; TODO: check trace ids are unique
+
+     (defn trace-check-invariants [trace]
+       ; checks done on each raw trace that was received
+       (let [trace-ids (set (map #(% "trace_id") trace))
+             span-ids (map #(% "span_id") trace)]
+
+         ; ensure no collisions in span ids
+         (when (not= (count span-ids) (count (set span-ids)))
+           (throw (ex-info "Collision in span ids for trace trace" {})))
+
+         ; ensure only one root span
+         (def roots (filter (fn [s] (nil? (s "parent_id"))) trace))
+         (when (not= (count roots) 1)
+           (throw (ex-info "Multiple root spans in trace" {})))
+
+         ; check for mismatching trace ids in a trace
+         (when (> (count trace-ids) 1)
+           (throw (ex-info (format "Multiple trace ids in trace %s" trace-ids) {})))
+
+         ; build the childmap which will check for circular references
+         (def cmap (spans->childmap trace))))
+
+     ; collect traces together since traces can be fragmented
+     (def traces (assemble-spans (reduce concat raw-traces)))
+     (doall (map trace-check-invariants raw-traces))
+
+     ; TODO: check that all referenced spans exist (maybe distributed tracing issues?)
+     traces)))
+
+(defn check-traces [token]
+  (let [raw-traces (or (@trace-db token) (throw (ex-info (format "No traces found for token '%s'." token) {})))]
+    (try
+      (do (traces-invariant-check raw-traces)
+          raw-traces)
+      (catch clojure.lang.ExceptionInfo e
+        (let [msg (.getMessage e)
+              data (ex-data e)
+              traces-msg (if-not (nil? traces) (format "Traces: %s\n" (with-out-str (pprint raw-traces))) "")]
+          (throw (ex-info
+                   (format "%s\n%s\nTrace invariant error." traces-msg msg) {})))))))
 
 (defn span-similarity [s1 s2]
   (- 0
