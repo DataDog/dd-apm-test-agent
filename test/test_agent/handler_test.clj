@@ -4,66 +4,6 @@
             [test-agent.handler :refer :all])
   (:use [clojure.pprint]))
 
-
-; reference implementation
-
-
-(defn traces->snapshot-ref [traces]
-  ; Generates a snapshot from a list of traces
-  (with-out-str (pprint (doall (map :spans traces)))))
-
-(defn trace->snapshot
-  ([trace] (trace->snapshot trace ""))
-  ([trace s]
-   (let [spans (trace-flatten-dfs-with-depth trace)
-         span->str
-         (fn [acc [span depth]]
-           (let [first? (= acc "[")
-                 prefix (if first? "[" (str acc "\n"))
-                 split (clojure.string/split (span->str span) #"\n")
-                 ident (apply str (repeat (* 4 depth) " "))
-                 split (map (fn [s] (str ident s)) split)
-                 indented (clojure.string/join (str "\n" (if first? "  " "")) split)]
-             (str prefix indented)))]
-     (str (reduce span->str "[" spans) "]"))))
-
-(defn traces->snapshot
-  ; Generates a snapshot from a list of traces
-  ; Since the snapshot is to be human-verifiable and checked into version
-  ; control it must be made as readable as possible.
-  ; To achieve this the following steps are taken:
-  ;  - Traces are stored as list of spans which is the popular way in which
-  ;    traces are represented in tracing libraries.
-  ;  - Common and required attributes are listed first in a consistent order.
-  ;  - All custom attributes are sorted alphanumerically afterward.
-  ;  - Trace ids are mapped to their position.
-  ;  - Span ids are reassigned to their BFS order.
-  ;    eg:  [       0       ]
-  ;         [   1   ] [  2  ]
-  ;         [3][4][5] [6] [7]
-  ;  - Spans are placed in DFS order as to be indented to indicate parenting.
-  ;    eg:  0
-  ;           1
-  ;             3
-  ;             4
-  ;             5
-  ;           2
-  ;             6
-  ;  - Annotations can be added to known tags.
-  ;      eg: "_dd.measured 1 ; this span is measured"
-  ;  - Braces are inlined whenever possible (except across traces) to reduce
-  ;    diff sizes.
-  ;
-  ; The format output is actually meant to be valid Clojure which makes it
-  ; trivial to parse. This was done to simplify development while also
-  ; piggy-backing on Clojure's attempt to make "code is data is readable" true.
-  ; However, it may make sense to decouple parseability and readability if it
-  ; becomes too difficult to maintain both in a single format.
-  ([traces] (traces->snapshot traces ""))
-  ([traces s]
-   (let [snapshots (map trace->snapshot traces)]
-     (str "[" (clojure.string/join "\n " snapshots) "]"))))
-
 (defn rand-str [len]
   (apply str (take len (repeatedly #(char (+ (rand 26) 65))))))
 
@@ -123,32 +63,29 @@
 (deftest test-trace->snapshot
   ; An easy test to do with snapshots is to parse it back
   ; and compare to the original trace.
-  ; (testing "1 trace, 1 span"
-  ;   (let [raw-traces [[(mkparent)]]
-  ;         traces (map spans->trace raw-traces)
-  ;         snapshot (traces->snapshot traces)]
-  ;     (is (string? snapshot))
-  ;     (is (true? (compare-traces (read-string snapshot)
-  ;                                raw-traces)))))
-  ; (testing "2 traces, 1 span each"
-  ;   (let [raw-traces [[(mkparent)][(mkparent)]]
-  ;         traces (map spans->trace raw-traces)
-  ;         snapshot (traces->snapshot traces)]
-  ;     (is (string? snapshot))
-  ;     (is (true? (compare-traces (read-string snapshot)
-  ;                               raw-traces)))))
-  (testing "2 traces, 2 spans each"
+  (testing "1 trace, 1 span"
+    (let [raw-traces [[(mkparent)]]
+          traces (map spans->trace raw-traces)
+          snapshot (traces->snapshot traces)]
+      (is (string? snapshot))
+      (is (true? (compare-traces (read-string snapshot)
+                                 raw-traces)))))
+  (testing "2 traces, 1 span each"
+    (let [raw-traces [[(mkparent)] [(mkparent)]]
+          traces (map spans->trace raw-traces)
+          snapshot (traces->snapshot traces)]
+      (is (string? snapshot))
+      (is (true? (compare-traces (read-string snapshot)
+                                 raw-traces)))))
+  (testing "2 traces, multi children"
     (let [raw-traces [[(mkparent {"trace_id" 0 "span_id" 0})
                        (mkspan {"trace_id" 0 "parent_id" 0})]
                       [(mkparent {"trace_id" 1 "span_id" 1})
                        (mkspan {"trace_id" 1 "parent_id" 1 "span_id" 2})
                        (mkspan {"trace_id" 1 "parent_id" 2})
-                       (mkspan {"trace_id" 1 "parent_id" 1})
-                       ]]
+                       (mkspan {"trace_id" 1 "parent_id" 1})]]
           traces (map spans->trace raw-traces)
           snapshot (traces->snapshot traces)]
-      (pprint raw-traces)
-      (print snapshot)
       (is (string? snapshot))
       (is (true? (compare-traces (read-string snapshot)
                                  raw-traces))))))
