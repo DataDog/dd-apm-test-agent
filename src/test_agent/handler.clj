@@ -66,7 +66,11 @@
     addchild (fn [par-map span]
                (let [par-id (span "parent_id")
                      span-id (span "span_id")
-                     parent-children (get par-map par-id (sorted-set-by span<))]
+                     ; add an entry for this span in case it doesn't
+                     ; have children so that it has an entry
+                     span-cs (get par-map span-id (sorted-set-by span<))
+                     par-map (assoc par-map span-id span-cs)
+                     parent-cs (get par-map par-id (sorted-set-by span<))]
                  (cond
                    ; Check for circular references by checking (if it exists) the span's
                    ; children entry for the parent id.
@@ -74,7 +78,7 @@
                    (> (count (filter (fn [x] (= (x "span_id") par-id)) (get par-map span-id []))) 0)
                    (throw (ex-info (format "Circular reference found in spans '%s' and '%s'" span-id par-id) {}))
                    :else
-                   (assoc par-map par-id (conj parent-children span)))))
+                   (assoc par-map par-id (conj parent-cs span)))))
     childrenmap (reduce addchild {} spans)]
     childrenmap))
 
@@ -138,9 +142,22 @@
         ((fn flat [spans res]
            (if (empty? spans) res
                (flat (next-row cmap spans)
-                     (concat res spans))))
-         [root] [])]
+                     (concat res spans)))) [root] [])]
     flattened))
+
+(defn trace-flatten-dfs
+  ([trace]
+   (let [cmap (:childmap trace)
+         root (trace-root trace)
+         flattened
+         ((fn flat [spans]
+            (if (empty? spans) []
+              (let [s (first spans)
+                    sid (s "span_id")
+                    cs (cmap sid)]
+                (conj (concat (flat cs) (flat (rest spans)))
+                      s)))) [root])]
+     flattened)))
 
 (defn span->str [span] (with-out-str (pprint span)))
 ; meta and metrics can not exist on a span if they are empty
@@ -197,7 +214,7 @@
 (defn traces-invariant-check
   ; perform a bunch of invariant checks on the raw trace payload, the assembled
   ; traces and the spans.
-  ; return grouped traces
+  ; Return grouped traces.
   ([raw-traces]
    (do
      ; check for empty traces
@@ -417,7 +434,10 @@
 (defn diff-matches [matches ignores]
   (map (fn [match] (diff-traces (:t1 match) (:t2 match) ignores)) matches))
 
-(defn compare-traces [act-traces exp-traces ignores]
+(defn compare-traces
+  ([act-traces exp-traces]
+   (compare-traces act-traces exp-traces []))
+  ([act-traces exp-traces ignores]
   (let [act-traces (map spans->trace act-traces)
         exp-traces (map spans->trace exp-traces)]
     (try
@@ -434,7 +454,8 @@
               act-str (traces->str act-traces {act-tid {}})
               exp-str (traces->str exp-traces)]
           (throw (ex-info
-                  (format "Expected traces:\n%s\nReceived actual traces:\n%s\n%s" exp-str act-str msg) {})))))))
+                  (format "Expected traces:\n%s\nReceived actual traces:\n%s\n%s" exp-str act-str msg) {}))))))
+  true))
 
 (defn mw-encoding [handler]
   (fn [req]
