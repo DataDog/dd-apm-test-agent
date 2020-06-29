@@ -16,11 +16,16 @@
   ([trace] (trace->snapshot trace ""))
   ([trace s]
    (let [spans (trace-flatten-dfs-with-depth trace)
-         ; ident (apply str (repeat (+ (* 4 depth) 2) " "))
          span->str
-         (fn [[span depth]]
-           (span->str span))]
-     (str "[" (clojure.string/join "\n" (map span->str spans)) "]"))))
+         (fn [acc [span depth]]
+           (let [first? (= acc "[")
+                 prefix (if first? "[" (str acc "\n"))
+                 split (clojure.string/split (span->str span) #"\n")
+                 ident (apply str (repeat (* 4 depth) " "))
+                 split (map (fn [s] (str ident s)) split)
+                 indented (clojure.string/join (str "\n" (if first? "  " "")) split)]
+             (str prefix indented)))]
+     (str (reduce span->str "[" spans) "]"))))
 
 (defn traces->snapshot
   ; Generates a snapshot from a list of traces
@@ -57,7 +62,7 @@
   ([traces] (traces->snapshot traces ""))
   ([traces s]
    (let [snapshots (map trace->snapshot traces)]
-     (str "[" (clojure.string/join "\n" snapshots) "]"))))
+     (str "[" (clojure.string/join "\n " snapshots) "]"))))
 
 (defn rand-str [len]
   (apply str (take len (repeatedly #(char (+ (rand 26) 65))))))
@@ -81,9 +86,7 @@
                "some-key" (rand-str 12)}
        "metrics" {"system.pid" (rand-int 9999)
                   "_dd.measured" (rand-int 1)}})
-  ([attrs]
-   (let [default-attrs (mkspan)]
-     (merge default-attrs attrs))))
+  ([attrs] (merge (mkspan) attrs)))
 
 (defn mkparent
   ([] (mkparent {}))
@@ -101,18 +104,18 @@
           dfs (trace-flatten-dfs trace)]
       (is (= (count dfs) (count raw-trace)))))
   (testing "already in DFS"
-    (let [raw-trace [(mkparent {"span_id" 0})
-                     (mkspan {"parent_id" 0 "start" 0})
-                     (mkspan {"parent_id" 0 "start" 1 "span_id" 1})
-                     (mkspan {"parent_id" 1})]
+    (let [raw-trace [(mkparent {"trace_id" 0 "span_id" 0})
+                     (mkspan {"trace_id" 0 "parent_id" 0 "start" 0})
+                     (mkspan {"trace_id" 0 "parent_id" 0 "start" 1 "span_id" 1})
+                     (mkspan {"trace_id" 0 "parent_id" 1})]
           trace (spans->trace raw-trace)
           dfs (trace-flatten-dfs trace)]
       (is (= dfs raw-trace))))
   (testing "not in DFS"
-    (let [raw-trace [(mkparent {"span_id" 0})
-                     (mkspan {"parent_id" 0 "start" 1 "span_id" 1})
-                     (mkspan {"parent_id" 0 "start" 0})
-                     (mkspan {"parent_id" 1})]
+    (let [raw-trace [(mkparent {"trace_id" 0 "span_id" 0})
+                     (mkspan {"trace_id" 0 "parent_id" 0 "start" 1 "span_id" 1})
+                     (mkspan {"trace_id" 0 "parent_id" 0 "start" 0})
+                     (mkspan {"trace_id" 0 "parent_id" 1})]
           trace (spans->trace raw-trace)
           dfs (trace-flatten-dfs trace)]
       (is (not= dfs raw-trace)))))
@@ -135,10 +138,13 @@
   ;     (is (true? (compare-traces (read-string snapshot)
   ;                               raw-traces)))))
   (testing "2 traces, 2 spans each"
-    (let [raw-traces [[(mkparent {"span_id" 0})
-                       (mkspan {"parent_id" 0})]
-                      [(mkparent {"span_id" 1})
-                       (mkspan {"parent_id" 1})]]
+    (let [raw-traces [[(mkparent {"trace_id" 0 "span_id" 0})
+                       (mkspan {"trace_id" 0 "parent_id" 0})]
+                      [(mkparent {"trace_id" 1 "span_id" 1})
+                       (mkspan {"trace_id" 1 "parent_id" 1 "span_id" 2})
+                       (mkspan {"trace_id" 1 "parent_id" 2})
+                       (mkspan {"trace_id" 1 "parent_id" 1})
+                       ]]
           traces (map spans->trace raw-traces)
           snapshot (traces->snapshot traces)]
       (pprint raw-traces)

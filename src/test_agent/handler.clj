@@ -207,7 +207,7 @@
          reduce-fn (fn [acc k]
                      (let [v (get m k)
                            k-str (value->str k)
-                           prefix (if (= acc "{") "{" (str acc "\n" prefix))]
+                           prefix (if (= acc "{") "{" (str acc "\n " prefix))]
                        (cond
                          (map? v) (str prefix k-str " " (span->str v (get cfg k {})))
                          :else (str prefix k-str " " (value->str v)))))]
