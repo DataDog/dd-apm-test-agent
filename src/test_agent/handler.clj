@@ -192,10 +192,17 @@
                                       "meta"
                                       "metrics"]
                            "meta" {:prefix "        "
-                                   :ord-keys ["runtime-id"]}
+                                   :ord-keys ["_dd.hostname"
+                                              "_dd.origin"
+                                              "env"
+                                              "language"
+                                              "runtime-id"
+                                              "version"]}
                            "metrics" {:prefix "           "
-                                      :ord-keys ["_dd.measured"
+                                      :ord-keys ["_dd.agent_psr"
                                                  "_dd.agent_psr"
+                                                 "_dd.limit_psr"
+                                                 "_dd.measured"
                                                  "_dd1.sr.eausr"
                                                  "_sampling_priority_v1"
                                                  "system.pid"]}}))
@@ -269,7 +276,7 @@
   ([traces] (traces->snapshot traces ""))
   ([traces s]
    (let [snapshots (map trace->snapshot traces)]
-     (str "[" (clojure.string/join "\n " snapshots) "]"))))
+     (str "[" (clojure.string/join "\n " snapshots) "]\n"))))
 
 (defn assemble-traces
   ; Assemble spans into traces by trace-id
@@ -330,6 +337,7 @@
      ; TODO: error context and formatting
      ; TODO: check trace ids consistent in trace payload
      ; TODO: check trace ids are unique
+     ; TODO: check no duplicates between meta/metrics
 
      ; collect traces together since traces can be fragmented
      (def traces (assemble-traces raw-traces))
