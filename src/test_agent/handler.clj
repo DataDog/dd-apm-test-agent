@@ -148,17 +148,56 @@
 (defn span-meta [span] (get span "meta" {}))
 (defn span-metrics [span] (get span "metrics" {}))
 
-(defn assemble-spans
+(defn assemble-traces
   ; Assemble spans into traces by trace-id
-  ([spans] (assemble-spans spans {}))
-  ([spans traces]
-   (if (empty? spans)
-     traces
+  ([raw-traces]
+   ; flatten the traces to a vector of spans
+   (assemble-traces (reduce concat raw-traces) {}))
+  ([raw-spans traces]
+   (if (empty? raw-spans)
+     (vals traces)
      (let
-      [span (first spans)]
-       (assemble-spans (rest spans) (assoc-in traces [(span "trace_id") (span "span_id")] span))))))
+      [span (first raw-spans)
+       tid (span "trace_id")
+       trace-spans (get traces tid [])
+       new-spans (conj trace-spans span)]
+       (assemble-traces (rest raw-spans) (assoc traces tid new-spans))))))
+
+(defn trace-invariant-check [trace]
+  ; checks done on each raw trace that was received
+  (let [trace-ids (set (map #(% "trace_id") trace))
+        span-ids (map #(% "span_id") trace)]
+
+    ; check span invariants
+    (defn span-check-invariants [errors span]
+      ; TODO: check required fields
+      ; (defn required-check [m item])
+      errors)
+
+    (def span-errors (reduce span-check-invariants "" trace))
+    (when (not= span-errors "")
+      (throw (ex-info (format "Span invariants failed:\n%s" span-errors) {})))
+
+    ; ensure no collisions in span ids
+    (when (not= (count span-ids) (count (set span-ids)))
+      (throw (ex-info "Collision in span ids for trace" {})))
+
+    ; ensure only one root span
+    (def roots (filter (fn [s] (nil? (s "parent_id"))) trace))
+    (when (not= (count roots) 1)
+      (throw (ex-info "Multiple root spans in trace" {})))
+
+    ; check for mismatching trace ids in a trace
+    (when (> (count trace-ids) 1)
+      (throw (ex-info (format "Multiple trace ids in trace %s" trace-ids) {})))
+
+    ; build the childmap which will check for circular references
+    (def cmap (spans->childmap trace))))
 
 (defn traces-invariant-check
+  ; perform a bunch of invariant checks on the raw trace payload, the assembled
+  ; traces and the spans.
+  ; return grouped traces
   ([raw-traces]
    (do
      ; check for empty traces
@@ -169,40 +208,9 @@
      ; TODO: check trace ids consistent in trace payload
      ; TODO: check trace ids are unique
 
-     (defn trace-check-invariants [trace]
-       ; checks done on each raw trace that was received
-       (let [trace-ids (set (map #(% "trace_id") trace))
-             span-ids (map #(% "span_id") trace)]
-
-         ; check span invariants
-         (defn span-check-invariants [errors span]
-           ; TODO: check required fields
-           ; (defn required-check [m item])
-           errors)
-
-         (def span-errors (reduce span-check-invariants "" trace))
-         (when (not= span-errors "")
-           (throw (ex-info (format "Span invariants failed:\n%s" span-errors) {})))
-
-         ; ensure no collisions in span ids
-         (when (not= (count span-ids) (count (set span-ids)))
-           (throw (ex-info "Collision in span ids for trace" {})))
-
-         ; ensure only one root span
-         (def roots (filter (fn [s] (nil? (s "parent_id"))) trace))
-         (when (not= (count roots) 1)
-           (throw (ex-info "Multiple root spans in trace" {})))
-
-         ; check for mismatching trace ids in a trace
-         (when (> (count trace-ids) 1)
-           (throw (ex-info (format "Multiple trace ids in trace %s" trace-ids) {})))
-
-         ; build the childmap which will check for circular references
-         (def cmap (spans->childmap trace))))
-
      ; collect traces together since traces can be fragmented
-     (def traces (assemble-spans (reduce concat raw-traces)))
-     (doall (map trace-check-invariants raw-traces))
+     (def traces (assemble-traces raw-traces))
+     (doall (map trace-invariant-check traces))
 
      ; TODO: check that all referenced spans exist (maybe distributed tracing issues?)
      traces)))
@@ -210,8 +218,8 @@
 (defn check-traces [token]
   (let [raw-traces (or (@trace-db token) (throw (ex-info (format "No traces found for token '%s'." token) {})))]
     (try
-      (do (traces-invariant-check raw-traces)
-          raw-traces)
+      (let [grouped-traces (traces-invariant-check raw-traces)]
+        grouped-traces)
       (catch clojure.lang.ExceptionInfo e
         (let [msg (.getMessage e)
               data (ex-data e)
@@ -478,11 +486,12 @@
             (infof "[%s] tests passed!" token)
             {:status 200 :headers {"Content-Type" "text/plain"} :body (str token)})
           CI?
-          ; else the snapshot does not exist and this is unexpected in CI
+          ; snapshot does not exist and this is unexpected in CI
           {:status 400 :headers {"Content-Type" "text/plain"} :body (format "No snapshots expected for '%s'" token)}
           :else
           ; snapshot does not exist so write the traces
           (do
+            (def traces (map spans->trace))
             (spit file (with-out-str (pprint act-traces)))
             (infof "[%s] saved new snapshot in %s" token file)
             {:status 200 :headers {"Content-Type" "text/plain"} :body "OK :)"})))
