@@ -64,12 +64,15 @@
   (let
    [span< (fn [s1 s2] (< (s1 "start") (s2 "start")))
     addchild (fn [par-map span]
+               ; (println "span!" span)
+               ; (println "map!" par-map)
                (let [par-id (span "parent_id")
                      span-id (span "span_id")
                      ; add an entry for this span in case it doesn't
                      ; have children so that it has an entry
-                     span-cs (get par-map span-id (sorted-set-by span<))
-                     par-map (assoc par-map span-id span-cs)
+                     ; span-cs (get par-map span-id (sorted-set-by span<))
+                     ; span-cs par-map
+                     ; par-map (assoc par-map span-id span-cs)
                      parent-cs (get par-map par-id (sorted-set-by span<))]
                  (cond
                    ; Check for circular references by checking (if it exists) the span's
@@ -145,6 +148,7 @@
                      (concat res spans)))) [root] [])]
     flattened))
 
+; TODO: should just be trace-reduce-dfs
 (defn trace-flatten-dfs
   ([trace]
    (let [cmap (:childmap trace)
@@ -152,14 +156,56 @@
          flattened
          ((fn flat [spans]
             (if (empty? spans) []
-              (let [s (first spans)
-                    sid (s "span_id")
-                    cs (cmap sid)]
-                (conj (concat (flat cs) (flat (rest spans)))
-                      s)))) [root])]
+                (let [s (first spans)
+                      sid (s "span_id")
+                      cs (cmap sid)]
+                  (conj (concat (flat cs) (flat (rest spans)))
+                        s)))) [root])]
      flattened)))
 
-(defn span->str [span] (with-out-str (pprint span)))
+(defn trace-flatten-dfs-with-depth
+  ([trace]
+   (let [cmap (:childmap trace)
+         root (trace-root trace)
+         flattened
+         ((fn flat [spans depth]
+            (if (empty? spans) []
+                (let [s (first spans)
+                      sid (s "span_id")
+                      cs (cmap sid)]
+                  (conj (concat (flat cs (inc depth)) (flat (rest spans) depth))
+                        [s depth])))) [root] 0)]
+     flattened)))
+
+(defn span->str
+  ([span] (with-out-str (pprint span)))
+  ([span prefix]
+   (let [span-keys ["name"
+                    "service"
+                    "resource"
+                    "type"
+                    "error"
+                    "sampled"
+                    "span_id"
+                    "trace_id"
+                    "parent_id"
+                    "start"
+                    "duration"
+                    "meta"
+                    "metrics"]
+         meta-keys ["runtime-id"]
+         metr-keys ["_dd.measured"
+                    "_dd.agent_psr"
+                    "system.pid"]
+         reduce-fn (fn [item acc k]
+                     (if-not (contains? item k) acc
+                             (let [v (clojure.string/trim-newline (with-out-str (pprint (get item k))))
+                                   prefix (if (= acc "{") "" (str "\n" prefix))]
+                               (str acc prefix "\"" k "\" " v))))
+         span-str (reduce (partial reduce-fn span) "{" span-keys)
+         other-keys (keys (apply dissoc span span-keys))
+         span-str (reduce (partial reduce-fn span) span-str other-keys)]
+     (str prefix span-str "}"))))
 ; meta and metrics can not exist on a span if they are empty
 ; funny how we optimize that but not error or resource...
 (defn span-meta [span] (get span "meta" {}))
@@ -438,24 +484,24 @@
   ([act-traces exp-traces]
    (compare-traces act-traces exp-traces []))
   ([act-traces exp-traces ignores]
-  (let [act-traces (map spans->trace act-traces)
-        exp-traces (map spans->trace exp-traces)]
-    (try
-      (let [matched-traces (match-traces act-traces exp-traces)
-            diffed-traces (diff-matches matched-traces ignores)]
+   (let [act-traces (map spans->trace act-traces)
+         exp-traces (map spans->trace exp-traces)]
+     (try
+       (let [matched-traces (match-traces act-traces exp-traces)
+             diffed-traces (diff-matches matched-traces ignores)]
         ; need to doall to finally execute all the side-effects
-        (doall diffed-traces))
-      (catch clojure.lang.ExceptionInfo e
+         (doall diffed-traces))
+       (catch clojure.lang.ExceptionInfo e
       ; Prepend trace context info
-        (let [msg (.getMessage e)
-              data (ex-data e)
-              act-tid (:act-trace-id data)
-              exp-tid (:exp-trace-id data)
-              act-str (traces->str act-traces {act-tid {}})
-              exp-str (traces->str exp-traces)]
-          (throw (ex-info
-                  (format "Expected traces:\n%s\nReceived actual traces:\n%s\n%s" exp-str act-str msg) {}))))))
-  true))
+         (let [msg (.getMessage e)
+               data (ex-data e)
+               act-tid (:act-trace-id data)
+               exp-tid (:exp-trace-id data)
+               act-str (traces->str act-traces {act-tid {}})
+               exp-str (traces->str exp-traces)]
+           (throw (ex-info
+                   (format "Expected traces:\n%s\nReceived actual traces:\n%s\n%s" exp-str act-str msg) {}))))))
+   true))
 
 (defn mw-encoding [handler]
   (fn [req]

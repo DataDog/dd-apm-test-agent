@@ -6,19 +6,24 @@
 
 
 ; reference implementation
+
+
 (defn traces->snapshot-ref [traces]
   ; Generates a snapshot from a list of traces
   (with-out-str (pprint (doall (map :spans traces)))))
 
-
 (defn trace->snapshot
   ([trace] (trace->snapshot trace ""))
-  ([trace s] (pprint (trace-flatten-dfs trace))))
-
+  ([trace s]
+   (let [spans (trace-flatten-dfs-with-depth trace)
+         span->str
+         (fn [[span depth]]
+           (span->str span (apply str (repeat (+ (* 4 depth) 2) " "))))]
+     (str "[" (clojure.string/join "\n" (map span->str spans)) "]"))))
 
 (defn traces->snapshot
   ; Generates a snapshot from a list of traces
-  ; Since the snapshot is to be human verifiable and checked into version
+  ; Since the snapshot is to be human-verifiable and checked into version
   ; control it must be made as readable as possible.
   ; To achieve this the following steps are taken:
   ;  - Traces are stored as list of spans which is the popular way in which
@@ -50,15 +55,14 @@
   ; becomes too difficult to maintain both in a single format.
   ([traces] (traces->snapshot traces ""))
   ([traces s]
-   (let [snapshots (map trace->snapshot traces)])))
-
+   (let [snapshots (map trace->snapshot traces)]
+     (str "[" (clojure.string/join "\n" snapshots) "]"))))
 
 (defn rand-str [len]
-    (apply str (take len (repeatedly #(char (+ (rand 26) 65))))))
+  (apply str (take len (repeatedly #(char (+ (rand 26) 65))))))
 
 (defn rand-long [n]
   (long (rand n)))
-
 
 (defn mkspan
   ([] {"name" (rand-str 6)
@@ -68,12 +72,13 @@
        "parent_id" (rand-long 4294967296)
        "service" (rand-str 5)
        "type" (rand-str 5)
+       "sampled" (rand-int 1)
        "error" (rand-int 1)
        "duration" (rand-int 20000)
        "start" (rand-int 30000)
-       "meta" {}
-       "metrics" {}
-       })
+       "meta" {"runtime-id" (rand-str 16)}
+       "metrics" {"system.pid" (rand-int 9999)
+                  "_dd.measured" (rand-int 1)}})
   ([attrs]
    (let [default-attrs (mkspan)]
      (merge default-attrs attrs))))
@@ -86,7 +91,6 @@
   ; TODO: parent and shape
   ([n] (let [tid (rand-long 4294967296)]
          (map (fn [x] (mkspan {"trace_id" tid})) (range n)))))
-
 
 (deftest test-trace->dfs
   (testing "1 span trace"
@@ -111,26 +115,35 @@
           dfs (trace-flatten-dfs trace)]
       (is (not= dfs raw-trace)))))
 
-; (deftest test-trace->snapshot
-;   (testing "1 span trace"
-;     (let [raw-traces [[{"resource" "test"
-;                   "name" "span"
-;                   "duration" 123124
-;                   "start" 12312321
-;                   "error" 0
-;                   "span_id" 3425432234
-;                   "trace_id" 2143534543543
-;                   "type" "redis"
-;                   "meta" {"runtime-id" 123
-;                           }
-;                   "metrics" {"_dd.agent_psr" 1.0
-;                              "system.pid" 123}
-;                   }]]
-;           traces (map spans->trace raw-traces)
-;           snapshot (traces->snapshot traces)]
-;       (is (string? snapshot))
-;       (is (true? (compare-traces (read-string snapshot)
-;                                  raw-traces))))))
+(deftest test-trace->snapshot
+  ; An easy test to do with snapshots is to parse it back
+  ; and compare to the original trace.
+  ; (testing "1 trace, 1 span"
+  ;   (let [raw-traces [[(mkparent)]]
+  ;         traces (map spans->trace raw-traces)
+  ;         snapshot (traces->snapshot traces)]
+  ;     (is (string? snapshot))
+  ;     (is (true? (compare-traces (read-string snapshot)
+  ;                                raw-traces)))))
+  ; (testing "2 traces, 1 span each"
+  ;   (let [raw-traces [[(mkparent)][(mkparent)]]
+  ;         traces (map spans->trace raw-traces)
+  ;         snapshot (traces->snapshot traces)]
+  ;     (is (string? snapshot))
+  ;     (is (true? (compare-traces (read-string snapshot)
+  ;                               raw-traces)))))
+  (testing "2 traces, 2 spans each"
+    (let [raw-traces [[(mkparent {"span_id" 0})
+                       (mkspan {"parent_id" 0})]
+                      [(mkparent {"span_id" 1})
+                       (mkspan {"parent_id" 1})]]
+          traces (map spans->trace raw-traces)
+          snapshot (traces->snapshot traces)]
+      (pprint raw-traces)
+      (print snapshot)
+      (is (string? snapshot))
+      (is (true? (compare-traces (read-string snapshot)
+                                 raw-traces))))))
 
 (deftest test-assemble-traces
   (testing "2 raw traces from same trace"
@@ -146,7 +159,6 @@
       (is (= (count assembled) 2))
       (is (= (count (first assembled)) 1))
       (is (= (count (second assembled)) 1)))))
-
 
 (deftest test-agent
   (testing "/start no token"
