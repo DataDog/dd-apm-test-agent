@@ -178,34 +178,42 @@
      flattened)))
 
 (defn span->str
-  ([span] (with-out-str (pprint span)))
-  ([span prefix]
-   (let [span-keys ["name"
-                    "service"
-                    "resource"
-                    "type"
-                    "error"
-                    "sampled"
-                    "span_id"
-                    "trace_id"
-                    "parent_id"
-                    "start"
-                    "duration"
-                    "meta"
-                    "metrics"]
-         meta-keys ["runtime-id"]
-         metr-keys ["_dd.measured"
-                    "_dd.agent_psr"
-                    "system.pid"]
-         reduce-fn (fn [item acc k]
-                     (if-not (contains? item k) acc
-                             (let [v (clojure.string/trim-newline (with-out-str (pprint (get item k))))
-                                   prefix (if (= acc "{") "" (str "\n" prefix))]
-                               (str acc prefix "\"" k "\" " v))))
-         span-str (reduce (partial reduce-fn span) "{" span-keys)
-         other-keys (keys (apply dissoc span span-keys))
-         span-str (reduce (partial reduce-fn span) span-str other-keys)]
-     (str prefix span-str "}"))))
+  ([span] (span->str span {:ord-keys ["name"
+                                      "service"
+                                      "resource"
+                                      "type"
+                                      "error"
+                                      "sampled"
+                                      "span_id"
+                                      "trace_id"
+                                      "parent_id"
+                                      "start"
+                                      "duration"
+                                      "meta"
+                                      "metrics"]
+                           "meta" {:prefix "        "
+                                   :ord-keys ["runtime-id"]}
+                           "metrics" {:prefix "           "
+                                      :ord-keys ["_dd.measured"
+                                                 "_dd.agent_psr"
+                                                 "_dd1.sr.eausr"
+                                                 "_sampling_priority_v1"
+                                                 "system.pid"]}}))
+  ([m cfg]
+   (let [ord-keys (filter (fn [k] (contains? m k)) (get cfg :ord-keys []))
+         ord-keys (concat ord-keys (keys (apply dissoc m ord-keys)))
+         value->str (fn [v] (clojure.string/trim-newline (with-out-str (prn v))))
+         prefix (get cfg :prefix "")
+         reduce-fn (fn [acc k]
+                     (let [v (get m k)
+                           k-str (value->str k)
+                           prefix (if (= acc "{") "{" (str acc "\n" prefix))]
+                       (cond
+                         (map? v) (str prefix k-str " " (span->str v (get cfg k {})))
+                         :else (str prefix k-str " " (value->str v)))))]
+
+     (str (reduce reduce-fn "{" ord-keys) "}"))))
+
 ; meta and metrics can not exist on a span if they are empty
 ; funny how we optimize that but not error or resource...
 (defn span-meta [span] (get span "meta" {}))

@@ -194,7 +194,7 @@ def snapshot(ignores=None, file=None, dir=None):
 
 ### Parallel
 
-```
+```python
 def snapshot(f):
     import pytest
     from ddtrace.compat import httplib

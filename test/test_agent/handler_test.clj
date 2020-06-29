@@ -16,9 +16,10 @@
   ([trace] (trace->snapshot trace ""))
   ([trace s]
    (let [spans (trace-flatten-dfs-with-depth trace)
+         ; ident (apply str (repeat (+ (* 4 depth) 2) " "))
          span->str
          (fn [[span depth]]
-           (span->str span (apply str (repeat (+ (* 4 depth) 2) " "))))]
+           (span->str span))]
      (str "[" (clojure.string/join "\n" (map span->str spans)) "]"))))
 
 (defn traces->snapshot
@@ -76,7 +77,8 @@
        "error" (rand-int 1)
        "duration" (rand-int 20000)
        "start" (rand-int 30000)
-       "meta" {"runtime-id" (rand-str 16)}
+       "meta" {"runtime-id" (rand-str 16)
+               "some-key" (rand-str 12)}
        "metrics" {"system.pid" (rand-int 9999)
                   "_dd.measured" (rand-int 1)}})
   ([attrs]
