@@ -226,9 +226,8 @@
 (defn span-metrics [span] (get span "metrics" {}))
 
 (defn trace->snapshot
-  ; Helper for traces->snapshot.
-  ([trace] (trace->snapshot trace ""))
-  ([trace s]
+  ; Helper for traces->snapshot
+  ([trace]
    (let [spans (trace-flatten-dfs-with-depth trace)
          span->str
          (fn [acc [span depth]]
@@ -273,9 +272,23 @@
   ; piggy-backing on Clojure's attempt to make "code is data is readable" true.
   ; However, it may make sense to decouple parseability and readability if it
   ; becomes too difficult to maintain both in a single format.
-  ([traces] (traces->snapshot traces ""))
-  ([traces s]
-   (let [snapshots (map trace->snapshot traces)]
+  ([traces]
+   (let [trace-normalize
+         (fn [trace_id trace]
+           (let [bfs (trace-flatten-bfs trace)
+                 reduce-fn
+                 (fn [[id id_map spans] span]
+                   (let
+                     [old_id (span "span_id")
+                      span (assoc span "span_id" id)
+                      span (assoc span "trace_id" trace_id)
+                      span (assoc span "parent_id" (get id_map (span "parent_id")))
+                      id_map (assoc id_map old_id id)]
+                     [(inc id) id_map (conj spans span)]))
+                 [id idmap spans] (reduce reduce-fn [0 {} []] bfs)]
+             spans))
+         normed-traces (map spans->trace (map-indexed trace-normalize traces))
+         snapshots (map trace->snapshot normed-traces)]
      (str "[" (clojure.string/join "\n " snapshots) "]\n"))))
 
 (defn assemble-traces
