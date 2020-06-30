@@ -200,7 +200,6 @@
                                               "version"]}
                            "metrics" {:prefix "           "
                                       :ord-keys ["_dd.agent_psr"
-                                                 "_dd.agent_psr"
                                                  "_dd.limit_psr"
                                                  "_dd.measured"
                                                  "_dd1.sr.eausr"
@@ -347,16 +346,9 @@
      (when (not-empty (filter empty? raw-traces))
        (throw (ex-info (format "Empty traces from client") {})))
 
-     ; TODO: error context and formatting
-     ; TODO: check trace ids consistent in trace payload
-     ; TODO: check trace ids are unique
-     ; TODO: check no duplicates between meta/metrics
-
      ; collect traces together since traces can be fragmented
      (def traces (assemble-traces raw-traces))
      (doall (map trace-invariant-check traces))
-
-     ; TODO: check that all referenced spans exist (maybe distributed tracing issues?)
      traces)))
 
 (defn check-traces [token]
