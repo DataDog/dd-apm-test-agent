@@ -593,16 +593,16 @@
         ntraces (count traces)]
     (infof "[%s] received %s trace%s" token ntraces (if (> ntraces 1) "s" ""))
     (db-add-traces token traces)
-    {:status 200 :headers {"Content-Type" "application/json"} :body "\"OK\""}))
+    {:status 200 :headers {"Content-Type" "text/plain"} :body "OK"}))
 
 (defn handle-check [req]
   (let [token (:token req)]
     (try
       (let
        [traces (check-traces token)]
-        {:status 200 :headers {"Content-Type" "application/json"} :body traces})
+        {:status 200 :headers {"Content-Type" "text/plain"} :body "OK"})
       (catch clojure.lang.ExceptionInfo e
-        {:status 400 :headers {"Content-Type" "application/json"} :body (.getMessage e)}))))
+        {:status 400 :headers {"Content-Type" "text/plain"} :body (.getMessage e)}))))
 
 (defn handle-clear [req]
   (let [token (:token req)]

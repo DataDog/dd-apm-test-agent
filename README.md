@@ -22,30 +22,48 @@ docker run --rm\
 
 See the [Python library PR](https://github.com/datadog/dd-trace-py/pull/1546).
 
-## Checks
+## Features
 
-- Decoded properly
-- Empty traces
-- Span ID collisions
-- Multiple root spans
-- Circular references in spans
-- Comparison against a reference (snapshot testing)
-- [ ] Inconsistent trace id in a trace payload
-- [ ] Required attributes
+### Trace invariant checks
+
+- Decoding
+- HTTP headers
+  - Trace count matches
+- [ ] Traces are non-empty
+- [ ] Required span properties
+- [ ] No collisions in trace ids across traces
+- No collisions in span ids within a trace
+- No multiple root spans
+- No circular references in spans
+- [ ] Tags are within the permitted size limits
+- [ ] Type checks
+  - Span properties
+    - IDs are 64-bit integers
+  - All keys are strings
+  - Values in metrics are numeric
+  - Values in meta are string or numeric
+- [ ] No duplicate values between meta and metrics
 - [ ] All referenced spans exist
-- [ ] Trace header validation
-- [ ] Trace-logs correlation
-- [ ] Tag size limit
-- [ ] Type check on keys/values, eg. no strings in metrics
-- [ ] No duplicate keys between metrics and meta
+- [ ] Value checks
+  - Sampling tags
+- [ ] Span type checks
+  - eg. "type: redis" has "host" and "port" tags in meta
+  - eg. "type: web" has resource
+
+
+### Snapshot testing
 
 
 ### TODO
 
+- [ ] Check inconsistent trace id in a trace payload
+- [ ] Required attributes
+- [ ] All referenced spans exist
+- [ ] Trace-logs correlation
 - [ ] Warning mechanism - diff http response code?
 - [ ] HTTPS support? (is this even supported in the real agent?)
-- [ ] Feature flags to enable/disable checks
-- [ ] Tests for the agent itself
+- [ ] Feature flags to enable/disable checks (eg. E001, W001); be able to pass
+      these with requests.
 - [ ] Better error messages for trace shape
 - [ ] Better error messages for span diff
 - [ ] Endpoint to fetch the traces for continued testing in the library
