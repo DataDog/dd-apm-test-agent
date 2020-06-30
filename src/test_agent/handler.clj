@@ -234,7 +234,7 @@
            (let [first? (= acc "[")
                  prefix (if first? "[" (str acc "\n"))
                  split (clojure.string/split (span->str span) #"\n")
-                 ident (apply str (repeat (* 4 depth) " "))
+                 ident (apply str (repeat (+ (if first? 0 2) (* 4 depth)) " "))
                  split (map (fn [s] (str ident s)) split)
                  indented (clojure.string/join (str "\n" (if first? "  " "")) split)]
              (str prefix indented)))]
