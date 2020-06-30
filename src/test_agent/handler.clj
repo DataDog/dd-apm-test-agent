@@ -279,11 +279,11 @@
                  reduce-fn
                  (fn [[id id_map spans] span]
                    (let
-                     [old_id (span "span_id")
-                      span (assoc span "span_id" id)
-                      span (assoc span "trace_id" trace_id)
-                      span (assoc span "parent_id" (get id_map (span "parent_id")))
-                      id_map (assoc id_map old_id id)]
+                    [old_id (span "span_id")
+                     span (assoc span "span_id" id)
+                     span (assoc span "trace_id" trace_id)
+                     span (assoc span "parent_id" (get id_map (span "parent_id")))
+                     id_map (assoc id_map old_id id)]
                      [(inc id) id_map (conj spans span)]))
                  [id idmap spans] (reduce reduce-fn [0 {} []] bfs)]
              spans))
