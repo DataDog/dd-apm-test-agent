@@ -79,7 +79,8 @@
     childrenmap))
 
 (defn spans->trace [spans] {:spans spans :childmap (spans->childmap spans)})
-(defn trace-root [trace] (first (get (:childmap trace) nil)))
+; Some languages represent the root span with 0 rather than nil.
+(defn trace-root [trace] (first (get (:childmap trace) nil (get (:childmap trace) 0))))
 (defn trace-count [trace] (count (:spans trace)))
 (defn trace-id [trace] ((trace-root trace) "trace_id"))
 

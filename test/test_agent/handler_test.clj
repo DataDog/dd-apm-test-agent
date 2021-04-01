@@ -44,18 +44,18 @@
           dfs (trace-flatten-dfs trace)]
       (is (= (count dfs) (count raw-trace)))))
   (testing "already in DFS"
-    (let [raw-trace [(mkparent {"trace_id" 0 "span_id" 0})
-                     (mkspan {"trace_id" 0 "parent_id" 0 "start" 0})
-                     (mkspan {"trace_id" 0 "parent_id" 0 "start" 1 "span_id" 1})
-                     (mkspan {"trace_id" 0 "parent_id" 1})]
+    (let [raw-trace [(mkparent {"trace_id" 0 "span_id" 1})
+                     (mkspan {"trace_id" 0 "parent_id" 1 "start" 0})
+                     (mkspan {"trace_id" 0 "parent_id" 1 "start" 1 "span_id" 2})
+                     (mkspan {"trace_id" 0 "parent_id" 2})]
           trace (spans->trace raw-trace)
           dfs (trace-flatten-dfs trace)]
       (is (= dfs raw-trace))))
   (testing "not in DFS"
-    (let [raw-trace [(mkparent {"trace_id" 0 "span_id" 0})
-                     (mkspan {"trace_id" 0 "parent_id" 0 "start" 1 "span_id" 1})
-                     (mkspan {"trace_id" 0 "parent_id" 0 "start" 0})
-                     (mkspan {"trace_id" 0 "parent_id" 1})]
+    (let [raw-trace [(mkparent {"trace_id" 0 "span_id" 1})
+                     (mkspan {"trace_id" 0 "parent_id" 1 "start" 1 "span_id" 2})
+                     (mkspan {"trace_id" 0 "parent_id" 1 "start" 0})
+                     (mkspan {"trace_id" 0 "parent_id" 2})]
           trace (spans->trace raw-trace)
           dfs (trace-flatten-dfs trace)]
       (is (not= dfs raw-trace)))))
@@ -70,6 +70,14 @@
       (is (string? snapshot))
       (is (true? (compare-traces (read-string snapshot)
                                  raw-traces)))))
+  ; Some clients use 0 to denote a root span.
+  (testing "1 trace, 1 span, 0 parent_id"
+    (let [raw-traces [[(mkspan {"parent_id" 0})]]
+          traces (map spans->trace raw-traces)
+          snapshot (traces->snapshot traces)]
+      (is (string? snapshot))
+      (is (true? (compare-traces (read-string snapshot)
+                                 raw-traces)))))
   (testing "2 traces, 1 span each"
     (let [raw-traces [[(mkparent)] [(mkparent)]]
           traces (map spans->trace raw-traces)
@@ -78,12 +86,12 @@
       (is (true? (compare-traces (read-string snapshot)
                                  raw-traces)))))
   (testing "2 traces, multi children"
-    (let [raw-traces [[(mkparent {"trace_id" 0 "span_id" 0})
-                       (mkspan {"trace_id" 0 "parent_id" 0})]
-                      [(mkparent {"trace_id" 1 "span_id" 1})
-                       (mkspan {"trace_id" 1 "parent_id" 1 "span_id" 2})
-                       (mkspan {"trace_id" 1 "parent_id" 2})
-                       (mkspan {"trace_id" 1 "parent_id" 1})]]
+    (let [raw-traces [[(mkparent {"trace_id" 0 "span_id" 1})
+                       (mkspan {"trace_id" 0 "parent_id" 1})]
+                      [(mkparent {"trace_id" 1 "span_id" 2})
+                       (mkspan {"trace_id" 1 "parent_id" 2 "span_id" 3})
+                       (mkspan {"trace_id" 1 "parent_id" 3})
+                       (mkspan {"trace_id" 1 "parent_id" 2})]]
           traces (map spans->trace raw-traces)
           snapshot (traces->snapshot traces)]
       (is (string? snapshot))
