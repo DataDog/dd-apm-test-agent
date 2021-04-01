@@ -587,7 +587,7 @@
         ntraces (count traces)]
     (infof "[%s] received %s trace%s" token ntraces (if (> ntraces 1) "s" ""))
     (db-add-traces token traces)
-    {:status 200 :headers {"Content-Type" "text/plain"} :body "OK"}))
+    {:status 200 :headers {"Content-Type" "application/json"} :body "{\"rate_by_service\": {}}"}))
 
 (defn handle-check [req]
   (let [token (:token req)]
