@@ -64,15 +64,8 @@
   (let
    [span< (fn [s1 s2] (< (s1 "start") (s2 "start")))
     addchild (fn [par-map span]
-               ; (println "span!" span)
-               ; (println "map!" par-map)
                (let [par-id (span "parent_id")
                      span-id (span "span_id")
-                     ; add an entry for this span in case it doesn't
-                     ; have children so that it has an entry
-                     ; span-cs (get par-map span-id (sorted-set-by span<))
-                     ; span-cs par-map
-                     ; par-map (assoc par-map span-id span-cs)
                      parent-cs (get par-map par-id (sorted-set-by span<))]
                  (cond
                    ; Check for circular references by checking (if it exists) the span's
