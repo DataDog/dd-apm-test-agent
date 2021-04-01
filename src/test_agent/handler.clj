@@ -320,7 +320,7 @@
 
     ; ensure only one root span
     (def roots (filter (fn [s] (nil? (s "parent_id"))) trace))
-    (when (not= (count roots) 1)
+    (when (> (count roots) 1)
       (throw (ex-info "Multiple root spans in trace" {})))
 
     ; check for mismatching trace ids in a trace
