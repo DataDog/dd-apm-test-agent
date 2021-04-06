@@ -2,9 +2,6 @@ FROM clojure
 
 EXPOSE 8126
 
-# Install git to allow users to clone a repo with snapshots into the container
-# to work around not being able to mount a volume.
-RUN apt update && apt install -y git
 RUN mkdir -p /usr/src/agent
 WORKDIR /usr/src/agent
 COPY project.clj /usr/src/agent/
