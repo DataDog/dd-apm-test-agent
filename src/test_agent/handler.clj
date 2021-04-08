@@ -3,12 +3,14 @@
             [compojure.core :refer :all]
             [compojure.route :as route]
             [msgpack.core :as msg]
+            [ring.adapter.jetty :as http]
             [ring.middleware.defaults :refer [wrap-defaults api-defaults]]
             [taoensso.timbre :as timbre
              :refer [log trace debug info warn error fatal
                      logf tracef debugf infof warnf errorf fatalf]])
   (:use [clojure.data]
-        [clojure.pprint]))
+        [clojure.pprint])
+  (:gen-class))
 
 (defn map-reduce
   ([f acc l] (map-reduce f acc l []))
@@ -695,3 +697,6 @@
 
 (def app
   (wrap-defaults app-routes api-defaults))
+
+(defn -main []
+  (http/run-jetty app {:port 8126}))
