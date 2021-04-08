@@ -1,0 +1,24 @@
+FROM ghcr.io/graalvm/graalvm-ce:java8-20.3.1.2
+
+EXPOSE 8126
+
+RUN curl -O https://raw.githubusercontent.com/technomancy/leiningen/stable/bin/lein && \
+    chmod +x lein && \
+    mv lein /usr/bin/lein && \
+    lein upgrade
+RUN gu install native-image
+
+RUN mkdir -p /src
+WORKDIR /src
+COPY project.clj /src/
+RUN lein deps
+COPY . /src
+RUN lein uberjar
+RUN native-image --no-fallback \
+                 --report-unsupported-elements-at-runtime \
+                 --no-server \
+                 --initialize-at-build-time \
+                 -jar target/test-agent.jar \
+                 -H:Name=./target/test-agent
+
+CMD ["./target/test-agent"]
