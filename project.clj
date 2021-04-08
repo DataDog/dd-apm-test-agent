@@ -17,5 +17,6 @@
   {:dev {:dependencies [[javax.servlet/servlet-api "2.5"]
                         [ring/ring-mock "0.3.2"]]}
    :uberjar {:aot :all}}
+  :uberjar-name "test-agent.jar"
   :main test-agent.handler
   :aot [test-agent.handler])

@@ -2,10 +2,10 @@ FROM clojure
 
 EXPOSE 8126
 
-RUN mkdir -p /usr/src/agent
-WORKDIR /usr/src/agent
-COPY project.clj /usr/src/agent/
+RUN mkdir -p /src
+WORKDIR /src
+COPY project.clj /src/
 RUN lein deps
-COPY . /usr/src/agent
-RUN mv "$(lein ring uberjar | sed -n 's/^Created \(.*standalone\.jar\)/\1/p')" app-standalone.jar
-CMD ["java", "-jar", "app-standalone.jar"]
+COPY . /src
+RUN lein uberjar
+CMD ["java", "-jar", "target/test-agent.jar"]
