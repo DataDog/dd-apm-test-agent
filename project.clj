@@ -2,7 +2,7 @@
   :description "Integration test agent for Datadog tracing libraries"
   :url "https://github.com/kyle-verhoog/dd-trace-test-agent"
   :min-lein-version "2.0.0"
-  :dependencies [[org.clojure/clojure "1.10.1"]
+  :dependencies [[org.clojure/clojure "1.10.3"]
                  [clojure-msgpack "1.2.1"]
                  [com.taoensso/timbre "4.10.0"]
                  [compojure "1.6.1"]
