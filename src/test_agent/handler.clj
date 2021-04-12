@@ -687,6 +687,10 @@
           (errorf e "[%s] crashed!" (get req :token ""))
           {:status 500 :headers {"Content-Type" "text/plain"} :body msg})))))
 
+(defn get-port [] (if (System/getenv "DD_TEST_AGENT_PORT")
+                    (Integer/parseInt (System/getenv "DD_TEST_AGENT_PORT"))
+                    8126))
+
 (defroutes app-routes
   (mw-token (mw-exc (GET "/test/check" [] handle-check)))
   (mw-token (mw-exc (GET "/test/clear" [] handle-clear)))
@@ -699,4 +703,4 @@
   (wrap-defaults app-routes api-defaults))
 
 (defn -main []
-  (http/run-jetty app {:port 8126}))
+  (http/run-jetty app {:port (get-port)}))
