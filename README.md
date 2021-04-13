@@ -130,7 +130,7 @@ Warning: it is an error to specify both `file` and `dir`.
   - When snapshots are unexpectedly _generated_ from a test case a failure will
     be raised.
 
-- `PORT` [`8126`]: Port to listen on.
+- `DD_TEST_AGENT_PORT`: Port to listen on. If this variable does **not** exist, the port will default to `8126`
 
 
 ## Development
