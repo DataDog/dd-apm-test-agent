@@ -696,7 +696,7 @@
   (mw-token (mw-exc (GET "/test/clear" [] handle-clear)))
   (mw-token (mw-exc (GET "/test/snapshot" [] handle-snapshot)))
   (mw-token (mw-exc (GET "/test/start" [] handle-start)))
-  (mw-token (mw-exc (mw-encoding (PUT "/v0.4/traces" [] handle-traces))))
+  (mw-token (mw-exc (mw-encoding (ANY "/v0.4/traces" [] handle-traces))))
   (route/not-found "Not Found"))
 
 (def app
