@@ -1,0 +1,4 @@
+aiohttp==3.7.4.post0
+attrs==21.2.0
+msgpack==1.0.2
+pytest==6.2.4
