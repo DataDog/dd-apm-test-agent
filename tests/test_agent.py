@@ -2,8 +2,6 @@ import msgpack
 
 
 async def test_sync_snapshot_single_trace(agent):
-    assert (await agent.get("/")).status == 404
-
     resp = await agent.get(
         "/test/start",
         headers={

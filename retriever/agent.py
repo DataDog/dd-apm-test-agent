@@ -1,16 +1,20 @@
 import argparse
 import contextlib
+import contextvars
+import collections
 import dataclasses
 import json
 import logging
 import os
 import pprint
+import textwrap
 from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
-import unittest
+from typing import OrderedDict
+from typing import Type
 
 from aiohttp import web
 from aiohttp.web import Request
@@ -20,67 +24,159 @@ import msgpack
 
 log = logging.getLogger(__name__)
 
+CHECK_CONTEXT: contextvars.ContextVar[
+    Optional["CheckContext"]
+] = contextvars.ContextVar("check_context", default=None)
+
 
 @dataclasses.dataclass()
 class CheckContext:
-    pre: str = dataclasses.field(default="")
-    items: Dict = dataclasses.field(default_factory=dict)
-    body: str = dataclasses.field(default="")
-    post: str = dataclasses.field(default="")
+    _ctx: OrderedDict = dataclasses.field(
+        init=False, default_factory=collections.OrderedDict
+    )
+    _checks: List["Check"] = dataclasses.field(init=False, default_factory=list)
 
-    def __str__(self):
-        return f"""{self.pre}
-        ---------------------------
-        Context:
-        {pprint.pformat(self.items)}
+    def __getitem__(self, item: str) -> Any:
+        return self._ctx[item]
 
-        {self.body}
-        ---------------------------
-        {self.post}
-        """
+    def add(self, k, v):
+        self._ctx[k] = v
 
-    def add_item(self, k: Any, v: Any) -> None:
-        self.items[k] = v
+    def copy(self) -> "CheckContext":
+        c = CheckContext()
+        c._ctx = self._ctx.copy()
+        return c
 
-    def add_pre(self, s: str):
-        self.pre += s
+    @classmethod
+    @contextlib.contextmanager
+    def add_items(cls, **items):
+        ctx = CHECK_CONTEXT.get()
+        old = ctx._ctx.copy()
+        ctx._ctx.update(items)
+        yield ctx
+        ctx._ctx.clear()
+        ctx._ctx.update(old)
+
+    def remove(self, k):
+        del self._ctx[k]
+
+    @classmethod
+    def add_check(cls, check: "Check"):
+        ctx = CHECK_CONTEXT.get()
+        ctx._checks.append(check)
+
+    def has_fails(self) -> bool:
+        return len(self.fails()) > 0
+
+    def fails(self) -> List["CheckFailure"]:
+        return [f for c in self._checks for f in c.fails()]
+
+    def straceback(self) -> str:
+        return "\n".join([f"{k} = {pprint.pformat(v)}" for k, v in self._ctx.items()])
 
 
-@dataclasses.dataclass()
 class Check:
+    name: str
     """Name of the check. Should be as succinct and representative as possible."""
 
-    name: str = dataclasses.field(init=True)
+    description: str
     """Description of the check. Be as descriptive as possible as this will be included
     with error messages returned to the test case.
     """
-    description: str = dataclasses.field(init=True)
+
+    default_enabled: bool
     """Whether the check is enabled by default or not."""
-    default_enabled: bool = dataclasses.field(init=True)
+
+    def __init__(self):
+        self._failures: List["CheckFailure"] = []
+
+    def failed(self) -> bool:
+        return len(self._failures) > 0
+
+    def fail(self, msg: str) -> None:
+        ctx = CHECK_CONTEXT.get()
+        self._failures.append(CheckFailure(self, msg, ctx.copy()))
+
+    def fails(self) -> List["CheckFailure"]:
+        return self._failures
+
+    def check(self, *args: List[Any], **kwargs: Dict[str, Any]) -> None:
+        """Perform any checking required for this Check.
+
+        CheckFailures should be raised for any failing checks.
+        """
+        raise NotImplementedError
+
+
+class CheckTraceCountHeader(Check):
+    name = "trace_count_header"
+    description = """
+The number of traces included in a payload must be included as the
+X-Datadog-Trace-Count http header with each payload. The value of the
+header must match the number of traces included in the payload.
+""".strip()
+    default_enabled = True
+
+    def check(self, headers: Dict[str, str], num_traces: int):
+        # TODO: could do this by default if defined in parent
+        # or if do _check approach
+        with CheckContext.add_items(
+            payload_headers=headers,
+            num_traces=num_traces,
+        ):
+            if "X-Datadog-Trace-Count" not in headers:
+                self.fail("X-Datadog-Trace-Count header not found in headers")
+                return
+            try:
+                count = int(headers["X-Datadog-Trace-Count"])
+            except ValueError:
+                self.fail("X-Datadog-Trace-Count header is not a valid integer")
+                return
+            else:
+                if num_traces != count:
+                    self.fail(
+                        f"X-Datadog-Trace-Count value ({count}) does not match actual number of traces ({num_traces})"
+                    )
+
+
+class CheckMetaTracerVersionHeader(Check):
+    name = "meta_tracer_version_header"
+    description = (
+        """v0.4 payloads must include the Datadog-Meta-Tracer-Version header."""
+    )
+    default_enabled = True
+
+    def check(self, headers: Dict[str, str]) -> None:
+        if "Datadog-Meta-Tracer-Version" not in headers:
+            self.fail("Datadog-Meta-Tracer-Version not found in headers")
 
 
 class CheckFailure(Exception):
-    def __init__(self, check: Check, context: CheckContext):
+    def __init__(self, check: Check, msg: str, context: CheckContext):
+        self._check: Check = check
+        self._msg: str = msg
+        self._context: CheckContext = context
         super().__init__()
-        self._check = check
-        self._context = context
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"""Check '{self._check.name}' failed.
-    {self._check.description}
-    {self._context}
-        """
+Description\n{textwrap.indent(self._check.description, "    ")}
+Context\n{textwrap.indent(self._context.straceback(), "    ")}
+Reason: {self._msg}"""
+
+    def __repr__(self) -> str:
+        return f"<CheckFailure({self._check.name}, msg='{self._msg}')>"
 
 
 @dataclasses.dataclass()
 class Checks:
-    checks: List[Check] = dataclasses.field(init=True)
+    checks: List[Type[Check]] = dataclasses.field(init=True)
     disabled: List[str] = dataclasses.field(init=True)
 
     class CheckNotFound(IndexError):
         pass
 
-    def _get_check(self, name: str) -> Check:
+    def _get_check(self, name: str) -> Type[Check]:
         for c in self.checks:
             if c.name == name:
                 return c
@@ -93,34 +189,23 @@ class Checks:
             return False
         return check.default_enabled
 
-    @contextlib.contextmanager
-    def check(self, name: str, context: Dict = {}) -> "Checker":
-        ctx = CheckContext()
-        for k, v in context.items():
-            ctx.add_item(k, v)
-
-        check = self._get_check(name)
-        try:
-            yield CheckerTest()
-        except AssertionError as e:
-            if self.is_enabled(name):
-                raise CheckFailure(check, ctx) from e
-
-
-class CheckerTest(unittest.TestCase):
-    pass
-
-
-class ValidationError(web.HTTPClientError):
-    status_code = 400
+    def check(self, name: str, *args, **kwargs) -> None:
+        check = self._get_check(name)()
+        CheckContext.add_check(check)
+        if self.is_enabled(name):
+            check.check(*args, **kwargs)
 
 
 @middleware
 async def check_failure_middleware(request: Request, handler: Callable) -> web.Response:
-    try:
-        return await handler(request)
-    except CheckFailure as e:
-        return web.HTTPBadRequest(body=str(e))
+    """Convert any failed checks into an HttpException."""
+    ctx = CheckContext()
+    CHECK_CONTEXT.set(ctx)
+    response = await handler(request)
+    if ctx.has_fails():
+        msg = "\n".join(str(f) for f in ctx.fails())
+        return web.HTTPBadRequest(body=msg)
+    return response
 
 
 @middleware
@@ -131,6 +216,7 @@ async def snapshot_token_middleware(
 
     The snapshot token is retrieved from the headers or params of the request.
     """
+    token: Optional[str]
     if "X-Datadog-Test-Token" in request.headers:
         token = request.headers["X-Datadog-Test-Token"]
     elif "token" in request.url.query:
@@ -140,21 +226,6 @@ async def snapshot_token_middleware(
 
     request["snapshot_token"] = token
     return await handler(request)
-
-
-@dataclasses.dataclass()
-class Error:
-    msg: str = dataclasses.field(init=True)
-
-
-@dataclasses.dataclass()
-class AgentRequest:
-    request: Request = dataclasses.field(init=True)
-    snapshot_token: Optional[str] = dataclasses.field(init=True)
-    errors: List[Error] = dataclasses.field(init=False)
-
-    def add_error(self, error: Error):
-        self.errors.append(error)
 
 
 class Agent:
@@ -186,28 +257,24 @@ class Agent:
             raise ValidationError(reason="Content type %r not supported" % content_type)
         return payload
 
-    async def handle_v04_traces(self, request: Request):
+    async def handle_v04_traces(self, request: Request) -> web.Response:
         self._requests.append(request)
         traces = await self._decode_v04_traces(request)
         assert isinstance(traces, list)
 
-        with request.app["checks"].check(
+        request.app["checks"].check(
             "trace_count_header",
-            context=dict(
-                headers=dict(request.headers),
-            ),
-        ) as test:
-            # Cast to dict for better pretty printing
-            test.assertIn("X-Datadog-Trace-Count", dict(request.headers))
-            test.assertEqual(int(request.headers["X-Datadog-Trace-Count"]), len(traces))
-
-        with request.app["checks"].check("meta_tracer_version_header") as test:
-            test.assertIn("Datadog-Meta-Tracer-Version", dict(request.headers))
+            headers=dict(request.headers),
+            num_traces=len(traces),
+        )
+        request.app["checks"].check(
+            "meta_tracer_version_header", headers=dict(request.headers)
+        )
 
         # TODO json response with sample rates
         return web.Response(text="OK")
 
-    async def handle_v05(self, request: Request):
+    async def handle_v05(self, request: Request) -> web.Response:
         raise NotImplementedError
 
     async def handle_start_snapshot(self, request: Request):
@@ -242,19 +309,8 @@ def make_app(disabled_checks: List[str]) -> web.Application:
     )
     checks = Checks(
         checks=[
-            Check(
-                name="meta_tracer_version_header",
-                description="""v0.4 payloads must include the Datadog-Meta-Tracer-Version header""",
-                default_enabled=True,
-            ),
-            Check(
-                name="trace_count_header",
-                description="""
-    The number of traces included in a payload must be included as the
-    X-Datadog-Trace-Count http header with each payload and must match the
-    number of traces included in the payload.""".lstrip().strip(),
-                default_enabled=True,
-            ),
+            CheckMetaTracerVersionHeader,
+            CheckTraceCountHeader,
         ],
         disabled=disabled_checks,
     )
