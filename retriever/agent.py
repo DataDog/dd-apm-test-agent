@@ -238,16 +238,21 @@ class Agent:
         """
         self._requests: List[Request] = []
 
-    def traces(self) -> Dict[int, List[Dict]]:
+    async def traces(self) -> Dict[int, List[Dict]]:
         """Return the traces stored by the agent."""
-        _traces: Dict[int, List[Dict]] = {}
+        _traces: Dict[int, List[Dict]] = collections.defaultdict(lambda: [])
 
         for req in self._requests:
-            pass
-
+            traces = await self._decode_v04_traces(req)
+            for t in traces:
+                for s in t:
+                    _traces[int(s["trace_id"])].append(s)
         return _traces
 
-    async def _decode_v04_traces(self, request: Request) -> bytes:
+    async def get_trace(self, trace_id: int) -> List[Dict]:
+        return (await self.traces())[trace_id]
+
+    async def _decode_v04_traces(self, request: Request) -> List:
         content_type = request.content_type
         if content_type == "application/msgpack":
             payload = msgpack.unpackb(await request.read())
@@ -277,12 +282,23 @@ class Agent:
     async def handle_v05(self, request: Request) -> web.Response:
         raise NotImplementedError
 
-    async def handle_start_snapshot(self, request: Request):
+    async def handle_start_snapshot(self, request: Request) -> web.Response:
         assert request["snapshot_token"]
         return web.HTTPOk(text="hello")
 
-    async def handle_snapshot(self, request: Request):
+    async def handle_snapshot(self, request: Request) -> web.Response:
         return web.HTTPOk(text="hello")
+
+    async def handle_test_traces(self, request: Request) -> web.Response:
+        """Return requested traces as JSON."""
+        trace_ids = map(
+            int,
+            request.url.query.get(
+                "trace_ids", request.headers.get("X-Datadog-Trace-Ids")
+            ).split(","),
+        )
+        traces = [await self.get_trace(tid) for tid in trace_ids]
+        return web.json_response(data=traces)
 
     async def handle_clear_traces(self, request: Request):
         raise NotImplementedError
@@ -302,9 +318,10 @@ def make_app(disabled_checks: List[str]) -> web.Application:
             web.put("/v0.4/traces", agent.handle_v04_traces),
             web.put("/v0.5/traces", agent.handle_v05),
             web.get("/test/start", agent.handle_start_snapshot),
-            web.get("/test/start-snapshot", agent.handle_start_snapshot),
-            web.get("/test/clear-traces", agent.handle_clear_traces),
-            web.get("/test/snapshot", agent.handle_snapshot),
+            web.get("/test/session-start", agent.handle_start_snapshot),
+            web.get("/test/session-clear-traces", agent.handle_clear_traces),
+            web.get("/test/session-snapshot", agent.handle_snapshot),
+            web.get("/test/traces", agent.handle_test_traces),
         ]
     )
     checks = Checks(

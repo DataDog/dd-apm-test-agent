@@ -32,12 +32,15 @@ async def agent(agent_app, aiohttp_client, loop) -> Generator[TestClient, None, 
 
 
 @pytest.fixture
-def v04_reference_http_trace_payload_data() -> Generator[bytes, None, None]:
-    data = msgpack.packb(
+def v04_reference_http_trace_payload_data_raw() -> Generator[bytes, None, None]:
+    data = [
         [
             {
                 "name": "http.request",
                 "service": "my-http-server",
+                "trace_id": "1234",
+                "span_id": "4321",
+                "parent_id": None,
                 "resource": "/users/",
                 "type": "http",
                 "meta": {},
@@ -46,8 +49,15 @@ def v04_reference_http_trace_payload_data() -> Generator[bytes, None, None]:
                 },
             }
         ]
-    )
+    ]
     yield data
+
+
+@pytest.fixture
+def v04_reference_http_trace_payload_data(
+    v04_reference_http_trace_payload_data_raw,
+) -> Generator[bytes, None, None]:
+    yield msgpack.packb(v04_reference_http_trace_payload_data_raw)
 
 
 @pytest.fixture
