@@ -38,7 +38,6 @@ async def test_trace_count_header_mismatch(
     agent,
     v04_reference_http_trace_payload_headers,
     v04_reference_http_trace_payload_data,
-    agent_disabled_checks,
 ):
     v04_reference_http_trace_payload_headers["X-Datadog-Trace-Count"] += "1"
     resp = await agent.put(

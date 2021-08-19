@@ -1,37 +1,44 @@
 import argparse
+import collections
 import contextlib
 import contextvars
-import collections
 import dataclasses
-import json
 import logging
 import os
 import pprint
 import textwrap
 from typing import Any
+from typing import Awaitable
 from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
 from typing import OrderedDict
+from typing import Tuple
 from typing import Type
 
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
-import msgpack
+
+from .trace import Trace
+from .trace import TraceMap
+from .trace import decode_v04
+
+
+_Handler = Callable[[Request], Awaitable[web.Response]]
 
 
 log = logging.getLogger(__name__)
 
-CHECK_CONTEXT: contextvars.ContextVar[
-    Optional["CheckContext"]
-] = contextvars.ContextVar("check_context", default=None)
+CHECK_CONTEXT: contextvars.ContextVar["CheckContext"] = contextvars.ContextVar(
+    "check_context"
+)
 
 
 @dataclasses.dataclass()
 class CheckContext:
-    _ctx: OrderedDict = dataclasses.field(
+    _ctx: OrderedDict[str, Any] = dataclasses.field(
         init=False, default_factory=collections.OrderedDict
     )
     _checks: List["Check"] = dataclasses.field(init=False, default_factory=list)
@@ -57,11 +64,11 @@ class CheckContext:
         ctx._ctx.clear()
         ctx._ctx.update(old)
 
-    def remove(self, k):
+    def remove(self, k: str) -> None:
         del self._ctx[k]
 
     @classmethod
-    def add_check(cls, check: "Check"):
+    def add_check(cls, check: "Check") -> None:
         ctx = CHECK_CONTEXT.get()
         ctx._checks.append(check)
 
@@ -100,7 +107,7 @@ class Check:
     def fails(self) -> List["CheckFailure"]:
         return self._failures
 
-    def check(self, *args: List[Any], **kwargs: Dict[str, Any]) -> None:
+    def check(self, *args, **kwargs):
         """Perform any checking required for this Check.
 
         CheckFailures should be raised for any failing checks.
@@ -117,7 +124,7 @@ header must match the number of traces included in the payload.
 """.strip()
     default_enabled = True
 
-    def check(self, headers: Dict[str, str], num_traces: int):
+    def check(self, headers: Dict[str, str], num_traces: int) -> None:  # type: ignore
         # TODO: could do this by default if defined in parent
         # or if do _check approach
         with CheckContext.add_items(
@@ -146,7 +153,7 @@ class CheckMetaTracerVersionHeader(Check):
     )
     default_enabled = True
 
-    def check(self, headers: Dict[str, str]) -> None:
+    def check(self, headers: Dict[str, str]) -> None:  # type: ignore
         if "Datadog-Meta-Tracer-Version" not in headers:
             self.fail("Datadog-Meta-Tracer-Version not found in headers")
 
@@ -168,20 +175,21 @@ Reason: {self._msg}"""
         return f"<CheckFailure({self._check.name}, msg='{self._msg}')>"
 
 
+class CheckNotFound(IndexError):
+    pass
+
+
 @dataclasses.dataclass()
 class Checks:
     checks: List[Type[Check]] = dataclasses.field(init=True)
     disabled: List[str] = dataclasses.field(init=True)
-
-    class CheckNotFound(IndexError):
-        pass
 
     def _get_check(self, name: str) -> Type[Check]:
         for c in self.checks:
             if c.name == name:
                 return c
         else:
-            raise self.CheckNotFound("Check for code %r not found" % name)
+            raise CheckNotFound("Check for code %r not found" % name)
 
     def is_enabled(self, name: str) -> bool:
         check = self._get_check(name)
@@ -189,15 +197,15 @@ class Checks:
             return False
         return check.default_enabled
 
-    def check(self, name: str, *args, **kwargs) -> None:
+    def check(self, name: str, *args: Tuple[Any], **kwargs: Dict[str, Any]) -> None:
         check = self._get_check(name)()
         CheckContext.add_check(check)
         if self.is_enabled(name):
             check.check(*args, **kwargs)
 
 
-@middleware
-async def check_failure_middleware(request: Request, handler: Callable) -> web.Response:
+@middleware  # type: ignore
+async def check_failure_middleware(request: Request, handler: _Handler) -> web.Response:
     """Convert any failed checks into an HttpException."""
     ctx = CheckContext()
     CHECK_CONTEXT.set(ctx)
@@ -208,23 +216,23 @@ async def check_failure_middleware(request: Request, handler: Callable) -> web.R
     return response
 
 
-@middleware
+@middleware  # type: ignore
 async def snapshot_token_middleware(
-    request: Request, handler: Callable
+    request: Request, handler: _Handler
 ) -> web.Response:
-    """Extracts snapshot token from the request and store it in the request.
+    """Extract snapshot token from the request and store it in the request.
 
     The snapshot token is retrieved from the headers or params of the request.
     """
     token: Optional[str]
-    if "X-Datadog-Test-Token" in request.headers:
-        token = request.headers["X-Datadog-Test-Token"]
-    elif "token" in request.url.query:
-        token = request.url.query.get("token")
+    if "X-Datadog-Test-Session-Token" in request.headers:
+        token = request.headers["X-Datadog-Test-Session-Token"]
+    elif "test_session_token" in request.url.query:
+        token = request.url.query.get("test_session_token")
     else:
         token = None
 
-    request["snapshot_token"] = token
+    request["session_token"] = token
     return await handler(request)
 
 
@@ -238,9 +246,14 @@ class Agent:
         """
         self._requests: List[Request] = []
 
-    async def traces(self) -> Dict[int, List[Dict]]:
+    async def _set_session_token(
+        self,
+    ):
+        pass
+
+    async def traces(self) -> TraceMap:
         """Return the traces stored by the agent."""
-        _traces: Dict[int, List[Dict]] = collections.defaultdict(lambda: [])
+        _traces: TraceMap = collections.defaultdict(lambda: [])
 
         for req in self._requests:
             traces = await self._decode_v04_traces(req)
@@ -249,21 +262,20 @@ class Agent:
                     _traces[int(s["trace_id"])].append(s)
         return _traces
 
-    async def get_trace(self, trace_id: int) -> List[Dict]:
+    async def get_trace(self, trace_id: int) -> Trace:
         return (await self.traces())[trace_id]
 
-    async def _decode_v04_traces(self, request: Request) -> List:
+    async def _decode_v04_traces(self, request: Request) -> Any:
         content_type = request.content_type
-        if content_type == "application/msgpack":
-            payload = msgpack.unpackb(await request.read())
-        elif content_type == "application/json":
-            payload = json.loads(await request.read())
-        else:
-            raise ValidationError(reason="Content type %r not supported" % content_type)
-        return payload
+        raw_data = await request.read()
+        return decode_v04(content_type, raw_data)
 
     async def handle_v04_traces(self, request: Request) -> web.Response:
         self._requests.append(request)
+        request.app["checks"].check(
+            "meta_tracer_version_header", headers=dict(request.headers)
+        )
+
         traces = await self._decode_v04_traces(request)
         assert isinstance(traces, list)
 
@@ -272,18 +284,15 @@ class Agent:
             headers=dict(request.headers),
             num_traces=len(traces),
         )
-        request.app["checks"].check(
-            "meta_tracer_version_header", headers=dict(request.headers)
-        )
 
-        # TODO json response with sample rates
-        return web.Response(text="OK")
+        # TODO: implement sampling logic
+        return web.json_response(data={"rate_by_service": {}})
 
     async def handle_v05(self, request: Request) -> web.Response:
         raise NotImplementedError
 
-    async def handle_start_snapshot(self, request: Request) -> web.Response:
-        assert request["snapshot_token"]
+    async def handle_start_session(self, request: Request) -> web.Response:
+        assert request["session_token"]
         return web.HTTPOk(text="hello")
 
     async def handle_snapshot(self, request: Request) -> web.Response:
@@ -294,17 +303,20 @@ class Agent:
         trace_ids = map(
             int,
             request.url.query.get(
-                "trace_ids", request.headers.get("X-Datadog-Trace-Ids")
+                "trace_ids", request.headers.get("X-Datadog-Trace-Ids", "")
             ).split(","),
         )
+        assert trace_ids
         traces = [await self.get_trace(tid) for tid in trace_ids]
         return web.json_response(data=traces)
 
-    async def handle_clear_traces(self, request: Request):
+    async def handle_clear_traces(self, request: Request) -> web.Response:
         raise NotImplementedError
 
 
-def make_app(disabled_checks: List[str]) -> web.Application:
+def make_app(
+    disabled_checks: List[str], snapshot_dir: str, snapshot_ci_mode: bool
+) -> web.Application:
     agent = Agent()
     app = web.Application(
         middlewares=[
@@ -317,8 +329,7 @@ def make_app(disabled_checks: List[str]) -> web.Application:
             web.post("/v0.4/traces", agent.handle_v04_traces),
             web.put("/v0.4/traces", agent.handle_v04_traces),
             web.put("/v0.5/traces", agent.handle_v05),
-            web.get("/test/start", agent.handle_start_snapshot),
-            web.get("/test/session-start", agent.handle_start_snapshot),
+            web.get("/test/session-start", agent.handle_start_session),
             web.get("/test/session-clear-traces", agent.handle_clear_traces),
             web.get("/test/session-snapshot", agent.handle_snapshot),
             web.get("/test/traces", agent.handle_test_traces),
@@ -332,6 +343,8 @@ def make_app(disabled_checks: List[str]) -> web.Application:
         disabled=disabled_checks,
     )
     app["checks"] = checks
+    app["snapshot_dir"] = snapshot_dir
+    app["snapshot_ci_mode"] = snapshot_ci_mode
     return app
 
 
@@ -361,13 +374,9 @@ def main():
 
     app = make_app(
         disabled_checks=args.disabled_checks,
-        # strict_mode=args.strictness,
-        # snapshot_dir=args.snapshot_dir,
-        # snapshot_ci_mode=args.snapshot_ci_mode,
+        snapshot_dir=args.snapshot_dir,
+        snapshot_ci_mode=args.snapshot_ci_mode,
     )
-    app["strict_mode"] = args.snapshot_dir
-    app["snapshot_dir"] = args.snapshot_dir
-    app["snapshot_ci_mode"] = args.snapshot_ci_mode
     web.run_app(app, port=args.port)
 
 

@@ -2,12 +2,11 @@ from typing import Dict
 from typing import Generator
 from typing import List
 
-from aiohttp import web
-from aiohttp.test_utils import TestClient
 import msgpack
 import pytest
 
-from retriever.agent import make_app
+from dd_apm_test_agent.agent import make_app
+
 
 pytest_plugins = "aiohttp.pytest_plugin"
 
@@ -18,34 +17,46 @@ def agent_disabled_checks() -> Generator[List[str], None, None]:
 
 
 @pytest.fixture
+def snapshot_dir() -> Generator[str, None, None]:
+    yield ""
+
+
+@pytest.fixture
+def snapshot_ci_mode() -> Generator[bool, None, None]:
+    yield False
+
+
+@pytest.fixture
 async def agent_app(
-    aiohttp_server, agent_disabled_checks
-) -> Generator[web.Application, None, None]:
-    app = await aiohttp_server(make_app(agent_disabled_checks))
+    aiohttp_server, agent_disabled_checks, snapshot_dir, snapshot_ci_mode
+):
+    app = await aiohttp_server(
+        make_app(agent_disabled_checks, snapshot_dir, snapshot_ci_mode)
+    )
     yield app
 
 
 @pytest.fixture
-async def agent(agent_app, aiohttp_client, loop) -> Generator[TestClient, None, None]:
+async def agent(agent_app, aiohttp_client, loop):
     client = await aiohttp_client(agent_app)
     yield client
 
 
 @pytest.fixture
-def v04_reference_http_trace_payload_data_raw() -> Generator[bytes, None, None]:
+def v04_reference_http_trace_payload_data_raw():
     data = [
         [
             {
                 "name": "http.request",
                 "service": "my-http-server",
-                "trace_id": "1234",
-                "span_id": "4321",
+                "trace_id": 1234,
+                "span_id": 4321,
                 "parent_id": None,
                 "resource": "/users/",
                 "type": "http",
                 "meta": {},
                 "metrics": {
-                    "sampling_priority_v1": "1",
+                    "sampling_priority_v1": 1.0,
                 },
             }
         ]
@@ -56,7 +67,7 @@ def v04_reference_http_trace_payload_data_raw() -> Generator[bytes, None, None]:
 @pytest.fixture
 def v04_reference_http_trace_payload_data(
     v04_reference_http_trace_payload_data_raw,
-) -> Generator[bytes, None, None]:
+):
     yield msgpack.packb(v04_reference_http_trace_payload_data_raw)
 
 
@@ -68,3 +79,19 @@ def v04_reference_http_trace_payload_headers() -> Generator[Dict[str, str], None
         "Datadog-Meta-Tracer-Version": "v0.1",
     }
     yield headers
+
+
+@pytest.fixture
+def do_reference_http_trace(
+    agent,
+    v04_reference_http_trace_payload_headers,
+    v04_reference_http_trace_payload_data,
+):
+    def fn():
+        return agent.put(
+            "/v0.4/traces",
+            headers=v04_reference_http_trace_payload_headers,
+            data=v04_reference_http_trace_payload_data,
+        )
+
+    yield fn

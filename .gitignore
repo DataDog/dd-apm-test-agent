@@ -1,1 +1,38 @@
-target/*
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.riot/
+
+# Distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+*.whl
+
+# Common virtual environments
+.venv/
+venv/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+
+# Unit test / coverage reports
+htmlcov/
+.coverage
+.coverage.*
+.cache

@@ -1,11 +1,8 @@
-FROM clojure
+FROM python:3.9
 
 EXPOSE 8126
 
 RUN mkdir -p /src
 WORKDIR /src
-COPY project.clj /src/
-RUN lein deps
-COPY . /src
-RUN lein uberjar
-CMD ["java", "-jar", "target/test-agent.jar"]
+RUN pip install riot
+CMD ["/bin/bash"]
