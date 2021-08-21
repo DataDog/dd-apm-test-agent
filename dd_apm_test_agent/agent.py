@@ -11,9 +11,9 @@ from typing import Any
 from typing import Awaitable
 from typing import Callable
 from typing import Dict
+from typing import Generator
 from typing import List
 from typing import Optional
-from typing import OrderedDict
 from typing import Tuple
 from typing import Type
 
@@ -31,55 +31,101 @@ _Handler = Callable[[Request], Awaitable[web.Response]]
 
 log = logging.getLogger(__name__)
 
-CHECK_CONTEXT: contextvars.ContextVar["CheckContext"] = contextvars.ContextVar(
-    "check_context"
+CHECK_TRACE: contextvars.ContextVar["CheckTrace"] = contextvars.ContextVar(
+    "check_trace"
 )
 
 
-@dataclasses.dataclass()
-class CheckContext:
-    _ctx: OrderedDict[str, Any] = dataclasses.field(
-        init=False, default_factory=collections.OrderedDict
-    )
-    _checks: List["Check"] = dataclasses.field(init=False, default_factory=list)
+class CheckTraceFrame:
+    def __init__(self, name: str, long: str) -> None:
+        self._checks: List["Check"] = []
+        self._name = name
+        self._long = long
+        self._children: List["CheckTraceFrame"] = []
 
-    def __getitem__(self, item: str) -> Any:
-        return self._ctx[item]
+    def add_check(self, check: "Check") -> None:
+        self._checks.append(check)
 
-    def add(self, k, v):
-        self._ctx[k] = v
+    def add_frame(self, frame: "CheckTraceFrame") -> None:
+        self._children.append(frame)
 
-    def copy(self) -> "CheckContext":
-        c = CheckContext()
-        c._ctx = self._ctx.copy()
-        return c
+    def has_fails(self) -> bool:
+        for c in self._checks:
+            if c.failed:
+                return True
+        return False
+
+    def __repr__(self) -> str:
+        return f"<CheckTraceFrame name='{self._name}' children={len(self._children)}>"
+
+
+class CheckTrace:
+    """A trace of a check used to provide helpful debugging information for failed checks.
+
+    At payload 1 (inspect this payload at localhost:8126/test/request/1bacf34db):
+        - /v04/trace (40kb, 5 traces)
+        At headers:
+            { ... }
+            ERROR: X-Datadog-Trace-Count does not match number of traces in payload
+        At trace 0 ("django.request", 20 spans):
+            At span 0 ("django.request", "/users/"):
+                ERROR: ...
+        At trace 2 ("http.request", 10 spans):
+            ERROR:
+    """
+
+    def __init__(self, root: CheckTraceFrame):
+        self._root = root
+        self._active = root
 
     @classmethod
     @contextlib.contextmanager
-    def add_items(cls, **items):
-        ctx = CHECK_CONTEXT.get()
-        old = ctx._ctx.copy()
-        ctx._ctx.update(items)
+    def add_frame(cls, frame: CheckTraceFrame) -> Generator["CheckTrace", None, None]:
+        """Add a frame to the trace."""
+        ctx = CHECK_TRACE.get()
+        ctx._active.add_frame(frame)
+        prev_active = ctx._active
+        ctx._active = frame
         yield ctx
-        ctx._ctx.clear()
-        ctx._ctx.update(old)
-
-    def remove(self, k: str) -> None:
-        del self._ctx[k]
+        ctx._active = prev_active
 
     @classmethod
     def add_check(cls, check: "Check") -> None:
-        ctx = CHECK_CONTEXT.get()
-        ctx._checks.append(check)
+        """Add the given check to the current frame."""
+        ctx = CHECK_TRACE.get()
+        ctx._active.add_check(check)
+
+    def frames(self) -> Generator[CheckTraceFrame, None, None]:
+        fs: List[CheckTraceFrame] = [self._root]
+        while fs:
+            frame = fs.pop(0)
+            yield frame
+            fs = frame._children + fs
+
+    def frames_dfs(self) -> Generator[Tuple[CheckTraceFrame, int], None, None]:
+        fs: List[Tuple[CheckTraceFrame, int]] = [(self._root, 0)]
+        while fs:
+            frame, depth = fs.pop(0)
+            yield frame, depth
+            fs = [(f, depth + 1) for f in frame._children] + fs
 
     def has_fails(self) -> bool:
-        return len(self.fails()) > 0
+        return len([f for f in self.frames() if f.has_fails()]) > 0
 
-    def fails(self) -> List["CheckFailure"]:
-        return [f for c in self._checks for f in c.fails()]
+    def __str__(self) -> str:
+        s = ""
+        # TODO: only include frames that have fails
+        for frame, depth in self.frames_dfs():
+            indent = " " * (depth + 2) if depth > 0 else ""
+            s += f"{indent}At {frame._name}:\n"
+            if frame._long:
+                s += textwrap.indent(f"- {frame._long}", prefix=f" {indent}")
+                s += "\n"
 
-    def straceback(self) -> str:
-        return "\n".join([f"{k} = {pprint.pformat(v)}" for k, v in self._ctx.items()])
+            for c in frame._checks:
+                if c.failed:
+                    s += f"{indent}❌ Check '{c.name}' failed: {c._msg}\n"
+        return s
 
 
 class Check:
@@ -95,17 +141,16 @@ class Check:
     """Whether the check is enabled by default or not."""
 
     def __init__(self):
-        self._failures: List["CheckFailure"] = []
+        self._failed: bool = False
+        self._msg: str = ""
 
+    @property
     def failed(self) -> bool:
-        return len(self._failures) > 0
+        return self._failed
 
     def fail(self, msg: str) -> None:
-        ctx = CHECK_CONTEXT.get()
-        self._failures.append(CheckFailure(self, msg, ctx.copy()))
-
-    def fails(self) -> List["CheckFailure"]:
-        return self._failures
+        self._failed = True
+        self._msg = msg
 
     def check(self, *args, **kwargs):
         """Perform any checking required for this Check.
@@ -125,25 +170,19 @@ header must match the number of traces included in the payload.
     default_enabled = True
 
     def check(self, headers: Dict[str, str], num_traces: int) -> None:  # type: ignore
-        # TODO: could do this by default if defined in parent
-        # or if do _check approach
-        with CheckContext.add_items(
-            payload_headers=headers,
-            num_traces=num_traces,
-        ):
-            if "X-Datadog-Trace-Count" not in headers:
-                self.fail("X-Datadog-Trace-Count header not found in headers")
-                return
-            try:
-                count = int(headers["X-Datadog-Trace-Count"])
-            except ValueError:
-                self.fail("X-Datadog-Trace-Count header is not a valid integer")
-                return
-            else:
-                if num_traces != count:
-                    self.fail(
-                        f"X-Datadog-Trace-Count value ({count}) does not match actual number of traces ({num_traces})"
-                    )
+        if "X-Datadog-Trace-Count" not in headers:
+            self.fail("X-Datadog-Trace-Count header not found in headers")
+            return
+        try:
+            count = int(headers["X-Datadog-Trace-Count"])
+        except ValueError:
+            self.fail("X-Datadog-Trace-Count header is not a valid integer")
+            return
+        else:
+            if num_traces != count:
+                self.fail(
+                    f"X-Datadog-Trace-Count value ({count}) does not match actual number of traces ({num_traces})"
+                )
 
 
 class CheckMetaTracerVersionHeader(Check):
@@ -156,23 +195,6 @@ class CheckMetaTracerVersionHeader(Check):
     def check(self, headers: Dict[str, str]) -> None:  # type: ignore
         if "Datadog-Meta-Tracer-Version" not in headers:
             self.fail("Datadog-Meta-Tracer-Version not found in headers")
-
-
-class CheckFailure(Exception):
-    def __init__(self, check: Check, msg: str, context: CheckContext):
-        self._check: Check = check
-        self._msg: str = msg
-        self._context: CheckContext = context
-        super().__init__()
-
-    def __str__(self) -> str:
-        return f"""Check '{self._check.name}' failed.
-Description\n{textwrap.indent(self._check.description, "    ")}
-Context\n{textwrap.indent(self._context.straceback(), "    ")}
-Reason: {self._msg}"""
-
-    def __repr__(self) -> str:
-        return f"<CheckFailure({self._check.name}, msg='{self._msg}')>"
 
 
 class CheckNotFound(IndexError):
@@ -199,7 +221,7 @@ class Checks:
 
     def check(self, name: str, *args: Tuple[Any], **kwargs: Dict[str, Any]) -> None:
         check = self._get_check(name)()
-        CheckContext.add_check(check)
+        CheckTrace.add_check(check)
         if self.is_enabled(name):
             check.check(*args, **kwargs)
 
@@ -207,23 +229,19 @@ class Checks:
 @middleware  # type: ignore
 async def check_failure_middleware(request: Request, handler: _Handler) -> web.Response:
     """Convert any failed checks into an HttpException."""
-    ctx = CheckContext()
-    CHECK_CONTEXT.set(ctx)
-    response = await handler(request)
-    if ctx.has_fails():
-        msg = "\n".join(str(f) for f in ctx.fails())
-        return web.HTTPBadRequest(body=msg)
+    ctx = CheckTrace(CheckTraceFrame(name="request %r" % request, long=""))
+    CHECK_TRACE.set(ctx)
+    try:
+        response = await handler(request)
+    except AssertionError as e:
+        return web.HTTPBadRequest(body=str(e))
+    else:
+        if ctx.has_fails():
+            return web.HTTPBadRequest(body=str(ctx))
     return response
 
 
-@middleware  # type: ignore
-async def snapshot_token_middleware(
-    request: Request, handler: _Handler
-) -> web.Response:
-    """Extract snapshot token from the request and store it in the request.
-
-    The snapshot token is retrieved from the headers or params of the request.
-    """
+def _session_token(request: Request) -> Optional[str]:
     token: Optional[str]
     if "X-Datadog-Test-Session-Token" in request.headers:
         token = request.headers["X-Datadog-Test-Session-Token"]
@@ -231,8 +249,16 @@ async def snapshot_token_middleware(
         token = request.url.query.get("test_session_token")
     else:
         token = None
+    return token
 
-    request["session_token"] = token
+
+@middleware  # type: ignore
+async def session_token_middleware(request: Request, handler: _Handler) -> web.Response:
+    """Extract session token from the request and store it in the request.
+
+    The token is retrieved from the headers or params of the request.
+    """
+    request["session_token"] = _session_token(request)
     return await handler(request)
 
 
@@ -244,12 +270,10 @@ class Agent:
         Storing exactly what is sent to the agent enables us to transform the data
         however we desire later on.
         """
-        self._requests: List[Request] = []
 
-    async def _set_session_token(
-        self,
-    ):
-        pass
+        # Token to be used if running test cases synchronously
+        self._sync_session_token: Optional[str] = None
+        self._requests: List[Request] = []
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent."""
@@ -272,18 +296,23 @@ class Agent:
 
     async def handle_v04_traces(self, request: Request) -> web.Response:
         self._requests.append(request)
-        request.app["checks"].check(
-            "meta_tracer_version_header", headers=dict(request.headers)
-        )
 
-        traces = await self._decode_v04_traces(request)
-        assert isinstance(traces, list)
+        with CheckTrace.add_frame(
+            CheckTraceFrame(name="headers", long=pprint.pformat(dict(request.headers)))
+        ):
+            request.app["checks"].check(
+                "meta_tracer_version_header", headers=dict(request.headers)
+            )
+            traces = await self._decode_v04_traces(request)
 
-        request.app["checks"].check(
-            "trace_count_header",
-            headers=dict(request.headers),
-            num_traces=len(traces),
-        )
+            with CheckTrace.add_frame(
+                CheckTraceFrame(name=f"payload ({len(traces)} traces)", long="")
+            ):
+                request.app["checks"].check(
+                    "trace_count_header",
+                    headers=dict(request.headers),
+                    num_traces=len(traces),
+                )
 
         # TODO: implement sampling logic
         return web.json_response(data={"rate_by_service": {}})
@@ -292,14 +321,45 @@ class Agent:
         raise NotImplementedError
 
     async def handle_start_session(self, request: Request) -> web.Response:
-        assert request["session_token"]
-        return web.HTTPOk(text="hello")
+        token = request["session_token"]
+        assert token is not None
+        self._sync_session_token = token
+        return web.HTTPOk()
 
     async def handle_snapshot(self, request: Request) -> web.Response:
-        return web.HTTPOk(text="hello")
+        token = request["session_token"]
+        snap_dir = request.app["snapshot_dir"]
+        snap_ci_mode = request.app["snapshot_ci_mode"]
+
+        if "X-Datadog-Test-Snapshot-Filename" in request.headers:
+            snap_file = request.headers["X-Datadog-Test-Snapshot-Filename"]
+        elif "test_snapshot_filename" in request.url.query:
+            snap_file = request.url.query.get("test_snapshot_filename")
+        else:
+            snap_file = token
+        snap_file = f"{snap_file}.json"
+
+        snap_path = os.path.join(snap_dir, snap_file)
+        log.info("Using snapshot file %s", snap_path)
+
+        snap_path_exists = os.path.exists(snap_path)
+        if snap_ci_mode and not snap_path_exists:
+            raise AssertionError("")
+        elif snap_path_exists:
+            with open(snap_path, mode="r") as f:
+                f.readlines()
+        else:
+            with open(snap_path, mode="w") as f:
+                f.write("test")
+
+        return web.HTTPOk()
 
     async def handle_test_traces(self, request: Request) -> web.Response:
-        """Return requested traces as JSON."""
+        """Return requested traces as JSON.
+
+        Traces can be requested by providing a header X-Datadog-Trace-Ids or
+        a query param trace_ids.
+        """
         trace_ids = map(
             int,
             request.url.query.get(
@@ -311,7 +371,15 @@ class Agent:
         return web.json_response(data=traces)
 
     async def handle_clear_traces(self, request: Request) -> web.Response:
-        raise NotImplementedError
+        """Clear traces by session token or all traces if none is provided."""
+        session_token = request["session_token"]
+        if session_token:
+            self._requests = [
+                r for r in self._requests if _session_token(r) != session_token
+            ]
+        else:
+            self._requests = []
+        return web.HTTPOk()
 
 
 def make_app(
@@ -321,7 +389,7 @@ def make_app(
     app = web.Application(
         middlewares=[
             check_failure_middleware,
-            snapshot_token_middleware,
+            session_token_middleware,
         ]
     )
     app.add_routes(
@@ -330,7 +398,7 @@ def make_app(
             web.put("/v0.4/traces", agent.handle_v04_traces),
             web.put("/v0.5/traces", agent.handle_v05),
             web.get("/test/session-start", agent.handle_start_session),
-            web.get("/test/session-clear-traces", agent.handle_clear_traces),
+            web.get("/test/session-clear", agent.handle_clear_traces),
             web.get("/test/session-snapshot", agent.handle_snapshot),
             web.get("/test/traces", agent.handle_test_traces),
         ]

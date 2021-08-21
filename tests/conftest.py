@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Dict
 from typing import Generator
 from typing import List
@@ -17,8 +18,8 @@ def agent_disabled_checks() -> Generator[List[str], None, None]:
 
 
 @pytest.fixture
-def snapshot_dir() -> Generator[str, None, None]:
-    yield ""
+def snapshot_dir(tmp_path: Path) -> Generator[Path, None, None]:
+    yield tmp_path
 
 
 @pytest.fixture
@@ -31,7 +32,7 @@ async def agent_app(
     aiohttp_server, agent_disabled_checks, snapshot_dir, snapshot_ci_mode
 ):
     app = await aiohttp_server(
-        make_app(agent_disabled_checks, snapshot_dir, snapshot_ci_mode)
+        make_app(agent_disabled_checks, str(snapshot_dir), snapshot_ci_mode)
     )
     yield app
 
@@ -49,8 +50,8 @@ def v04_reference_http_trace_payload_data_raw():
             {
                 "name": "http.request",
                 "service": "my-http-server",
-                "trace_id": 1234,
-                "span_id": 4321,
+                "trace_id": 123456,
+                "span_id": 654321,
                 "parent_id": None,
                 "resource": "/users/",
                 "type": "http",

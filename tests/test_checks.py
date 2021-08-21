@@ -31,7 +31,7 @@ async def test_trace_count_header(
         assert resp.status == 200, await resp.text()
     else:
         assert resp.status == 400, await resp.text()
-        assert "Check 'trace_count_header' failed." in await resp.text()
+        assert "Check 'trace_count_header' failed" in await resp.text()
 
 
 async def test_trace_count_header_mismatch(
@@ -46,7 +46,7 @@ async def test_trace_count_header_mismatch(
         data=v04_reference_http_trace_payload_data,
     )
     assert resp.status == 400, await resp.text()
-    assert "Check 'trace_count_header' failed." in await resp.text()
+    assert "Check 'trace_count_header' failed" in await resp.text()
 
 
 @pytest.mark.parametrize("agent_disabled_checks", [[], ["meta_tracer_version_header"]])
@@ -66,4 +66,4 @@ async def test_meta_tracer_version_header(
         assert resp.status == 200, await resp.text()
     else:
         assert resp.status == 400, await resp.text()
-        assert "Check 'meta_tracer_version_header' failed." in await resp.text()
+        assert "Check 'meta_tracer_version_header' failed" in await resp.text()
