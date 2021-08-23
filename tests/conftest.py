@@ -59,7 +59,14 @@ def v04_reference_http_trace_payload_data_raw():
                 "parent_id": None,
                 "resource": "/users/",
                 "type": "http",
-                "meta": {},
+                "start": 1342343123,
+                "duration": 123214,
+                "meta": {
+                    "http.url": "http://localhost:8080/users",
+                    "http.method": "GET",
+                    "http.status_code": "200",
+                    "http.status_msg": "OK",
+                },
                 "metrics": {
                     "sampling_priority_v1": 1.0,
                 },

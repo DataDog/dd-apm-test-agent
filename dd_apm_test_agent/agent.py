@@ -368,6 +368,7 @@ class Agent:
         token = request["session_token"]
         snap_dir = request.app["snapshot_dir"]
         snap_ci_mode = request.app["snapshot_ci_mode"]
+        # TODO: ignore_keys
 
         with CheckTrace.add_frame(f"snapshot (token={token})") as frame:
             frame.add_item(f"Directory: {snap_dir}")

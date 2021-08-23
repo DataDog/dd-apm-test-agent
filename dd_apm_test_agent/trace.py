@@ -11,11 +11,15 @@ import msgpack
 import typeguard
 
 
+SpanId = int
+TraceId = int
+
+
 class Span(TypedDict, total=False):
     name: str
-    span_id: int
-    trace_id: int
-    parent_id: int  # TODO: is this actually optional...it could be?
+    span_id: SpanId
+    trace_id: TraceId
+    parent_id: Optional[int]  # TODO: is this actually optional...it could be?
     service: Optional[str]
     resource: Optional[str]
     type: Optional[str]  # noqa

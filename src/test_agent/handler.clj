@@ -316,17 +316,6 @@
           (throw (ex-info
                   (format "%s\n%s\nTrace invariant error." traces-msg msg) {})))))))
 
-(defn trace-similarity [t1 t2]
-  ; Calculate a similarity score between two traces used to match traces.
-  ; The lower the score the less similar the traces are.
-  (- 0
-
-     (* -1 (reduce (fn [score [s1 s2]] (+ score (span-similarity s1 s2))) 0
-                   (map vector (trace-flatten-bfs t1) (trace-flatten-bfs t2))))
-
-     ; compare root spans
-     (* -1 (span-similarity (trace-root t1) (trace-root t2)))))
-
 (defn match-traces [t1s t2s]
   ; Attempts to match traces based on their similarity
   (let [t2-match

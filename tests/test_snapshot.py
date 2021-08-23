@@ -4,22 +4,19 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    "params,headers,snapshot_ci_mode",
+    "snapshot_ci_mode",
     [
-        ({"test_session_token": "test_case"}, {}, False),
-        ({"test_session_token": "test_case"}, {}, True),
-        ({}, {"X-Datadog-Test-Session-Token": "test_case"}, False),
-        ({}, {"X-Datadog-Test-Session-Token": "test_case"}, True),
+        False,
+        True,
+        False,
+        True,
     ],
 )
 async def test_snapshot_single_trace_synchronous(
     agent,
-    headers,
-    params,
-    v04_reference_http_trace_payload_headers,
-    v04_reference_http_trace_payload_data,
     snapshot_dir,
     snapshot_ci_mode,
+    do_reference_http_trace,
 ):
     """
     When doing a synchronous session
@@ -30,19 +27,13 @@ async def test_snapshot_single_trace_synchronous(
                 The test should fail
     """
     # Send a trace
-    hdrs = v04_reference_http_trace_payload_headers.copy()
-    hdrs.update(headers)
-    resp = await agent.put(
-        "/v0.4/traces",
-        params=params,
-        headers=v04_reference_http_trace_payload_headers,
-        data=v04_reference_http_trace_payload_data,
-    )
+    resp = await do_reference_http_trace(token="test_case")
     assert resp.status == 200
 
-    # Perform the snapshot
-    resp = await agent.get("/test/session-snapshot", params=params, headers=headers)
-
+    # Do the snapshot
+    resp = await agent.get(
+        "/test/session-snapshot", params={"test_session_token": "test_case"}
+    )
     snap_path = snapshot_dir / "test_case.json"
     if snapshot_ci_mode:
         # No previous snapshot file exists so this should fail
@@ -53,4 +44,13 @@ async def test_snapshot_single_trace_synchronous(
         assert resp.status == 200, await resp.text()
         assert os.path.exists(snap_path)
         with open(snap_path, mode="r") as f:
-            print(f.readlines())
+            print("".join(f.readlines()))
+
+        # Do the snapshot again to actually perform a comparison
+        resp = await do_reference_http_trace(token="test_case")
+        assert resp.status == 200, await resp.text()
+
+        resp = await agent.get(
+            "/test/session-snapshot", params={"test_session_token": "test_case"}
+        )
+        assert resp.status == 200, await resp.text()
