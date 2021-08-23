@@ -3,6 +3,7 @@ import collections
 import contextlib
 import contextvars
 import dataclasses
+import json
 import logging
 import os
 import pprint
@@ -37,11 +38,14 @@ CHECK_TRACE: contextvars.ContextVar["CheckTrace"] = contextvars.ContextVar(
 
 
 class CheckTraceFrame:
-    def __init__(self, name: str, long: str) -> None:
+    def __init__(self, name: str) -> None:
         self._checks: List["Check"] = []
         self._name = name
-        self._long = long
         self._children: List["CheckTraceFrame"] = []
+        self._items: List[str] = []
+
+    def add_item(self, item: str):
+        self._items.append(item)
 
     def add_check(self, check: "Check") -> None:
         self._checks.append(check)
@@ -80,13 +84,14 @@ class CheckTrace:
 
     @classmethod
     @contextlib.contextmanager
-    def add_frame(cls, frame: CheckTraceFrame) -> Generator["CheckTrace", None, None]:
+    def add_frame(cls, title: str) -> Generator["CheckTraceFrame", None, None]:
         """Add a frame to the trace."""
         ctx = CHECK_TRACE.get()
+        frame = CheckTraceFrame(title)
         ctx._active.add_frame(frame)
         prev_active = ctx._active
         ctx._active = frame
-        yield ctx
+        yield frame
         ctx._active = prev_active
 
     @classmethod
@@ -118,8 +123,8 @@ class CheckTrace:
         for frame, depth in self.frames_dfs():
             indent = " " * (depth + 2) if depth > 0 else ""
             s += f"{indent}At {frame._name}:\n"
-            if frame._long:
-                s += textwrap.indent(f"- {frame._long}", prefix=f" {indent}")
+            for item in frame._items:
+                s += textwrap.indent(f"- {item}", prefix=f" {indent}")
                 s += "\n"
 
             for c in frame._checks:
@@ -229,12 +234,12 @@ class Checks:
 @middleware  # type: ignore
 async def check_failure_middleware(request: Request, handler: _Handler) -> web.Response:
     """Convert any failed checks into an HttpException."""
-    ctx = CheckTrace(CheckTraceFrame(name="request %r" % request, long=""))
+    ctx = CheckTrace(CheckTraceFrame(name="request %r" % request))
     CHECK_TRACE.set(ctx)
     try:
         response = await handler(request)
     except AssertionError as e:
-        return web.HTTPBadRequest(body=str(e))
+        return web.HTTPBadRequest(body=str(ctx) + str(e))
     else:
         if ctx.has_fails():
             return web.HTTPBadRequest(body=str(ctx))
@@ -258,7 +263,8 @@ async def session_token_middleware(request: Request, handler: _Handler) -> web.R
 
     The token is retrieved from the headers or params of the request.
     """
-    request["session_token"] = _session_token(request)
+    token = _session_token(request)
+    request["session_token"] = token
     return await handler(request)
 
 
@@ -286,8 +292,18 @@ class Agent:
                     _traces[int(s["trace_id"])].append(s)
         return _traces
 
-    async def get_trace(self, trace_id: int) -> Trace:
+    async def get_trace_by_trace_id(self, trace_id: int) -> Trace:
         return (await self.traces())[trace_id]
+
+    async def _get_traces_by_session(self, token: str) -> List[Trace]:
+        requests = [r for r in self._requests if r["session_token"] == token]
+        tracemap: TraceMap = collections.defaultdict(lambda: [])
+        for req in requests:
+            for trace in await self._decode_v04_traces(req):
+                for span in trace:
+                    tracemap[span["trace_id"]].append(span)
+        traces = list(tracemap.values())
+        return traces
 
     async def _decode_v04_traces(self, request: Request) -> Any:
         content_type = request.content_type
@@ -296,19 +312,15 @@ class Agent:
 
     async def handle_v04_traces(self, request: Request) -> web.Response:
         self._requests.append(request)
+        checks: Checks = request.app["checks"]
 
-        with CheckTrace.add_frame(
-            CheckTraceFrame(name="headers", long=pprint.pformat(dict(request.headers)))
-        ):
-            request.app["checks"].check(
-                "meta_tracer_version_header", headers=dict(request.headers)
-            )
+        with CheckTrace.add_frame("headers") as f:
+            f.add_item(pprint.pformat(dict(request.headers)))
+            checks.check("meta_tracer_version_header", headers=dict(request.headers))
             traces = await self._decode_v04_traces(request)
 
-            with CheckTrace.add_frame(
-                CheckTraceFrame(name=f"payload ({len(traces)} traces)", long="")
-            ):
-                request.app["checks"].check(
+            with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
+                checks.check(
                     "trace_count_header",
                     headers=dict(request.headers),
                     num_traces=len(traces),
@@ -331,27 +343,37 @@ class Agent:
         snap_dir = request.app["snapshot_dir"]
         snap_ci_mode = request.app["snapshot_ci_mode"]
 
-        if "X-Datadog-Test-Snapshot-Filename" in request.headers:
-            snap_file = request.headers["X-Datadog-Test-Snapshot-Filename"]
-        elif "test_snapshot_filename" in request.url.query:
-            snap_file = request.url.query.get("test_snapshot_filename")
-        else:
-            snap_file = token
-        snap_file = f"{snap_file}.json"
+        with CheckTrace.add_frame(f"snapshot (token={token})") as frame:
+            frame.add_item(f"Directory: {snap_dir}")
+            frame.add_item(f"CI mode: {snap_ci_mode}")
 
-        snap_path = os.path.join(snap_dir, snap_file)
-        log.info("Using snapshot file %s", snap_path)
+            if "X-Datadog-Test-Snapshot-Filename" in request.headers:
+                snap_file = request.headers["X-Datadog-Test-Snapshot-Filename"]
+            elif "test_snapshot_filename" in request.url.query:
+                snap_file = request.url.query.get("test_snapshot_filename")
+            else:
+                snap_file = token
+            snap_file = f"{snap_file}.json"
 
-        snap_path_exists = os.path.exists(snap_path)
-        if snap_ci_mode and not snap_path_exists:
-            raise AssertionError("")
-        elif snap_path_exists:
-            with open(snap_path, mode="r") as f:
-                f.readlines()
-        else:
-            with open(snap_path, mode="w") as f:
-                f.write("test")
+            frame.add_item(f"File: {snap_file}")
 
+            snap_path = os.path.join(snap_dir, snap_file)
+            log.info("Using snapshot file %s", snap_path)
+
+            snap_path_exists = os.path.exists(snap_path)
+            if snap_ci_mode and not snap_path_exists:
+                raise AssertionError(f"Snapshot file '{snap_path}' not found. Perhaps the file was not checked into source control?")
+            elif snap_path_exists:
+                with open(snap_path, mode="r") as f:
+                    f.readlines()
+            else:
+                # Create a new snapshot for the data received
+                traces = await self._get_traces_by_session(token)
+                with open(snap_path, mode="w") as f:
+                    f.write(json.dumps(traces))
+
+        if token == self._sync_session_token:
+            self._sync_session_token = None
         return web.HTTPOk()
 
     async def handle_test_traces(self, request: Request) -> web.Response:
@@ -367,7 +389,7 @@ class Agent:
             ).split(","),
         )
         assert trace_ids
-        traces = [await self.get_trace(tid) for tid in trace_ids]
+        traces = [await self.get_trace_by_trace_id(tid) for tid in trace_ids]
         return web.json_response(data=traces)
 
     async def handle_clear_traces(self, request: Request) -> web.Response:

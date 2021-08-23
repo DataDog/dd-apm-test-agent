@@ -12,7 +12,7 @@ import pytest
         ({}, {"X-Datadog-Test-Session-Token": "test_case"}, True),
     ],
 )
-async def test_snapshot_single_trace_synchronous_new(
+async def test_snapshot_single_trace_synchronous(
     agent,
     headers,
     params,
@@ -47,12 +47,14 @@ async def test_snapshot_single_trace_synchronous_new(
     # Perform the snapshot
     resp = await agent.get("/test/session-snapshot", params=params, headers=headers)
 
+    snap_path = snapshot_dir / "test_case.json"
     if snapshot_ci_mode:
         # No previous snapshot file exists so this should fail
         assert resp.status == 400, await resp.text()
-        assert await resp.text() == ""
+        assert f"Snapshot file '{snap_path}' not found" in await resp.text()
     else:
         # Since this is the first invocation the snapshot file should be created
         assert resp.status == 200, await resp.text()
-        snap_path = snapshot_dir / "test_case.json"
         assert os.path.exists(snap_path)
+        with open(snap_path, mode="r") as f:
+            print(f.readlines())
