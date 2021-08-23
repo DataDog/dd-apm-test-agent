@@ -29,10 +29,6 @@ async def test_snapshot_single_trace_synchronous(
             When not in CI mode
                 The test should fail
     """
-    # Start the snapshot
-    resp = await agent.get("/test/session-start", params=params, headers=headers)
-    assert resp.status == 200, await resp.text()
-
     # Send a trace
     hdrs = v04_reference_http_trace_payload_headers.copy()
     hdrs.update(headers)

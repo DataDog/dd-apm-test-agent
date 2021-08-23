@@ -22,6 +22,7 @@ from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
 
+from .snapshot import Snapshot
 from .trace import Trace
 from .trace import TraceMap
 from .trace import decode_v04
@@ -64,19 +65,7 @@ class CheckTraceFrame:
 
 
 class CheckTrace:
-    """A trace of a check used to provide helpful debugging information for failed checks.
-
-    At payload 1 (inspect this payload at localhost:8126/test/request/1bacf34db):
-        - /v04/trace (40kb, 5 traces)
-        At headers:
-            { ... }
-            ERROR: X-Datadog-Trace-Count does not match number of traces in payload
-        At trace 0 ("django.request", 20 spans):
-            At span 0 ("django.request", "/users/"):
-                ERROR: ...
-        At trace 2 ("http.request", 10 spans):
-            ERROR:
-    """
+    """A trace of a check used to provide helpful debugging information for failed checks."""
 
     def __init__(self, root: CheckTraceFrame):
         self._root = root
@@ -225,9 +214,14 @@ class Checks:
         return check.default_enabled
 
     def check(self, name: str, *args: Tuple[Any], **kwargs: Dict[str, Any]) -> None:
+        """Find and run the check with the given ``name`` if it is enabled."""
         check = self._get_check(name)()
-        CheckTrace.add_check(check)
+
         if self.is_enabled(name):
+            # Register the check with the current trace
+            CheckTrace.add_check(check)
+
+            # Run the check
             check.check(*args, **kwargs)
 
 
@@ -278,7 +272,6 @@ class Agent:
         """
 
         # Token to be used if running test cases synchronously
-        self._sync_session_token: Optional[str] = None
         self._requests: List[Request] = []
 
     async def traces(self) -> TraceMap:
@@ -295,15 +288,50 @@ class Agent:
     async def get_trace_by_trace_id(self, trace_id: int) -> Trace:
         return (await self.traces())[trace_id]
 
-    async def _get_traces_by_session(self, token: str) -> List[Trace]:
-        requests = [r for r in self._requests if r["session_token"] == token]
+    def _requests_by_session(self, token: Optional[str]) -> List[Request]:
+        # Go backwards in the requests received gathering requests until
+        # the /session-start request for the token is found.
+        manual_reqs = []
+        for req in reversed(self._requests):
+            if req.match_info.handler == self.handle_session_start:
+                if token is None or _session_token(req) == token:
+                    break
+                else:
+                    # The requests made were from a different manual session
+                    # so discard them.
+                    manual_reqs = []
+                    break
+            manual_reqs.append(req)
+        else:
+            manual_reqs = []
+
+        assoc_reqs = (
+            [
+                r
+                for r in self._requests
+                if _session_token(r) == token and r not in manual_reqs
+            ]
+            if token is not None
+            else []
+        )
+        return manual_reqs + assoc_reqs
+
+    async def _traces_by_session(self, token: Optional[str]) -> List[Trace]:
+        """Return the traces that belong to the given session token.
+
+        If token is None or if the token was used to manually start a session
+        with /session-start then return all traces that were sent since the last
+        /session-start request was made.
+
+        Spans are aggregated by trace_id (no ordering is performed).
+        """
         tracemap: TraceMap = collections.defaultdict(lambda: [])
-        for req in requests:
-            for trace in await self._decode_v04_traces(req):
-                for span in trace:
-                    tracemap[span["trace_id"]].append(span)
-        traces = list(tracemap.values())
-        return traces
+        for req in self._requests_by_session(token):
+            if req.match_info.handler == self.handle_v04_traces:
+                for trace in await self._decode_v04_traces(req):
+                    for span in trace:
+                        tracemap[span["trace_id"]].append(span)
+        return list(tracemap.values())
 
     async def _decode_v04_traces(self, request: Request) -> Any:
         content_type = request.content_type
@@ -332,10 +360,8 @@ class Agent:
     async def handle_v05(self, request: Request) -> web.Response:
         raise NotImplementedError
 
-    async def handle_start_session(self, request: Request) -> web.Response:
-        token = request["session_token"]
-        assert token is not None
-        self._sync_session_token = token
+    async def handle_session_start(self, request: Request) -> web.Response:
+        self._requests.append(request)
         return web.HTTPOk()
 
     async def handle_snapshot(self, request: Request) -> web.Response:
@@ -362,19 +388,30 @@ class Agent:
 
             snap_path_exists = os.path.exists(snap_path)
             if snap_ci_mode and not snap_path_exists:
-                raise AssertionError(f"Snapshot file '{snap_path}' not found. Perhaps the file was not checked into source control?")
+                raise AssertionError(
+                    f"Snapshot file '{snap_path}' not found."
+                    "Perhaps the file was not checked into source control?"
+                    "The snapshot file is automatically generated when the test case is run when not in CI mode."
+                )
             elif snap_path_exists:
+                # Do the snapshot comparison
+                received_traces = await self._traces_by_session(token)
                 with open(snap_path, mode="r") as f:
-                    f.readlines()
+                    snapshot = Snapshot(
+                        expected_traces=json.load(f), received_traces=received_traces
+                    )
             else:
                 # Create a new snapshot for the data received
-                traces = await self._get_traces_by_session(token)
+                traces = await self._traces_by_session(token)
                 with open(snap_path, mode="w") as f:
                     f.write(json.dumps(traces))
 
-        if token == self._sync_session_token:
-            self._sync_session_token = None
         return web.HTTPOk()
+
+    async def handle_session_traces(self, request: Request) -> web.Response:
+        token = request["session_token"]
+        traces = await self._traces_by_session(token)
+        return web.json_response(traces)
 
     async def handle_test_traces(self, request: Request) -> web.Response:
         """Return requested traces as JSON.
@@ -392,15 +429,21 @@ class Agent:
         traces = [await self.get_trace_by_trace_id(tid) for tid in trace_ids]
         return web.json_response(data=traces)
 
-    async def handle_clear_traces(self, request: Request) -> web.Response:
+    async def handle_session_clear(self, request: Request) -> web.Response:
         """Clear traces by session token or all traces if none is provided."""
         session_token = request["session_token"]
-        if session_token:
+        if session_token is not None:
             self._requests = [
                 r for r in self._requests if _session_token(r) != session_token
             ]
         else:
-            self._requests = []
+            # Clear all requests made after a /session-start
+            i = len(self._requests)
+            for i, req in enumerate(reversed(self._requests)):
+                if req.match_info.handler == self.handle_session_start:
+                    break
+                i -= 1
+            self._requests = self._requests[0:i]
         return web.HTTPOk()
 
 
@@ -419,9 +462,10 @@ def make_app(
             web.post("/v0.4/traces", agent.handle_v04_traces),
             web.put("/v0.4/traces", agent.handle_v04_traces),
             web.put("/v0.5/traces", agent.handle_v05),
-            web.get("/test/session-start", agent.handle_start_session),
-            web.get("/test/session-clear", agent.handle_clear_traces),
+            web.get("/test/session-start", agent.handle_session_start),
+            web.get("/test/session-clear", agent.handle_session_clear),
             web.get("/test/session-snapshot", agent.handle_snapshot),
+            web.get("/test/session-traces", agent.handle_session_traces),
             web.get("/test/traces", agent.handle_test_traces),
         ]
     )
@@ -435,6 +479,9 @@ def make_app(
     app["checks"] = checks
     app["snapshot_dir"] = snapshot_dir
     app["snapshot_ci_mode"] = snapshot_ci_mode
+    # TODO: add option for failing /traces endpoint requests when bad data
+    # default should be False
+    # Also add a /tests/traces-check
     return app
 
 

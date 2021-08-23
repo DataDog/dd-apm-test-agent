@@ -1,7 +1,9 @@
 from pathlib import Path
+import random
 from typing import Dict
 from typing import Generator
 from typing import List
+from typing import Optional
 
 import msgpack
 import pytest
@@ -50,8 +52,8 @@ def v04_reference_http_trace_payload_data_raw():
             {
                 "name": "http.request",
                 "service": "my-http-server",
-                "trace_id": 123456,
-                "span_id": 654321,
+                "trace_id": random.randint(0, 2 ** 64),
+                "span_id": random.randint(0, 2 ** 64),
                 "parent_id": None,
                 "resource": "/users/",
                 "type": "http",
@@ -88,9 +90,11 @@ def do_reference_http_trace(
     v04_reference_http_trace_payload_headers,
     v04_reference_http_trace_payload_data,
 ):
-    def fn():
+    def fn(token: Optional[str] = None):
+        params = {"test_session_token": token} if token is not None else {}
         return agent.put(
             "/v0.4/traces",
+            params=params,
             headers=v04_reference_http_trace_payload_headers,
             data=v04_reference_http_trace_payload_data,
         )
