@@ -22,7 +22,8 @@ from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
 
-from .snapshot import Snapshot
+from .snapshot import generate_snapshot
+from .snapshot import snapshot
 from .trace import Trace
 from .trace import TraceMap
 from .trace import decode_v04
@@ -45,7 +46,7 @@ class CheckTraceFrame:
         self._children: List["CheckTraceFrame"] = []
         self._items: List[str] = []
 
-    def add_item(self, item: str):
+    def add_item(self, item: str) -> None:
         self._items.append(item)
 
     def add_check(self, check: "Check") -> None:
@@ -213,7 +214,7 @@ class Checks:
             return False
         return check.default_enabled
 
-    def check(self, name: str, *args: Tuple[Any], **kwargs: Dict[str, Any]) -> None:
+    def check(self, name: str, *args: Any, **kwargs: Any) -> None:
         """Find and run the check with the given ``name`` if it is enabled."""
         check = self._get_check(name)()
 
@@ -270,7 +271,6 @@ class Agent:
         Storing exactly what is sent to the agent enables us to transform the data
         however we desire later on.
         """
-
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
 
@@ -285,13 +285,13 @@ class Agent:
                     _traces[int(s["trace_id"])].append(s)
         return _traces
 
-    async def get_trace_by_trace_id(self, trace_id: int) -> Trace:
+    async def _trace_by_trace_id(self, trace_id: int) -> Trace:
         return (await self.traces())[trace_id]
 
     def _requests_by_session(self, token: Optional[str]) -> List[Request]:
         # Go backwards in the requests received gathering requests until
         # the /session-start request for the token is found.
-        manual_reqs = []
+        manual_reqs: List[Request] = []
         for req in reversed(self._requests):
             if req.match_info.handler == self.handle_session_start:
                 if token is None or _session_token(req) == token:
@@ -397,15 +397,15 @@ class Agent:
                 # Do the snapshot comparison
                 received_traces = await self._traces_by_session(token)
                 with open(snap_path, mode="r") as f:
-                    snapshot = Snapshot(
-                        expected_traces=json.load(f), received_traces=received_traces
-                    )
+                    raw_snapshot = json.load(f)
+
+                snapshot(expected_traces=raw_snapshot, received_traces=received_traces)
             else:
                 # Create a new snapshot for the data received
                 traces = await self._traces_by_session(token)
                 with open(snap_path, mode="w") as f:
-                    f.write(json.dumps(traces))
-
+                    # TODO: pretty print + sort keys
+                    f.write(json.dumps(generate_snapshot(traces), indent=2))
         return web.HTTPOk()
 
     async def handle_session_traces(self, request: Request) -> web.Response:
@@ -426,7 +426,7 @@ class Agent:
             ).split(","),
         )
         assert trace_ids
-        traces = [await self.get_trace_by_trace_id(tid) for tid in trace_ids]
+        traces = [await self._trace_by_trace_id(tid) for tid in trace_ids]
         return web.json_response(data=traces)
 
     async def handle_session_clear(self, request: Request) -> web.Response:

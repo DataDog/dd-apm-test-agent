@@ -28,38 +28,6 @@
   ([msg] (str "\033[91m" msg "\033[0m"))
   ([f msg] (if f (errf msg) msg)))
 
-(defn snappath
-  ([snap] (format "%s/%s.snap" snapdir snap))
-  ([dir snap] (format "%s/%s.snap" dir snap)))
-(defn file-exists? [file] (.exists (clojure.java.io/as-file file)))
-
-
-; There are only 2 global atoms
-; - trace-db: for holding the traces for a token
-; - sync-token used to maintain the current synchronous test token
-
-
-(def trace-db
-  ; map[token, list[trace]]
-  ; stores the raw traces for a test token
-  (atom {} :validator (fn [db] true)))
-
-(defn db-add-traces
-  [token traces]
-  (swap! trace-db update-in [token] concat traces)
-  traces)
-
-(defn db-rm-traces
-  [token]
-  (swap! trace-db dissoc token))
-
-(def sync-token
-  ; token to be used when running tests synchronously
-  (atom nil))
-
-(defn set-sync-token [token] (swap! sync-token (fn [cur-token] token)))
-(defn clear-sync-token [] (set-sync-token nil))
-
 (defn spans->childmap [spans]
   ; Converts a list of spans into a map of span id to a sorted set
   ; of the span's children (ordered by their start)
@@ -132,17 +100,6 @@
           (str acc "\n" "trace id: " tid "\n" (errf ishighlight strace))))
       "-------------------------------------" traces)]
      (str joined-str "-------------------------------------"))))
-
-(defn trace-flatten-bfs
-  [trace]
-  (let [cmap (:childmap trace)
-        root (trace-root trace)
-        flattened
-        ((fn flat [spans res]
-           (if (empty? spans) res
-               (flat (next-row cmap spans)
-                     (concat res spans)))) [root] [])]
-    flattened))
 
 ; TODO: should just be (trace-reduce-dfs concat [] trace)
 (defn trace-flatten-dfs
@@ -359,24 +316,10 @@
           (throw (ex-info
                   (format "%s\n%s\nTrace invariant error." traces-msg msg) {})))))))
 
-(defn span-similarity [s1 s2]
-  (- 0
-     (if (= (s1 "name") (s2 "name")) 0 1)
-     (if (= (s1 "service") (s2 "service")) 0 1)
-     (if (= (s1 "type") (s2 "type")) 0 1)
-     (if (= (s1 "error") (s2 "error")) 0 1)
-     (if (= (s1 "resource") (s2 "resource")) 0 1)
-     (reduce (fn [acc k] (+ acc (if (= ((span-meta s1) k) ((span-meta s2) k)) 0 1)))
-             0 (set (concat (keys (span-meta s1)) (keys (span-meta s2)))))
-     (reduce (fn [acc k] (+ acc (if (= ((span-metrics s1) k) ((span-metrics s2) k)) 0 1)))
-             0 (set (concat (keys (span-metrics s1)) (keys (span-metrics s2)))))))
-
 (defn trace-similarity [t1 t2]
   ; Calculate a similarity score between two traces used to match traces.
   ; The lower the score the less similar the traces are.
   (- 0
-     ; penalize the difference in the number of traces
-     (Math/abs (- (trace-count t1) (trace-count t2)))
 
      (* -1 (reduce (fn [score [s1 s2]] (+ score (span-similarity s1 s2))) 0
                    (map vector (trace-flatten-bfs t1) (trace-flatten-bfs t2))))

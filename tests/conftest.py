@@ -1,10 +1,12 @@
 from pathlib import Path
 import random
+from typing import Awaitable
 from typing import Dict
 from typing import Generator
 from typing import List
 from typing import Optional
 
+from aiohttp.web import Request
 import msgpack
 import pytest
 
@@ -90,9 +92,9 @@ def do_reference_http_trace(
     v04_reference_http_trace_payload_headers,
     v04_reference_http_trace_payload_data,
 ):
-    def fn(token: Optional[str] = None):
+    def fn(token: Optional[str] = None) -> Awaitable[Request]:
         params = {"test_session_token": token} if token is not None else {}
-        return agent.put(
+        return agent.put(  # type: ignore
             "/v0.4/traces",
             params=params,
             headers=v04_reference_http_trace_payload_headers,
