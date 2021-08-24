@@ -2,6 +2,9 @@ import os
 
 import pytest
 
+from .conftest import v04_msgpack_trace
+from .trace import trace
+
 
 @pytest.mark.parametrize(
     "snapshot_ci_mode",
@@ -16,7 +19,7 @@ async def test_snapshot_single_trace(
     agent,
     snapshot_dir,
     snapshot_ci_mode,
-    do_reference_http_trace,
+        do_reference_v04_http_trace,
 ):
     """
     When a trace is sent and a snapshot taken
@@ -28,7 +31,7 @@ async def test_snapshot_single_trace(
                 The snapshot should pass
     """
     # Send a trace
-    resp = await do_reference_http_trace(token="test_case")
+    resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200
 
     # Do the snapshot
@@ -48,7 +51,7 @@ async def test_snapshot_single_trace(
             print("".join(f.readlines()))
 
         # Do the snapshot again to actually perform a comparison
-        resp = await do_reference_http_trace(token="test_case")
+        resp = await do_reference_v04_http_trace(token="test_case")
         assert resp.status == 200, await resp.text()
 
         resp = await agent.get(
@@ -57,7 +60,22 @@ async def test_snapshot_single_trace(
         assert resp.status == 200, await resp.text()
 
 
-async def test_snapshot_trace_size_diff(agent, snapshot_dir, snapshot_ci_mode, do_reference_http_trace):
-    from .trace import span
-    print(span())
-    assert 0
+@pytest.mark.parametrize("traces", [
+    [trace(10)],
+])
+async def test_snapshot_trace_size_diff(agent, snapshot_dir, snapshot_ci_mode, traces):
+    resp = await v04_msgpack_trace(agent, traces, token="test")
+    assert resp.status == 200, await resp.text()
+
+    # Create the snapshot
+    resp = await agent.get(
+        "/test/session-snapshot", params={"test_session_token": "test"}
+    )
+    assert resp.status == 200, await resp.text()
+
+    resp = await v04_msgpack_trace(agent, traces, token="test")
+    assert resp.status == 200, await resp.text()
+    resp = await agent.get(
+        "/test/session-snapshot", params={"test_session_token": "test"}
+    )
+    assert resp.status == 200, await resp.text()

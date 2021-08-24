@@ -17,12 +17,12 @@ async def test_synchronous_session_single_trace(
     headers,
     trace_token,
     v04_reference_http_trace_payload_data_raw,
-    do_reference_http_trace,
+        do_reference_v04_http_trace,
 ):
     resp = await agent.get("/test/session-start", params=params, headers=headers)
     assert resp.status == 200, await resp.text()
 
-    resp = await do_reference_http_trace(token=trace_token)
+    resp = await do_reference_v04_http_trace(token=trace_token)
     assert resp.status == 200
 
     resp = await agent.get("/test/session-traces", params=params, headers=headers)
@@ -40,12 +40,12 @@ async def test_synchronous_session_single_trace(
 async def test_multi_session(
     agent,
     v04_reference_http_trace_payload_data_raw,
-    do_reference_http_trace,
+        do_reference_v04_http_trace,
 ):
-    resp = await do_reference_http_trace(token="test_case")
+    resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200, await resp.text()
 
-    resp = await do_reference_http_trace(token="test_case2")
+    resp = await do_reference_v04_http_trace(token="test_case2")
     assert resp.status == 200, await resp.text()
 
     for token in ["test_case", "test_case2"]:

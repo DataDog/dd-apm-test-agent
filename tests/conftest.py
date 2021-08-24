@@ -6,7 +6,7 @@ from typing import Generator
 from typing import List
 from typing import Optional
 
-from aiohttp.web import Request
+from aiohttp.web import Response
 import msgpack
 import pytest
 
@@ -93,13 +93,28 @@ def v04_reference_http_trace_payload_headers() -> Generator[Dict[str, str], None
     yield headers
 
 
+def v04_msgpack_trace(agent, traces, token = None):
+    params = {"test_session_token": token} if token is not None else {}
+    headers = {
+        "Content-Type": "application/msgpack",
+        "X-Datadog-Trace-Count": str(len(traces)),
+        "Datadog-Meta-Tracer-Version": "v0.1",
+    }
+    return agent.put(
+        "/v0.4/traces",
+        params=params,
+        headers=headers,
+        data=msgpack.packb(traces),
+    )
+
+
 @pytest.fixture
-def do_reference_http_trace(
+def do_reference_v04_http_trace(
     agent,
     v04_reference_http_trace_payload_headers,
     v04_reference_http_trace_payload_data,
 ):
-    def fn(token: Optional[str] = None) -> Awaitable[Request]:
+    def fn(token: Optional[str] = None) -> Awaitable[Response]:
         params = {"test_session_token": token} if token is not None else {}
         return agent.put(  # type: ignore
             "/v0.4/traces",

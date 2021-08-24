@@ -6,6 +6,7 @@ from typing import List
 from typing import Tuple
 
 from .checks import Check
+from .checks import CheckTrace
 from .trace import Span
 from .trace import Trace
 from .trace import TraceId
@@ -111,7 +112,7 @@ def _match_traces(t1s: List[Trace], t2s: List[Trace]) -> List[Tuple[Trace, Trace
 
 def _compare(expected: Trace, received: Trace) -> None:
     if len(expected) != len(received):
-        raise SnapshotFailure("Number of traces received %d doesn't match expected %d", len(received), len(expected))
+        raise AssertionError(f"Number of traces received {len(received)} doesn't match expected {len(expected)}")
 
 
 class SnapshotFailure(Exception):
@@ -131,7 +132,8 @@ def snapshot(expected_traces: List[Trace], received_traces: List[Trace]) -> None
     log.debug("Matched traces %r", matched)
 
     for exp, rec in matched:
-        _compare(exp, rec)
+        with CheckTrace.add_frame(f"trace ({len(exp)}) spans"):
+            _compare(exp, rec)
 
 
 def generate_snapshot(received_traces: List[Trace]) -> List[Trace]:
