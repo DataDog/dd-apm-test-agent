@@ -1,32 +1,29 @@
 import argparse
 import collections
-import contextlib
-import contextvars
-import dataclasses
 import json
 import logging
 import os
 import pprint
-import textwrap
 from typing import Any
 from typing import Awaitable
 from typing import Callable
-from typing import Dict
-from typing import Generator
 from typing import List
 from typing import Optional
-from typing import Tuple
-from typing import Type
 
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
 
+from .checks import CheckTrace
+from .checks import Checks
+from .checks import start_trace
 from .snapshot import generate_snapshot
 from .snapshot import snapshot
 from .trace import Trace
 from .trace import TraceMap
 from .trace import decode_v04
+from .trace_checks import CheckMetaTracerVersionHeader
+from .trace_checks import CheckTraceCountHeader
 
 
 _Handler = Callable[[Request], Awaitable[web.Response]]
@@ -34,210 +31,18 @@ _Handler = Callable[[Request], Awaitable[web.Response]]
 
 log = logging.getLogger(__name__)
 
-CHECK_TRACE: contextvars.ContextVar["CheckTrace"] = contextvars.ContextVar(
-    "check_trace"
-)
-
-
-class CheckTraceFrame:
-    def __init__(self, name: str) -> None:
-        self._checks: List["Check"] = []
-        self._name = name
-        self._children: List["CheckTraceFrame"] = []
-        self._items: List[str] = []
-
-    def add_item(self, item: str) -> None:
-        self._items.append(item)
-
-    def add_check(self, check: "Check") -> None:
-        self._checks.append(check)
-
-    def add_frame(self, frame: "CheckTraceFrame") -> None:
-        self._children.append(frame)
-
-    def has_fails(self) -> bool:
-        for c in self._checks:
-            if c.failed:
-                return True
-        return False
-
-    def __repr__(self) -> str:
-        return f"<CheckTraceFrame name='{self._name}' children={len(self._children)}>"
-
-
-class CheckTrace:
-    """A trace of a check used to provide helpful debugging information for failed checks."""
-
-    def __init__(self, root: CheckTraceFrame):
-        self._root = root
-        self._active = root
-
-    @classmethod
-    @contextlib.contextmanager
-    def add_frame(cls, title: str) -> Generator["CheckTraceFrame", None, None]:
-        """Add a frame to the trace."""
-        ctx = CHECK_TRACE.get()
-        frame = CheckTraceFrame(title)
-        ctx._active.add_frame(frame)
-        prev_active = ctx._active
-        ctx._active = frame
-        yield frame
-        ctx._active = prev_active
-
-    @classmethod
-    def add_check(cls, check: "Check") -> None:
-        """Add the given check to the current frame."""
-        ctx = CHECK_TRACE.get()
-        ctx._active.add_check(check)
-
-    def frames(self) -> Generator[CheckTraceFrame, None, None]:
-        fs: List[CheckTraceFrame] = [self._root]
-        while fs:
-            frame = fs.pop(0)
-            yield frame
-            fs = frame._children + fs
-
-    def frames_dfs(self) -> Generator[Tuple[CheckTraceFrame, int], None, None]:
-        fs: List[Tuple[CheckTraceFrame, int]] = [(self._root, 0)]
-        while fs:
-            frame, depth = fs.pop(0)
-            yield frame, depth
-            fs = [(f, depth + 1) for f in frame._children] + fs
-
-    def has_fails(self) -> bool:
-        return len([f for f in self.frames() if f.has_fails()]) > 0
-
-    def __str__(self) -> str:
-        s = ""
-        # TODO: only include frames that have fails
-        for frame, depth in self.frames_dfs():
-            indent = " " * (depth + 2) if depth > 0 else ""
-            s += f"{indent}At {frame._name}:\n"
-            for item in frame._items:
-                s += textwrap.indent(f"- {item}", prefix=f" {indent}")
-                s += "\n"
-
-            for c in frame._checks:
-                if c.failed:
-                    s += f"{indent}❌ Check '{c.name}' failed: {c._msg}\n"
-        return s
-
-
-class Check:
-    name: str
-    """Name of the check. Should be as succinct and representative as possible."""
-
-    description: str
-    """Description of the check. Be as descriptive as possible as this will be included
-    with error messages returned to the test case.
-    """
-
-    default_enabled: bool
-    """Whether the check is enabled by default or not."""
-
-    def __init__(self):
-        self._failed: bool = False
-        self._msg: str = ""
-
-    @property
-    def failed(self) -> bool:
-        return self._failed
-
-    def fail(self, msg: str) -> None:
-        self._failed = True
-        self._msg = msg
-
-    def check(self, *args, **kwargs):
-        """Perform any checking required for this Check.
-
-        CheckFailures should be raised for any failing checks.
-        """
-        raise NotImplementedError
-
-
-class CheckTraceCountHeader(Check):
-    name = "trace_count_header"
-    description = """
-The number of traces included in a payload must be included as the
-X-Datadog-Trace-Count http header with each payload. The value of the
-header must match the number of traces included in the payload.
-""".strip()
-    default_enabled = True
-
-    def check(self, headers: Dict[str, str], num_traces: int) -> None:  # type: ignore
-        if "X-Datadog-Trace-Count" not in headers:
-            self.fail("X-Datadog-Trace-Count header not found in headers")
-            return
-        try:
-            count = int(headers["X-Datadog-Trace-Count"])
-        except ValueError:
-            self.fail("X-Datadog-Trace-Count header is not a valid integer")
-            return
-        else:
-            if num_traces != count:
-                self.fail(
-                    f"X-Datadog-Trace-Count value ({count}) does not match actual number of traces ({num_traces})"
-                )
-
-
-class CheckMetaTracerVersionHeader(Check):
-    name = "meta_tracer_version_header"
-    description = (
-        """v0.4 payloads must include the Datadog-Meta-Tracer-Version header."""
-    )
-    default_enabled = True
-
-    def check(self, headers: Dict[str, str]) -> None:  # type: ignore
-        if "Datadog-Meta-Tracer-Version" not in headers:
-            self.fail("Datadog-Meta-Tracer-Version not found in headers")
-
-
-class CheckNotFound(IndexError):
-    pass
-
-
-@dataclasses.dataclass()
-class Checks:
-    checks: List[Type[Check]] = dataclasses.field(init=True)
-    disabled: List[str] = dataclasses.field(init=True)
-
-    def _get_check(self, name: str) -> Type[Check]:
-        for c in self.checks:
-            if c.name == name:
-                return c
-        else:
-            raise CheckNotFound("Check for code %r not found" % name)
-
-    def is_enabled(self, name: str) -> bool:
-        check = self._get_check(name)
-        if check.name in self.disabled:
-            return False
-        return check.default_enabled
-
-    def check(self, name: str, *args: Any, **kwargs: Any) -> None:
-        """Find and run the check with the given ``name`` if it is enabled."""
-        check = self._get_check(name)()
-
-        if self.is_enabled(name):
-            # Register the check with the current trace
-            CheckTrace.add_check(check)
-
-            # Run the check
-            check.check(*args, **kwargs)
-
 
 @middleware  # type: ignore
 async def check_failure_middleware(request: Request, handler: _Handler) -> web.Response:
     """Convert any failed checks into an HttpException."""
-    ctx = CheckTrace(CheckTraceFrame(name="request %r" % request))
-    CHECK_TRACE.set(ctx)
+    trace = start_trace("request %r" % request)
     try:
         response = await handler(request)
     except AssertionError as e:
-        return web.HTTPBadRequest(body=str(ctx) + str(e))
+        return web.HTTPBadRequest(body=str(trace) + str(e))
     else:
-        if ctx.has_fails():
-            return web.HTTPBadRequest(body=str(ctx))
+        if trace.has_fails():
+            return web.HTTPBadRequest(body=str(trace))
     return response
 
 

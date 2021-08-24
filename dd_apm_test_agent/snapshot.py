@@ -1,14 +1,19 @@
 from collections import defaultdict
+import logging
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Tuple
 
+from .checks import Check
 from .trace import Span
 from .trace import Trace
 from .trace import TraceId
 from .trace import bfs_order
 from .trace import root_span
+
+
+log = logging.getLogger(__name__)
 
 
 def _key_match(d1: Dict[str, Any], d2: Dict[str, Any], key: str) -> bool:
@@ -104,16 +109,29 @@ def _match_traces(t1s: List[Trace], t2s: List[Trace]) -> List[Tuple[Trace, Trace
     return matches
 
 
+def _compare(expected: Trace, received: Trace) -> None:
+    if len(expected) != len(received):
+        raise SnapshotFailure("Number of traces received %d doesn't match expected %d", len(received), len(expected))
+
+
+class SnapshotFailure(Exception):
+    pass
+
+
+class SnapshotCheck(Check):
+    def check(self, *args, **kwargs):
+        pass
+
+
 def snapshot(expected_traces: List[Trace], received_traces: List[Trace]) -> None:
     normed_expected, normed_received = map(
         _normalize_traces, (expected_traces, received_traces)
     )
     matched = _match_traces(normed_expected, normed_received)
+    log.debug("Matched traces %r", matched)
 
-    for t1, t2 in matched:
-        pass
-
-    print(matched)
+    for exp, rec in matched:
+        _compare(exp, rec)
 
 
 def generate_snapshot(received_traces: List[Trace]) -> List[Trace]:

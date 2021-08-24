@@ -12,19 +12,20 @@ import pytest
         True,
     ],
 )
-async def test_snapshot_single_trace_synchronous(
+async def test_snapshot_single_trace(
     agent,
     snapshot_dir,
     snapshot_ci_mode,
     do_reference_http_trace,
 ):
     """
-    When doing a synchronous session
-        When a trace is sent and a snapshot taken
-            When in CI mode
-                The snapshot file should be created
-            When not in CI mode
-                The test should fail
+    When a trace is sent and a snapshot taken
+        When not in CI mode
+            The test should fail
+        When in CI mode
+            The snapshot file should be created
+            When the same trace is sent again
+                The snapshot should pass
     """
     # Send a trace
     resp = await do_reference_http_trace(token="test_case")
@@ -54,3 +55,9 @@ async def test_snapshot_single_trace_synchronous(
             "/test/session-snapshot", params={"test_session_token": "test_case"}
         )
         assert resp.status == 200, await resp.text()
+
+
+async def test_snapshot_trace_size_diff(agent, snapshot_dir, snapshot_ci_mode, do_reference_http_trace):
+    from .trace import span
+    print(span())
+    assert 0

@@ -15,6 +15,22 @@ SpanId = int
 TraceId = int
 
 
+SPAN_TYPES = [
+    "cache",
+    "cassandra",
+    "elasticsearch",
+    "grpc",
+    "http",
+    "mongodb",
+    "redis",
+    "sql",
+    "template",
+    "test",
+    "web",
+    "worker",
+]
+
+
 class Span(TypedDict, total=False):
     name: str
     span_id: SpanId
