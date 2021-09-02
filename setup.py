@@ -26,7 +26,6 @@ setup(
     install_requires=[
         "aiohttp",
         "msgpack",
-        "typeguard",
     ],
     setup_requires=["setuptools_scm"],
     use_scm_version=True,

@@ -1,5 +1,6 @@
 """Tracing specific functions and types"""
 import json
+from typing import Any
 from typing import Dict
 from typing import Generator
 from typing import List
@@ -8,7 +9,6 @@ from typing import TypedDict
 from typing import cast
 
 import msgpack
-import typeguard
 
 
 SpanId = int
@@ -51,13 +51,59 @@ v04TraceChunk = List[List[Span]]
 TraceMap = Dict[int, Trace]
 
 
-def _verify_v04_payload(data: bytes) -> v04TraceChunk:
-    typeguard.check_type("data", data, v04TraceChunk)
+def v04_verify_span(d: Dict[str, Any]) -> Span:
+    # TODO: check these
+    try:
+        required_attrs = ["span_id", "trace_id", "name"]
+        for attr in required_attrs:
+            assert attr in d, f"'{attr}' required in span"
+        NoneType = type(None)
+        assert isinstance(d["span_id"], int)
+        assert isinstance(d["trace_id"], int)
+        assert isinstance(d["name"], str)
+        if "resource" in d:
+            assert isinstance(d["resource"], (str, NoneType))
+        if "service" in d:
+            assert isinstance(d["service"], (str, NoneType))
+        if "type" in d:
+            assert isinstance(d["type"], (str, NoneType))
+        if "parent_id" in d:
+            assert isinstance(d["parent_id"], (int, NoneType))
+        if "error" in d:
+            assert isinstance(d["error"], int)
+        if "meta" in d:
+            assert isinstance(d["meta"], dict)
+            for k, v in d["meta"].items():
+                assert isinstance(k, str)
+                assert isinstance(v, str)
+        if "metrics" in d:
+            assert isinstance(d["metrics"], dict)
+            for k, v in d["metrics"].items():
+                assert isinstance(k, str)
+                assert isinstance(v, (float, int))
+        return cast(Span, d)
+    except AssertionError as e:
+        raise TypeError(*e.args) from e
+
+
+def v04_verify_trace(maybe_trace: Any) -> Trace:
+    if not isinstance(maybe_trace, list):
+        raise TypeError("Trace must be a list.")
+    for maybe_span in maybe_trace:
+        v04_verify_span(maybe_span)
+    return cast(Trace, maybe_trace)
+
+
+def _verify_v04_payload(data: Any) -> v04TraceChunk:
+    if not isinstance(data, list):
+        raise TypeError("Trace chunk must be a list.")
+    for maybe_trace in data:
+        v04_verify_trace(maybe_trace)
     return cast(v04TraceChunk, data)
 
 
 def _child_map(trace: Trace) -> Dict[int, List[Span]]:
-    child_map: Dict[int, List[Span]] = {}
+    child_map: Dict[SpanId, List[Span]] = {}
     # Initialize the map with all possible ids
     for s in trace:
         child_map[s["span_id"]] = []
