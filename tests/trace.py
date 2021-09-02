@@ -1,3 +1,4 @@
+import os
 from random import Random
 from typing import Dict
 
@@ -10,8 +11,15 @@ from dd_apm_test_agent.trace import dfs_order
 # Fix the seed for deterministic results
 _random = Random(1234)
 
-with open("/usr/share/dict/words") as f:
-    WORDS = f.read().splitlines()
+
+_dictionaries = ["/usr/share/dict/words", "/usr/dict/words"]
+for d in _dictionaries:
+    if os.path.exists(d):
+        with open(d) as f:
+            WORDS = f.read().splitlines()
+        break
+else:
+    WORDS = ["red", "blue", "green", "yellow", "orange"]
 
 
 def span(rnd: Random = _random, **kwargs) -> Span:
