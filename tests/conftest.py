@@ -1,9 +1,11 @@
+import json
 from pathlib import Path
 import random
 from typing import Awaitable
 from typing import Dict
 from typing import Generator
 from typing import List
+from typing import Literal
 from typing import Optional
 
 from aiohttp.web import Response
@@ -11,6 +13,7 @@ import msgpack
 import pytest
 
 from dd_apm_test_agent.agent import make_app
+from dd_apm_test_agent.trace import Trace
 
 
 pytest_plugins = "aiohttp.pytest_plugin"
@@ -93,18 +96,31 @@ def v04_reference_http_trace_payload_headers() -> Generator[Dict[str, str], None
     yield headers
 
 
-def v04_msgpack_trace(agent, traces, token = None):
+def v04_trace(
+    agent,
+    traces: List[Trace],
+    encoding: Literal["msgpack", "json"] = "msgpack",
+    token: Optional[str] = None,
+):
     params = {"test_session_token": token} if token is not None else {}
+    if encoding == "msgpack":
+        content_type = "application/msgpack"
+        encode = msgpack.packb
+    else:
+        content_type = "application/json"
+        encode = json.dumps
+
     headers = {
-        "Content-Type": "application/msgpack",
+        "Content-Type": content_type,
         "X-Datadog-Trace-Count": str(len(traces)),
         "Datadog-Meta-Tracer-Version": "v0.1",
     }
+
     return agent.put(
         "/v0.4/traces",
         params=params,
         headers=headers,
-        data=msgpack.packb(traces),
+        data=encode(traces),
     )
 
 

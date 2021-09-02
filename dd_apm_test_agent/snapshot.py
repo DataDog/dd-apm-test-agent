@@ -8,6 +8,7 @@ from typing import Tuple
 from .checks import Check
 from .checks import CheckTrace
 from .trace import Span
+from .trace import SpanId
 from .trace import Trace
 from .trace import TraceId
 from .trace import bfs_order
@@ -69,15 +70,19 @@ def _trace_similarity(t1: Trace, t2: Trace) -> int:
     return score
 
 
-def _normalize_trace(trace: Trace, trace_id: int) -> Trace:
+def _normalize_trace(trace: Trace, trace_id: TraceId) -> Trace:
     normed_trace = list(bfs_order(trace))
     span_id = 0
+
+    new_id_map: Dict[SpanId, int] = {}
     for span in trace:
         span["trace_id"] = trace_id
+        new_id_map[span["span_id"]] = span_id
         span["span_id"] = span_id
-        normed_trace.append(span)
+        if span["parent_id"]:
+            span["parent_id"] = new_id_map[span["parent_id"]]
         span_id += 1
-    return sorted(normed_trace, key=lambda s: s["start"])
+    return normed_trace
 
 
 def _normalize_traces(traces: List[Trace]) -> List[Trace]:
@@ -112,7 +117,9 @@ def _match_traces(t1s: List[Trace], t2s: List[Trace]) -> List[Tuple[Trace, Trace
 
 def _compare(expected: Trace, received: Trace) -> None:
     if len(expected) != len(received):
-        raise AssertionError(f"Number of traces received {len(received)} doesn't match expected {len(expected)}")
+        raise AssertionError(
+            f"Number of traces received ({len(received)}) doesn't match expected ({len(expected)})"
+        )
 
 
 class SnapshotFailure(Exception):

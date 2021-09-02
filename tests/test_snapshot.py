@@ -2,8 +2,8 @@ import os
 
 import pytest
 
-from .conftest import v04_msgpack_trace
-from .trace import trace
+from .conftest import v04_trace
+from .trace import random_trace
 
 
 @pytest.mark.parametrize(
@@ -19,7 +19,7 @@ async def test_snapshot_single_trace(
     agent,
     snapshot_dir,
     snapshot_ci_mode,
-        do_reference_v04_http_trace,
+    do_reference_v04_http_trace,
 ):
     """
     When a trace is sent and a snapshot taken
@@ -29,7 +29,7 @@ async def test_snapshot_single_trace(
             The snapshot file should be created
             When the same trace is sent again
                 The snapshot should pass
-    """
+    """  # noqa: RST301
     # Send a trace
     resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200
@@ -60,11 +60,14 @@ async def test_snapshot_single_trace(
         assert resp.status == 200, await resp.text()
 
 
-@pytest.mark.parametrize("traces", [
-    [trace(10)],
-])
-async def test_snapshot_trace_size_diff(agent, snapshot_dir, snapshot_ci_mode, traces):
-    resp = await v04_msgpack_trace(agent, traces, token="test")
+@pytest.mark.parametrize(
+    "traces",
+    [
+        [random_trace(2)],
+    ],
+)
+async def test_snapshot_trace_size_diff(agent, traces):
+    resp = await v04_trace(agent, traces, token="test")
     assert resp.status == 200, await resp.text()
 
     # Create the snapshot
@@ -72,10 +75,16 @@ async def test_snapshot_trace_size_diff(agent, snapshot_dir, snapshot_ci_mode, t
         "/test/session-snapshot", params={"test_session_token": "test"}
     )
     assert resp.status == 200, await resp.text()
+    resp = await agent.get("/test/session-clear", params={"test_session_token": "test"})
+    assert resp.status == 200, await resp.text()
 
-    resp = await v04_msgpack_trace(agent, traces, token="test")
+    # Send one less span in the trace
+    trace2 = traces[0][:-1]
+    resp = await v04_trace(agent, [trace2], token="test")
     assert resp.status == 200, await resp.text()
     resp = await agent.get(
         "/test/session-snapshot", params={"test_session_token": "test"}
     )
-    assert resp.status == 200, await resp.text()
+    resp_text = await resp.text()
+    assert resp.status == 400, resp_text
+    assert "Number of traces received (1) doesn't match expected (2)" in resp_text

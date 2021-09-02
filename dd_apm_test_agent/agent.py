@@ -175,7 +175,7 @@ class Agent:
         snap_ci_mode = request.app["snapshot_ci_mode"]
         # TODO: ignore_keys
 
-        with CheckTrace.add_frame(f"snapshot (token={token})") as frame:
+        with CheckTrace.add_frame(f"snapshot (token='{token}')") as frame:
             frame.add_item(f"Directory: {snap_dir}")
             frame.add_item(f"CI mode: {snap_ci_mode}")
 
@@ -186,9 +186,7 @@ class Agent:
             else:
                 snap_file = token
             snap_file = f"{snap_file}.json"
-
             frame.add_item(f"File: {snap_file}")
-
             snap_path = os.path.join(snap_dir, snap_file)
             log.info("Using snapshot file %s", snap_path)
 

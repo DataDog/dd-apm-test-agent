@@ -1,5 +1,7 @@
 import json
 
+from dd_apm_test_agent.trace import trace_id
+
 
 async def test_trace(
     agent,
@@ -14,7 +16,8 @@ async def test_trace(
     )
     assert resp.status == 200, await resp.text()
 
-    resp = await agent.get("/test/traces", params={"trace_ids": "123456"})
+    tid = trace_id(v04_reference_http_trace_payload_data_raw[0])
+    resp = await agent.get("/test/traces", params={"trace_ids": str(tid)})
     assert resp.status == 200
     assert json.loads(await resp.text()) == v04_reference_http_trace_payload_data_raw
 

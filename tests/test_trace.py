@@ -3,10 +3,21 @@ import json
 import msgpack
 import pytest
 
-from dd_apm_test_agent import trace
 from dd_apm_test_agent.trace import bfs_order
+from dd_apm_test_agent.trace import decode_v04
 from dd_apm_test_agent.trace import dfs_order
 from dd_apm_test_agent.trace import root_span
+
+from .trace import random_trace
+
+
+def test_random_trace():
+    for i in range(1, 100):
+        t = random_trace(i)
+        assert root_span(t)
+        assert len(t) == i
+        assert dfs_order(t)
+        assert bfs_order(t)
 
 
 @pytest.mark.parametrize(
@@ -30,7 +41,7 @@ from dd_apm_test_agent.trace import root_span
     ],
 )
 def test_decode_v04(content_type, payload):
-    assert trace.decode_v04(content_type, payload) is not None
+    assert decode_v04(content_type, payload) is not None
 
 
 @pytest.mark.parametrize(
@@ -42,7 +53,7 @@ def test_decode_v04(content_type, payload):
 )
 def test_decode_v04_bad(content_type, payload):
     with pytest.raises(TypeError):
-        trace.decode_v04(content_type, payload)
+        decode_v04(content_type, payload)
 
 
 @pytest.mark.parametrize(

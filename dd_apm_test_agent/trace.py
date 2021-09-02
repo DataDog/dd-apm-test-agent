@@ -102,6 +102,10 @@ def root_span(t: Trace) -> Span:
     raise ValueError("root span not found in trace")
 
 
+def trace_id(t: Trace) -> TraceId:
+    return t[0]["trace_id"]
+
+
 def decode_v04(content_type: str, data: bytes) -> v04TraceChunk:
     if content_type == "application/msgpack":
         chunk = msgpack.unpackb(data)
