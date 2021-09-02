@@ -1,11 +1,13 @@
 import os
 from random import Random
+from typing import Any
 from typing import Dict
 
 from dd_apm_test_agent.trace import SPAN_TYPES
 from dd_apm_test_agent.trace import Span
 from dd_apm_test_agent.trace import Trace
 from dd_apm_test_agent.trace import dfs_order
+from dd_apm_test_agent.trace import v04_verify_span
 
 
 # Fix the seed for deterministic results
@@ -22,7 +24,7 @@ else:
     WORDS = ["red", "blue", "green", "yellow", "orange"]
 
 
-def span(rnd: Random = _random, **kwargs) -> Span:
+def span(rnd: Random = _random, **kwargs: Any) -> Span:
     for k in ["name", "resource", "service"]:
         if k not in kwargs:
             kwargs[k] = rnd.choice(WORDS).lower()
@@ -49,7 +51,7 @@ def span(rnd: Random = _random, **kwargs) -> Span:
 
     if "metrics" not in kwargs:
         kwargs["metrics"] = {}
-    return kwargs
+    return v04_verify_span(kwargs)
 
 
 def _prufers_trace(n: int, rnd: Random = _random) -> Trace:

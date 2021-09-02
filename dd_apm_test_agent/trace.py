@@ -35,7 +35,7 @@ class Span(TypedDict, total=False):
     name: str
     span_id: SpanId
     trace_id: TraceId
-    parent_id: Optional[int]  # TODO: is this actually optional...it could be?
+    parent_id: int  # TODO: is this actually optional...it could be?
     service: Optional[str]
     resource: Optional[str]
     type: Optional[str]  # noqa
@@ -51,9 +51,10 @@ v04TraceChunk = List[List[Span]]
 TraceMap = Dict[int, Trace]
 
 
-def v04_verify_span(d: Dict[str, Any]) -> Span:
-    # TODO: check these
+def v04_verify_span(d: Any) -> Span:
+    assert isinstance(d, dict)
     try:
+        # TODO: check these
         required_attrs = ["span_id", "trace_id", "name"]
         for attr in required_attrs:
             assert attr in d, f"'{attr}' required in span"
@@ -62,13 +63,13 @@ def v04_verify_span(d: Dict[str, Any]) -> Span:
         assert isinstance(d["trace_id"], int)
         assert isinstance(d["name"], str)
         if "resource" in d:
-            assert isinstance(d["resource"], (str, NoneType))
+            assert isinstance(d["resource"], (str, NoneType))  # type: ignore
         if "service" in d:
-            assert isinstance(d["service"], (str, NoneType))
+            assert isinstance(d["service"], (str, NoneType))  # type: ignore
         if "type" in d:
-            assert isinstance(d["type"], (str, NoneType))
+            assert isinstance(d["type"], (str, NoneType))  # type: ignore
         if "parent_id" in d:
-            assert isinstance(d["parent_id"], (int, NoneType))
+            assert isinstance(d["parent_id"], (int, NoneType))  # type: ignore
         if "error" in d:
             assert isinstance(d["error"], int)
         if "meta" in d:

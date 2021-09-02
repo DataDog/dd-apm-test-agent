@@ -4,6 +4,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Tuple
+from typing import cast
 
 from .checks import Check
 from .checks import CheckTrace
@@ -38,14 +39,14 @@ def _key_match(d1: Dict[str, Any], d2: Dict[str, Any], key: str) -> bool:
     elif key not in d1 and key not in d2:
         return True
     else:
-        return d1[key] == d2[key]
+        return cast(bool, d1[key] == d2[key])
 
 
 def _span_similarity(s1: Span, s2: Span) -> int:
     score = 0
 
     for key in ["name", "service", "type", "error", "resource"]:
-        if not _key_match(s1, s2, key):
+        if not _key_match(s1, s2, key):  # type: ignore
             score -= 1
 
     s1_meta = s1.get("meta", {})
