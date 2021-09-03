@@ -3,8 +3,6 @@ import os
 import pytest
 
 from dd_apm_test_agent.trace import copy_span
-from dd_apm_test_agent.trace import copy_trace
-from dd_apm_test_agent.trace import root_span
 from dd_apm_test_agent.trace import set_attr
 from dd_apm_test_agent.trace import set_meta_tag
 from dd_apm_test_agent.trace import set_metric_tag

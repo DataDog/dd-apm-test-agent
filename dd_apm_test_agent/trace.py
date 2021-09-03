@@ -1,4 +1,5 @@
 """Tracing specific functions and types"""
+from collections import OrderedDict
 import json
 from typing import Any
 from typing import Dict
@@ -75,7 +76,7 @@ SpanAttr = Literal[
 TopLevelSpanValue = Union[None, SpanId, TraceId, int, str]
 Trace = List[Span]
 v04TraceChunk = List[List[Span]]
-TraceMap = Dict[int, Trace]
+TraceMap = OrderedDict[int, Trace]
 
 
 def verify_span(d: Any) -> Span:

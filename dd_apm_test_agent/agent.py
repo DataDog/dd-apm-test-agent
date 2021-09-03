@@ -1,10 +1,9 @@
 import argparse
-import collections
+from collections import OrderedDict
 import json
 import logging
 import os
 import pprint
-from typing import Any
 from typing import Awaitable
 from typing import Callable
 from typing import List
@@ -22,6 +21,7 @@ from .snapshot import snapshot
 from .trace import Trace
 from .trace import TraceMap
 from .trace import decode_v04
+from .trace import v04TraceChunk
 from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceCountHeader
 
@@ -80,14 +80,21 @@ class Agent:
         self._requests: List[Request] = []
 
     async def traces(self) -> TraceMap:
-        """Return the traces stored by the agent."""
-        _traces: TraceMap = collections.defaultdict(lambda: [])
+        """Return the traces stored by the agent in the order in which they
+        arrived.
 
-        for req in self._requests:
+        Spans from trace chunks are aggregated by trace id and returned as
+        complete lists.
+        """
+        _traces: TraceMap = OrderedDict()
+        for req in reversed(self._requests):
             traces = await self._decode_v04_traces(req)
             for t in traces:
                 for s in t:
-                    _traces[int(s["trace_id"])].append(s)
+                    trace_id = s["trace_id"]
+                    if trace_id not in _traces:
+                        _traces[trace_id] = []
+                    _traces[trace_id].append(s)
         return _traces
 
     async def _trace_by_trace_id(self, trace_id: int) -> Trace:
@@ -130,15 +137,18 @@ class Agent:
 
         Spans are aggregated by trace_id (no ordering is performed).
         """
-        tracemap: TraceMap = collections.defaultdict(lambda: [])
+        tracemap: TraceMap = OrderedDict()
         for req in self._requests_by_session(token):
             if req.match_info.handler == self.handle_v04_traces:
                 for trace in await self._decode_v04_traces(req):
                     for span in trace:
-                        tracemap[span["trace_id"]].append(span)
+                        trace_id = span["trace_id"]
+                        if trace_id not in tracemap:
+                            tracemap[trace_id] = []
+                        tracemap[trace_id].append(span)
         return list(tracemap.values())
 
-    async def _decode_v04_traces(self, request: Request) -> Any:
+    async def _decode_v04_traces(self, request: Request) -> v04TraceChunk:
         content_type = request.content_type
         raw_data = await request.read()
         return decode_v04(content_type, raw_data)
@@ -223,14 +233,19 @@ class Agent:
         Traces can be requested by providing a header X-Datadog-Trace-Ids or
         a query param trace_ids.
         """
-        trace_ids = map(
-            int,
-            request.url.query.get(
-                "trace_ids", request.headers.get("X-Datadog-Trace-Ids", "")
-            ).split(","),
+        raw_trace_ids = request.url.query.get(
+            "trace_ids", request.headers.get("X-Datadog-Trace-Ids", "")
         )
-        assert trace_ids
-        traces = [await self._trace_by_trace_id(tid) for tid in trace_ids]
+        if raw_trace_ids:
+            trace_ids = map(int, raw_trace_ids.split(","))
+            traces = []
+            for tid in trace_ids:
+                try:
+                    traces.append(await self._trace_by_trace_id(tid))
+                except KeyError:
+                    traces.append([])
+        else:
+            traces = list((await self.traces()).values())
         return web.json_response(data=traces)
 
     async def handle_session_clear(self, request: Request) -> web.Response:
@@ -307,12 +322,18 @@ def main():
         "--strictness", type=int, default=int(os.environ.get("STRICTNESS", 0))
     )
     parser.add_argument(
-        "--disable-checks",
+        "--disabled-checks",
         type=list,
         default=[s.upper() for s in os.environ.get("DISABLED_CHECKS", "").split(",")],
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default=os.environ.get("LOG_LEVEL", "INFO"),
+        help="Set the log level. DEBUG, INFO, WARNING, ERROR, CRITICAL",
+    )
     args = parser.parse_args()
-
+    logging.basicConfig(level=args.log_level)
     app = make_app(
         disabled_checks=args.disabled_checks,
         snapshot_dir=args.snapshot_dir,

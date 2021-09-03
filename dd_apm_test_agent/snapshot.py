@@ -197,7 +197,7 @@ def _compare_traces(expected: Trace, received: Trace) -> None:
                         )
                     else:
                         raise AssertionError(
-                            f"{diff_type} mismatch on '{diff_key}': got '{s_rec[diff_key]}' which does not match expected '{s_exp[diff_key]}'."
+                            f"{diff_type} mismatch on '{diff_key}': got '{s_rec[diff_key]}' which does not match expected '{s_exp[diff_key]}'."  # type: ignore
                         )
 
 
