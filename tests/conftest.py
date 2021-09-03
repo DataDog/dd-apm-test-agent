@@ -13,7 +13,9 @@ from aiohttp.web import Response
 import msgpack
 import pytest
 
+from dd_apm_test_agent.agent import _parse_csv
 from dd_apm_test_agent.agent import make_app
+from dd_apm_test_agent.snapshot import DEFAULT_SNAPSHOT_IGNORES
 from dd_apm_test_agent.trace import Trace
 
 
@@ -23,6 +25,11 @@ pytest_plugins = "aiohttp.pytest_plugin"
 @pytest.fixture
 def agent_disabled_checks() -> Generator[List[str], None, None]:
     yield []
+
+
+@pytest.fixture
+def log_span_fmt() -> Generator[str, None, None]:
+    yield "[{name}]"
 
 
 @pytest.fixture
@@ -36,34 +43,25 @@ def snapshot_ci_mode() -> Generator[bool, None, None]:
 
 
 @pytest.fixture
-def log_span_fmt() -> Generator[str, None, None]:
-    yield "[{name}]"
-
-
-@pytest.fixture
 def snapshot_ignored_attrs() -> Generator[Set[str], None, None]:
-    yield set(
-        "span_id,trace_id,parent_id,duration,start,metrics.system.pid,meta.runtime-id".split(
-            ","
-        )
-    )
+    yield set(_parse_csv(DEFAULT_SNAPSHOT_IGNORES))
 
 
 @pytest.fixture
 async def agent_app(
     aiohttp_server,
     agent_disabled_checks,
+    log_span_fmt,
     snapshot_dir,
     snapshot_ci_mode,
-    log_span_fmt,
     snapshot_ignored_attrs,
 ):
     app = await aiohttp_server(
         make_app(
             agent_disabled_checks,
+            log_span_fmt,
             str(snapshot_dir),
             snapshot_ci_mode,
-            log_span_fmt,
             snapshot_ignored_attrs,
         )
     )

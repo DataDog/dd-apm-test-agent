@@ -23,6 +23,11 @@ from .trace import root_span
 log = logging.getLogger(__name__)
 
 
+DEFAULT_SNAPSHOT_IGNORES = (
+    "span_id,trace_id,parent_id,duration,start,metrics.system.pid,meta.runtime-id"
+)
+
+
 def _key_match(d1: Dict[str, Any], d2: Dict[str, Any], key: str) -> bool:
     """
     >>> _key_match({"a": 1}, {"a": 2}, "a")

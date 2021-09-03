@@ -17,6 +17,7 @@ from aiohttp.web import middleware
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
+from .snapshot import DEFAULT_SNAPSHOT_IGNORES
 from .snapshot import generate_snapshot
 from .snapshot import snapshot
 from .trace import Trace
@@ -32,6 +33,23 @@ _Handler = Callable[[Request], Awaitable[web.Response]]
 
 
 log = logging.getLogger(__name__)
+
+
+def _parse_csv(s: str) -> List[str]:
+    """Return the values of a csv string.
+
+    >>> _parse_csv("a,b,c")
+    ['a', 'b', 'c']
+    >>> _parse_csv(" a, b ,c ")
+    ['a', 'b', 'c']
+    >>> _parse_csv(" a,b,c ")
+    ['a', 'b', 'c']
+    >>> _parse_csv(" a,")
+    ['a']
+    >>> _parse_csv("a, ")
+    ['a']
+    """
+    return [s.strip() for s in s.split(",") if s.strip() != ""]
 
 
 @middleware  # type: ignore
@@ -297,9 +315,9 @@ class Agent:
 
 def make_app(
     disabled_checks: List[str],
+    log_span_fmt: str,
     snapshot_dir: str,
     snapshot_ci_mode: bool,
-    log_span_fmt: str,
     snapshot_ignored_attrs: List[str],
 ) -> web.Application:
     agent = Agent()
@@ -377,13 +395,11 @@ def main():
     )
     parser.add_argument(
         "--snapshot-ignored-attrs",
-        type=list,
+        type=set,
         default=set(
-            s.strip()
-            for s in os.environ.get(
-                "SNAPSHOT_IGNORED_ATTRS",
-                "span_id,trace_id,parent_id,duration,start,metrics.system.pid,meta.runtime-id",
-            ).split(",")
+            _parse_csv(
+                os.environ.get("SNAPSHOT_IGNORED_ATTRS", DEFAULT_SNAPSHOT_IGNORES)
+            )
         ),
         help="Comma-separated values of span attributes to ignore. meta/metrics attributes can be ignored by prefixing the key with meta. or metrics.",
     )
@@ -391,9 +407,9 @@ def main():
     logging.basicConfig(level=args.log_level)
     app = make_app(
         disabled_checks=args.disabled_checks,
+        log_span_fmt=args.log_span_fmt,
         snapshot_dir=args.snapshot_dir,
         snapshot_ci_mode=args.snapshot_ci_mode,
-        log_span_fmt=args.log_span_fmt,
         snapshot_ignored_attrs=args.snapshot_ignored_attrs,
     )
     web.run_app(app, port=args.port)
