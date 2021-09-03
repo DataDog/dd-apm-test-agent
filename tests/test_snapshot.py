@@ -87,11 +87,6 @@ FIVE_SPAN_TRACE = random_trace(5)
             "Number of traces received (2) doesn't match expected (1).",
         ),
         (
-            [[set_attr(copy_span(ONE_SPAN_TRACE[0]), "resource", "resource1")]],
-            [[set_attr(copy_span(ONE_SPAN_TRACE[0]), "resource", "resource2")]],
-            "span mismatch on 'resource': got 'resource2' which does not match expected 'resource1'",
-        ),
-        (
             [[set_attr(copy_span(ONE_SPAN_TRACE[0]), "name", "name_expected")]],
             [[set_attr(copy_span(ONE_SPAN_TRACE[0]), "name", "name_received")]],
             "span mismatch on 'name': got 'name_received' which does not match expected 'name_expected'",
@@ -130,6 +125,22 @@ FIVE_SPAN_TRACE = random_trace(5)
                 ]
             ],
             "Span metrics value 'received' in received span but is not in the expected span.",
+        ),
+        # Mismatching metrics tag
+        (
+            [
+                [
+                    TWO_SPAN_TRACE[0],
+                    set_metric_tag(copy_span(TWO_SPAN_TRACE[1]), "received", 123.32),
+                ]
+            ],
+            [
+                [
+                    TWO_SPAN_TRACE[0],
+                    set_metric_tag(copy_span(TWO_SPAN_TRACE[1]), "received", 123.32),
+                ]
+            ],
+            "",
         ),
         # Default ignored fields
         (

@@ -218,13 +218,18 @@ class Agent:
         token = request["session_token"]
         snap_dir = request.app["snapshot_dir"]
         snap_ci_mode = request.app["snapshot_ci_mode"]
+        log.info(
+            "Performing with token=%r, ci_mode=%r and snapshot directory=%r",
+            token,
+            snap_ci_mode,
+            snap_dir,
+        )
 
         # Get the span attributes that are to be ignored for this snapshot.
         default_span_ignores: Set[str] = request.app["snapshot_ignored_attrs"]
-        overrides = set(
-            s.strip() for s in request.url.query.get("ignored", "").split(",")
-        )
+        overrides = set(_parse_csv(request.url.query.get("ignored", "")))
         span_ignores = list(default_span_ignores | overrides)
+        log.info("Using ignores %r", span_ignores)
 
         with CheckTrace.add_frame(f"snapshot (token='{token}')") as frame:
             frame.add_item(f"Directory: {snap_dir}")
@@ -263,8 +268,8 @@ class Agent:
                 # Create a new snapshot for the data received
                 traces = await self._traces_by_session(token)
                 with open(snap_path, mode="w") as f:
-                    # TODO: pretty print + sort keys
                     f.write(json.dumps(generate_snapshot(traces), indent=2))
+                log.info("wrote new snapshot to %r", os.path.abspath(snap_path))
         return web.HTTPOk()
 
     async def handle_session_traces(self, request: Request) -> web.Response:
@@ -412,6 +417,14 @@ def main():
     )
     args = parser.parse_args()
     logging.basicConfig(level=args.log_level)
+
+    if not os.path.exists(args.snapshot_dir) or not os.access(
+        args.snapshot_dir, os.W_OK | os.X_OK
+    ):
+        log.warning(
+            "snapshot directory %r does not exist or is not readable. Snapshotting will not work.",
+            os.path.abspath(args.snapshot_dir),
+        )
     app = make_app(
         disabled_checks=args.disabled_checks,
         log_span_fmt=args.log_span_fmt,

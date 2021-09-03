@@ -215,11 +215,13 @@ def pprint_trace(
 
 
 def copy_span(s: Span) -> Span:
-    meta = s["meta"].copy()
-    metrics = s["metrics"].copy()
+    meta = s["meta"].copy() if "meta" in s else None
+    metrics = s["metrics"].copy() if "metrics" in s else None
     copy = s.copy()
-    copy["meta"] = meta
-    copy["metrics"] = metrics
+    if meta is not None:
+        copy["meta"] = meta
+    if metrics is not None:
+        copy["metrics"] = metrics
     return copy
 
 
