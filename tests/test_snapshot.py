@@ -8,7 +8,7 @@ from dd_apm_test_agent.trace import set_meta_tag
 from dd_apm_test_agent.trace import set_metric_tag
 
 from .conftest import v04_trace
-from .trace import random_trace
+from .trace_utils import random_trace
 
 
 @pytest.mark.parametrize(

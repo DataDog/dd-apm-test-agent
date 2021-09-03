@@ -1,7 +1,7 @@
 import pytest
 
 from .conftest import v04_trace
-from .trace import span
+from .trace_utils import span
 
 
 async def test_reference(
