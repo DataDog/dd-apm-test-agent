@@ -40,7 +40,7 @@ SPAN_REQUIRED_ATTRS = [
     "parent_id",
 ]
 
-MetricType = Union[float]  # TODO: just float?
+MetricType = Union[int, float]
 
 
 class Span(TypedDict, total=False):
@@ -108,7 +108,7 @@ def verify_span(d: Any) -> Span:
             assert isinstance(d["metrics"], dict)
             for k, v in d["metrics"].items():
                 assert isinstance(k, str)
-                assert isinstance(v, float)
+                assert isinstance(v, (int, float))
         return cast(Span, d)
     except AssertionError as e:
         raise TypeError(*e.args) from e
