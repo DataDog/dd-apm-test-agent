@@ -7,6 +7,7 @@ from typing import Generator
 from typing import List
 from typing import Literal
 from typing import Optional
+from typing import Set
 
 from aiohttp.web import Response
 import msgpack
@@ -40,12 +41,30 @@ def log_span_fmt() -> Generator[str, None, None]:
 
 
 @pytest.fixture
+def snapshot_ignored_attrs() -> Generator[Set[str], None, None]:
+    yield set(
+        "span_id,trace_id,parent_id,duration,start,metrics.system.pid,meta.runtime-id".split(
+            ","
+        )
+    )
+
+
+@pytest.fixture
 async def agent_app(
-    aiohttp_server, agent_disabled_checks, snapshot_dir, snapshot_ci_mode, log_span_fmt
+    aiohttp_server,
+    agent_disabled_checks,
+    snapshot_dir,
+    snapshot_ci_mode,
+    log_span_fmt,
+    snapshot_ignored_attrs,
 ):
     app = await aiohttp_server(
         make_app(
-            agent_disabled_checks, str(snapshot_dir), snapshot_ci_mode, log_span_fmt
+            agent_disabled_checks,
+            str(snapshot_dir),
+            snapshot_ci_mode,
+            log_span_fmt,
+            snapshot_ignored_attrs,
         )
     )
     yield app

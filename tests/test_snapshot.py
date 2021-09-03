@@ -75,6 +75,7 @@ FIVE_SPAN_TRACE = random_trace(5)
     [
         ([ONE_SPAN_TRACE], [ONE_SPAN_TRACE], ""),
         ([FIVE_SPAN_TRACE], [FIVE_SPAN_TRACE], ""),
+        # Mismatching trace sizes
         (
             [TWO_SPAN_TRACE],
             [TWO_SPAN_TRACE[:-1]],
@@ -129,6 +130,44 @@ FIVE_SPAN_TRACE = random_trace(5)
                 ]
             ],
             "Span metrics value 'received' in received span but is not in the expected span.",
+        ),
+        # Default ignored fields
+        (
+            [
+                [
+                    {
+                        "name": "s",
+                        "span_id": 1234,
+                        "trace_id": 1,
+                        "parent_id": 0,
+                        "resource": "/",
+                        "start": 0,
+                        "duration": 1,
+                        "type": "web",
+                        "error": 0,
+                        "meta": {},
+                        "metrics": {},
+                    }
+                ]
+            ],
+            [
+                [
+                    {
+                        "name": "s",
+                        "span_id": 4321,
+                        "trace_id": 2,
+                        "parent_id": 0,
+                        "resource": "/",
+                        "start": 0,
+                        "duration": 1,
+                        "type": "web",
+                        "error": 0,
+                        "meta": {},
+                        "metrics": {},
+                    }
+                ]
+            ],
+            "",
         ),
     ],
 )

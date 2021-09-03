@@ -8,6 +8,7 @@ from typing import Awaitable
 from typing import Callable
 from typing import List
 from typing import Optional
+from typing import Set
 
 from aiohttp import web
 from aiohttp.web import Request
@@ -194,7 +195,13 @@ class Agent:
         token = request["session_token"]
         snap_dir = request.app["snapshot_dir"]
         snap_ci_mode = request.app["snapshot_ci_mode"]
-        # TODO: ignore_keys
+
+        # Get the span attributes that are to be ignored for this snapshot.
+        default_span_ignores: Set[str] = request.app["snapshot_ignored_attrs"]
+        overrides = set(
+            s.strip() for s in request.url.query.get("ignored", "").split(",")
+        )
+        span_ignores = list(default_span_ignores | overrides)
 
         with CheckTrace.add_frame(f"snapshot (token='{token}')") as frame:
             frame.add_item(f"Directory: {snap_dir}")
@@ -224,7 +231,11 @@ class Agent:
                 with open(snap_path, mode="r") as f:
                     raw_snapshot = json.load(f)
 
-                snapshot(expected_traces=raw_snapshot, received_traces=received_traces)
+                snapshot(
+                    expected_traces=raw_snapshot,
+                    received_traces=received_traces,
+                    ignored=span_ignores,
+                )
             else:
                 # Create a new snapshot for the data received
                 traces = await self._traces_by_session(token)
@@ -289,6 +300,7 @@ def make_app(
     snapshot_dir: str,
     snapshot_ci_mode: bool,
     log_span_fmt: str,
+    snapshot_ignored_attrs: List[str],
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
@@ -322,6 +334,7 @@ def make_app(
     app["snapshot_dir"] = snapshot_dir
     app["snapshot_ci_mode"] = snapshot_ci_mode
     app["log_span_fmt"] = log_span_fmt
+    app["snapshot_ignored_attrs"] = snapshot_ignored_attrs
     # TODO: add option for failing /traces endpoint requests when bad data
     # default should be False
     # Also add a /tests/traces-check
@@ -362,6 +375,18 @@ def main():
         default=os.environ.get("LOG_SPAN_FMT", "[{name}]"),
         help="Format to use when logging spans. Default is '[{name}]'. All span attributes are available.",
     )
+    parser.add_argument(
+        "--snapshot-ignored-attrs",
+        type=list,
+        default=set(
+            s.strip()
+            for s in os.environ.get(
+                "SNAPSHOT_IGNORED_ATTRS",
+                "span_id,trace_id,parent_id,duration,start,metrics.system.pid,meta.runtime-id",
+            ).split(",")
+        ),
+        help="Comma-separated values of span attributes to ignore. meta/metrics attributes can be ignored by prefixing the key with meta. or metrics.",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=args.log_level)
     app = make_app(
@@ -369,6 +394,7 @@ def main():
         snapshot_dir=args.snapshot_dir,
         snapshot_ci_mode=args.snapshot_ci_mode,
         log_span_fmt=args.log_span_fmt,
+        snapshot_ignored_attrs=args.snapshot_ignored_attrs,
     )
     web.run_app(app, port=args.port)
 

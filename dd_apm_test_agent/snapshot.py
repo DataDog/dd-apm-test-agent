@@ -4,6 +4,7 @@ import pprint
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Set
 from typing import Tuple
 from typing import cast
 
@@ -118,7 +119,9 @@ def _match_traces(t1s: List[Trace], t2s: List[Trace]) -> List[Tuple[Trace, Trace
     return matches
 
 
-def _diff_spans(s1: Span, s2: Span) -> Tuple[List[str], List[str], List[str]]:
+def _diff_spans(
+    s1: Span, s2: Span, ignored: Set[str]
+) -> Tuple[List[str], List[str], List[str]]:
     """Return differing attributes between two spans and their meta/metrics maps.
 
     It is assumed that the spans have passed through preliminary validation
@@ -128,17 +131,19 @@ def _diff_spans(s1: Span, s2: Span) -> Tuple[List[str], List[str], List[str]]:
     >>> span = verify_span(dict(name="", trace_id=1234, span_id=11, meta={}, metrics={}))
     >>> span2 = copy_span(span)
     >>> span2["resource"] = ""
-    >>> _diff_spans(span, span2)
+    >>> _diff_spans(span, span2, set())
     (['resource'], [], [])
     >>> span2["type"] = "web"
-    >>> tuple(map(set, _diff_spans(span, span2))) == ({'resource', 'type'}, set(), set())
+    >>> tuple(map(set, _diff_spans(span, span2, set()))) == ({'resource', 'type'}, set(), set())
     True
     >>> span2["meta"]["key"] = "value"
-    >>> tuple(map(set, _diff_spans(span, span2))) == ({'resource', 'type'}, {'key'}, set())
+    >>> tuple(map(set, _diff_spans(span, span2, set()))) == ({'resource', 'type'}, {'key'}, set())
     True
     >>> span2["metrics"]["key2"] = 100.0
-    >>> tuple(map(set, _diff_spans(span, span2))) == ({'resource', 'type'}, {'key'}, {'key2'})
+    >>> tuple(map(set, _diff_spans(span, span2, set()))) == ({'resource', 'type'}, {'key'}, {'key2'})
     True
+    >>> _diff_spans(span, span2, set(['metrics.key2', 'meta.key', 'resource', 'type', 'meta.key2']))
+    ([], [], [])
     """
     results = []
     s1_no_tags = cast(
@@ -149,22 +154,26 @@ def _diff_spans(s1: Span, s2: Span) -> Tuple[List[str], List[str], List[str]]:
         Dict[str, TopLevelSpanValue],
         {k: v for k, v in s2.items() if k not in ("meta", "metrics")},
     )
-    for d1, d2 in [
-        (s1_no_tags, s2_no_tags),
-        (s1["meta"], s2["meta"]),
-        (s1["metrics"], s2["metrics"]),
+    for d1, d2, ignored in [
+        (s1_no_tags, s2_no_tags, ignored),
+        (s1["meta"], s2["meta"], set(i[5:] for i in ignored if i.startswith("meta."))),
+        (
+            s1["metrics"],
+            s2["metrics"],
+            set(i[8:] for i in ignored if i.startswith("metrics.")),
+        ),
     ]:
         d1 = cast(Dict[str, Any], d1)
         d2 = cast(Dict[str, Any], d2)
         diffs = []
-        for k in set(d1.keys()) | set(d2.keys()):
+        for k in (set(d1.keys()) | set(d2.keys())) - ignored:
             if not _key_match(d1, d2, k):
                 diffs.append(k)
         results.append(diffs)
     return cast(Tuple[List[str], List[str], List[str]], tuple(results))
 
 
-def _compare_traces(expected: Trace, received: Trace) -> None:
+def _compare_traces(expected: Trace, received: Trace, ignored: Set[str]) -> None:
     """Compare two traces for differences.
 
     The given traces are assumed to be in BFS order.
@@ -179,7 +188,9 @@ def _compare_traces(expected: Trace, received: Trace) -> None:
         ) as frame:
             frame.add_item(f"Expected span:\n{pprint.pformat(s_exp)}")
             frame.add_item(f"Received span:\n{pprint.pformat(s_rec)}")
-            top_level_diffs, meta_diffs, metrics_diffs = _diff_spans(s_exp, s_rec)
+            top_level_diffs, meta_diffs, metrics_diffs = _diff_spans(
+                s_exp, s_rec, ignored
+            )
 
             for diffs, diff_type, d_exp, d_rec in [
                 (top_level_diffs, "span", s_exp, s_rec),
@@ -210,7 +221,9 @@ class SnapshotCheck(Check):
         pass
 
 
-def snapshot(expected_traces: List[Trace], received_traces: List[Trace]) -> None:
+def snapshot(
+    expected_traces: List[Trace], received_traces: List[Trace], ignored: List[str]
+) -> None:
     normed_expected = _normalize_traces(expected_traces)
     normed_received = _normalize_traces(received_traces)
     matched = _match_traces(normed_expected, normed_received)
@@ -218,7 +231,7 @@ def snapshot(expected_traces: List[Trace], received_traces: List[Trace]) -> None
 
     for exp, rec in matched:
         with CheckTrace.add_frame(f"trace ({len(exp)}) spans"):
-            _compare_traces(exp, rec)
+            _compare_traces(exp, rec, set(ignored))
 
 
 def generate_snapshot(received_traces: List[Trace]) -> List[Trace]:
