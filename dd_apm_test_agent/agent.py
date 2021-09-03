@@ -307,12 +307,12 @@ class Agent:
             ]
         else:
             # Clear all requests made after a /session-start
-            i = len(self._requests)
-            for i, req in enumerate(reversed(self._requests)):
+            i = 0
+            for req in reversed(self._requests):
                 if req.match_info.handler == self.handle_session_start:
                     break
                 i -= 1
-            self._requests = self._requests[0:i]
+            self._requests = self._requests[:i]
         return web.HTTPOk()
 
     async def handle_trace_analyze(self, request: Request) -> web.Response:
@@ -386,6 +386,16 @@ def main():
         "--snapshot-ci-mode", type=int, default=int(os.environ.get("SNAPSHOT_CI", 0))
     )
     parser.add_argument(
+        "--snapshot-ignored-attrs",
+        type=set,
+        default=set(
+            _parse_csv(
+                os.environ.get("SNAPSHOT_IGNORED_ATTRS", DEFAULT_SNAPSHOT_IGNORES)
+            )
+        ),
+        help="Comma-separated values of span attributes to ignore. meta/metrics attributes can be ignored by prefixing the key with meta. or metrics.",
+    )
+    parser.add_argument(
         "--strictness", type=int, default=int(os.environ.get("STRICTNESS", 0))
     )
     parser.add_argument(
@@ -404,16 +414,6 @@ def main():
         type=str,
         default=os.environ.get("LOG_SPAN_FMT", "[{name}]"),
         help="Format to use when logging spans. Default is '[{name}]'. All span attributes are available.",
-    )
-    parser.add_argument(
-        "--snapshot-ignored-attrs",
-        type=set,
-        default=set(
-            _parse_csv(
-                os.environ.get("SNAPSHOT_IGNORED_ATTRS", DEFAULT_SNAPSHOT_IGNORES)
-            )
-        ),
-        help="Comma-separated values of span attributes to ignore. meta/metrics attributes can be ignored by prefixing the key with meta. or metrics.",
     )
     args = parser.parse_args()
     logging.basicConfig(level=args.log_level)
