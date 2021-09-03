@@ -40,10 +40,14 @@ async def check_failure_middleware(request: Request, handler: _Handler) -> web.R
     try:
         response = await handler(request)
     except AssertionError as e:
-        return web.HTTPBadRequest(body=str(trace) + str(e))
+        msg = str(trace) + str(e)
+        log.error(msg)
+        return web.HTTPBadRequest(body=msg)
     else:
         if trace.has_fails():
-            return web.HTTPBadRequest(body=str(trace))
+            msg = str(trace)
+            log.error(msg)
+            return web.HTTPBadRequest(body=msg)
     return response
 
 
@@ -162,8 +166,12 @@ class Agent:
             f.add_item(pprint.pformat(dict(request.headers)))
             checks.check("meta_tracer_version_header", headers=dict(request.headers))
             traces = await self._decode_v04_traces(request)
-            for trace in traces:
-                log.info("Received trace chunk\n%s", pprint_trace(trace))
+            log.info("Received trace payload with %r trace chunks", len(traces))
+            for i, trace in enumerate(traces):
+                log.info(
+                    "Chunk %d\n%s", i, pprint_trace(trace, request.app["log_span_fmt"])
+                )
+            log.info("End of payload %s", "-" * 40)
 
             with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
                 checks.check(
@@ -277,7 +285,10 @@ class Agent:
 
 
 def make_app(
-    disabled_checks: List[str], snapshot_dir: str, snapshot_ci_mode: bool
+    disabled_checks: List[str],
+    snapshot_dir: str,
+    snapshot_ci_mode: bool,
+    log_span_fmt: str,
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
@@ -310,6 +321,7 @@ def make_app(
     app["checks"] = checks
     app["snapshot_dir"] = snapshot_dir
     app["snapshot_ci_mode"] = snapshot_ci_mode
+    app["log_span_fmt"] = log_span_fmt
     # TODO: add option for failing /traces endpoint requests when bad data
     # default should be False
     # Also add a /tests/traces-check
@@ -344,12 +356,19 @@ def main():
         default=os.environ.get("LOG_LEVEL", "INFO"),
         help="Set the log level. DEBUG, INFO, WARNING, ERROR, CRITICAL",
     )
+    parser.add_argument(
+        "--log-span-fmt",
+        type=str,
+        default=os.environ.get("LOG_SPAN_FMT", "[{name}]"),
+        help="Format to use when logging spans. Default is '[{name}]'. All span attributes are available.",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=args.log_level)
     app = make_app(
         disabled_checks=args.disabled_checks,
         snapshot_dir=args.snapshot_dir,
         snapshot_ci_mode=args.snapshot_ci_mode,
+        log_span_fmt=args.log_span_fmt,
     )
     web.run_app(app, port=args.port)
 

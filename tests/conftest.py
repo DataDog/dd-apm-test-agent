@@ -35,11 +35,18 @@ def snapshot_ci_mode() -> Generator[bool, None, None]:
 
 
 @pytest.fixture
+def log_span_fmt() -> Generator[str, None, None]:
+    yield "[{name}]"
+
+
+@pytest.fixture
 async def agent_app(
-    aiohttp_server, agent_disabled_checks, snapshot_dir, snapshot_ci_mode
+    aiohttp_server, agent_disabled_checks, snapshot_dir, snapshot_ci_mode, log_span_fmt
 ):
     app = await aiohttp_server(
-        make_app(agent_disabled_checks, str(snapshot_dir), snapshot_ci_mode)
+        make_app(
+            agent_disabled_checks, str(snapshot_dir), snapshot_ci_mode, log_span_fmt
+        )
     )
     yield app
 

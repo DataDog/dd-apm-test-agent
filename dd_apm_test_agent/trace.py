@@ -189,7 +189,8 @@ def dfs_order_with_depth(trace: Trace) -> Generator[Tuple[Span, int], None, None
 
 
 def pprint_trace(
-    trace: Trace, fmt: Union[str, Callable[[Span], str]] = "[{name}]"
+    trace: Trace,
+    fmt: Union[str, Callable[[Span], str]],
 ) -> str:
     child_map = _child_map(trace)
     stack: List[Tuple[str, str, Span]] = [("", "", root_span(trace))]
