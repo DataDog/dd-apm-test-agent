@@ -1,12 +1,14 @@
 """Tracing specific functions and types"""
 import json
 from typing import Any
+from typing import Callable
 from typing import Dict
 from typing import Generator
 from typing import List
 from typing import Literal
 from typing import Optional
 from typing import OrderedDict
+from typing import Tuple
 from typing import TypedDict
 from typing import Union
 from typing import cast
@@ -174,6 +176,41 @@ def dfs_order(trace: Trace) -> Generator[Span, None, None]:
         c = children.pop(0)
         yield c
         children = child_map[c["span_id"]] + children
+
+
+def dfs_order_with_depth(trace: Trace) -> Generator[Tuple[Span, int], None, None]:
+    child_map = _child_map(trace)
+    root = root_span(trace)
+    children = [(root, 0)]
+    while children:
+        c, depth = children.pop(0)
+        yield c, depth
+        children = [(_, depth) for _ in child_map[c["span_id"]]] + children
+
+
+def pprint_trace(
+    trace: Trace, fmt: Union[str, Callable[[Span], str]] = "[{name}]"
+) -> str:
+    child_map = _child_map(trace)
+    stack: List[Tuple[str, str, Span]] = [("", "", root_span(trace))]
+    s = ""
+    while stack:
+        prefix, childprefix, span = stack.pop(0)
+
+        for i, child in enumerate(reversed(child_map[span["span_id"]])):
+            if i == 0:
+                stack.insert(0, (childprefix + "└─ ", childprefix + "   ", child))
+            else:
+                stack.insert(0, (childprefix + "├─ ", childprefix + "│  ", child))
+
+        if callable(fmt):
+            spanf = fmt(span)
+        else:
+            spanf = fmt.format(**span)
+        s += f"{prefix}{spanf}"
+        if stack:
+            s += "\n"
+    return s
 
 
 def copy_span(s: Span) -> Span:

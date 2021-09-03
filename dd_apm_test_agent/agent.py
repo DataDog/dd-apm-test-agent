@@ -21,6 +21,7 @@ from .snapshot import snapshot
 from .trace import Trace
 from .trace import TraceMap
 from .trace import decode_v04
+from .trace import pprint_trace
 from .trace import v04TraceChunk
 from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceCountHeader
@@ -161,6 +162,8 @@ class Agent:
             f.add_item(pprint.pformat(dict(request.headers)))
             checks.check("meta_tracer_version_header", headers=dict(request.headers))
             traces = await self._decode_v04_traces(request)
+            for trace in traces:
+                log.info("Received trace chunk\n%s", pprint_trace(trace))
 
             with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
                 checks.check(
@@ -265,6 +268,13 @@ class Agent:
             self._requests = self._requests[0:i]
         return web.HTTPOk()
 
+    async def handle_trace_analyze(self, request: Request) -> web.Response:
+        # client.get("/span/start")
+        # client.get("/span/tag")
+        # client.get("/span/finish")
+        # wait 1s, gather traces and assert tags
+        raise NotImplementedError
+
 
 def make_app(
     disabled_checks: List[str], snapshot_dir: str, snapshot_ci_mode: bool
@@ -286,6 +296,8 @@ def make_app(
             web.get("/test/session/snapshot", agent.handle_snapshot),
             web.get("/test/session/traces", agent.handle_session_traces),
             web.get("/test/traces", agent.handle_test_traces),
+            # web.get("/test/benchmark", agent.handle_test_traces),
+            web.get("/test/trace/analyze", agent.handle_trace_analyze),
         ]
     )
     checks = Checks(

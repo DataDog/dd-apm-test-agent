@@ -96,6 +96,7 @@ def random_trace(nspans: int, rng: Random = _random) -> Trace:
     #   smarter type (should only be on service entry)
     #   sampling decisions
     #   dd_origin?
+    assert nspans > 0
     trace_id = rng.randint(0, 2 ** 64)
     t = _prufers_trace(nspans, rng)
     root = root_span(t)
