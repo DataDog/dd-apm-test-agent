@@ -19,20 +19,20 @@ async def test_synchronous_session_single_trace(
     v04_reference_http_trace_payload_data_raw,
     do_reference_v04_http_trace,
 ):
-    resp = await agent.get("/test/session-start", params=params, headers=headers)
+    resp = await agent.get("/test/session/start", params=params, headers=headers)
     assert resp.status == 200, await resp.text()
 
     resp = await do_reference_v04_http_trace(token=trace_token)
     assert resp.status == 200
 
-    resp = await agent.get("/test/session-traces", params=params, headers=headers)
+    resp = await agent.get("/test/session/traces", params=params, headers=headers)
     assert resp.status == 200
     assert await resp.json() == v04_reference_http_trace_payload_data_raw
 
     # Clear the traces and make sure there aren't any still stored
-    resp = await agent.get("/test/session-clear", params=params, headers=headers)
+    resp = await agent.get("/test/session/clear", params=params, headers=headers)
     assert resp.status == 200
-    resp = await agent.get("/test/session-traces", params=params, headers=headers)
+    resp = await agent.get("/test/session/traces", params=params, headers=headers)
     assert resp.status == 200
     assert await resp.json() == []
 
@@ -50,20 +50,20 @@ async def test_multi_session(
 
     for token in ["test_case", "test_case2"]:
         resp = await agent.get(
-            "/test/session-traces", params={"test_session_token": token}
+            "/test/session/traces", params={"test_session_token": token}
         )
         assert resp.status == 200
         assert await resp.json() == v04_reference_http_trace_payload_data_raw
 
-    resp = await agent.get("/test/session-traces")
+    resp = await agent.get("/test/session/traces")
     assert resp.status == 200
     assert await resp.json() == []
 
-    resp = await agent.get("/test/session-clear")
+    resp = await agent.get("/test/session/clear")
     assert resp.status == 200
     for token in ["test_case", "test_case2"]:
         resp = await agent.get(
-            "/test/session-traces", params={"test_session_token": token}
+            "/test/session/traces", params={"test_session_token": token}
         )
         assert resp.status == 200
         assert await resp.json() == []

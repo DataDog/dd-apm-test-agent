@@ -281,10 +281,10 @@ def make_app(
             web.post("/v0.4/traces", agent.handle_v04_traces),
             web.put("/v0.4/traces", agent.handle_v04_traces),
             web.put("/v0.5/traces", agent.handle_v05),
-            web.get("/test/session-start", agent.handle_session_start),
-            web.get("/test/session-clear", agent.handle_session_clear),
-            web.get("/test/session-snapshot", agent.handle_snapshot),
-            web.get("/test/session-traces", agent.handle_session_traces),
+            web.get("/test/session/start", agent.handle_session_start),
+            web.get("/test/session/clear", agent.handle_session_clear),
+            web.get("/test/session/snapshot", agent.handle_snapshot),
+            web.get("/test/session/traces", agent.handle_session_traces),
             web.get("/test/traces", agent.handle_test_traces),
         ]
     )
