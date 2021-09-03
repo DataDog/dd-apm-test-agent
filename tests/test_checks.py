@@ -1,5 +1,8 @@
 import pytest
 
+from .conftest import v04_trace
+from .trace import span
+
 
 async def test_reference(
     agent,
@@ -67,3 +70,12 @@ async def test_meta_tracer_version_header(
     else:
         assert resp.status == 400, await resp.text()
         assert "Check 'meta_tracer_version_header' failed" in await resp.text()
+
+
+async def test_trace_content_length(agent):
+    # Assume a trace will be at least 100 bytes each
+    s = span()
+    trace = [s for _ in range(int(5e7 / 100))]
+    resp = await v04_trace(agent, [trace], "msgpack")
+    assert resp.status == 400, await resp.text()
+    assert "Check 'trace_content_length' failed: content length" in await resp.text()

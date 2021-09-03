@@ -26,6 +26,7 @@ from .trace import decode_v04
 from .trace import pprint_trace
 from .trace import v04TraceChunk
 from .trace_checks import CheckMetaTracerVersionHeader
+from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
 
 
@@ -184,6 +185,10 @@ class Agent:
         with CheckTrace.add_frame("headers") as f:
             f.add_item(pprint.pformat(dict(request.headers)))
             checks.check("meta_tracer_version_header", headers=dict(request.headers))
+            checks.check(
+                "trace_content_length",
+                content_length=int(request.headers["Content-Length"]),
+            )
             traces = await self._decode_v04_traces(request)
             log.info("Received trace payload with %r trace chunks", len(traces))
             for i, trace in enumerate(traces):
@@ -322,10 +327,11 @@ def make_app(
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
+        client_max_size=int(100e6),  # 100MB - arbitrary
         middlewares=[
             check_failure_middleware,
             session_token_middleware,
-        ]
+        ],
     )
     app.add_routes(
         [
@@ -345,6 +351,7 @@ def make_app(
         checks=[
             CheckMetaTracerVersionHeader,
             CheckTraceCountHeader,
+            CheckTraceContentLength,
         ],
         disabled=disabled_checks,
     )

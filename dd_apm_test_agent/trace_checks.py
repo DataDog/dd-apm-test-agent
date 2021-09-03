@@ -38,3 +38,15 @@ class CheckMetaTracerVersionHeader(Check):
     def check(self, headers: Dict[str, str]) -> None:  # type: ignore
         if "Datadog-Meta-Tracer-Version" not in headers:
             self.fail("Datadog-Meta-Tracer-Version not found in headers")
+
+
+class CheckTraceContentLength(Check):
+    name = "trace_content_length"
+    description = """
+The max content size of a trace payload is 50MB.
+""".strip()
+    default_enabled = True
+
+    def check(self, content_length: int) -> None:  # type: ignore
+        if content_length > 5e7:
+            self.fail(f"content length {content_length} too large.")
