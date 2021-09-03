@@ -96,12 +96,12 @@ def v04_reference_http_trace_payload_headers() -> Generator[Dict[str, str], None
     yield headers
 
 
-def v04_trace(
-    agent: "AiohttpClient",  # type: ignore
+def v04_trace(  # type: ignore
+    agent,
     traces: List[Trace],
     encoding: Literal["msgpack", "json"] = "msgpack",
     token: Optional[str] = None,
-) -> "":  # type: ignore
+):
     params = {"test_session_token": token} if token is not None else {}
     if encoding == "msgpack":
         content_type = "application/msgpack"

@@ -2,6 +2,13 @@ import os
 
 import pytest
 
+from dd_apm_test_agent.trace import copy_span
+from dd_apm_test_agent.trace import copy_trace
+from dd_apm_test_agent.trace import root_span
+from dd_apm_test_agent.trace import set_attr
+from dd_apm_test_agent.trace import set_meta_tag
+from dd_apm_test_agent.trace import set_metric_tag
+
 from .conftest import v04_trace
 from .trace import random_trace
 
@@ -48,7 +55,7 @@ async def test_snapshot_single_trace(
         assert resp.status == 200, await resp.text()
         assert os.path.exists(snap_path)
         with open(snap_path, mode="r") as f:
-            print("".join(f.readlines()))
+            assert "".join(f.readlines()) != ""
 
         # Do the snapshot again to actually perform a comparison
         resp = await do_reference_v04_http_trace(token="test_case")
@@ -60,17 +67,77 @@ async def test_snapshot_single_trace(
         assert resp.status == 200, await resp.text()
 
 
+ONE_SPAN_TRACE = random_trace(1)
+TWO_SPAN_TRACE = random_trace(2)
+FIVE_SPAN_TRACE = random_trace(5)
+
+
 @pytest.mark.parametrize(
-    "traces",
+    "expected_traces,actual_traces,error",
     [
-        [random_trace(2)],
+        ([ONE_SPAN_TRACE], [ONE_SPAN_TRACE], ""),
+        ([FIVE_SPAN_TRACE], [FIVE_SPAN_TRACE], ""),
+        (
+            [TWO_SPAN_TRACE],
+            [TWO_SPAN_TRACE[:-1]],
+            "Number of traces received (1) doesn't match expected (2).",
+        ),
+        (
+            [TWO_SPAN_TRACE[:-1]],
+            [TWO_SPAN_TRACE],
+            "Number of traces received (2) doesn't match expected (1).",
+        ),
+        (
+            [[set_attr(copy_span(ONE_SPAN_TRACE[0]), "resource", "resource1")]],
+            [[set_attr(copy_span(ONE_SPAN_TRACE[0]), "resource", "resource2")]],
+            "span mismatch on 'resource': got 'resource2' which does not match expected 'resource1'",
+        ),
+        (
+            [[set_attr(copy_span(ONE_SPAN_TRACE[0]), "name", "name_expected")]],
+            [[set_attr(copy_span(ONE_SPAN_TRACE[0]), "name", "name_received")]],
+            "span mismatch on 'name': got 'name_received' which does not match expected 'name_expected'",
+        ),
+        (
+            [
+                [
+                    TWO_SPAN_TRACE[0],
+                    set_attr(copy_span(TWO_SPAN_TRACE[1]), "name", "name_expected"),
+                ]
+            ],
+            [
+                [
+                    TWO_SPAN_TRACE[0],
+                    set_attr(copy_span(TWO_SPAN_TRACE[1]), "name", "name_received"),
+                ]
+            ],
+            "span mismatch on 'name': got 'name_received' which does not match expected 'name_expected'",
+        ),
+        (
+            [
+                [
+                    TWO_SPAN_TRACE[0],
+                    set_meta_tag(copy_span(TWO_SPAN_TRACE[1]), "expected", "value"),
+                ]
+            ],
+            [[TWO_SPAN_TRACE[0], TWO_SPAN_TRACE[1]]],
+            "Span meta value 'expected' in expected span but is not in the received span.",
+        ),
+        (
+            [[TWO_SPAN_TRACE[0], TWO_SPAN_TRACE[1]]],
+            [
+                [
+                    TWO_SPAN_TRACE[0],
+                    set_metric_tag(copy_span(TWO_SPAN_TRACE[1]), "received", 123.32),
+                ]
+            ],
+            "Span metrics value 'received' in received span but is not in the expected span.",
+        ),
     ],
 )
-async def test_snapshot_trace_size_diff(agent, traces):
-    resp = await v04_trace(agent, traces, token="test")
+async def test_snapshot_trace_differences(agent, expected_traces, actual_traces, error):
+    resp = await v04_trace(agent, expected_traces, token="test")
     assert resp.status == 200, await resp.text()
 
-    # Create the snapshot
     resp = await agent.get(
         "/test/session-snapshot", params={"test_session_token": "test"}
     )
@@ -78,13 +145,14 @@ async def test_snapshot_trace_size_diff(agent, traces):
     resp = await agent.get("/test/session-clear", params={"test_session_token": "test"})
     assert resp.status == 200, await resp.text()
 
-    # Send one less span in the trace
-    trace2 = traces[0][:-1]
-    resp = await v04_trace(agent, [trace2], token="test")
+    resp = await v04_trace(agent, actual_traces, token="test")
     assert resp.status == 200, await resp.text()
     resp = await agent.get(
         "/test/session-snapshot", params={"test_session_token": "test"}
     )
     resp_text = await resp.text()
-    assert resp.status == 400, resp_text
-    assert "Number of traces received (1) doesn't match expected (2)" in resp_text
+    if error:
+        assert resp.status == 400, resp_text
+        assert error in resp_text, resp_text
+    else:
+        assert resp.status == 200, resp_text

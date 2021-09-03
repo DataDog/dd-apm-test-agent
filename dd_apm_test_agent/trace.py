@@ -4,8 +4,10 @@ from typing import Any
 from typing import Dict
 from typing import Generator
 from typing import List
+from typing import Literal
 from typing import Optional
 from typing import TypedDict
+from typing import Union
 from typing import cast
 
 import msgpack
@@ -29,29 +31,54 @@ SPAN_TYPES = [
     "web",
     "worker",
 ]
+SPAN_REQUIRED_ATTRS = [
+    "name",
+    "span_id",
+    "trace_id",
+    "duration",
+    "start",
+    "parent_id",
+]
+
+MetricType = Union[float]  # TODO: just float?
 
 
 class Span(TypedDict, total=False):
     name: str
     span_id: SpanId
     trace_id: TraceId
+    start: int
+    duration: int
     parent_id: int  # TODO: is this actually optional...it could be?
     service: Optional[str]
     resource: Optional[str]
     type: Optional[str]  # noqa
     error: Optional[int]
-    start: int
-    duration: int
     meta: Dict[str, str]
-    metrics: Dict[str, float]
+    metrics: Dict[str, MetricType]
 
 
+SpanAttr = Literal[
+    "name",
+    "span_id",
+    "trace_id",
+    "start",
+    "duration",
+    "parent_id",
+    "service",
+    "resource",
+    "type",
+    "error",
+    "meta",
+    "metrics",
+]
+TopLevelSpanValue = Union[None, SpanId, TraceId, int, str]
 Trace = List[Span]
 v04TraceChunk = List[List[Span]]
 TraceMap = Dict[int, Trace]
 
 
-def v04_verify_span(d: Any) -> Span:
+def verify_span(d: Any) -> Span:
     assert isinstance(d, dict)
     try:
         # TODO: check these
@@ -81,7 +108,7 @@ def v04_verify_span(d: Any) -> Span:
             assert isinstance(d["metrics"], dict)
             for k, v in d["metrics"].items():
                 assert isinstance(k, str)
-                assert isinstance(v, (float, int))
+                assert isinstance(v, float)
         return cast(Span, d)
     except AssertionError as e:
         raise TypeError(*e.args) from e
@@ -91,7 +118,7 @@ def v04_verify_trace(maybe_trace: Any) -> Trace:
     if not isinstance(maybe_trace, list):
         raise TypeError("Trace must be a list.")
     for maybe_span in maybe_trace:
-        v04_verify_span(maybe_span)
+        verify_span(maybe_span)
     return cast(Trace, maybe_trace)
 
 
@@ -113,13 +140,17 @@ def _child_map(trace: Trace) -> Dict[int, List[Span]]:
     for s in trace:
         child_map[s["parent_id"]].append(s)
 
-    # Sort the children by their start time
+    # Sort the children ascending by their start time
     for span_id in child_map:
-        child_map[span_id] = sorted(child_map[span_id], key=lambda s: s["start"])
+        child_map[span_id] = sorted(child_map[span_id], key=lambda _: _["start"])
     return child_map
 
 
 def bfs_order(trace: Trace) -> Generator[Span, None, None]:
+    """Return trace in BFS order.
+
+    Note: does not return copies of the spans.
+    """
     child_map = _child_map(trace)
     root = root_span(trace)
     children = [[root]]
@@ -131,6 +162,10 @@ def bfs_order(trace: Trace) -> Generator[Span, None, None]:
 
 
 def dfs_order(trace: Trace) -> Generator[Span, None, None]:
+    """Return the trace in DFS order.
+
+    Note: does not return copies of the spans.
+    """
     child_map = _child_map(trace)
     root = root_span(trace)
     children = [root]
@@ -138,6 +173,19 @@ def dfs_order(trace: Trace) -> Generator[Span, None, None]:
         c = children.pop(0)
         yield c
         children = child_map[c["span_id"]] + children
+
+
+def copy_span(s: Span) -> Span:
+    meta = s["meta"].copy()
+    metrics = s["metrics"].copy()
+    copy = s.copy()
+    copy["meta"] = meta
+    copy["metrics"] = metrics
+    return copy
+
+
+def copy_trace(t: Trace) -> Trace:
+    return [copy_span(s) for s in t]
 
 
 def root_span(t: Trace) -> Span:
@@ -151,6 +199,21 @@ def root_span(t: Trace) -> Span:
 
 def trace_id(t: Trace) -> TraceId:
     return t[0]["trace_id"]
+
+
+def set_attr(s: Span, k: SpanAttr, v: TopLevelSpanValue) -> Span:
+    s[k] = v
+    return s
+
+
+def set_meta_tag(s: Span, k: str, v: str) -> Span:
+    s["meta"][k] = v
+    return s
+
+
+def set_metric_tag(s: Span, k: str, v: MetricType) -> Span:
+    s["metrics"][k] = v
+    return s
 
 
 def decode_v04(content_type: str, data: bytes) -> v04TraceChunk:

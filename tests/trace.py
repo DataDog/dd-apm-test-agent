@@ -7,7 +7,8 @@ from dd_apm_test_agent.trace import SPAN_TYPES
 from dd_apm_test_agent.trace import Span
 from dd_apm_test_agent.trace import Trace
 from dd_apm_test_agent.trace import dfs_order
-from dd_apm_test_agent.trace import v04_verify_span
+from dd_apm_test_agent.trace import root_span
+from dd_apm_test_agent.trace import verify_span
 
 
 # Fix the seed for deterministic results
@@ -51,7 +52,7 @@ def span(rnd: Random = _random, **kwargs: Any) -> Span:
 
     if "metrics" not in kwargs:
         kwargs["metrics"] = {}
-    return v04_verify_span(kwargs)
+    return verify_span(kwargs)
 
 
 def _prufers_trace(n: int, rnd: Random = _random) -> Trace:
@@ -97,6 +98,10 @@ def random_trace(nspans: int, rng: Random = _random) -> Trace:
     #   dd_origin?
     trace_id = rng.randint(0, 2 ** 64)
     t = _prufers_trace(nspans, rng)
+    root = root_span(t)
     for s in t:
+        if s is not root:
+            del s["type"]
+            del s["resource"]
         s["trace_id"] = trace_id
     return t
