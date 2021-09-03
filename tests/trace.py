@@ -1,9 +1,7 @@
-import os
 from random import Random
 from typing import Any
 from typing import Dict
 
-from dd_apm_test_agent.trace import SPAN_TYPES
 from dd_apm_test_agent.trace import Span
 from dd_apm_test_agent.trace import Trace
 from dd_apm_test_agent.trace import dfs_order
@@ -15,23 +13,48 @@ from dd_apm_test_agent.trace import verify_span
 _random = Random(1234)
 
 
-_dictionaries = ["/usr/share/dict/words", "/usr/dict/words"]
-for d in _dictionaries:
-    if os.path.exists(d):
-        with open(d) as f:
-            WORDS = f.read().splitlines()
-        break
-else:
-    WORDS = ["red", "blue", "green", "yellow", "orange"]
+_TYPES = {
+    "web": {
+        "name": ["django.request", "flask.request", "rack.request"],
+        "service": ["django", "flask", "rack"],
+        "resource": [
+            "/users",
+            "/feed",
+            "/posts",
+            "/home",
+        ],
+    },
+    "cache": {
+        "name": ["memcached.command"],
+        "service": ["memcached"],
+        "resource": [
+            "get",
+            "get_many",
+            "set",
+        ],
+    },
+    "sql": {
+        "name": ["mysql.query", "postgres.query"],
+        "service": ["mysql", "postgres"],
+        "resource": [
+            "SELECT * from users",
+        ],
+    },
+}
 
 
 def span(rnd: Random = _random, **kwargs: Any) -> Span:
-    for k in ["name", "resource", "service"]:
-        if k not in kwargs:
-            kwargs[k] = rnd.choice(WORDS).lower()
-
     if "type" not in kwargs:
-        kwargs["type"] = rnd.choice(SPAN_TYPES)
+        kwargs["type"] = rnd.choice(list(_TYPES.keys()))
+
+    data = _TYPES[kwargs["type"]]
+    for k in ["name", "service"]:
+        i = rnd.choice(list(range(len(data["name"]))))
+        if k not in kwargs:
+            kwargs[k] = data[k][i]
+
+    if "resource" not in kwargs:
+        kwargs["resource"] = rnd.choice(data["resource"])
 
     for k in ["trace_id", "span_id"]:
         if k not in kwargs:
