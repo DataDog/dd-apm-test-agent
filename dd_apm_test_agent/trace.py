@@ -1,5 +1,4 @@
 """Tracing specific functions and types"""
-from collections import OrderedDict
 import json
 from typing import Any
 from typing import Dict
@@ -7,6 +6,7 @@ from typing import Generator
 from typing import List
 from typing import Literal
 from typing import Optional
+from typing import OrderedDict
 from typing import TypedDict
 from typing import Union
 from typing import cast
