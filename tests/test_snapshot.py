@@ -2,6 +2,7 @@ import os
 
 import pytest
 
+from dd_apm_test_agent.snapshot import generate_snapshot
 from dd_apm_test_agent.trace import copy_span
 from dd_apm_test_agent.trace import set_attr
 from dd_apm_test_agent.trace import set_meta_tag
@@ -204,3 +205,55 @@ async def test_snapshot_trace_differences(agent, expected_traces, actual_traces,
         assert error in resp_text, resp_text
     else:
         assert resp.status == 200, resp_text
+
+
+@pytest.mark.parametrize(
+    "trace,expected",
+    [
+        (
+            [
+                [
+                    {"parent_id": 0, "span_id": 1, "start": 0},
+                    {"parent_id": 1, "span_id": 2, "start": 1},
+                    {"parent_id": 1, "span_id": 3, "start": 2},
+                    {"parent_id": 2, "span_id": 4, "start": 4},
+                ]
+            ],
+            """[[
+  {
+    "meta": {},
+    "metrics": {},
+    "parent_id": 0,
+    "span_id": 1,
+    "start": 0,
+    "trace_id": 0
+  },
+     {
+       "meta": {},
+       "metrics": {},
+       "parent_id": 1,
+       "span_id": 2,
+       "start": 1,
+       "trace_id": 0
+     },
+        {
+          "meta": {},
+          "metrics": {},
+          "parent_id": 2,
+          "span_id": 4,
+          "start": 4,
+          "trace_id": 0
+        },
+     {
+       "meta": {},
+       "metrics": {},
+       "parent_id": 1,
+       "span_id": 3,
+       "start": 2,
+       "trace_id": 0
+     }]]\n""",
+        )
+    ],
+)
+def test_generate_snapshot(trace, expected):
+    assert generate_snapshot(trace) == expected

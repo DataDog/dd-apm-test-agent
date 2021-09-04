@@ -268,7 +268,7 @@ class Agent:
                 # Create a new snapshot for the data received
                 traces = await self._traces_by_session(token)
                 with open(snap_path, mode="w") as f:
-                    f.write(json.dumps(generate_snapshot(traces), indent=2))
+                    f.write(generate_snapshot(traces))
                 log.info("wrote new snapshot to %r", os.path.abspath(snap_path))
         return web.HTTPOk()
 
@@ -365,9 +365,6 @@ def make_app(
     app["snapshot_ci_mode"] = snapshot_ci_mode
     app["log_span_fmt"] = log_span_fmt
     app["snapshot_ignored_attrs"] = snapshot_ignored_attrs
-    # TODO: add option for failing /traces endpoint requests when bad data
-    # default should be False
-    # Also add a /tests/traces-check
     return app
 
 

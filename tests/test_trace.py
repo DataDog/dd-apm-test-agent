@@ -9,7 +9,6 @@ from dd_apm_test_agent.trace import dfs_order
 from dd_apm_test_agent.trace import root_span
 
 from .trace_utils import random_trace
-from .trace_utils import span
 
 
 def test_random_trace():

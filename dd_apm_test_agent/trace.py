@@ -133,20 +133,20 @@ def _verify_v04_payload(data: Any) -> v04TraceChunk:
     return cast(v04TraceChunk, data)
 
 
-def _child_map(trace: Trace) -> Dict[int, List[Span]]:
-    child_map: Dict[SpanId, List[Span]] = {}
+def child_map(trace: Trace) -> Dict[int, List[Span]]:
+    cmap: Dict[SpanId, List[Span]] = {}
     # Initialize the map with all possible ids
     for s in trace:
-        child_map[s["span_id"]] = []
-        child_map[s["parent_id"]] = []
+        cmap[s["span_id"]] = []
+        cmap[s["parent_id"]] = []
 
     for s in trace:
-        child_map[s["parent_id"]].append(s)
+        cmap[s["parent_id"]].append(s)
 
     # Sort the children ascending by their start time
-    for span_id in child_map:
-        child_map[span_id] = sorted(child_map[span_id], key=lambda _: _["start"])
-    return child_map
+    for span_id in cmap:
+        cmap[span_id] = sorted(cmap[span_id], key=lambda _: _["start"])
+    return cmap
 
 
 def bfs_order(trace: Trace) -> Generator[Span, None, None]:
@@ -154,14 +154,14 @@ def bfs_order(trace: Trace) -> Generator[Span, None, None]:
 
     Note: does not return copies of the spans.
     """
-    child_map = _child_map(trace)
+    cmap = child_map(trace)
     root = root_span(trace)
     children = [[root]]
     while children:
         cs = children.pop(0)
         for c in cs:
             yield c
-            children.append(child_map[c["span_id"]])
+            children.append(cmap[c["span_id"]])
 
 
 def dfs_order(trace: Trace) -> Generator[Span, None, None]:
@@ -169,45 +169,41 @@ def dfs_order(trace: Trace) -> Generator[Span, None, None]:
 
     Note: does not return copies of the spans.
     """
-    child_map = _child_map(trace)
+    cmap = child_map(trace)
     root = root_span(trace)
     children = [root]
     while children:
         c = children.pop(0)
         yield c
-        children = child_map[c["span_id"]] + children
+        children = cmap[c["span_id"]] + children
 
 
 def dfs_order_with_depth(trace: Trace) -> Generator[Tuple[Span, int], None, None]:
-    child_map = _child_map(trace)
+    cmap = child_map(trace)
     root = root_span(trace)
     children = [(root, 0)]
     while children:
         c, depth = children.pop(0)
         yield c, depth
-        children = [(_, depth) for _ in child_map[c["span_id"]]] + children
+        children = [(_, depth) for _ in cmap[c["span_id"]]] + children
 
 
 def pprint_trace(
     trace: Trace,
     fmt: Union[str, Callable[[Span], str]],
 ) -> str:
-    child_map = _child_map(trace)
+    cmap = child_map(trace)
     stack: List[Tuple[str, str, Span]] = [("", "", root_span(trace))]
     s = ""
     while stack:
         prefix, childprefix, span = stack.pop(0)
-
-        for i, child in enumerate(reversed(child_map[span["span_id"]])):
+        for i, child in enumerate(reversed(cmap[span["span_id"]])):
             if i == 0:
                 stack.insert(0, (childprefix + "└─ ", childprefix + "   ", child))
             else:
                 stack.insert(0, (childprefix + "├─ ", childprefix + "│  ", child))
 
-        if callable(fmt):
-            spanf = fmt(span)
-        else:
-            spanf = fmt.format(**span)
+        spanf = fmt(span) if callable(fmt) else fmt.format(**span)
         s += f"{prefix}{spanf}"
         if stack:
             s += "\n"

@@ -1,6 +1,8 @@
 from collections import defaultdict
+import json
 import logging
 import pprint
+import textwrap
 from typing import Any
 from typing import Dict
 from typing import List
@@ -16,6 +18,7 @@ from .trace import TopLevelSpanValue
 from .trace import Trace
 from .trace import TraceId
 from .trace import bfs_order
+from .trace import child_map
 from .trace import copy_trace
 from .trace import root_span
 
@@ -84,12 +87,20 @@ def _normalize_trace(trace: Trace, trace_id: TraceId) -> Trace:
     span_id = 1
 
     new_id_map: Dict[SpanId, int] = {}
-    for span in trace:
+    for span in normed_trace:
         span["trace_id"] = trace_id
         new_id_map[span["span_id"]] = span_id
         span["span_id"] = span_id
         if span["parent_id"]:
             span["parent_id"] = new_id_map[span["parent_id"]]
+        else:
+            # Normalize the parent of root spans to be 0.
+            span["parent_id"] = 0
+
+        if "meta" not in span:
+            span["meta"] = {}
+        if "metrics" not in span:
+            span["metrics"] = {}
         span_id += 1
     return normed_trace
 
@@ -109,7 +120,7 @@ def _match_traces(t1s: List[Trace], t2s: List[Trace]) -> List[Tuple[Trace, Trace
         t1_trace_id = t1[0]["trace_id"]
         t1_map[t1_trace_id] = t1
         for t2 in t2s:
-            t2_trace_id = t1[0]["trace_id"]
+            t2_trace_id = t2[0]["trace_id"]
             t2_map[t2_trace_id] = t2
             similarities[t1_trace_id].append((t2_trace_id, _trace_similarity(t1, t2)))
 
@@ -117,10 +128,10 @@ def _match_traces(t1s: List[Trace], t2s: List[Trace]) -> List[Tuple[Trace, Trace
     tids_to_match = set(similarities.keys())
     while tids_to_match:
         tid = tids_to_match.pop()
-        match_tid, match_score = min(similarities[tid], key=lambda t: t[1])
+        match_tid, match_score = max(similarities[tid], key=lambda t: t[1])
         matches.append((t1_map[tid], t2_map[match_tid]))
 
-    # TODO: check for unmatched traces
+    assert tids_to_match == set(), f"Unmatched traces {tids_to_match}"
     return matches
 
 
@@ -239,5 +250,35 @@ def snapshot(
             _compare_traces(exp, rec, set(ignored))
 
 
-def generate_snapshot(received_traces: List[Trace]) -> List[Trace]:
-    return _normalize_traces(received_traces)
+def _snapshot_trace_str(trace: Trace) -> str:
+    cmap = child_map(trace)
+    stack: List[Tuple[int, Span]] = [(0, root_span(trace))]
+    s = "[\n"
+    while stack:
+        prefix, span = stack.pop(0)
+        for i, child in enumerate(reversed(cmap[span["span_id"]])):
+            if i == 0:
+                stack.insert(0, (prefix + 3, child))
+            else:
+                stack.insert(0, (prefix + 3, child))
+        s += textwrap.indent(
+            json.dumps(span, sort_keys=True, indent=2), " " * (prefix + 2)
+        )
+        if stack:
+            s += ",\n"
+    s += "]"
+    return s
+
+
+def _snapshot_json(traces: List[Trace]) -> str:
+    s = "["
+    for t in traces:
+        s += _snapshot_trace_str(t)
+        if t != traces[-1]:
+            s += ",\n"
+    s += "]\n"
+    return s
+
+
+def generate_snapshot(received_traces: List[Trace]) -> str:
+    return _snapshot_json(_normalize_traces(received_traces))

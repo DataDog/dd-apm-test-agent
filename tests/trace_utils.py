@@ -9,7 +9,7 @@ from dd_apm_test_agent.trace import root_span
 from dd_apm_test_agent.trace import verify_span
 
 
-# Fix the seed for deterministic results
+# Fix the seed for deterministic results between runs
 _random = Random(1234)
 
 
