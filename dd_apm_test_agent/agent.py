@@ -227,7 +227,7 @@ class Agent:
 
         # Get the span attributes that are to be ignored for this snapshot.
         default_span_ignores: Set[str] = request.app["snapshot_ignored_attrs"]
-        overrides = set(_parse_csv(request.url.query.get("ignored", "")))
+        overrides = set(_parse_csv(request.url.query.get("ignores", "")))
         span_ignores = list(default_span_ignores | overrides)
         log.info("Using ignores %r", span_ignores)
 
@@ -396,13 +396,21 @@ def main():
                 os.environ.get("SNAPSHOT_IGNORED_ATTRS", DEFAULT_SNAPSHOT_IGNORES)
             )
         ),
-        help="Comma-separated values of span attributes to ignore. meta/metrics attributes can be ignored by prefixing the key with meta. or metrics.",
+        help=(
+            "Comma-separated values of span attributes to ignore. "
+            "meta/metrics attributes can be ignored by prefixing the key "
+            "with meta. or metrics."
+        ),
     )
     parser.add_argument(
         "--disabled-checks",
         type=list,
         default=_parse_csv(os.environ.get("DISABLED_CHECKS", "")),
-        help="Comma-separated values of checks to disable. None are disabled by default.",
+        help=(
+            "Comma-separated values of checks to disable. None are disabled "
+            " by default. For the list of values see "
+            "https://github.com/datadog/dd-trace-test-agent"
+        ),
     )
     parser.add_argument(
         "--log-level",
@@ -414,7 +422,10 @@ def main():
         "--log-span-fmt",
         type=str,
         default=os.environ.get("LOG_SPAN_FMT", "[{name}]"),
-        help="Format to use when logging spans. Default is '[{name}]'. All span attributes are available.",
+        help=(
+            "Format to use when logging spans. Default is '[{name}]'. "
+            "All span attributes are available."
+        ),
     )
     args = parser.parse_args()
     logging.basicConfig(level=args.log_level)
