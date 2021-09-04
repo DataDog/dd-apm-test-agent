@@ -377,10 +377,16 @@ def main():
         "-p", "--port", type=int, default=int(os.environ.get("PORT", 8126))
     )
     parser.add_argument(
-        "--snapshot-dir", type=str, default=os.environ.get("SNAPSHOT_DIR", "snaps")
+        "--snapshot-dir",
+        type=str,
+        default=os.environ.get("SNAPSHOT_DIR", "snapshots"),
+        help="Directory to store snapshots.",
     )
     parser.add_argument(
-        "--snapshot-ci-mode", type=int, default=int(os.environ.get("SNAPSHOT_CI", 0))
+        "--snapshot-ci-mode",
+        type=int,
+        default=int(os.environ.get("SNAPSHOT_CI", 0)),
+        help="Enable CI mode for snapshotting. Enforces that snapshot files exist.",
     )
     parser.add_argument(
         "--snapshot-ignored-attrs",
@@ -393,18 +399,16 @@ def main():
         help="Comma-separated values of span attributes to ignore. meta/metrics attributes can be ignored by prefixing the key with meta. or metrics.",
     )
     parser.add_argument(
-        "--strictness", type=int, default=int(os.environ.get("STRICTNESS", 0))
-    )
-    parser.add_argument(
         "--disabled-checks",
         type=list,
-        default=[s.upper() for s in os.environ.get("DISABLED_CHECKS", "").split(",")],
+        default=_parse_csv(os.environ.get("DISABLED_CHECKS", "")),
+        help="Comma-separated values of checks to disable. None are disabled by default.",
     )
     parser.add_argument(
         "--log-level",
         type=str,
         default=os.environ.get("LOG_LEVEL", "INFO"),
-        help="Set the log level. DEBUG, INFO, WARNING, ERROR, CRITICAL",
+        help="Set the log level. DEBUG, INFO, WARNING, ERROR, CRITICAL.",
     )
     parser.add_argument(
         "--log-span-fmt",
