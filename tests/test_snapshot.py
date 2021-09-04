@@ -12,15 +12,7 @@ from .conftest import v04_trace
 from .trace_utils import random_trace
 
 
-@pytest.mark.parametrize(
-    "snapshot_ci_mode",
-    [
-        False,
-        True,
-        False,
-        True,
-    ],
-)
+@pytest.mark.parametrize("snapshot_ci_mode", [False, True])
 async def test_snapshot_single_trace(
     agent,
     snapshot_dir,
@@ -257,3 +249,39 @@ async def test_snapshot_trace_differences(agent, expected_traces, actual_traces,
 )
 def test_generate_snapshot(trace, expected):
     assert generate_snapshot(trace) == expected
+
+
+async def test_snapshot_custom_dir(agent, tmp_path, do_reference_v04_http_trace):
+    resp = await do_reference_v04_http_trace(token="test_case")
+    assert resp.status == 200
+
+    custom_dir = tmp_path / "custom"
+    custom_dir.mkdir()
+
+    resp = await agent.get(
+        "/test/session/snapshot",
+        params={"test_session_token": "test_case", "dir": str(custom_dir)},
+    )
+    snap_path = custom_dir / "test_case.json"
+    assert resp.status == 200, await resp.text()
+    assert os.path.exists(snap_path)
+    with open(snap_path, mode="r") as f:
+        assert "".join(f.readlines()) != ""
+
+
+async def test_snapshot_custom_file(agent, tmp_path, do_reference_v04_http_trace):
+    resp = await do_reference_v04_http_trace(token="test_case")
+    assert resp.status == 200
+
+    custom_dir = tmp_path / "custom"
+    custom_dir.mkdir()
+    custom_file = custom_dir / "custom_snapshot.json"
+
+    resp = await agent.get(
+        "/test/session/snapshot",
+        params={"test_session_token": "test_case", "file": str(custom_file)},
+    )
+    assert resp.status == 200, await resp.text()
+    assert os.path.exists(custom_file), custom_file
+    with open(custom_file, mode="r") as f:
+        assert "".join(f.readlines()) != ""

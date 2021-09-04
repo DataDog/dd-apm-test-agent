@@ -216,7 +216,7 @@ class Agent:
 
     async def handle_snapshot(self, request: Request) -> web.Response:
         token = request["session_token"]
-        snap_dir = request.app["snapshot_dir"]
+        snap_dir = request.url.query.get("dir", request.app["snapshot_dir"])
         snap_ci_mode = request.app["snapshot_ci_mode"]
         log.info(
             "Performing with token=%r, ci_mode=%r and snapshot directory=%r",
@@ -237,26 +237,24 @@ class Agent:
 
             if "X-Datadog-Test-Snapshot-Filename" in request.headers:
                 snap_file = request.headers["X-Datadog-Test-Snapshot-Filename"]
-            elif "test_snapshot_filename" in request.url.query:
-                snap_file = request.url.query.get("test_snapshot_filename")
+            elif "file" in request.url.query:
+                snap_file = request.url.query.get("file")
             else:
-                snap_file = token
-            snap_file = f"{snap_file}.json"
+                snap_file = os.path.join(snap_dir, f"{token}.json")
             frame.add_item(f"File: {snap_file}")
-            snap_path = os.path.join(snap_dir, snap_file)
-            log.info("Using snapshot file %s", snap_path)
+            log.info("using snapshot file %r", snap_file)
 
-            snap_path_exists = os.path.exists(snap_path)
+            snap_path_exists = os.path.exists(snap_file)
             if snap_ci_mode and not snap_path_exists:
                 raise AssertionError(
-                    f"Snapshot file '{snap_path}' not found."
+                    f"Snapshot file '{snap_file}' not found."
                     "Perhaps the file was not checked into source control?"
                     "The snapshot file is automatically generated when the test case is run when not in CI mode."
                 )
             elif snap_path_exists:
                 # Do the snapshot comparison
                 received_traces = await self._traces_by_session(token)
-                with open(snap_path, mode="r") as f:
+                with open(snap_file, mode="r") as f:
                     raw_snapshot = json.load(f)
 
                 snapshot(
@@ -267,9 +265,9 @@ class Agent:
             else:
                 # Create a new snapshot for the data received
                 traces = await self._traces_by_session(token)
-                with open(snap_path, mode="w") as f:
+                with open(snap_file, mode="w") as f:
                     f.write(generate_snapshot(traces))
-                log.info("wrote new snapshot to %r", os.path.abspath(snap_path))
+                log.info("wrote new snapshot to %r", os.path.abspath(snap_file))
         return web.HTTPOk()
 
     async def handle_session_traces(self, request: Request) -> web.Response:
