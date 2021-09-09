@@ -11,7 +11,7 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Build and publish latest image
-      uses: VaultVulp/gp-docker-action@1.2
+      uses: VaultVulp/gp-docker-action@1.2.0
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         image-name: ddapm-test-agent
@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - name: Build and publish latest image
-        uses: VaultVulp/gp-docker-action@1.2
+        uses: VaultVulp/gp-docker-action@1.2.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           image-name: ddapm-test-agent
