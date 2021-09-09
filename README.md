@@ -21,7 +21,7 @@ From Docker:
             -p 8126:8126\
             -e CI_MODE=0\
             -v $PWD/tests/snapshots:/snapshots\
-            ghcr.io/datadog/ddapm-test-agent:latest
+            ghcr.io/datadog/dd-trace-test-agent/ddapm-test-agent:latest
 
 
 ## Features
