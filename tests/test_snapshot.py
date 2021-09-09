@@ -2,11 +2,11 @@ import os
 
 import pytest
 
-from dd_apm_test_agent.snapshot import generate_snapshot
-from dd_apm_test_agent.trace import copy_span
-from dd_apm_test_agent.trace import set_attr
-from dd_apm_test_agent.trace import set_meta_tag
-from dd_apm_test_agent.trace import set_metric_tag
+from ddapm_test_agent.snapshot import generate_snapshot
+from ddapm_test_agent.trace import copy_span
+from ddapm_test_agent.trace import set_attr
+from ddapm_test_agent.trace import set_meta_tag
+from ddapm_test_agent.trace import set_metric_tag
 
 from .conftest import v04_trace
 from .trace_utils import random_trace

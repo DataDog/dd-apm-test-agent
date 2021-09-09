@@ -2,11 +2,11 @@ from random import Random
 from typing import Any
 from typing import Dict
 
-from dd_apm_test_agent.trace import Span
-from dd_apm_test_agent.trace import Trace
-from dd_apm_test_agent.trace import dfs_order
-from dd_apm_test_agent.trace import root_span
-from dd_apm_test_agent.trace import verify_span
+from ddapm_test_agent.trace import Span
+from ddapm_test_agent.trace import Trace
+from ddapm_test_agent.trace import dfs_order
+from ddapm_test_agent.trace import root_span
+from ddapm_test_agent.trace import verify_span
 
 
 # Fix the seed for deterministic results between runs

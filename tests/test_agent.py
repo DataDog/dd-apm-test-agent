@@ -1,6 +1,6 @@
 import json
 
-from dd_apm_test_agent.trace import trace_id
+from ddapm_test_agent.trace import trace_id
 
 
 async def test_trace(

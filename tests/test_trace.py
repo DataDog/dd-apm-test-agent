@@ -3,10 +3,10 @@ import json
 import msgpack
 import pytest
 
-from dd_apm_test_agent.trace import bfs_order
-from dd_apm_test_agent.trace import decode_v04
-from dd_apm_test_agent.trace import dfs_order
-from dd_apm_test_agent.trace import root_span
+from ddapm_test_agent.trace import bfs_order
+from ddapm_test_agent.trace import decode_v04
+from ddapm_test_agent.trace import dfs_order
+from ddapm_test_agent.trace import root_span
 
 from .trace_utils import random_trace
 

@@ -13,10 +13,10 @@ from aiohttp.web import Response
 import msgpack
 import pytest
 
-from dd_apm_test_agent.agent import _parse_csv
-from dd_apm_test_agent.agent import make_app
-from dd_apm_test_agent.snapshot import DEFAULT_SNAPSHOT_IGNORES
-from dd_apm_test_agent.trace import Trace
+from ddapm_test_agent.agent import _parse_csv
+from ddapm_test_agent.agent import make_app
+from ddapm_test_agent.snapshot import DEFAULT_SNAPSHOT_IGNORES
+from ddapm_test_agent.trace import Trace
 
 
 pytest_plugins = "aiohttp.pytest_plugin"

@@ -7,9 +7,9 @@ with open("README.md", "r") as f:
 
 
 setup(
-    name="dd-apm-test-agent",
+    name="ddapm-test-agent",
     description="",
-    url="https://github.com/Datadog/dd-test-agent",
+    url="https://github.com/Datadog/dd-trace-test-agent",
     author="Kyle Verhoog",
     author_email="kyle@verhoog.ca",
     classifiers=[
@@ -21,7 +21,7 @@ setup(
     long_description_content_type="text/markdown",
     license="BSD 3",
     packages=find_packages(exclude=["tests*"]),
-    package_data={"dd_apm_test_agent": ["py.typed"]},
+    package_data={"ddapm_test_agent": ["py.typed"]},
     python_requires=">=3.7",
     install_requires=[
         "aiohttp",
@@ -31,7 +31,7 @@ setup(
     use_scm_version=True,
     entry_points={
         "console_scripts": [
-            "ddapm-test-agent=dd_apm_test_agent.agent:main",
+            "ddapm-test-agent=ddapm_test_agent.agent:main",
         ]
     },
     # Required for mypy compatibility, see
