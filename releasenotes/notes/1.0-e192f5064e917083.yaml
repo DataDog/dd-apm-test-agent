@@ -10,11 +10,15 @@ features:
     agent for a specific session.
 upgrade:
   - |
-    `token` has been renamed to `test_session_token`
-    `X-Datadog-Test-Token` has been renamed to `X-Datadog-Test-Session-Token`
+    `TEST_AGENT_PORT` has been renamed to `PORT`.
   - |
-    The default snapshot directory has been changed from `snaps` to `snapshots`
+    `X-Datadog-Test-Token` has been renamed to `X-Datadog-Test-Session-Token`.
   - |
-    The `/test/start` endpoint has been renamed to `/test/session/start`
+    `token` has been renamed to `test_session_token`.
+    `X-Datadog-Test-Token` has been renamed to `X-Datadog-Test-Session-Token`.
   - |
-    The `/test/snapshot` endpoint has been renamed to `/test/session/snapshot`
+    The default snapshot directory has been changed from `snaps` to `snapshots`.
+  - |
+    The `/test/start` endpoint has been renamed to `/test/session/start`.
+  - |
+    The `/test/snapshot` endpoint has been renamed to `/test/session/snapshot`.
