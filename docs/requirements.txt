@@ -1,5 +1,0 @@
-sphinx==3.3
-sphinx-click==2.5.0
-sphinx-rtd-theme==0.5.0
-reno
-m2r2
