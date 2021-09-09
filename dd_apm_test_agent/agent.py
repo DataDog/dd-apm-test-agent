@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import pprint
+import sys
 from typing import Awaitable
 from typing import Callable
 from typing import List
@@ -190,12 +191,12 @@ class Agent:
                 content_length=int(request.headers["Content-Length"]),
             )
             traces = await self._decode_v04_traces(request)
-            log.info("Received trace payload with %r trace chunks", len(traces))
+            log.info("received trace payload with %r trace chunks", len(traces))
             for i, trace in enumerate(traces):
                 log.info(
                     "Chunk %d\n%s", i, pprint_trace(trace, request.app["log_span_fmt"])
                 )
-            log.info("End of payload %s", "-" * 40)
+            log.info("end of payload %s", "-" * 40)
 
             with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
                 checks.check(
@@ -219,7 +220,7 @@ class Agent:
         snap_dir = request.url.query.get("dir", request.app["snapshot_dir"])
         snap_ci_mode = request.app["snapshot_ci_mode"]
         log.info(
-            "Performing with token=%r, ci_mode=%r and snapshot directory=%r",
+            "performing snapshot with token=%r, ci_mode=%r and snapshot directory=%r",
             token,
             snap_ci_mode,
             snap_dir,
@@ -229,7 +230,7 @@ class Agent:
         default_span_ignores: Set[str] = request.app["snapshot_ignored_attrs"]
         overrides = set(_parse_csv(request.url.query.get("ignores", "")))
         span_ignores = list(default_span_ignores | overrides)
-        log.info("Using ignores %r", span_ignores)
+        log.info("using ignores %r", span_ignores)
 
         with CheckTrace.add_frame(f"snapshot (token='{token}')") as frame:
             frame.add_item(f"Directory: {snap_dir}")
@@ -366,7 +367,7 @@ def make_app(
     return app
 
 
-def main():
+def main(*args):
     parser = argparse.ArgumentParser(
         description="Datadog APM test agent",
         prog="agent",
@@ -425,14 +426,14 @@ def main():
             "All span attributes are available."
         ),
     )
-    args = parser.parse_args()
+    args = parser.parse_args(args=args)
     logging.basicConfig(level=args.log_level)
 
     if not os.path.exists(args.snapshot_dir) or not os.access(
         args.snapshot_dir, os.W_OK | os.X_OK
     ):
         log.warning(
-            "snapshot directory %r does not exist or is not readable. Snapshotting will not work.",
+            "default snapshot directory %r does not exist or is not readable. Snapshotting will not work.",
             os.path.abspath(args.snapshot_dir),
         )
     app = make_app(
@@ -446,4 +447,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(*sys.argv)
