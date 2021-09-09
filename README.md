@@ -1,6 +1,6 @@
 # Datadog APM test agent
 
-A test agent for APM integration libraries.
+Agent for Datadog APM libraries providing testing utilities.
 
 ## Usage
 
@@ -17,10 +17,6 @@ docker run --rm\
             -v $PWD/tests/snapshots:/snapshots\
             kyleverhoog/ddapm-test-agent:latest
 ```
-
-### CI usage
-
-See the [Python library PR](https://github.com/datadog/dd-trace-py/pull/1546).
 
 ## Features
 
@@ -54,24 +50,41 @@ See the [Python library PR](https://github.com/datadog/dd-trace-py/pull/1546).
 
 ### Snapshot testing
 
+The test agent provides a form of [characterization testing](https://en.wikipedia.org/wiki/Characterization_test) which
+we refer to as snapshotting. This allows library maintainers to ensure that traces don't change unexpectedly when making
+unrelated changes.
+
+This can be used to write integration tests by having test cases use the tracer to emit traces which are collected by
+the test agent and compared against reference traces stored previously.
+
+To do snapshot testing with the test agent:
+
+1. Ensure traces are associated with a session token (typically the name of the test case) by either:
+   - Calling the `/test/session/start` with the token endpoint before emitting the traces; or
+   - Attaching an additional query param or header specifying the session token on `/vX.Y/trace` requests (see below for
+     the API specifics). (Required for concurrent test running)
+2. Emit traces (run the integration test).
+3. Signal the end of the session and perform the snapshot comparison by calling the `/tests/session/snapshot` endpoint
+   with the session token. The endpoint will return a `400` response code if the snapshot failed along with a plain-text
+   trace of the error which can be forwarded to the test framework to help triage the issue.
+
 ### TODO
 
 - [ ] Check inconsistent trace id in a trace payload
 - [ ] Required attributes
 - [ ] All referenced spans exist
-- [ ] Trace-logs correlation
-- [ ] Endpoint to fetch the traces for continued testing in the library
 
-## Overview
+## API
 
 ### /test/session/start
 
-Initiate a _synchronous_ test case. All subsequent traces received will be
+Initiate a _synchronous_ session. All subsequent traces received will be
 associated with the required test token provided.
 
-#### [required] `?test_session_token=`
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
 
-Test session token for a test case. This must be unique across all test cases.
+Test session token for a test case. **Ensure this value is unique to avoid conflicts between sessions.**
 
 
 ### /test/session/snapshot
@@ -114,16 +127,24 @@ Warning: it is an error to specify both `file` and `dir`.
 
 ### Environment Variables
 
+- `PORT` [`8126`]: Port to listen on.
+
+- `DISABLED_CHECKS` [`""`]: Comma-separated values of checks to disable.
+
+- `LOG_LEVEL` [`"INFO"`]: Log level to use. DEBUG, INFO, WARNING, ERROR, CRITICAL.
+
+- `LOG_SPAN_FMT` [`"[{name}]"`]: Format string to use when outputting spans in logs.
+
 - `SNAPSHOT_DIR` [`"./snapshots"`]: Directory in which snapshots will be stored.
     Can be overridden by providing the `dir` query param on `/snapshot`.
 
 - `SNAPSHOT_CI` [`0`]: Toggles CI mode for the snapshot tests. Set to `1` to
   enable. CI mode does the following:
-
   - When snapshots are unexpectedly _generated_ from a test case a failure will
     be raised.
 
-- `DD_TEST_AGENT_PORT` [`8126`]: Port to listen on.
+- `SNAPSHOT_IGNORED_ATTRS` [`"span_id,trace_id,parent_id,duration,start,metrics.system.pid,meta.runtime-id"`]: The
+   attributes to ignore when comparing spans in snapshots.
 
 
 ## Development
@@ -139,9 +160,9 @@ You will need Python 3.8 or above and `riot`. It is recommended to create a virt
 
 ### Running the tests
 
-To run the tests:
+To run the tests (in Python 3.8):
 
-    riot run test
+    riot run -p3.8 test
 
 ### Linting and formatting
 
