@@ -1,0 +1,20 @@
+---
+prelude: >
+    The test agent has been rewritten in Python and the API being cleaned up
+    substantially.
+features:
+  - |
+    `/test/traces/` has been added to retrieve traces collected by the agent.
+  - |
+    `/test/session/traces/` has been added to retrieve traces collected by the
+    agent for a specific session.
+upgrade:
+  - |
+    `token` has been renamed to `test_session_token`
+    `X-Datadog-Test-Token` has been renamed to `X-Datadog-Test-Session-Token`
+  - |
+    The default snapshot directory has been changed from `snaps` to `snapshots`
+  - |
+    The `/test/start` endpoint has been renamed to `/test/session/start`
+  - |
+    The `/test/snapshot` endpoint has been renamed to `/test/session/snapshot`

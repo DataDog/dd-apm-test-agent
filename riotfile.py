@@ -43,10 +43,8 @@ venv = Venv(
                 "flake8-blind-except": latest,
                 "flake8-builtins": latest,
                 "flake8-docstrings": latest,
-                "flake8-import-order": latest,
                 "flake8-logging-format": latest,
                 "flake8-rst-docstrings": latest,
-                # needed for some features from flake8-rst-docstrings
                 "pygments": latest,
                 "toml": latest,
             },
@@ -58,20 +56,6 @@ venv = Venv(
                 "mypy": latest,
                 "pytest": latest,
             },
-        ),
-        Venv(
-            name="docs",
-            command="sphinx-build {cmdargs} -W -b html docs docs/_build/",
-            pkgs={
-                "sphinx": "==3.3",
-                "sphinx-rtd-theme": "==0.5.0",
-                "reno": latest,
-                "m2r2": latest,
-            },
-        ),
-        Venv(
-            name="servedocs",
-            command="python -m http.server --directory docs/_build {cmdargs}",
         ),
         Venv(
             pkgs={

@@ -76,6 +76,17 @@ To do snapshot testing with the test agent:
 
 ## API
 
+### /test/traces
+
+Return traces that have been received by the agent. Traces matching specific trace ids can be requested with the options
+below.
+
+#### [optional] `?trace_ids=`
+#### [optional] `X-Datadog-Trace-Ids`
+
+Specify trace ids as comma separated values (eg. `12345,7890,2468`)
+
+
 ### /test/session/start
 
 Initiate a _synchronous_ session. All subsequent traces received will be
@@ -121,6 +132,14 @@ An absolute or relative (to the current working directory of the agent) file
 name where the snap will be stored and retrieved.
 
 Warning: it is an error to specify both `file` and `dir`.
+
+
+### /test/session/traces
+
+Return traces that have been received by the agent for the given session token.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
 
 
 ## Configuration
