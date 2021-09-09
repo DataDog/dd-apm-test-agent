@@ -8,14 +8,14 @@ Agent for Datadog APM libraries providing testing utilities.
 
 ```bash
 # Pull the image
-docker pull kyleverhoog/ddapm-test-agent
+docker pull ghcr.io/datadog/ddapm-test-agent
 
 # Run the test agent and mount the snapshot directory
 docker run --rm\
             -p 8126:8126\
             -e CI_MODE=0\
             -v $PWD/tests/snapshots:/snapshots\
-            kyleverhoog/ddapm-test-agent:latest
+            ghcr.io/datadog/ddapm-test-agent:latest
 ```
 
 ## Features
