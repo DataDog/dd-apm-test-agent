@@ -10,6 +10,7 @@ venv = Venv(
             command="pytest {cmdargs}",
             pys=["3.7", "3.8", "3.9"],
             pkgs={
+                "ddtrace": "==0.51.1",
                 "pytest": latest,
             },
         ),
