@@ -8,6 +8,8 @@ features:
   - |
     `/test/session/traces/` has been added to retrieve traces collected by the
     agent for a specific session.
+  - |
+    The test agent is now published to PyPI. It can be installed with `pip install ddapm-test-agent`.
 upgrade:
   - |
     `TEST_AGENT_PORT` has been renamed to `PORT`.

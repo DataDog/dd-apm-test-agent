@@ -2,21 +2,27 @@
 
 Agent for Datadog APM libraries providing testing utilities.
 
-## Usage
 
-### Local usage
+## Installation
 
-```bash
-# Pull the image
-docker pull ghcr.io/datadog/ddapm-test-agent
+The test agent can be installed from PyPI, docker or from source.
 
-# Run the test agent and mount the snapshot directory
-docker run --rm\
+From PyPI:
+
+    pip install ddapm-test-agent
+
+    ddapm-test-agent --port=8126
+
+
+From Docker:
+
+    # Run the test agent and mount the snapshot directory
+    docker run --rm\
             -p 8126:8126\
             -e CI_MODE=0\
             -v $PWD/tests/snapshots:/snapshots\
             ghcr.io/datadog/ddapm-test-agent:latest
-```
+
 
 ## Features
 
