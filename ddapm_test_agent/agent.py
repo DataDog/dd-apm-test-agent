@@ -15,6 +15,7 @@ from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
 
+from . import _get_version
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
@@ -379,7 +380,14 @@ def main(args: Optional[List[str]] = None) -> None:
         args = sys.argv[1:]
     parser = argparse.ArgumentParser(
         description="Datadog APM test agent",
-        prog="agent",
+        prog="ddapm-test-agent",
+    )
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="store_true",
+        dest="version",
+        help="Print version info and exit.",
     )
     parser.add_argument(
         "-p", "--port", type=int, default=int(os.environ.get("PORT", 8126))
@@ -437,6 +445,10 @@ def main(args: Optional[List[str]] = None) -> None:
     )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
+
+    if parsed_args.version:
+        print(_get_version())
+        sys.exit(0)
 
     if not os.path.exists(parsed_args.snapshot_dir) or not os.access(
         parsed_args.snapshot_dir, os.W_OK | os.X_OK
