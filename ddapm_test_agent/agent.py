@@ -10,7 +10,6 @@ from typing import Callable
 from typing import List
 from typing import Optional
 from typing import Set
-from typing import Tuple
 
 from aiohttp import web
 from aiohttp.web import Request
@@ -375,7 +374,7 @@ def make_app(
     return app
 
 
-def main(args: Optional[Tuple[str]] = None):
+def main(args: Optional[List[str]] = None) -> None:
     if args is None:
         args = sys.argv[1:]
     parser = argparse.ArgumentParser(
@@ -399,7 +398,7 @@ def main(args: Optional[Tuple[str]] = None):
     )
     parser.add_argument(
         "--snapshot-ignored-attrs",
-        type=set,
+        type=Set[str],
         default=set(
             _parse_csv(
                 os.environ.get("SNAPSHOT_IGNORED_ATTRS", DEFAULT_SNAPSHOT_IGNORES)
@@ -413,7 +412,7 @@ def main(args: Optional[Tuple[str]] = None):
     )
     parser.add_argument(
         "--disabled-checks",
-        type=list,
+        type=List[str],
         default=_parse_csv(os.environ.get("DISABLED_CHECKS", "")),
         help=(
             "Comma-separated values of checks to disable. None are disabled "
@@ -436,24 +435,24 @@ def main(args: Optional[Tuple[str]] = None):
             "All span attributes are available."
         ),
     )
-    args = parser.parse_args(args=args)
-    logging.basicConfig(level=args.log_level)
+    parsed_args = parser.parse_args(args=args)
+    logging.basicConfig(level=parsed_args.log_level)
 
-    if not os.path.exists(args.snapshot_dir) or not os.access(
-        args.snapshot_dir, os.W_OK | os.X_OK
+    if not os.path.exists(parsed_args.snapshot_dir) or not os.access(
+        parsed_args.snapshot_dir, os.W_OK | os.X_OK
     ):
         log.warning(
             "default snapshot directory %r does not exist or is not readable. Snapshotting will not work.",
-            os.path.abspath(args.snapshot_dir),
+            os.path.abspath(parsed_args.snapshot_dir),
         )
     app = make_app(
-        disabled_checks=args.disabled_checks,
-        log_span_fmt=args.log_span_fmt,
-        snapshot_dir=args.snapshot_dir,
-        snapshot_ci_mode=args.snapshot_ci_mode,
-        snapshot_ignored_attrs=args.snapshot_ignored_attrs,
+        disabled_checks=parsed_args.disabled_checks,
+        log_span_fmt=parsed_args.log_span_fmt,
+        snapshot_dir=parsed_args.snapshot_dir,
+        snapshot_ci_mode=parsed_args.snapshot_ci_mode,
+        snapshot_ignored_attrs=parsed_args.snapshot_ignored_attrs,
     )
-    web.run_app(app, port=args.port)
+    web.run_app(app, port=parsed_args.port)
 
 
 if __name__ == "__main__":
