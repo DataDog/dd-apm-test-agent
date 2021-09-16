@@ -10,6 +10,7 @@ from typing import Callable
 from typing import List
 from typing import Optional
 from typing import Set
+from typing import Tuple
 
 from aiohttp import web
 from aiohttp.web import Request
@@ -374,7 +375,9 @@ def make_app(
     return app
 
 
-def main(*args):
+def main(args: Optional[Tuple[str]] = None):
+    if args is None:
+        args = sys.argv[1:]
     parser = argparse.ArgumentParser(
         description="Datadog APM test agent",
         prog="agent",
@@ -454,4 +457,4 @@ def main(*args):
 
 
 if __name__ == "__main__":
-    main(*sys.argv)
+    main()
