@@ -75,7 +75,9 @@ SpanAttr = Literal[
     "meta",
     "metrics",
 ]
-TopLevelSpanValue = Union[None, SpanId, TraceId, int, str]
+TopLevelSpanValue = Union[
+    None, SpanId, TraceId, int, str, Dict[str, str], Dict[str, MetricType]
+]
 Trace = List[Span]
 v04TraceChunk = List[List[Span]]
 TraceMap = OrderedDict[int, Trace]

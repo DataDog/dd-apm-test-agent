@@ -253,6 +253,35 @@ def snapshot(
             _compare_traces(exp, rec, set(ignored))
 
 
+def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
+    """Order the span to be more human readable."""
+    d = OrderedDict()
+    order = [
+        "name",
+        "service",
+        "resource",
+        "trace_id",
+        "span_id",
+        "parent_id",
+        "type",
+        "error",
+        "meta",
+        "metrics",
+    ]
+    for k in order:
+        if k in s:
+            if k in ["meta", "metrics"]:
+                # Sort the meta and metrics dictionaries alphanumerically
+                d[k] = OrderedDict(sorted(s[k].items(), key=operator.itemgetter(0)))  # type: ignore
+            else:
+                d[k] = s[k]  # type: ignore
+
+    # Add the rest of the attributes in alphanumeric order.
+    for k in sorted(set(s.keys()) - set(order)):
+        d[k] = s[k]  # type: ignore
+    return d  # type: ignore
+
+
 def _snapshot_trace_str(trace: Trace) -> str:
     cmap = child_map(trace)
     stack: List[Tuple[int, Span]] = [(0, root_span(trace))]
@@ -265,33 +294,8 @@ def _snapshot_trace_str(trace: Trace) -> str:
             else:
                 stack.insert(0, (prefix + 3, child))
 
-        def ordered_span(s: Span) -> OrderedDictType[str, str]:
-            """Order the span to be more human readable."""
-            d = OrderedDict()
-            for k in [
-                "name",
-                "service",
-                "resource",
-                "trace_id",
-                "span_id",
-                "parent_id",
-                "error",
-            ]:
-                if k in s:
-                    d[k] = s[k]  # type: ignore
-            for k in sorted(set(s.keys()) - {"name", "service", "resource"}):
-                d[k] = s[k]  # type: ignore
-
-            d["meta"] = OrderedDict(
-                sorted(s["meta"].items(), key=operator.itemgetter(0))
-            )
-            d["metrics"] = OrderedDict(
-                sorted(s["metrics"].items(), key=operator.itemgetter(0))
-            )
-            return d
-
         s += textwrap.indent(
-            json.dumps(ordered_span(span), indent=2), " " * (prefix + 2)
+            json.dumps(_ordered_span(span), indent=2), " " * (prefix + 2)
         )
         if stack:
             s += ",\n"
