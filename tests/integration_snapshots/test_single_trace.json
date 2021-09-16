@@ -1,22 +1,22 @@
 [[
   {
-    "duration": 73000,
+    "name": "root",
+    "service": "custom_service",
+    "resource": "/url/endpoint",
+    "trace_id": 0,
+    "span_id": 1,
+    "parent_id": 0,
     "error": 0,
+    "duration": 38000,
     "meta": {
-      "runtime-id": "0581ae5a3a7e491b9ed6a6323f75f002"
+      "runtime-id": "ebee976449494ac4b8d58700d561f337"
     },
     "metrics": {
       "_dd.agent_psr": 1.0,
       "_dd.tracer_kr": 1.0,
       "_sampling_priority_v1": 1,
-      "system.pid": 49012
+      "system.pid": 50213
     },
-    "name": "root",
-    "parent_id": 0,
-    "resource": "/url/endpoint",
-    "service": "custom_service",
-    "span_id": 1,
-    "start": 1631157505689591000,
-    "trace_id": 0,
+    "start": 1631760829855306000,
     "type": "web"
   }]]

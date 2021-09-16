@@ -1,11 +1,14 @@
+from collections import OrderedDict
 from collections import defaultdict
 import json
 import logging
+import operator
 import pprint
 import textwrap
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import OrderedDict as OrderedDictType
 from typing import Set
 from typing import Tuple
 from typing import cast
@@ -261,8 +264,34 @@ def _snapshot_trace_str(trace: Trace) -> str:
                 stack.insert(0, (prefix + 3, child))
             else:
                 stack.insert(0, (prefix + 3, child))
+
+        def ordered_span(s: Span) -> OrderedDictType[str, str]:
+            """Order the span to be more human readable."""
+            d = OrderedDict()
+            for k in [
+                "name",
+                "service",
+                "resource",
+                "trace_id",
+                "span_id",
+                "parent_id",
+                "error",
+            ]:
+                if k in s:
+                    d[k] = s[k]  # type: ignore
+            for k in sorted(set(s.keys()) - {"name", "service", "resource"}):
+                d[k] = s[k]  # type: ignore
+
+            d["meta"] = OrderedDict(
+                sorted(s["meta"].items(), key=operator.itemgetter(0))
+            )
+            d["metrics"] = OrderedDict(
+                sorted(s["metrics"].items(), key=operator.itemgetter(0))
+            )
+            return d
+
         s += textwrap.indent(
-            json.dumps(span, sort_keys=True, indent=2), " " * (prefix + 2)
+            json.dumps(ordered_span(span), indent=2), " " * (prefix + 2)
         )
         if stack:
             s += ",\n"
