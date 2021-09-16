@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Fix partial trace chunks (referring to spans in other chunks) causing 500s.
