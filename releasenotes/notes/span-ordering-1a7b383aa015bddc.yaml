@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    Spans output in snapshots are now ordered to be more human readable with
+    the important attributes (name, service, resource) moved to the top of the
+    JSON object. This affects the output JSON but does not break existing
+    snapshots.
