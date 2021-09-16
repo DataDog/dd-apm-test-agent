@@ -193,9 +193,16 @@ class Agent:
             traces = await self._decode_v04_traces(request)
             log.info("received trace payload with %r trace chunks", len(traces))
             for i, trace in enumerate(traces):
-                log.info(
-                    "Chunk %d\n%s", i, pprint_trace(trace, request.app["log_span_fmt"])
-                )
+                try:
+                    log.info(
+                        "Chunk %d\n%s",
+                        i,
+                        pprint_trace(trace, request.app["log_span_fmt"]),
+                    )
+                except ValueError:
+                    log.info(
+                        "Chunk %d could not be displayed (might be incomplete).", i
+                    )
             log.info("end of payload %s", "-" * 40)
 
             with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):

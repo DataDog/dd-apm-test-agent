@@ -1,3 +1,4 @@
+import asyncio
 import os
 import subprocess
 
@@ -29,7 +30,7 @@ async def testagent(loop, testagent_port):
     # Wait for server to start
     try:
         async with aiohttp.ClientSession() as session:
-            while 1:
+            for _ in range(10):
                 try:
                     r = await session.get(f"http://localhost:{testagent_port}")
                 except ClientConnectorError:
@@ -37,6 +38,9 @@ async def testagent(loop, testagent_port):
                 else:
                     if r.status == 404:
                         break
+                await asyncio.sleep(0.05)
+            else:
+                assert 0
             yield session
     finally:
         p.terminate()
@@ -141,3 +145,22 @@ async def test_multi_trace(testagent, tracer):
     )
     assert resp.status == 400
     tracer.shutdown()
+
+
+async def test_trace_distributed_same_payload(testagent, tracer):
+    await testagent.get(
+        "http://localhost:8126/test/session/start?test_session_token=test_trace_distributed_same_payload"
+    )
+    with tracer.trace("root0"):
+        with tracer.trace("child0") as span:
+            ctx = span.context
+
+    tracer.context_provider.activate(ctx)
+    with tracer.trace("root1"):
+        with tracer.trace("child1"):
+            pass
+    tracer.writer.flush_queue()
+    resp = await testagent.get(
+        "http://localhost:8126/test/session/snapshot?test_session_token=test_trace_distributed_same_payload"
+    )
+    assert resp.status == 200
