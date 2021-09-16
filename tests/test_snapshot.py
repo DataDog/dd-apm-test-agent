@@ -213,36 +213,36 @@ async def test_snapshot_trace_differences(agent, expected_traces, actual_traces,
             ],
             """[[
   {
+    "trace_id": 0,
+    "span_id": 1,
+    "parent_id": 0,
     "meta": {},
     "metrics": {},
-    "parent_id": 0,
-    "span_id": 1,
-    "start": 0,
-    "trace_id": 0
+    "start": 0
   },
      {
+       "trace_id": 0,
+       "span_id": 2,
+       "parent_id": 1,
        "meta": {},
        "metrics": {},
-       "parent_id": 1,
-       "span_id": 2,
-       "start": 1,
-       "trace_id": 0
+       "start": 1
      },
         {
+          "trace_id": 0,
+          "span_id": 4,
+          "parent_id": 2,
           "meta": {},
           "metrics": {},
-          "parent_id": 2,
-          "span_id": 4,
-          "start": 4,
-          "trace_id": 0
+          "start": 4
         },
      {
+       "trace_id": 0,
+       "span_id": 3,
+       "parent_id": 1,
        "meta": {},
        "metrics": {},
-       "parent_id": 1,
-       "span_id": 3,
-       "start": 2,
-       "trace_id": 0
+       "start": 2
      }]]\n""",
         )
     ],
