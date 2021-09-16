@@ -223,6 +223,21 @@ document the changes in the generated file, remove the irrelevant sections and
 commit the release note with the change.
 
 
+### Releasing
+
+1. Generate the release notes and use [`pandoc`](https://pandoc.org/) to format
+them for Github:
+
+    riot run -s reno report --no-show-source | pandoc -f rst -t gfm --wrap=none
+
+    Copy the output and put them in a new release: https://github.com/DataDog/dd-apm-test-agent/releases/new.
+
+2. Enter a tag for the release (following [`semver`](https://semver.org)).
+3. Use the tag without the `v` as the title.
+4. Save the release as a draft and pass the link to someone else to give a quick review.
+5. If all looks good hit publish
+
+
 ## Example: Python library usage
 
 ### Synchronous
