@@ -7,17 +7,17 @@
     "span_id": 1,
     "parent_id": 0,
     "error": 0,
-    "duration": 51000,
     "meta": {
-      "runtime-id": "ebee976449494ac4b8d58700d561f337"
+      "runtime-id": "c01c8b1a754045aa99099f1dcf3cba97"
     },
     "metrics": {
       "_dd.agent_psr": 1.0,
       "_dd.tracer_kr": 1.0,
       "_sampling_priority_v1": 1,
-      "system.pid": 50213
+      "system.pid": 50012
     },
-    "start": 1631760831942109000
+    "duration": 125000,
+    "start": 1631826396053392000
   },
      {
        "name": "child0",
@@ -27,10 +27,10 @@
        "span_id": 2,
        "parent_id": 1,
        "error": 0,
-       "duration": 6000,
        "meta": {},
        "metrics": {},
-       "start": 1631760831942149000
+       "duration": 13000,
+       "start": 1631826396053493000
      }],
 [
   {
@@ -41,17 +41,17 @@
     "span_id": 1,
     "parent_id": 0,
     "error": 0,
-    "duration": 20000,
     "meta": {
-      "runtime-id": "ebee976449494ac4b8d58700d561f337"
+      "runtime-id": "c01c8b1a754045aa99099f1dcf3cba97"
     },
     "metrics": {
       "_dd.agent_psr": 1.0,
       "_dd.tracer_kr": 1.0,
       "_sampling_priority_v1": 1,
-      "system.pid": 50213
+      "system.pid": 50012
     },
-    "start": 1631760831942252000
+    "duration": 49000,
+    "start": 1631826396053837000
   },
      {
        "name": "child1",
@@ -61,8 +61,8 @@
        "span_id": 2,
        "parent_id": 1,
        "error": 0,
-       "duration": 4000,
        "meta": {},
        "metrics": {},
-       "start": 1631760831942265000
+       "duration": 9000,
+       "start": 1631826396053868000
      }]]

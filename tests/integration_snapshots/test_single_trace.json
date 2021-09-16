@@ -6,17 +6,17 @@
     "trace_id": 0,
     "span_id": 1,
     "parent_id": 0,
+    "type": "web",
     "error": 0,
-    "duration": 38000,
     "meta": {
-      "runtime-id": "ebee976449494ac4b8d58700d561f337"
+      "runtime-id": "c01c8b1a754045aa99099f1dcf3cba97"
     },
     "metrics": {
       "_dd.agent_psr": 1.0,
       "_dd.tracer_kr": 1.0,
       "_sampling_priority_v1": 1,
-      "system.pid": 50213
+      "system.pid": 50012
     },
-    "start": 1631760829855306000,
-    "type": "web"
+    "duration": 109000,
+    "start": 1631826393738891000
   }]]

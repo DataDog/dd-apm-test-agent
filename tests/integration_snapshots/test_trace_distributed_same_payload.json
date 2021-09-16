@@ -1,66 +1,66 @@
 [[
   {
-    "duration": 61000,
+    "name": "root0",
+    "service": null,
+    "resource": "root0",
+    "trace_id": 0,
+    "span_id": 1,
+    "parent_id": 0,
     "error": 0,
     "meta": {
-      "runtime-id": "3df65266e6314eab9ebdf29f83930202"
+      "runtime-id": "c01c8b1a754045aa99099f1dcf3cba97"
     },
     "metrics": {
       "_dd.agent_psr": 1.0,
       "_dd.tracer_kr": 1.0,
       "_sampling_priority_v1": 1,
-      "system.pid": 47736
+      "system.pid": 50012
     },
-    "name": "root0",
-    "parent_id": 0,
-    "resource": "root0",
-    "service": null,
-    "span_id": 1,
-    "start": 1631758255248029000,
-    "trace_id": 0
+    "duration": 149000,
+    "start": 1631826396314617000
   },
      {
-       "duration": 7000,
+       "name": "child0",
+       "service": null,
+       "resource": "child0",
+       "trace_id": 0,
+       "span_id": 2,
+       "parent_id": 1,
        "error": 0,
        "meta": {},
        "metrics": {},
-       "name": "child0",
-       "parent_id": 1,
-       "resource": "child0",
-       "service": null,
-       "span_id": 2,
-       "start": 1631758255248071000,
-       "trace_id": 0
+       "duration": 17000,
+       "start": 1631826396314735000
      },
         {
-          "duration": 16000,
+          "name": "root1",
+          "service": null,
+          "resource": "root1",
+          "trace_id": 0,
+          "span_id": 3,
+          "parent_id": 2,
           "error": 0,
           "meta": {
-            "runtime-id": "3df65266e6314eab9ebdf29f83930202"
+            "runtime-id": "c01c8b1a754045aa99099f1dcf3cba97"
           },
           "metrics": {
             "_dd.tracer_kr": 1.0,
             "_sampling_priority_v1": 1,
-            "system.pid": 47736
+            "system.pid": 50012
           },
-          "name": "root1",
-          "parent_id": 2,
-          "resource": "root1",
-          "service": null,
-          "span_id": 3,
-          "start": 1631758255248195000,
-          "trace_id": 0
+          "duration": 45000,
+          "start": 1631826396315049000
         },
            {
-             "duration": 4000,
+             "name": "child1",
+             "service": null,
+             "resource": "child1",
+             "trace_id": 0,
+             "span_id": 4,
+             "parent_id": 3,
              "error": 0,
              "meta": {},
              "metrics": {},
-             "name": "child1",
-             "parent_id": 3,
-             "resource": "child1",
-             "service": null,
-             "span_id": 4,
-             "start": 1631758255248204000,
-             "trace_id": 0
+             "duration": 10000,
+             "start": 1631826396315074000
            }]]
