@@ -211,6 +211,18 @@ docker run --rm -v ${PWD}/snaps:/snapshots --publish 8126:8126 agent
 ```
 
 
+### Release notes
+
+This project follows [`semver`](https://semver.org/) and so bug fixes, breaking
+changes, new features, etc must be accompanied by a release note. To generate a
+release note:
+
+    riot run reno new <short-description-of-change>
+
+document the changes in the generated file, remove the irrelevant sections and
+commit the release note with the change.
+
+
 ## Example: Python library usage
 
 ### Synchronous

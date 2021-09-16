@@ -58,19 +58,11 @@ venv = Venv(
             },
         ),
         Venv(
+            name="reno",
             pkgs={
                 "reno": latest,
             },
-            venvs=[
-                Venv(
-                    name="releasenote",
-                    command="reno new --edit {cmdargs}",
-                ),
-                Venv(
-                    name="reno",
-                    command="reno {cmdargs}",
-                ),
-            ],
+            command="reno {cmdargs}",
         ),
     ],
 )
