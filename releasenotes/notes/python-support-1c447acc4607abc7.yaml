@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    Specify required Python version to >=3.8. It was mistakenly set to >=3.7
+    in setup.py.

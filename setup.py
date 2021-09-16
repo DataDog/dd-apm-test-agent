@@ -22,7 +22,7 @@ setup(
     license="BSD 3",
     packages=find_packages(exclude=["tests*"]),
     package_data={"ddapm_test_agent": ["py.typed"]},
-    python_requires=">=3.7",
+    python_requires=">=3.8",
     install_requires=[
         "aiohttp",
         "msgpack",
