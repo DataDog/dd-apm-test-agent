@@ -8,8 +8,8 @@ with open("README.md", "r") as f:
 
 setup(
     name="ddapm-test-agent",
-    description="",
-    url="https://github.com/Datadog/dd-trace-test-agent",
+    description="Test agent for Datadog APM client libraries",
+    url="https://github.com/Datadog/dd-apm-test-agent",
     author="Kyle Verhoog",
     author_email="kyle@verhoog.ca",
     classifiers=[
