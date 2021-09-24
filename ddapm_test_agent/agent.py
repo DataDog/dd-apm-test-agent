@@ -256,8 +256,8 @@ class Agent:
             snap_path_exists = os.path.exists(snap_file)
             if snap_ci_mode and not snap_path_exists:
                 raise AssertionError(
-                    f"Snapshot file '{snap_file}' not found."
-                    "Perhaps the file was not checked into source control?"
+                    f"Snapshot file '{snap_file}' not found. "
+                    "Perhaps the file was not checked into source control? "
                     "The snapshot file is automatically generated when the test case is run when not in CI mode."
                 )
             elif snap_path_exists:
