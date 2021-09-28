@@ -142,6 +142,7 @@ class Agent:
                     break
             manual_reqs.append(req)
         else:
+            # If the for loop falls through then there were no matching traces.
             manual_reqs = []
 
         assoc_reqs = (

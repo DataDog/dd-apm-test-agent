@@ -30,7 +30,7 @@ async def testagent(loop, testagent_port):
     # Wait for server to start
     try:
         async with aiohttp.ClientSession() as session:
-            for _ in range(10):
+            for _ in range(20):
                 try:
                     r = await session.get(f"http://localhost:{testagent_port}")
                 except ClientConnectorError:
