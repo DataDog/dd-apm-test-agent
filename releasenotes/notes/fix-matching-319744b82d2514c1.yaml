@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    Fix the snapshot matching algorithm which had previously assumed that trace
+    ids would be unique across both sets of traces.

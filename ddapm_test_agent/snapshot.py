@@ -1,5 +1,4 @@
 from collections import OrderedDict
-from collections import defaultdict
 import json
 import logging
 import operator
@@ -24,6 +23,7 @@ from .trace import bfs_order
 from .trace import child_map
 from .trace import copy_trace
 from .trace import root_span
+from .trace import trace_id as get_trace_id
 
 
 log = logging.getLogger(__name__)
@@ -116,25 +116,36 @@ def _normalize_traces(traces: List[Trace]) -> List[Trace]:
 
 
 def _match_traces(t1s: List[Trace], t2s: List[Trace]) -> List[Tuple[Trace, Trace]]:
-    similarities: Dict[TraceId, List[Tuple[TraceId, int]]] = defaultdict(lambda: [])
-    t1_map: Dict[TraceId, Trace] = {}
-    t2_map: Dict[TraceId, Trace] = {}
-    for t1 in t1s:
-        t1_trace_id = t1[0]["trace_id"]
-        t1_map[t1_trace_id] = t1
-        for t2 in t2s:
-            t2_trace_id = t2[0]["trace_id"]
-            t2_map[t2_trace_id] = t2
-            similarities[t1_trace_id].append((t2_trace_id, _trace_similarity(t1, t2)))
+    t1_map: Dict[TraceId, Trace] = {get_trace_id(t): t for t in t1s}
+    t2_map: Dict[TraceId, Trace] = {get_trace_id(t): t for t in t2s}
+    # Note: cannot assume trace_ids are unique between t1s and t2s (since snapshot normalizes them)
+    similarities: List[Tuple[TraceId, TraceId, int]] = []
 
+    # Map the similarity of every trace in t1s to every trace in t2s
+    for t1_trace_id, t1 in t1_map.items():
+        for t2_trace_id, t2 in t2_map.items():
+            similarities.append((t1_trace_id, t2_trace_id, _trace_similarity(t1, t2)))
+
+    # Sort the similarities by score
+    similarities = sorted(similarities, key=lambda x: x[2], reverse=True)
+
+    # Go over the scores and match the traces
+    matched_t1s = set()
+    matched_t2s = set()
     matches: List[Tuple[Trace, Trace]] = []
-    tids_to_match = set(similarities.keys())
-    while tids_to_match:
-        tid = tids_to_match.pop()
-        match_tid, match_score = max(similarities[tid], key=lambda t: t[1])
-        matches.append((t1_map[tid], t2_map[match_tid]))
+    for (t1_trace_id, t2_trace_id, score) in similarities:
+        if (t1_trace_id in matched_t1s) or (t2_trace_id in matched_t2s):
+            continue
+        matches.append((t1_map[t1_trace_id], t2_map[t2_trace_id]))
+        matched_t1s.add(t1_trace_id)
+        matched_t2s.add(t2_trace_id)
 
-    assert tids_to_match == set(), f"Unmatched traces {tids_to_match}"
+    assert len(matched_t1s) == len(
+        t1_map
+    ), f"Unmatched traces {matched_t1s - set(t1_map.keys())}"
+    assert len(matched_t2s) == len(
+        t2_map
+    ), f"Unmatched traces {matched_t2s - set(t2_map.keys())}"
     return matches
 
 
