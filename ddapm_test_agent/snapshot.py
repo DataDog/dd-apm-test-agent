@@ -142,10 +142,10 @@ def _match_traces(t1s: List[Trace], t2s: List[Trace]) -> List[Tuple[Trace, Trace
 
     assert len(matched_t1s) == len(
         t1_map
-    ), f"Unmatched traces {matched_t1s - set(t1_map.keys())}"
+    ), f"Unmatched expected traces {set(t1_map.keys()) - matched_t1s}"
     assert len(matched_t2s) == len(
         t2_map
-    ), f"Unmatched traces {matched_t2s - set(t2_map.keys())}"
+    ), f"Unmatched received traces {set(t2_map.keys()) - matched_t2s}"
     return matches
 
 
