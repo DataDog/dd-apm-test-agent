@@ -128,33 +128,27 @@ class Agent:
         return (await self.traces())[trace_id]
 
     def _requests_by_session(self, token: Optional[str]) -> List[Request]:
+        """Return the latest requests sent with the given token.
+
+        All requests since the most recent /session/start request are included.
+
+        If no /session/start is given for the token then all requests made with
+        the token are returned.
+        """
         # Go backwards in the requests received gathering requests until
         # the /session-start request for the token is found.
-        manual_reqs: List[Request] = []
+        reqs: List[Request] = []
         for req in reversed(self._requests):
             if req.match_info.handler == self.handle_session_start:
                 if token is None or _session_token(req) == token:
                     break
                 else:
                     # The requests made were from a different manual session
-                    # so discard them.
-                    manual_reqs = []
-                    break
-            manual_reqs.append(req)
-        else:
-            # If the for loop falls through then there were no matching traces.
-            manual_reqs = []
-
-        assoc_reqs = (
-            [
-                r
-                for r in self._requests
-                if _session_token(r) == token and r not in manual_reqs
-            ]
-            if token is not None
-            else []
-        )
-        return manual_reqs + assoc_reqs
+                    # so continue.
+                    continue
+            if _session_token(req) in [token, None]:
+                reqs.append(req)
+        return reqs
 
     async def _traces_by_session(self, token: Optional[str]) -> List[Trace]:
         """Return the traces that belong to the given session token.
@@ -310,17 +304,25 @@ class Agent:
         """Clear traces by session token or all traces if none is provided."""
         session_token = request["session_token"]
         if session_token is not None:
+            # Clear any synchronous sessions.
+            in_token_sync_session = False
+            for req in self._requests:
+                if req.match_info.handler == self.handle_session_start:
+                    if _session_token(req) == session_token:
+                        in_token_sync_session = True
+                    else:
+                        in_token_sync_session = False
+                if in_token_sync_session:
+                    setattr(req, "__delete", True)
+
+            # Filter out all the requests.
             self._requests = [
-                r for r in self._requests if _session_token(r) != session_token
+                r
+                for r in self._requests
+                if _session_token(r) != session_token and not hasattr(r, "__delete")
             ]
         else:
-            # Clear all requests made after a /session-start
-            i = 0
-            for req in reversed(self._requests):
-                if req.match_info.handler == self.handle_session_start:
-                    break
-                i -= 1
-            self._requests = self._requests[:i]
+            self._requests = []
         return web.HTTPOk()
 
     async def handle_trace_analyze(self, request: Request) -> web.Response:

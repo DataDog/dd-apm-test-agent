@@ -133,6 +133,23 @@ async def test_multi_trace(testagent, tracer):
     )
     assert resp.status == 200
 
+    # Run the snapshot test again.
+    await testagent.get(
+        "http://localhost:8126/test/session/start?test_session_token=test_multi_trace"
+    )
+    with tracer.trace("root0"):
+        with tracer.trace("child0"):
+            pass
+    with tracer.trace("root1"):
+        with tracer.trace("child1"):
+            pass
+    tracer.writer.flush_queue()
+    resp = await testagent.get(
+        "http://localhost:8126/test/session/snapshot?test_session_token=test_multi_trace"
+    )
+    assert resp.status == 200
+
+    # Simulate a failed snapshot with a missing trace.
     await testagent.get(
         "http://localhost:8126/test/session/start?test_session_token=test_multi_trace"
     )
@@ -164,3 +181,29 @@ async def test_trace_distributed_same_payload(testagent, tracer):
         "http://localhost:8126/test/session/snapshot?test_session_token=test_trace_distributed_same_payload"
     )
     assert resp.status == 200
+
+
+async def test_trace_missing_received(testagent, tracer):
+    resp = await testagent.get(
+        "http://localhost:8126/test/session/start?test_session_token=test_trace_missing_received"
+    )
+    assert resp.status == 200, await resp.text()
+
+    with tracer.trace("root0"):
+        with tracer.trace("child0"):
+            pass
+    tracer.writer.flush_queue()
+    resp = await testagent.get(
+        "http://localhost:8126/test/session/snapshot?test_session_token=test_trace_missing_received"
+    )
+    assert resp.status == 200
+
+    # Do another snapshot without sending any traces.
+    resp = await testagent.get(
+        "http://localhost:8126/test/session/start?test_session_token=test_trace_missing_received"
+    )
+    assert resp.status == 200, await resp.text()
+    resp = await testagent.get(
+        "http://localhost:8126/test/session/snapshot?test_session_token=test_trace_missing_received"
+    )
+    assert resp.status == 400

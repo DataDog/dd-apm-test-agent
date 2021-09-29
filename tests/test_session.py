@@ -37,11 +37,20 @@ async def test_synchronous_session_single_trace(
     assert await resp.json() == []
 
 
-async def test_multi_session(
+async def test_concurrent_session(
     agent,
     v04_reference_http_trace_payload_data_raw,
     do_reference_v04_http_trace,
 ):
+    resp = await agent.get(
+        "/test/session/start", params={"test_session_token": "test_case"}
+    )
+    assert resp.status == 200, await resp.text()
+    resp = await agent.get(
+        "/test/session/start", params={"test_session_token": "test_case2"}
+    )
+    assert resp.status == 200, await resp.text()
+
     resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200, await resp.text()
 
@@ -67,3 +76,35 @@ async def test_multi_session(
         )
         assert resp.status == 200
         assert await resp.json() == []
+
+
+async def test_two_sessions(
+    agent,
+    v04_reference_http_trace_payload_data_raw,
+    do_reference_v04_http_trace,
+):
+    """
+    When sessions are run again
+        Only the traces for the latest session should be returned.
+    """
+    resp = await agent.get(
+        "/test/session/start", params={"test_session_token": "test_case"}
+    )
+    assert resp.status == 200, await resp.text()
+
+    resp = await do_reference_v04_http_trace(token="test_case")
+    assert resp.status == 200, await resp.text()
+
+    resp = await agent.get(
+        "/test/session/start", params={"test_session_token": "test_case"}
+    )
+    assert resp.status == 200, await resp.text()
+
+    resp = await do_reference_v04_http_trace(token="test_case")
+    assert resp.status == 200, await resp.text()
+
+    resp = await agent.get(
+        "/test/session/traces", params={"test_session_token": "test_case"}
+    )
+    assert resp.status == 200
+    assert await resp.json() == v04_reference_http_trace_payload_data_raw
