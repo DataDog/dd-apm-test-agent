@@ -290,6 +290,10 @@ def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
     # Add the rest of the attributes in alphanumeric order.
     for k in sorted(set(s.keys()) - set(order)):
         d[k] = s[k]  # type: ignore
+
+    for k in ["meta", "metrics"]:
+        if k in d and len(d[k]) == 0:
+            del d[k]
     return d  # type: ignore
 
 

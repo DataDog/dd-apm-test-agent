@@ -74,6 +74,18 @@ To do snapshot testing with the test agent:
    with the session token. The endpoint will return a `400` response code if the snapshot failed along with a plain-text
    trace of the error which can be forwarded to the test framework to help triage the issue.
 
+
+#### Snapshot output
+
+The traces are normalized and output in JSON to a file. The following transformations are made to the input:
+
+- Trace ids are overwritten to match the order in which the traces were received.
+- Span ids are overwritten to be the DFS order of the spans in the trace tree.
+- Span attributes are ordered to be more human-readable, with the important attributes being listed first.
+- Span attributes are otherwise ordered alphanumerically.
+- The span meta and metrics maps if empty are excluded.
+
+
 ### TODO
 
 - [ ] Check inconsistent trace id in a trace payload

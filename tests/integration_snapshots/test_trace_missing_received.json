@@ -8,16 +8,16 @@
     "parent_id": 0,
     "error": 0,
     "meta": {
-      "runtime-id": "55e8c714e39543198cc99c53617faf9e"
+      "runtime-id": "2d377516ca12429aaf072f037ed2e4cc"
     },
     "metrics": {
       "_dd.agent_psr": 1.0,
       "_dd.tracer_kr": 1.0,
       "_sampling_priority_v1": 1,
-      "system.pid": 60904
+      "system.pid": 28509
     },
-    "duration": 73000,
-    "start": 1632956239689971000
+    "duration": 98000,
+    "start": 1633558543448651000
   },
      {
        "name": "child0",
@@ -27,8 +27,6 @@
        "span_id": 2,
        "parent_id": 1,
        "error": 0,
-       "meta": {},
-       "metrics": {},
-       "duration": 6000,
-       "start": 1632956239690025000
+       "duration": 12000,
+       "start": 1633558543448725000
      }]]
