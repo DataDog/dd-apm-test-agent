@@ -1,0 +1,4 @@
+---
+other:
+  - |
+    Snapshots will no longer have empty meta/metrics maps included in the output.

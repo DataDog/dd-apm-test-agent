@@ -9,14 +9,14 @@
     "type": "web",
     "error": 0,
     "meta": {
-      "runtime-id": "c01c8b1a754045aa99099f1dcf3cba97"
+      "runtime-id": "2d377516ca12429aaf072f037ed2e4cc"
     },
     "metrics": {
       "_dd.agent_psr": 1.0,
       "_dd.tracer_kr": 1.0,
       "_sampling_priority_v1": 1,
-      "system.pid": 50012
+      "system.pid": 28509
     },
-    "duration": 109000,
-    "start": 1631826393738891000
+    "duration": 76000,
+    "start": 1633558540524060000
   }]]
