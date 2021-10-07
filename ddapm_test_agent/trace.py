@@ -79,7 +79,7 @@ TopLevelSpanValue = Union[
     None, SpanId, TraceId, int, str, Dict[str, str], Dict[str, MetricType]
 ]
 Trace = List[Span]
-v04TraceChunk = List[List[Span]]
+v04TracePayload = List[List[Span]]
 TraceMap = OrderedDict[int, Trace]
 
 
@@ -127,12 +127,12 @@ def v04_verify_trace(maybe_trace: Any) -> Trace:
     return cast(Trace, maybe_trace)
 
 
-def _verify_v04_payload(data: Any) -> v04TraceChunk:
+def _verify_v04_payload(data: Any) -> v04TracePayload:
     if not isinstance(data, list):
-        raise TypeError("Trace chunk must be a list.")
+        raise TypeError("Trace payload must be a list.")
     for maybe_trace in data:
         v04_verify_trace(maybe_trace)
-    return cast(v04TraceChunk, data)
+    return cast(v04TracePayload, data)
 
 
 def child_map(trace: Trace) -> Dict[int, List[Span]]:
@@ -255,11 +255,11 @@ def set_metric_tag(s: Span, k: str, v: MetricType) -> Span:
     return s
 
 
-def decode_v04(content_type: str, data: bytes) -> v04TraceChunk:
+def decode_v04(content_type: str, data: bytes) -> v04TracePayload:
     if content_type == "application/msgpack":
-        chunk = msgpack.unpackb(data)
+        payload = msgpack.unpackb(data)
     elif content_type == "application/json":
-        chunk = json.loads(data)
+        payload = json.loads(data)
     else:
         raise TypeError("Content type %r not supported" % content_type)
-    return _verify_v04_payload(chunk)
+    return _verify_v04_payload(payload)

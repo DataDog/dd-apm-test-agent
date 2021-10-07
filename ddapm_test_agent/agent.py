@@ -26,7 +26,7 @@ from .trace import Trace
 from .trace import TraceMap
 from .trace import decode_v04
 from .trace import pprint_trace
-from .trace import v04TraceChunk
+from .trace import v04TracePayload
 from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
@@ -170,7 +170,7 @@ class Agent:
                         tracemap[trace_id].append(span)
         return list(tracemap.values())
 
-    async def _decode_v04_traces(self, request: Request) -> v04TraceChunk:
+    async def _decode_v04_traces(self, request: Request) -> v04TracePayload:
         content_type = request.content_type
         raw_data = await request.read()
         return decode_v04(content_type, raw_data)
