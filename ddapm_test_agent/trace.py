@@ -263,3 +263,71 @@ def decode_v04(content_type: str, data: bytes) -> v04TracePayload:
     else:
         raise TypeError("Content type %r not supported" % content_type)
     return _verify_v04_payload(payload)
+
+
+def decode_v05(data: bytes) -> v04TracePayload:
+    payload = msgpack.unpackb(data, strict_map_key=False)
+    if not isinstance(payload, list):
+        raise TypeError(
+            "Trace payload must be an array containing two elements, got type %r."
+            % type(payload)
+        )
+    if len(payload) != 2:
+        raise TypeError(
+            "Trace payload must contain two elements, got an array with %r elements."
+            % len(payload)
+        )
+
+    maybe_string_table = payload[0]
+    for s in maybe_string_table:
+        if not isinstance(s, str):
+            raise TypeError("String table contains non-string value %r." % s)
+    string_table = cast(List[str], maybe_string_table)
+
+    v05_traces = payload[1]
+    traces: List[List[Span]] = []
+    for v05_trace in v05_traces:
+        trace: List[Span] = []
+        for v05_span in v05_trace:
+            if not isinstance(v05_span, list):
+                raise TypeError(
+                    "Span data was not an array, got type %r." % type(v05_span)
+                )
+            if len(v05_span) != 12:
+                raise TypeError(
+                    "Span data was not an array of size 12, got array of size %r"
+                    % len(v05_span)
+                )
+
+            v05_meta = v05_span[9]
+            meta: Dict[str, str] = {}
+            for idx1, idx2 in v05_meta.items():
+                meta[string_table[idx1]] = string_table[idx2]
+
+            v05_metrics = v05_span[10]
+            metrics: Dict[str, MetricType] = {}
+            for idx, val in v05_metrics.items():
+                if not isinstance(val, (float, int)):
+                    raise TypeError("Unexpected metric type %s" % type(val))
+                metrics[string_table[idx]] = val
+
+            # Recreate the span using the string values from the table
+            span = verify_span(
+                {
+                    "service": string_table[v05_span[0]],
+                    "name": string_table[v05_span[1]],
+                    "resource": string_table[v05_span[2]],
+                    "trace_id": v05_span[3],
+                    "span_id": v05_span[4],
+                    "parent_id": v05_span[5],
+                    "start": v05_span[6],
+                    "duration": v05_span[7],
+                    "error": v05_span[8],
+                    "meta": meta,
+                    "metrics": metrics,
+                    "type": string_table[v05_span[11]],
+                }
+            )
+            trace.append(span)
+        traces.append(trace)
+    return traces

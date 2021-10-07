@@ -8,6 +8,7 @@ import sys
 from typing import Awaitable
 from typing import Callable
 from typing import List
+from typing import Literal
 from typing import Optional
 from typing import Set
 
@@ -25,6 +26,7 @@ from .snapshot import snapshot
 from .trace import Trace
 from .trace import TraceMap
 from .trace import decode_v04
+from .trace import decode_v05
 from .trace import pprint_trace
 from .trace import v04TracePayload
 from .trace_checks import CheckMetaTracerVersionHeader
@@ -175,7 +177,19 @@ class Agent:
         raw_data = await request.read()
         return decode_v04(content_type, raw_data)
 
+    async def _decode_v05_traces(self, request: Request) -> v04TracePayload:
+        raw_data = await request.read()
+        return decode_v05(raw_data)
+
     async def handle_v04_traces(self, request: Request) -> web.Response:
+        return await self._handle_traces(request, version="v0.4")
+
+    async def handle_v05_traces(self, request: Request) -> web.Response:
+        return await self._handle_traces(request, version="v0.5")
+
+    async def _handle_traces(
+        self, request: Request, version: Literal["v0.4", "v0.5"]
+    ) -> web.Response:
         self._requests.append(request)
         checks: Checks = request.app["checks"]
 
@@ -186,7 +200,10 @@ class Agent:
                 "trace_content_length",
                 content_length=int(request.headers["Content-Length"]),
             )
-            traces = await self._decode_v04_traces(request)
+            if version == "v0.4":
+                traces = await self._decode_v04_traces(request)
+            elif version == "v0.5":
+                traces = await self._decode_v05_traces(request)
             log.info("received trace payload with %r trace chunks", len(traces))
             for i, trace in enumerate(traces):
                 try:
@@ -210,9 +227,6 @@ class Agent:
 
         # TODO: implement sampling logic
         return web.json_response(data={"rate_by_service": {}})
-
-    async def handle_v05(self, request: Request) -> web.Response:
-        raise NotImplementedError
 
     async def handle_session_start(self, request: Request) -> web.Response:
         self._requests.append(request)
@@ -352,7 +366,8 @@ def make_app(
         [
             web.post("/v0.4/traces", agent.handle_v04_traces),
             web.put("/v0.4/traces", agent.handle_v04_traces),
-            web.put("/v0.5/traces", agent.handle_v05),
+            web.post("/v0.5/traces", agent.handle_v05_traces),
+            web.put("/v0.5/traces", agent.handle_v05_traces),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/snapshot", agent.handle_snapshot),
