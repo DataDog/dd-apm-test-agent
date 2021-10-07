@@ -54,6 +54,15 @@ From Docker:
   - eg. "type: web" has resource
 
 
+### Returning data
+
+All data that is submitted to the test agent can be retrieved.
+
+#### Traces
+
+Traces can be returned via the `/test/traces` endpoint documented below.
+
+
 ### Snapshot testing
 
 The test agent provides a form of [characterization testing](https://en.wikipedia.org/wiki/Characterization_test) which
@@ -188,7 +197,8 @@ Return traces that have been received by the agent for the given session token.
 
 ### Prerequisites
 
-You will need Python 3.8 or above and `riot`. It is recommended to create a virtualenv:
+You will need Python 3.8 or above and [`riot`](https://github.com/Datadog/riot). It is recommended to create and work
+out of a virtualenv:
 
     virtualenv --python=3.8 .venv
     source .venv/bin/activate
@@ -203,10 +213,11 @@ To run the tests (in Python 3.8):
 
 ### Linting and formatting
 
-To lint and format the code:
+To lint, format and type-check the code:
 
     riot run -s flake8
     riot run -s fmt
+    riot run -s mypy
 
 ### Docker
 
@@ -229,9 +240,9 @@ This project follows [`semver`](https://semver.org/) and so bug fixes, breaking
 changes, new features, etc must be accompanied by a release note. To generate a
 release note:
 
-
-    riot run reno new <short-description-of-change>
-
+```bash
+riot run reno new <short-description-of-change>
+```
 
 document the changes in the generated file, remove the irrelevant sections and
 commit the release note with the change.
@@ -241,73 +252,12 @@ commit the release note with the change.
 
 1. Generate the release notes and use [`pandoc`](https://pandoc.org/) to format
 them for Github:
-
+```bash
     riot run -s reno report --no-show-source | pandoc -f rst -t gfm --wrap=none
-
-    Copy the output and put them in a new release: https://github.com/DataDog/dd-apm-test-agent/releases/new.
+```
+   Copy the output into a new release: https://github.com/DataDog/dd-apm-test-agent/releases/new.
 
 2. Enter a tag for the release (following [`semver`](https://semver.org)).
 3. Use the tag without the `v` as the title.
 4. Save the release as a draft and pass the link to someone else to give a quick review.
 5. If all looks good hit publish
-
-
-## Example: Python library usage
-
-### Synchronous
-
-For synchronous usage we simply need to tell the test agent when a test case
-has started and then when it's done, query the results.
-
-```python
-def snapshot(ignores=None, file=None, dir=None):
-    import pytest
-    from ddtrace.compat import httplib
-    from ddtrace import tracer
-
-    ignores = ignores or []
-
-    def dec(f):
-
-        def wrapper(*args, **kwargs):
-            if len(args) > 1:
-                self = args[0]
-                clsname = self.__class__.__name__
-            else:
-                clsname = ""
-
-            # Unique test token for this test case: the fully qualified test name.
-            token = "{}{}{}.{}".format(__name__, "." if clsname else "", clsname, f.__name__)
-
-            try:
-                # Connection to the test agent.
-                conn = httplib.HTTPConnection(tracer.writer.api.hostname, tracer.writer.api.port)
-
-                # Signal the start of this test case.
-                conn.request("GET", "/test/session/start?test_session_token=%s" % token, {}, {})
-
-                # Run the test case.
-                ret = f(*args, **kwargs)
-
-                # Flush any generated traces so we don't have to wait.
-                tracer.writer.flush_queue()
-
-                ignoresqs = ",".join(ignores)
-                conn = httplib.HTTPConnection(tracer.writer.api.hostname, tracer.writer.api.port)
-
-                # Query for the results of the snapshot test
-                conn.request("GET", "/test/session/snapshot?ignores=%s&test_session_token=%s&file=%s&dir=%s" % (ignoresqs, token, file, dir), {}, {})
-
-                # If we get a non-200 response code the test failed.
-                r = conn.getresponse()
-                if r.status != 200:
-                    # A plain-text message is included in the body which can be
-                    # presented to the user.
-                    pytest.fail(r.read().decode(), pytrace=False)
-
-                return ret
-            finally:
-                conn.close()
-        return wrapper
-    return dec
-```
