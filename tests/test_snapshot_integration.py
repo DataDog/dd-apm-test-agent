@@ -4,6 +4,7 @@ import subprocess
 
 import aiohttp
 from aiohttp.client_exceptions import ClientConnectorError
+from aiohttp.client_exceptions import ClientOSError
 from ddtrace import Tracer
 import pytest
 
@@ -33,7 +34,7 @@ async def testagent(loop, testagent_port):
             for _ in range(20):
                 try:
                     r = await session.get(f"http://localhost:{testagent_port}")
-                except ClientConnectorError:
+                except (ClientConnectorError, ClientOSError):
                     pass
                 else:
                     if r.status == 404:
