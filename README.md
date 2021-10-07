@@ -58,6 +58,22 @@ All data that is submitted to the test agent can be retrieved.
 - Traces can be returned via the `/test/traces` endpoint documented [below](#API).
 
 
+### Helpful logging
+
+The `INFO` log level of the test agent outputs useful information about the requests the test agent receives. For traces
+this includes a visual representation of the traces.
+
+```
+INFO:ddapm_test_agent.agent:received trace payload with 1 trace chunk
+INFO:ddapm_test_agent.agent:Chunk 0
+[parent]
+├─ [child1]
+├─ [child2]
+└─ [child3]
+INFO:ddapm_test_agent.agent:end of payload ----------------------------------------
+```
+
+
 ### Snapshot testing
 
 The test agent provides a form of [characterization testing](https://en.wikipedia.org/wiki/Characterization_test) which
