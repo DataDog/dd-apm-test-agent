@@ -77,6 +77,15 @@ INFO:ddapm_test_agent.agent:end of payload -------------------------------------
 ```
 
 
+### Proxy
+
+The test agent provides proxying to the Datadog agent. This is enabled by passing the agent url to the test agent
+either via the `--agent-url` commandline argument or by the `DD_TRACE_AGENT_URL` or `DD_AGENT_URL` environment
+variables.
+
+When proxying is enabled the response from the Datadog agent will be returned instead of one from the test agent.
+
+
 ### Snapshot testing
 
 The test agent provides a form of [characterization testing](https://en.wikipedia.org/wiki/Characterization_test) which
@@ -138,6 +147,9 @@ Please refer to `ddapm-test-agent --help`.
 
 - `SNAPSHOT_IGNORED_ATTRS` [`"span_id,trace_id,parent_id,duration,start,metrics.system.pid,meta.runtime-id"`]: The
   attributes to ignore when comparing spans in snapshots.
+
+- `DD_AGENT_URL` [`""`]: URL to a Datadog agent. When provided requests will be proxied to the agent.
+
 
 
 ## API

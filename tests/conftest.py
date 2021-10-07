@@ -48,6 +48,11 @@ def snapshot_ignored_attrs() -> Generator[Set[str], None, None]:
 
 
 @pytest.fixture
+def agent_url() -> Generator[str, None, None]:
+    yield ""
+
+
+@pytest.fixture
 async def agent_app(
     aiohttp_server,
     agent_disabled_checks,
@@ -55,6 +60,7 @@ async def agent_app(
     snapshot_dir,
     snapshot_ci_mode,
     snapshot_ignored_attrs,
+    agent_url,
 ):
     app = await aiohttp_server(
         make_app(
@@ -63,6 +69,7 @@ async def agent_app(
             str(snapshot_dir),
             snapshot_ci_mode,
             snapshot_ignored_attrs,
+            agent_url,
         )
     )
     yield app
