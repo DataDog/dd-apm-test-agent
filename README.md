@@ -1,5 +1,8 @@
 # Datadog APM test agent
 
+![GitHub Workflow Status (branch)](https://img.shields.io/github/workflow/status/DataDog/dd-apm-test-agent/CI/master?style=flat-square)
+![PyPI](https://img.shields.io/pypi/v/ddapm-test-agent?style=flat-square)
+
 <img align="right" src="https://user-images.githubusercontent.com/6321485/136316621-b4af42b6-4d1f-4482-a45b-bdee47e94bb8.jpeg" alt="bits agent" width="200px"/>
 
 The APM test agent is an application which emulates the APM endpoints of
