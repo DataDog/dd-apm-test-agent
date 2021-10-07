@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Add support for the /v0.5/traces endpoint. Traces sent to this endpoint can
+    be queried and snapshotted just as they can be for /v0.4/traces.
