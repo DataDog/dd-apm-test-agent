@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    Trace requests can now be proxied to an actual agent by passing an agent
+    url to the test agent. This can be done by passing the ``--agent-url``
+    command-line option or via the ``DD_AGENT_URL`` or ``DD_TRACE_AGENT_URL``
+    environment variables.

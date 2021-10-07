@@ -12,6 +12,7 @@ from typing import Literal
 from typing import Optional
 from typing import Set
 
+from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
@@ -225,6 +226,20 @@ class Agent:
                     num_traces=len(traces),
                 )
 
+        agent_url = request.app["agent_url"]
+        if agent_url:
+            log.info("Forwarding request to agent at %r", agent_url)
+            async with ClientSession() as session:
+                async with session.post(
+                    f"{agent_url}/v0.4/traces",
+                    headers=request.headers,
+                    data=await request.read(),
+                ) as resp:
+                    assert resp.status == 200
+                    data = await resp.json()
+                    log.info("Got response %r from agent", data)
+                    return web.json_response(data=data)
+
         # TODO: implement sampling logic
         return web.json_response(data={"rate_by_service": {}})
 
@@ -353,6 +368,7 @@ def make_app(
     snapshot_dir: str,
     snapshot_ci_mode: bool,
     snapshot_ignored_attrs: List[str],
+    agent_url: str,
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
@@ -390,6 +406,7 @@ def make_app(
     app["snapshot_ci_mode"] = snapshot_ci_mode
     app["log_span_fmt"] = log_span_fmt
     app["snapshot_ignored_attrs"] = snapshot_ignored_attrs
+    app["agent_url"] = agent_url
     return app
 
 
@@ -461,6 +478,17 @@ def main(args: Optional[List[str]] = None) -> None:
             "All span attributes are available."
         ),
     )
+    parser.add_argument(
+        "--agent-url",
+        type=str,
+        default=os.environ.get(
+            "DD_TRACE_AGENT_URL", os.environ.get("DD_AGENT_URL", "")
+        ),
+        help=(
+            "Datadog agent URL. If provided, any received data will be forwarded "
+            "to the agent."
+        ),
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -481,6 +509,7 @@ def main(args: Optional[List[str]] = None) -> None:
         snapshot_dir=parsed_args.snapshot_dir,
         snapshot_ci_mode=parsed_args.snapshot_ci_mode,
         snapshot_ignored_attrs=parsed_args.snapshot_ignored_attrs,
+        agent_url=parsed_args.agent_url,
     )
     web.run_app(app, port=parsed_args.port)
 
