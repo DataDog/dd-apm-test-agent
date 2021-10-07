@@ -1,20 +1,27 @@
 # Datadog APM test agent
 
-Agent for Datadog APM libraries providing testing utilities.
+<img align="right" src="https://user-images.githubusercontent.com/6321485/136316621-b4af42b6-4d1f-4482-a45b-bdee47e94bb8.jpeg" alt="bits agent" width="200px"/>
+
+The APM test agent is an application which emulates the APM endpoints of
+the [Datadog agent](https://github.com/DataDog/datadog-agent/) which can be used for testing Datadog APM client
+libraries.
+
+See the [features](#Features) section for the complete list of functionalities provided.
+
+See the [API](#API) section for the endpoint available.
+
+See the [Development](#Development) section for how to get the test agent running locally to add additional checks or fix bugs.
 
 
 ## Installation
 
-The test agent can be installed from PyPI, docker or from source.
-
-From PyPI:
+The test agent can be installed from PyPI:
 
     pip install ddapm-test-agent
 
     ddapm-test-agent --port=8126
 
-
-From Docker:
+from Docker:
 
     # Run the test agent and mount the snapshot directory
     docker run --rm\
@@ -23,44 +30,32 @@ From Docker:
             -v $PWD/tests/snapshots:/snapshots\
             ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
 
+or from source:
+
+    pip install git+https://github.com/Datadog/dd-apm-test-agent
+
 
 ## Features
 
 ### Trace invariant checks
 
-- HTTP headers
-  - Trace count matches (`trace_count_header`)
-  - Library version included (`meta_tracer_version_header`)
-- Trace payload size (`trace_content_length`)
-- [ ] Traces are non-empty
-- [ ] Required span properties
-- [ ] No collisions in trace ids across traces
-- [ ] No collisions in span ids within a trace
-- [ ] No multiple root spans
-- [ ] No circular references in spans
-- [ ] Tags are within the permitted size limits
-- [ ] Type checks
-  - Span properties
-    - IDs are 64-bit integers
-  - All keys are strings
-  - Values in metrics are numeric
-  - Values in meta are string or numeric
-- [ ] No duplicate values between meta and metrics
-- [ ] All referenced spans exist
-- [ ] Value checks
-  - Sampling tags
-- [ ] Span type checks
-  - eg. "type: redis" has "host" and "port" tags in meta
-  - eg. "type: web" has resource
+Many checks are provided by the test agent which will verify trace data. All checks are enabled by default and can be
+manually disabled.
+
+See the [configuration](#Configuration) section for the options.
+
+| Check description  | Check name |
+| ------------- | ------------- |
+| Trace count header matches number of traces  | `trace_count_header`  |
+| Client library version header included in request  | `meta_tracer_version_header`  |
+| Trace content length header matches payload size  | `trace_content_length`  |
 
 
 ### Returning data
 
 All data that is submitted to the test agent can be retrieved.
 
-#### Traces
-
-Traces can be returned via the `/test/traces` endpoint documented below.
+- Traces can be returned via the `/test/traces` endpoint documented [below](#API).
 
 
 ### Snapshot testing
@@ -95,11 +90,36 @@ The traces are normalized and output in JSON to a file. The following transforma
 - The span meta and metrics maps if empty are excluded.
 
 
-### TODO
+## Configuration
 
-- [ ] Check inconsistent trace id in a trace payload
-- [ ] Required attributes
-- [ ] All referenced spans exist
+The test agent can be configured via command-line options or via environment variables.
+
+### Command line
+
+Please refer to `ddapm-test-agent --help`.
+
+
+### Environment Variables
+
+- `PORT` [`8126`]: Port to listen on.
+
+- `DISABLED_CHECKS` [`""`]: Comma-separated values of checks to disable.
+
+- `LOG_LEVEL` [`"INFO"`]: Log level to use. DEBUG, INFO, WARNING, ERROR, CRITICAL.
+
+- `LOG_SPAN_FMT` [`"[{name}]"`]: Format string to use when outputting spans in logs.
+
+- `SNAPSHOT_DIR` [`"./snapshots"`]: Directory in which snapshots will be stored.
+  Can be overridden by providing the `dir` query param on `/snapshot`.
+
+- `SNAPSHOT_CI` [`0`]: Toggles CI mode for the snapshot tests. Set to `1` to
+  enable. CI mode does the following:
+    - When snapshots are unexpectedly _generated_ from a test case a failure will
+      be raised.
+
+- `SNAPSHOT_IGNORED_ATTRS` [`"span_id,trace_id,parent_id,duration,start,metrics.system.pid,meta.runtime-id"`]: The
+  attributes to ignore when comparing spans in snapshots.
+
 
 ## API
 
@@ -169,36 +189,12 @@ Return traces that have been received by the agent for the given session token.
 #### [optional] `X-Datadog-Test-Session-Token`
 
 
-## Configuration
-
-### Environment Variables
-
-- `PORT` [`8126`]: Port to listen on.
-
-- `DISABLED_CHECKS` [`""`]: Comma-separated values of checks to disable.
-
-- `LOG_LEVEL` [`"INFO"`]: Log level to use. DEBUG, INFO, WARNING, ERROR, CRITICAL.
-
-- `LOG_SPAN_FMT` [`"[{name}]"`]: Format string to use when outputting spans in logs.
-
-- `SNAPSHOT_DIR` [`"./snapshots"`]: Directory in which snapshots will be stored.
-    Can be overridden by providing the `dir` query param on `/snapshot`.
-
-- `SNAPSHOT_CI` [`0`]: Toggles CI mode for the snapshot tests. Set to `1` to
-  enable. CI mode does the following:
-  - When snapshots are unexpectedly _generated_ from a test case a failure will
-    be raised.
-
-- `SNAPSHOT_IGNORED_ATTRS` [`"span_id,trace_id,parent_id,duration,start,metrics.system.pid,meta.runtime-id"`]: The
-   attributes to ignore when comparing spans in snapshots.
-
-
 ## Development
 
 ### Prerequisites
 
-You will need Python 3.8 or above and [`riot`](https://github.com/Datadog/riot). It is recommended to create and work
-out of a virtualenv:
+A Python version of 3.8 or above and [`riot`](https://github.com/Datadog/riot) are required. It is recommended to create
+and work out of a virtualenv:
 
     virtualenv --python=3.8 .venv
     source .venv/bin/activate
@@ -257,7 +253,7 @@ them for Github:
 ```
    Copy the output into a new release: https://github.com/DataDog/dd-apm-test-agent/releases/new.
 
-2. Enter a tag for the release (following [`semver`](https://semver.org)).
+2. Enter a tag for the release (following [`semver`](https://semver.org)) (eg. `v1.1.3`, `v1.0.3`, `v1.2.0`).
 3. Use the tag without the `v` as the title.
 4. Save the release as a draft and pass the link to someone else to give a quick review.
 5. If all looks good hit publish
