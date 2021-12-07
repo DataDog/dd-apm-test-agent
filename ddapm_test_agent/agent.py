@@ -16,6 +16,8 @@ from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
+import aiohttp_jinja2
+import jinja2
 
 from . import _get_version
 from .checks import CheckTrace
@@ -36,6 +38,9 @@ from .trace_checks import CheckTraceCountHeader
 
 
 _Handler = Callable[[Request], Awaitable[web.Response]]
+
+this_dir = os.path.abspath(os.path.dirname(__file__))
+template_dir = os.path.join(this_dir, "templates")
 
 
 log = logging.getLogger(__name__)
@@ -181,6 +186,15 @@ class Agent:
     async def _decode_v05_traces(self, request: Request) -> v04TracePayload:
         raw_data = await request.read()
         return decode_v05(raw_data)
+
+    @aiohttp_jinja2.template("index.jinja2")
+    async def handle_index(self, request: Request) -> web.Response:
+        traces = await self.traces()
+        return {"traces": traces}
+
+    @aiohttp_jinja2.template("requests.jinja2")
+    async def handle_requests(self, request: Request) -> web.Response:
+        return {"requests": reversed(self._requests)}
 
     async def handle_v04_traces(self, request: Request) -> web.Response:
         return await self._handle_traces(request, version="v0.4")
@@ -378,8 +392,11 @@ def make_app(
             session_token_middleware,
         ],
     )
+    aiohttp_jinja2.setup(app, loader=jinja2.FileSystemLoader(template_dir))
     app.add_routes(
         [
+            web.get("/", agent.handle_index),
+            web.get("/requests", agent.handle_requests),
             web.post("/v0.4/traces", agent.handle_v04_traces),
             web.put("/v0.4/traces", agent.handle_v04_traces),
             web.post("/v0.5/traces", agent.handle_v05_traces),

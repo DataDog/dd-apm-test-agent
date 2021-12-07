@@ -26,6 +26,7 @@ setup(
     python_requires=">=3.8",
     install_requires=[
         "aiohttp",
+        "aiohttp_jinja2",
         "msgpack",
     ],
     setup_requires=["setuptools_scm"],

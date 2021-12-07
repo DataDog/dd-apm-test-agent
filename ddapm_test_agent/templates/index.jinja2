@@ -1,0 +1,21 @@
+{% extends "base.jinja2" %}
+{% block title %}Traces{% endblock %}
+{% block content %}
+<div class="content">
+  <h1>Traces</h1>
+  {% for trace_id, trace in traces.items() %}
+  <h2>{{ trace_id }}</h2>
+  <div id="trace-{{trace_id}}"></div>
+  <script>
+    var container = document.getElementById("trace-{{trace_id}}");
+    var  options = {
+      "mode": "view",
+      "name": "trace {{trace_id}}"
+    };
+    var editor = new JSONEditor(container, options);
+    var initialJson = {{ trace | tojson }};
+    editor.set(initialJson);
+  </script>
+  {% endfor %}
+</div>
+{% endblock %}

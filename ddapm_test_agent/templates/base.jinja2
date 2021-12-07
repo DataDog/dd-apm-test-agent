@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Test Agent{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.3/css/bulma.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/9.5.7/jsoneditor.min.css" integrity="sha512-KUAYxdtovjDFrnJvy5/8xWbJUUf41CIwieVmjF2dFzqLZhrdZj6urqX/0/06J+cqs5BlaZQwwwEnaShUy7LHrw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/9.5.7/jsoneditor-minimalist.min.js" integrity="sha512-IX7zs5ISXFuyDtW7lil+TXm/If5+4i7tqKvh58hV5KxX47fAeXU3zS2UzzB4ddHalU4AgZsF2a+EJx5eE+3ZMA==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  </head>
+  <body>
+    <nav class="navbar" role="navigation" aria-label="main navigation">
+      <!--div class="navbar-brand">
+        <a class="navbar-item" href="/">Test Agent</a>
+      </div-->
+      <div id="navbarBasicExample" class="navbar-menu">
+        <div class="navbar-start">
+          <a class="navbar-item" href="/">
+            Traces
+          </a>
+          <a class="navbar-item" href="/requests">
+            Requests
+          </a>
+          <a class="navbar-item" href="/sessions">
+            Sessions
+          </a>
+        </div>
+      </div>
+    </nav>
+    <section class="section">
+      <div class="container">
+        {% block content %}{% endblock %}
+      </div>
+    </section>
+  </body>
+</html>
