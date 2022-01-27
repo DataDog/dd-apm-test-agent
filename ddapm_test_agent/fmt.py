@@ -79,11 +79,11 @@ def main(args: Optional[List[str]] = None) -> None:
 
     # Find all json files
     resolved_files = _resolve_files(parsed_args.files)
-    log.info("Found {} snapshot files to process".format(len(resolved_files)))
+    log.info("Found {} snapshot files to process", (len(resolved_files),))
 
     has_errors = False
     for fname in resolved_files:
-        log.debug("Checking snapshot file {r}".format(r))
+        log.debug("Checking snapshot file {!r}", (fname,))
         try:
             # Read the original file data
             with open(fname, "r") as fp:
@@ -95,19 +95,19 @@ def main(args: Optional[List[str]] = None) -> None:
 
             # Only do anything if something changed
             if formatted != original:
-                log.debug("Snapshot file {!r} has changes".format(fname))
+                log.debug("Snapshot file {!r} has changes", (fname,))
                 if parsed_args.check:
                     # If we are in check mode and we changed the content, error
-                    log.error("Snapshot file {!r} would be reformatted!".format(fname))
+                    log.error("Snapshot file {!r} would be reformatted!", (fname,))
                     has_errors = True
                 else:
                     # Rewrite the original file with the new formatted version
                     with open(fname, "w") as fp:
                         fp.write(formatted)
-                    log.info("Snapshot file {!r} was formatted".format(fname))
+                    log.info("Snapshot file {!r} was formatted", fname)
 
-        except Exception as e:
-            log.error("Error processing file {!r}: {}".format(fname, e))
+        except Exception:
+            log.exception("Error processing file {!r}: {}", (fname,))
             has_errors = True
 
     if has_errors:
