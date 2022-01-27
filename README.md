@@ -124,8 +124,25 @@ The test agent can be configured via command-line options or via environment var
 
 ### Command line
 
-Please refer to `ddapm-test-agent --help`.
+#### ddapm-test-agent
 
+`ddapm-test-agent` is command used to run a test agent.
+
+Please refer to `ddapm-test-agent --help` for more information.
+
+#### ddapm-test-agent-fmt
+
+`ddapm-test-agent-fmt` is a command line tool to format or lint snapshot json files.
+
+``` bash
+# Format all snapshot json files
+ddapm-test-agent-fmt path/to/snapshots
+
+# Lint snapshot json files
+ddapm-test-agent-fmt --check path/to/snapshots
+```
+
+Please refer to `ddapm-test-agent-fmt --help` for more information.
 
 ### Environment Variables
 

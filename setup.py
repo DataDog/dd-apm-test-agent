@@ -33,6 +33,7 @@ setup(
     entry_points={
         "console_scripts": [
             "ddapm-test-agent=ddapm_test_agent.agent:main",
+            "ddapm-test-agent-fmt=ddapm_test_agent.fmt:main",
         ]
     },
     # Required for mypy compatibility, see
