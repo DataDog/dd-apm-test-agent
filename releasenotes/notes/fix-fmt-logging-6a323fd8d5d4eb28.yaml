@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Fix log messages in ``ddapm-test-agent-fmt``.
