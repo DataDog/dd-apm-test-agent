@@ -246,7 +246,7 @@ and work out of a virtualenv:
 
     virtualenv --python=3.8 .venv
     source .venv/bin/activate
-    pip install riot
+    pip install -e .[testing]
 
 
 ### Running the tests
