@@ -5,6 +5,8 @@ from setuptools import setup
 with open("README.md", "r") as f:
     long_description = f.read()
 
+with open("test_deps.txt") as f:
+    testing_deps = [line.strip() for line in f.readlines()]
 
 setup(
     name="ddapm-test-agent",
@@ -28,6 +30,7 @@ setup(
         "aiohttp",
         "msgpack",
     ],
+    tests_require=testing_deps,
     setup_requires=["setuptools_scm"],
     use_scm_version=True,
     entry_points={
@@ -35,6 +38,9 @@ setup(
             "ddapm-test-agent=ddapm_test_agent.agent:main",
             "ddapm-test-agent-fmt=ddapm_test_agent.fmt:main",
         ]
+    },
+    extras_require={
+        "testing": testing_deps,
     },
     # Required for mypy compatibility, see
     # https://mypy.readthedocs.io/en/stable/installed_packages.html#making-pep-561-compatible-packages

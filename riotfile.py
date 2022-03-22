@@ -2,17 +2,18 @@ from riot import Venv
 from riot import latest
 
 
+with open("test_deps.txt") as f:
+    testing_deps = [line.strip() for line in f.readlines()]
+
+
 venv = Venv(
     pys=["3"],
     venvs=[
         Venv(
             name="test",
             command="pytest {cmdargs}",
-            pys=["3.7", "3.8", "3.9", "3.10"],
-            pkgs={
-                "ddtrace": "==0.51.1",
-                "pytest": latest,
-            },
+            pys=["3.8", "3.9", "3.10"],
+            pkgs={pkg: latest for pkg in testing_deps},
         ),
         Venv(
             pkgs={
