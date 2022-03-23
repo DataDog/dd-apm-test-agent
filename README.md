@@ -259,6 +259,16 @@ Return traces that have been received by the agent for the given session token.
 #### [optional] `X-Datadog-Test-Session-Token`
 
 
+### /test/session/stats
+
+Return stats that have been received by the agent for the given session token.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+Stats are returned as a JSON list of the stats payloads received.
+
+
 ## Development
 
 ### Prerequisites
