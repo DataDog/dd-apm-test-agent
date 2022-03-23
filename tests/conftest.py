@@ -10,6 +10,8 @@ from typing import Optional
 from typing import Set
 
 from aiohttp.web import Response
+from ddsketch import LogCollapsingLowestDenseDDSketch
+from ddsketch.pb.proto import DDSketchProto
 import msgpack
 import pytest
 
@@ -168,6 +170,88 @@ def do_reference_v04_http_trace(
             params=params,
             headers=v04_reference_http_trace_payload_headers,
             data=v04_reference_http_trace_payload_data,
+        )
+
+    yield fn
+
+
+@pytest.fixture
+def v06_reference_http_stats_payload_headers():
+    headers = {
+        "Content-Type": "application/msgpack",
+        "Datadog-Meta-Lang": "python",
+        "Datadog-Meta-Tracer-Version": "v0.1",
+    }
+    yield headers
+
+
+@pytest.fixture
+def v06_reference_http_stats_payload_data_raw():
+    ok_dist = LogCollapsingLowestDenseDDSketch(0.00775, bin_limit=2048)
+    err_dist = LogCollapsingLowestDenseDDSketch(0.00775, bin_limit=2048)
+
+    rng = random.Random(0)
+    total = 0
+    ok_n = 97
+    err_n = 3
+    for _ in range(ok_n):
+        n = rng.randint(1e9, 2e9)
+        total += n
+        ok_dist.add(n)
+    for _ in range(err_n):
+        n = rng.randint(2e9, 3e9)
+        total += n
+        err_dist.add(n)
+
+    data = {
+        "Env": "dev",
+        "Version": "v0.1",
+        "Hostname": "Host-1234",
+        "Stats": [
+            {
+                "Start": 0,
+                "Duration": 100000,
+                "Stats": [
+                    {
+                        "Name": "http.request",
+                        "Resource": "/user/profile",
+                        "Synthetics": False,
+                        "Hits": ok_n + err_n,
+                        "TopLevelHits": ok_n + err_n,
+                        "Duration": total,
+                        "Errors": err_n,
+                        "OkSummary": DDSketchProto.to_proto(
+                            ok_dist
+                        ).SerializeToString(),
+                        "ErrorSummary": DDSketchProto.to_proto(
+                            err_dist
+                        ).SerializeToString(),
+                    },
+                ],
+            }
+        ],
+    }
+    yield data
+
+
+@pytest.fixture
+def v06_reference_http_stats_payload_data(v06_reference_http_stats_payload_data_raw):
+    yield msgpack.packb(v06_reference_http_stats_payload_data_raw)
+
+
+@pytest.fixture
+def do_reference_v06_http_stats(
+    agent,
+    v06_reference_http_stats_payload_headers,
+    v06_reference_http_stats_payload_data,
+):
+    def fn(token: Optional[str] = None) -> Awaitable[Response]:
+        params = {"test_session_token": token} if token is not None else {}
+        return agent.put(  # type: ignore
+            "/v0.6/stats",
+            params=params,
+            headers=v06_reference_http_stats_payload_headers,
+            data=v06_reference_http_stats_payload_data,
         )
 
     yield fn

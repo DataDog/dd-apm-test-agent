@@ -27,13 +27,15 @@ from .snapshot import generate_snapshot
 from .snapshot import snapshot
 from .trace import Trace
 from .trace import TraceMap
-from .trace import decode_v04
-from .trace import decode_v05
+from .trace import decode_v04 as trace_decode_v04
+from .trace import decode_v05 as trace_decode_v05
 from .trace import pprint_trace
 from .trace import v04TracePayload
 from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
+from .tracestats import decode_v06 as tracestats_decode_v06
+from .tracestats import v06StatsPayload
 
 
 _Handler = Callable[[Request], Awaitable[web.Response]]
@@ -174,20 +176,45 @@ class Agent:
                         tracemap[trace_id].append(span)
         return list(tracemap.values())
 
+    async def _tracestats_by_session(
+        self, token: Optional[str]
+    ) -> List[v06StatsPayload]:
+        stats: List[v06StatsPayload] = []
+        for req in self._requests_by_session(token):
+            if req.match_info.handler == self.handle_v06_tracestats:
+                s = await self._decode_v06_tracestats(req)
+                stats.append(s)
+        return stats
+
     async def _decode_v04_traces(self, request: Request) -> v04TracePayload:
         content_type = request.content_type
         raw_data = await request.read()
-        return decode_v04(content_type, raw_data)
+        return trace_decode_v04(content_type, raw_data)
 
     async def _decode_v05_traces(self, request: Request) -> v04TracePayload:
         raw_data = await request.read()
-        return decode_v05(raw_data)
+        return trace_decode_v05(raw_data)
+
+    async def _decode_v06_tracestats(self, request: Request) -> v06StatsPayload:
+        raw_data = await request.read()
+        return tracestats_decode_v06(raw_data)
 
     async def handle_v04_traces(self, request: Request) -> web.Response:
         return await self._handle_traces(request, version="v0.4")
 
     async def handle_v05_traces(self, request: Request) -> web.Response:
         return await self._handle_traces(request, version="v0.5")
+
+    async def handle_v06_tracestats(self, request: Request) -> web.Response:
+        self._requests.append(request)
+        stats = await self._decode_v06_tracestats(request)
+        nstats = len(stats["Stats"])
+        log.info(
+            "received /v0.6/stats payload with %r stats bucket%s",
+            nstats,
+            "s" if nstats else "",
+        )
+        return web.json_response(stats)
 
     async def _handle_traces(
         self, request: Request, version: Literal["v0.4", "v0.5"]
@@ -309,13 +336,19 @@ class Agent:
         traces = await self._traces_by_session(token)
         return web.json_response(traces)
 
+    async def handle_session_tracestats(self, request: Request) -> web.Response:
+        token = request["session_token"]
+        stats = await self._tracestats_by_session(token)
+        return web.json_response(stats)
+
     async def handle_session_requests(self, request: Request) -> web.Response:
         token = request["session_token"]
         resp = []
-        for req in self._requests_by_session(token):
+        for req in reversed(self._requests_by_session(token)):
             if req.match_info.handler not in (
                 self.handle_v04_traces,
                 self.handle_v05_traces,
+                self.handle_v06_tracestats,
             ):
                 continue
             resp.append(
@@ -404,10 +437,12 @@ def make_app(
             web.put("/v0.4/traces", agent.handle_v04_traces),
             web.post("/v0.5/traces", agent.handle_v05_traces),
             web.put("/v0.5/traces", agent.handle_v05_traces),
+            web.put("/v0.6/stats", agent.handle_v06_tracestats),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/snapshot", agent.handle_snapshot),
             web.get("/test/session/traces", agent.handle_session_traces),
+            web.get("/test/session/stats", agent.handle_session_tracestats),
             web.get("/test/session/requests", agent.handle_session_requests),
             web.get("/test/traces", agent.handle_test_traces),
             # web.get("/test/benchmark", agent.handle_test_traces),

@@ -113,7 +113,9 @@ async def test_two_sessions(
     assert await resp.json() == v04_reference_http_trace_payload_data_raw
 
 
-async def test_session_requests(agent, do_reference_v04_http_trace):
+async def test_session_requests(
+    agent, do_reference_v04_http_trace, do_reference_v06_http_stats
+):
     resp = await agent.get(
         "/test/session/start", params={"test_session_token": "test_case"}
     )
@@ -122,13 +124,15 @@ async def test_session_requests(agent, do_reference_v04_http_trace):
     assert resp.status == 200, await resp.text()
     resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200, await resp.text()
+    resp = await do_reference_v06_http_stats(token="test_case")
+    assert resp.status == 200, await resp.text()
 
     resp = await agent.get(
         "/test/session/requests", params={"test_session_token": "test_case"}
     )
     requests = await resp.json()
     assert resp.status == 200
-    assert len(requests) == 2
+    assert len(requests) == 3
     assert "X-Datadog-Trace-Count" in requests[0]["headers"]
     body = requests[0]["body"]
     traces = msgpack.unpackb(base64.b64decode(body))
@@ -136,3 +140,5 @@ async def test_session_requests(agent, do_reference_v04_http_trace):
     assert traces[0][0]["name"] == "http.request"
     assert requests[0]["method"] == "PUT"
     assert requests[0]["url"].endswith("/v0.4/traces?test_session_token=test_case")
+    assert requests[1]["url"].endswith("/v0.4/traces?test_session_token=test_case")
+    assert requests[2]["url"].endswith("/v0.6/stats?test_session_token=test_case")

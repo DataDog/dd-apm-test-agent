@@ -28,6 +28,7 @@ setup(
     python_requires=">=3.8",
     install_requires=[
         "aiohttp",
+        "ddsketch",
         "msgpack",
     ],
     tests_require=testing_deps,

@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    Add support for the ``/v0.6/stats`` endpoint. All requests made to the
+    endpoint will be stored and can be retrieved via the
+    ``/test/session/requests`` or ``/test/session/stats`` endpoints.
+    Note that snapshotting for stats is not yet implemented.
