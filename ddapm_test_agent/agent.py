@@ -1,4 +1,5 @@
 import argparse
+import base64
 from collections import OrderedDict
 import json
 import logging
@@ -308,6 +309,25 @@ class Agent:
         traces = await self._traces_by_session(token)
         return web.json_response(traces)
 
+    async def handle_session_requests(self, request: Request) -> web.Response:
+        token = request["session_token"]
+        resp = []
+        for req in self._requests_by_session(token):
+            if req.match_info.handler not in (
+                self.handle_v04_traces,
+                self.handle_v05_traces,
+            ):
+                continue
+            resp.append(
+                {
+                    "headers": dict(req.headers),
+                    "body": base64.b64encode(await req.read()).decode(),
+                    "url": str(req.url),
+                    "method": req.method,
+                }
+            )
+        return web.json_response(resp)
+
     async def handle_test_traces(self, request: Request) -> web.Response:
         """Return requested traces as JSON.
 
@@ -388,6 +408,7 @@ def make_app(
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/snapshot", agent.handle_snapshot),
             web.get("/test/session/traces", agent.handle_session_traces),
+            web.get("/test/session/requests", agent.handle_session_requests),
             web.get("/test/traces", agent.handle_test_traces),
             # web.get("/test/benchmark", agent.handle_test_traces),
             web.get("/test/trace/analyze", agent.handle_trace_analyze),

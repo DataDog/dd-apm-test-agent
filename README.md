@@ -229,6 +229,28 @@ name where the snap will be stored and retrieved.
 Warning: it is an error to specify both `file` and `dir`.
 
 
+### /test/session/requests
+
+Return all requests that have been received by the agent for the given session token.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+Returns the requests in the following json format:
+
+```json
+[
+  {
+    "headers": {},
+    "body": "...",
+    "url": "http...",
+    "method": "GET"
+  }
+]
+```
+
+`body` is a base64 encoded body of the request.
+
 ### /test/session/traces
 
 Return traces that have been received by the agent for the given session token.
