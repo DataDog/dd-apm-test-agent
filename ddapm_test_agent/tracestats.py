@@ -10,7 +10,7 @@ import msgpack
 # Note that class attributes are golang style to match the payload.
 
 
-class AggrMetrics(TypedDict):
+class StatsAggr(TypedDict):
     Name: str
     Resource: str
     Type: Optional[str]  # noqa
@@ -26,7 +26,7 @@ class AggrMetrics(TypedDict):
 class StatsBucket(TypedDict):
     Start: int
     Duration: int
-    Stats: List[AggrMetrics]
+    Stats: List[StatsAggr]
 
 
 class v06StatsPayload(TypedDict):
@@ -40,9 +40,9 @@ def decode_v06(data: bytes) -> v06StatsPayload:
     payload = msgpack.unpackb(data)
     stats_buckets: List[StatsBucket] = []
     for raw_bucket in payload["Stats"]:
-        stats: List[AggrMetrics] = []
+        stats: List[StatsAggr] = []
         for raw_stats in raw_bucket["Stats"]:
-            stat = AggrMetrics(
+            stat = StatsAggr(
                 Name=raw_stats["Name"],
                 Resource=raw_stats["Resource"],
                 Type=raw_stats.get("Type"),
