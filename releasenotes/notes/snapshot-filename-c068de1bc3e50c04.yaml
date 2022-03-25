@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Fix custom snapshot filenames. Custom filenames are not supposed to include the file extension.

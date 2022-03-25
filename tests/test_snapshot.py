@@ -2,11 +2,11 @@ import os
 
 import pytest
 
+from ddapm_test_agent import trace_snapshot
 from ddapm_test_agent.trace import copy_span
 from ddapm_test_agent.trace import set_attr
 from ddapm_test_agent.trace import set_meta_tag
 from ddapm_test_agent.trace import set_metric_tag
-from ddapm_test_agent.trace_snapshot import generate_snapshot
 
 from .conftest import v04_trace
 from .trace_utils import random_trace
@@ -40,7 +40,7 @@ async def test_snapshot_single_trace(
     if snapshot_ci_mode:
         # No previous snapshot file exists so this should fail
         assert resp.status == 400, await resp.text()
-        assert f"Snapshot file '{snap_path}' not found" in await resp.text()
+        assert f"Trace snapshot file '{snap_path}' not found" in await resp.text()
     else:
         # Since this is the first invocation the snapshot file should be created
         assert resp.status == 200, await resp.text()
@@ -239,8 +239,8 @@ async def test_snapshot_trace_differences(agent, expected_traces, actual_traces,
         )
     ],
 )
-def test_generate_snapshot(trace, expected):
-    assert generate_snapshot(trace) == expected
+def test_generate_trace_snapshot(trace, expected):
+    assert trace_snapshot.generate_snapshot(trace) == expected
 
 
 async def test_snapshot_custom_dir(agent, tmp_path, do_reference_v04_http_trace):
@@ -267,11 +267,12 @@ async def test_snapshot_custom_file(agent, tmp_path, do_reference_v04_http_trace
 
     custom_dir = tmp_path / "custom"
     custom_dir.mkdir()
+    custom_file_name = custom_dir / "custom_snapshot"
     custom_file = custom_dir / "custom_snapshot.json"
 
     resp = await agent.get(
         "/test/session/snapshot",
-        params={"test_session_token": "test_case", "file": str(custom_file)},
+        params={"test_session_token": "test_case", "file": str(custom_file_name)},
     )
     assert resp.status == 200, await resp.text()
     assert os.path.exists(custom_file), custom_file

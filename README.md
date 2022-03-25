@@ -222,11 +222,14 @@ This value will override the environment variable `SNAPSHOT_DIR`.
 Warning: it is an error to specify both `dir` and `file`.
 
 #### [optional] `?file=`
+#### [optional] `X-Datadog-Test-Snapshot-Filename`
 
 An absolute or relative (to the current working directory of the agent) file
 name where the snap will be stored and retrieved.
 
 Warning: it is an error to specify both `file` and `dir`.
+
+Note: the file extension will be appended to the filename.
 
 
 ### /test/session/requests

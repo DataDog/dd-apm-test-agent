@@ -19,6 +19,7 @@ from aiohttp.web import Request
 from aiohttp.web import middleware
 
 from . import _get_version
+from . import trace_snapshot
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
@@ -31,9 +32,6 @@ from .trace import v04TracePayload
 from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
-from .trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
-from .trace_snapshot import generate_snapshot
-from .trace_snapshot import snapshot
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 
@@ -301,24 +299,26 @@ class Agent:
             elif "file" in request.url.query:
                 snap_file = request.url.query.get("file")
             else:
-                snap_file = os.path.join(snap_dir, f"{token}.json")
-            frame.add_item(f"File: {snap_file}")
-            log.info("using snapshot file %r", snap_file)
+                snap_file = os.path.join(snap_dir, token)
 
-            snap_path_exists = os.path.exists(snap_file)
-            if snap_ci_mode and not snap_path_exists:
+            trace_snap_file = f"{snap_file}.json"
+            frame.add_item(f"Trace File: {trace_snap_file}")
+            log.info("using snapshot file %r", trace_snap_file)
+
+            trace_snap_path_exists = os.path.exists(trace_snap_file)
+            if snap_ci_mode and not trace_snap_path_exists:
                 raise AssertionError(
-                    f"Snapshot file '{snap_file}' not found. "
+                    f"Trace snapshot file '{trace_snap_file}' not found. "
                     "Perhaps the file was not checked into source control? "
                     "The snapshot file is automatically generated when the test case is run when not in CI mode."
                 )
-            elif snap_path_exists:
+            elif trace_snap_path_exists:
                 # Do the snapshot comparison
                 received_traces = await self._traces_by_session(token)
-                with open(snap_file, mode="r") as f:
+                with open(trace_snap_file, mode="r") as f:
                     raw_snapshot = json.load(f)
 
-                snapshot(
+                trace_snapshot.snapshot(
                     expected_traces=raw_snapshot,
                     received_traces=received_traces,
                     ignored=span_ignores,
@@ -326,9 +326,9 @@ class Agent:
             else:
                 # Create a new snapshot for the data received
                 traces = await self._traces_by_session(token)
-                with open(snap_file, mode="w") as f:
-                    f.write(generate_snapshot(traces))
-                log.info("wrote new snapshot to %r", os.path.abspath(snap_file))
+                with open(trace_snap_file, mode="w") as f:
+                    f.write(trace_snapshot.generate_snapshot(traces))
+                log.info("wrote new snapshot to %r", os.path.abspath(trace_snap_file))
         return web.HTTPOk()
 
     async def handle_session_traces(self, request: Request) -> web.Response:
@@ -500,7 +500,9 @@ def main(args: Optional[List[str]] = None) -> None:
         type=Set[str],
         default=set(
             _parse_csv(
-                os.environ.get("SNAPSHOT_IGNORED_ATTRS", DEFAULT_SNAPSHOT_IGNORES)
+                os.environ.get(
+                    "SNAPSHOT_IGNORED_ATTRS", trace_snapshot.DEFAULT_SNAPSHOT_IGNORES
+                )
             )
         ),
         help=(
