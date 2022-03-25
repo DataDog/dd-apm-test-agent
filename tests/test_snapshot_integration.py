@@ -134,7 +134,7 @@ async def test_multi_trace(testagent, tracer):
     with tracer.trace("root1"):
         with tracer.trace("child1"):
             pass
-    tracer.writer.flush_queue()
+    tracer.flush()
     resp = await testagent.get(
         "http://localhost:8126/test/session/snapshot?test_session_token=test_multi_trace"
     )
@@ -150,7 +150,7 @@ async def test_multi_trace(testagent, tracer):
     with tracer.trace("root1"):
         with tracer.trace("child1"):
             pass
-    tracer.writer.flush_queue()
+    tracer.flush()
     resp = await testagent.get(
         "http://localhost:8126/test/session/snapshot?test_session_token=test_multi_trace"
     )
@@ -163,7 +163,7 @@ async def test_multi_trace(testagent, tracer):
     with tracer.trace("root0"):
         with tracer.trace("child0"):
             pass
-    tracer.writer.flush_queue()
+    tracer.flush()
     resp = await testagent.get(
         "http://localhost:8126/test/session/snapshot?test_session_token=test_multi_trace"
     )
@@ -183,7 +183,7 @@ async def test_trace_distributed_same_payload(testagent, tracer):
     with tracer.trace("root1"):
         with tracer.trace("child1"):
             pass
-    tracer.writer.flush_queue()
+    tracer.flush()
     resp = await testagent.get(
         "http://localhost:8126/test/session/snapshot?test_session_token=test_trace_distributed_same_payload"
     )
@@ -199,7 +199,7 @@ async def test_trace_missing_received(testagent, tracer):
     with tracer.trace("root0"):
         with tracer.trace("child0"):
             pass
-    tracer.writer.flush_queue()
+    tracer.flush()
     resp = await testagent.get(
         "http://localhost:8126/test/session/snapshot?test_session_token=test_trace_missing_received"
     )
