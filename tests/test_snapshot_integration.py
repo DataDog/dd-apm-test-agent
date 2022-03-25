@@ -14,13 +14,19 @@ def testagent_port():
     yield 8126
 
 
+@pytest.fixture(scope="module")
+def testagent_snapshot_ci_mode():
+    # Default all tests in this module to be run in CI mode
+    yield True
+
+
 @pytest.fixture
-async def testagent(loop, testagent_port):
+async def testagent(loop, testagent_port, testagent_snapshot_ci_mode):
     env = os.environ.copy()
     env.update(
         {
             "PORT": str(testagent_port),
-            "SNAPSHOT_CI": "1",
+            "SNAPSHOT_CI": "1" if testagent_snapshot_ci_mode else "0",
             "SNAPSHOT_DIR": os.path.join(
                 os.path.dirname(__file__), "integration_snapshots"
             ),
