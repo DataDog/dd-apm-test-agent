@@ -22,9 +22,6 @@ from . import _get_version
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
-from .snapshot import DEFAULT_SNAPSHOT_IGNORES
-from .snapshot import generate_snapshot
-from .snapshot import snapshot
 from .trace import Trace
 from .trace import TraceMap
 from .trace import decode_v04 as trace_decode_v04
@@ -34,6 +31,9 @@ from .trace import v04TracePayload
 from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
+from .trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
+from .trace_snapshot import generate_snapshot
+from .trace_snapshot import snapshot
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 

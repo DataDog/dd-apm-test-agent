@@ -17,8 +17,8 @@ import pytest
 
 from ddapm_test_agent.agent import _parse_csv
 from ddapm_test_agent.agent import make_app
-from ddapm_test_agent.snapshot import DEFAULT_SNAPSHOT_IGNORES
 from ddapm_test_agent.trace import Trace
+from ddapm_test_agent.trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
 
 
 pytest_plugins = "aiohttp.pytest_plugin"

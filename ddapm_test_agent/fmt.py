@@ -8,7 +8,7 @@ from typing import List
 from typing import Optional
 
 from . import _get_version
-from .snapshot import generate_snapshot
+from .trace_snapshot import generate_snapshot
 
 
 log = logging.getLogger(__name__)
