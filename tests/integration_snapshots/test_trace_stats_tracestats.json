@@ -1,0 +1,20 @@
+[
+  {
+    "Start": 0,
+    "Duration": 10000000000,
+    "Stats": [
+      {
+        "Name": "http.request",
+        "Resource": "/users/view",
+        "Type": null,
+        "Synthetics": false,
+        "Hits": 5,
+        "TopLevelHits": 5,
+        "Duration": 293000,
+        "Errors": 1,
+        "OkSummary": 1046,
+        "ErrorSummary": 1046
+      }
+    ]
+  }
+]

@@ -3,10 +3,13 @@ import os
 import pytest
 
 from ddapm_test_agent import trace_snapshot
+from ddapm_test_agent import tracestats_snapshot
 from ddapm_test_agent.trace import copy_span
 from ddapm_test_agent.trace import set_attr
 from ddapm_test_agent.trace import set_meta_tag
 from ddapm_test_agent.trace import set_metric_tag
+from ddapm_test_agent.tracestats import StatsAggr
+from ddapm_test_agent.tracestats import StatsBucket
 
 from .conftest import v04_trace
 from .trace_utils import random_trace
@@ -243,6 +246,88 @@ def test_generate_trace_snapshot(trace, expected):
     assert trace_snapshot.generate_snapshot(trace) == expected
 
 
+@pytest.mark.parametrize(
+    "buckets,expected",
+    [
+        (
+            [
+                StatsBucket(  # noqa
+                    Start=1000,
+                    Duration=10,
+                    Stats=[
+                        # Not using all the fields of StatsAggr, hence the ignores
+                        StatsAggr(  # type: ignore
+                            Name="http.request",
+                            Resource="/users/list",
+                            Hits=10,
+                            TopLevelHits=10,
+                            Duration=100,
+                        ),  # noqa
+                        StatsAggr(  # type: ignore
+                            Name="http.request",
+                            Resource="/users/create",
+                            Hits=5,
+                            TopLevelHits=5,
+                            Duration=10,
+                        ),  # noqa
+                    ],
+                ),
+                StatsBucket(
+                    Start=1010,
+                    Duration=10,
+                    Stats=[
+                        StatsAggr(  # type: ignore
+                            Name="http.request",
+                            Resource="/users/list",
+                            Hits=20,
+                            TopLevelHits=20,
+                            Duration=200,
+                        ),
+                    ],
+                ),
+            ],
+            """[
+  {
+    "Start": 0,
+    "Duration": 10,
+    "Stats": [
+      {
+        "Name": "http.request",
+        "Resource": "/users/create",
+        "Hits": 5,
+        "TopLevelHits": 5,
+        "Duration": 10
+      },
+      {
+        "Name": "http.request",
+        "Resource": "/users/list",
+        "Hits": 10,
+        "TopLevelHits": 10,
+        "Duration": 100
+      }
+    ]
+  },
+  {
+    "Start": 10,
+    "Duration": 10,
+    "Stats": [
+      {
+        "Name": "http.request",
+        "Resource": "/users/list",
+        "Hits": 20,
+        "TopLevelHits": 20,
+        "Duration": 200
+      }
+    ]
+  }
+]\n""",
+        ),
+    ],
+)
+def test_generate_tracestats_snapshot(buckets, expected):
+    assert tracestats_snapshot.generate(buckets) == expected
+
+
 async def test_snapshot_custom_dir(agent, tmp_path, do_reference_v04_http_trace):
     resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200
@@ -278,3 +363,40 @@ async def test_snapshot_custom_file(agent, tmp_path, do_reference_v04_http_trace
     assert os.path.exists(custom_file), custom_file
     with open(custom_file, mode="r") as f:
         assert "".join(f.readlines()) != ""
+
+
+@pytest.mark.parametrize("snapshot_ci_mode", [False, True])
+async def test_snapshot_tracestats(
+    agent, tmp_path, snapshot_ci_mode, do_reference_v06_http_stats, snapshot_dir
+):
+    resp = await do_reference_v06_http_stats(token="test_case")
+    assert resp.status == 200
+
+    snap_path = snapshot_dir / "test_case_tracestats.json"
+    resp = await agent.get(
+        "/test/session/snapshot", params={"test_session_token": "test_case"}
+    )
+    resp_clear = await agent.get(
+        "/test/session/clear", params={"test_session_token": "test_case"}
+    )
+    assert resp_clear.status == 200, await resp_clear.text()
+
+    if snapshot_ci_mode:
+        # No previous snapshot file exists so this should fail
+        assert resp.status == 400
+        assert f"Trace stats snapshot file '{snap_path}' not found" in await resp.text()
+    else:
+        # First invocation the snapshot, file should be created
+        assert resp.status == 200
+        assert os.path.exists(snap_path)
+        with open(snap_path, mode="r") as f:
+            assert "".join(f.readlines()) != ""
+
+        # Do the snapshot again to actually perform a comparison
+        resp = await do_reference_v06_http_stats(token="test_case")
+        assert resp.status == 200, await resp.text()
+
+        resp = await agent.get(
+            "/test/session/snapshot", params={"test_session_token": "test_case"}
+        )
+        assert resp.status == 200, await resp.text()

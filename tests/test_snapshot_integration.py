@@ -1,11 +1,13 @@
 import asyncio
 import os
 import subprocess
+from typing import Generator
 
 import aiohttp
 from aiohttp.client_exceptions import ClientConnectorError
 from aiohttp.client_exceptions import ClientOSError
 from ddtrace import Tracer
+from ddtrace.sampler import DatadogSampler
 import pytest
 
 
@@ -56,6 +58,24 @@ async def testagent(loop, testagent_port, testagent_snapshot_ci_mode):
 @pytest.fixture
 def tracer(testagent_port, testagent):
     tracer = Tracer(url=f"http://localhost:{testagent_port}")
+    yield tracer
+
+
+@pytest.fixture
+def trace_sample_rate():
+    yield 1.0
+
+
+@pytest.fixture
+def stats_tracer(
+    tracer: Tracer, trace_sample_rate: float
+) -> Generator[Tracer, None, None]:
+    tracer.configure(
+        compute_stats_enabled=True,
+        sampler=DatadogSampler(
+            default_sample_rate=trace_sample_rate,
+        ),
+    )
     yield tracer
 
 
@@ -114,7 +134,7 @@ async def test_single_trace(
         if error is not None:
             span.error = error
         for k, v in meta.items():
-            span.set_meta(k, v)
+            span.set_tag(k, v)
         for k, v in metrics.items():
             span.set_metric(k, v)
     tracer.shutdown()
@@ -214,3 +234,59 @@ async def test_trace_missing_received(testagent, tracer):
         "http://localhost:8126/test/session/snapshot?test_session_token=test_trace_missing_received"
     )
     assert resp.status == 400
+
+
+# TODO: uncomment once ddtrace has stats
+"""
+def _tracestats_traces(tracer: Tracer):
+    for i in range(5):
+        with tracer.trace("http.request", resource="/users/view") as span:
+            if i == 4:
+                span.error = 1
+
+
+def _tracestats_traces_no_error(tracer: Tracer):
+    for i in range(5):
+        with tracer.trace("http.request", resource="/users/view"):
+            pass
+
+
+def _tracestats_traces_missing_trace(tracer: Tracer):
+    for i in range(4):
+        with tracer.trace("http.request", resource="/users/view") as span:
+            if i == 3:
+                span.error = 1
+
+
+def _tracestats_traces_extra_trace(tracer: Tracer):
+    _tracestats_traces(tracer)
+    with tracer.trace("http.request", resource="/users/list"):
+        pass
+
+
+# @pytest.mark.parametrize("testagent_snapshot_ci_mode", [False])
+@pytest.mark.parametrize("trace_sample_rate", [0.0])  # Don't send any traces
+@pytest.mark.parametrize("do_traces,fail", [
+    (_tracestats_traces, False),  # Keep this first and set `testagent_snapshot_ci_mode=True` to generate the snapshot.
+    (_tracestats_traces_no_error, True),
+    (_tracestats_traces_missing_trace, True),
+    (_tracestats_traces_extra_trace, True),
+])
+async def test_tracestats(
+    testagent: aiohttp.ClientSession,
+    stats_tracer: Tracer,
+    testagent_snapshot_ci_mode: bool,
+    trace_sample_rate: float,
+    do_traces,
+    fail,
+) -> None:
+    do_traces(stats_tracer)
+    stats_tracer.shutdown()  # force out the stats
+    resp = await testagent.get(
+        "http://localhost:8126/test/session/snapshot?test_session_token=test_trace_stats"
+    )
+    if fail:
+        assert resp.status == 400
+    else:
+        assert resp.status == 200
+"""

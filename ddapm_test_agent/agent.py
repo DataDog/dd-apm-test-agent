@@ -20,6 +20,7 @@ from aiohttp.web import middleware
 
 from . import _get_version
 from . import trace_snapshot
+from . import tracestats_snapshot
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
@@ -274,6 +275,7 @@ class Agent:
         return web.HTTPOk()
 
     async def handle_snapshot(self, request: Request) -> web.Response:
+        """Generate a snapshot or perform a snapshot test."""
         token = request["session_token"]
         snap_dir = request.url.query.get("dir", request.app["snapshot_dir"])
         snap_ci_mode = request.app["snapshot_ci_mode"]
@@ -301,12 +303,24 @@ class Agent:
             else:
                 snap_file = os.path.join(snap_dir, token)
 
+            # The logic from here is mostly duplicated for traces and trace stats.
+            # If another data type is to be snapshotted then it probably makes sense to abstract away
+            # the required pieces of snapshotting (loading, generating and comparing).
+
+            # For backwards compatibility traces don't have a postfix of `_trace.json`
             trace_snap_file = f"{snap_file}.json"
+            tracestats_snap_file = f"{snap_file}_tracestats.json"
+
             frame.add_item(f"Trace File: {trace_snap_file}")
-            log.info("using snapshot file %r", trace_snap_file)
+            frame.add_item(f"Stats File: {tracestats_snap_file}")
+            log.info(
+                "using snapshot files %r and %r", trace_snap_file, tracestats_snap_file
+            )
 
             trace_snap_path_exists = os.path.exists(trace_snap_file)
-            if snap_ci_mode and not trace_snap_path_exists:
+
+            received_traces = await self._traces_by_session(token)
+            if snap_ci_mode and received_traces and not trace_snap_path_exists:
                 raise AssertionError(
                     f"Trace snapshot file '{trace_snap_file}' not found. "
                     "Perhaps the file was not checked into source control? "
@@ -314,21 +328,51 @@ class Agent:
                 )
             elif trace_snap_path_exists:
                 # Do the snapshot comparison
-                received_traces = await self._traces_by_session(token)
                 with open(trace_snap_file, mode="r") as f:
                     raw_snapshot = json.load(f)
-
                 trace_snapshot.snapshot(
                     expected_traces=raw_snapshot,
                     received_traces=received_traces,
                     ignored=span_ignores,
                 )
-            else:
+            elif received_traces:
                 # Create a new snapshot for the data received
-                traces = await self._traces_by_session(token)
                 with open(trace_snap_file, mode="w") as f:
-                    f.write(trace_snapshot.generate_snapshot(traces))
-                log.info("wrote new snapshot to %r", os.path.abspath(trace_snap_file))
+                    f.write(trace_snapshot.generate_snapshot(received_traces))
+                log.info(
+                    "wrote new trace snapshot to %r", os.path.abspath(trace_snap_file)
+                )
+
+            # Get all stats buckets from the payloads since we don't care about the other fields (hostname, env, etc)
+            # in the payload.
+            received_stats = [
+                bucket
+                for p in (await self._tracestats_by_session(token))
+                for bucket in p["Stats"]
+            ]
+            tracestats_snap_path_exists = os.path.exists(tracestats_snap_file)
+            if snap_ci_mode and received_stats and not tracestats_snap_path_exists:
+                raise AssertionError(
+                    f"Trace stats snapshot file '{tracestats_snap_file}' not found. "
+                    "Perhaps the file was not checked into source control? "
+                    "The snapshot file is automatically generated when the test case is run when not in CI mode."
+                )
+            elif tracestats_snap_path_exists:
+                # Do the snapshot comparison
+                with open(tracestats_snap_file, mode="r") as f:
+                    raw_snapshot = json.load(f)
+                tracestats_snapshot.snapshot(
+                    expected_stats=raw_snapshot,
+                    received_stats=received_stats,
+                )
+            elif received_stats:
+                # Create a new snapshot for the data received
+                with open(tracestats_snap_file, mode="w") as f:
+                    f.write(tracestats_snapshot.generate(received_stats))
+                log.info(
+                    "wrote new tracestats snapshot to %r",
+                    os.path.abspath(tracestats_snap_file),
+                )
         return web.HTTPOk()
 
     async def handle_session_traces(self, request: Request) -> web.Response:

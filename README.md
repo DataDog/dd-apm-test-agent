@@ -195,6 +195,12 @@ Test session token for a test case. **Ensure this value is unique to avoid confl
 
 ### /test/session/snapshot
 
+Perform a snapshot generation or comparison on the data received during the session.
+
+Snapshots are generated when the test agent is not in CI mode and there is no snapshot file present. Otherwise a
+snapshot comparison will be performed.
+
+
 #### [optional\*] `?test_session_token=`
 #### [optional\*] `X-Datadog-Test-Session-Token`
 To run test cases in parallel this HTTP header must be specified. All test
@@ -230,6 +236,8 @@ name where the snap will be stored and retrieved.
 Warning: it is an error to specify both `file` and `dir`.
 
 Note: the file extension will be appended to the filename.
+
+`_tracestats` will be appended to the filename for trace stats requests.
 
 
 ### /test/session/requests

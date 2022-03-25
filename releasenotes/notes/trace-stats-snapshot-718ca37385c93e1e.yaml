@@ -1,0 +1,8 @@
+---
+features:
+  - |
+    Implement trace stats snapshotting.
+
+    Trace stats are now included in the snapshot behaviour provided by the testagent.
+ 
+    Similar to traces, trace stats snapshots are output to a json file.
