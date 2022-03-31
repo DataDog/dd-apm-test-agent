@@ -58,17 +58,17 @@ def span(rnd: Random = _random, **kwargs: Any) -> Span:
 
     for k in ["trace_id", "span_id"]:
         if k not in kwargs:
-            kwargs[k] = rnd.randint(0, 2 ** 64)
+            kwargs[k] = rnd.randint(0, 2**64)
 
     # Don't assign a parent id by default
     if "parent_id" not in kwargs:
         kwargs["parent_id"] = None
 
     if "start" not in kwargs:
-        kwargs["start"] = rnd.randint(0, 2 ** 48)
+        kwargs["start"] = rnd.randint(0, 2**48)
 
     if "duration" not in kwargs:
-        kwargs["duration"] = rnd.randint(100, 10 ** 10)
+        kwargs["duration"] = rnd.randint(100, 10**10)
 
     if "meta" not in kwargs:
         kwargs["meta"] = {}
@@ -120,7 +120,7 @@ def random_trace(nspans: int, rng: Random = _random) -> Trace:
     #   sampling decisions
     #   dd_origin?
     assert nspans > 0
-    trace_id = rng.randint(0, 2 ** 64)
+    trace_id = rng.randint(0, 2**64)
     t = _prufers_trace(nspans, rng)
     root = root_span(t)
     for s in t:
