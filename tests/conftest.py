@@ -90,8 +90,8 @@ def v04_reference_http_trace_payload_data_raw():
             {
                 "name": "http.request",
                 "service": "my-http-server",
-                "trace_id": random.randint(0, 2 ** 64),
-                "span_id": random.randint(0, 2 ** 64),
+                "trace_id": random.randint(0, 2**64),
+                "span_id": random.randint(0, 2**64),
                 "parent_id": None,
                 "resource": "/users/",
                 "type": "http",
