@@ -2,11 +2,13 @@ import asyncio
 import os
 import subprocess
 from typing import Generator
+from typing import Callable
 
 import aiohttp
 from aiohttp.client_exceptions import ClientConnectorError
 from aiohttp.client_exceptions import ClientOSError
 from ddtrace import Tracer
+from ddtrace import Span
 from ddtrace.sampler import DatadogSampler
 import pytest
 
@@ -237,34 +239,33 @@ async def test_trace_missing_received(testagent, tracer):
 
 
 # TODO: uncomment once ddtrace has stats
-"""
-def _tracestats_traces(tracer: Tracer):
+def _tracestats_traces(tracer: Tracer) -> None:
     for i in range(5):
         with tracer.trace("http.request", resource="/users/view") as span:
             if i == 4:
                 span.error = 1
 
 
-def _tracestats_traces_no_error(tracer: Tracer):
+def _tracestats_traces_no_error(tracer: Tracer) -> None:
     for i in range(5):
         with tracer.trace("http.request", resource="/users/view"):
             pass
 
 
-def _tracestats_traces_missing_trace(tracer: Tracer):
+def _tracestats_traces_missing_trace(tracer: Tracer) -> None:
     for i in range(4):
         with tracer.trace("http.request", resource="/users/view") as span:
             if i == 3:
                 span.error = 1
 
 
-def _tracestats_traces_extra_trace(tracer: Tracer):
+def _tracestats_traces_extra_trace(tracer: Tracer) -> None:
     _tracestats_traces(tracer)
     with tracer.trace("http.request", resource="/users/list"):
         pass
 
 
-# @pytest.mark.parametrize("testagent_snapshot_ci_mode", [False])
+@pytest.mark.parametrize("testagent_snapshot_ci_mode", [False])
 @pytest.mark.parametrize("trace_sample_rate", [0.0])  # Don't send any traces
 @pytest.mark.parametrize("do_traces,fail", [
     (_tracestats_traces, False),  # Keep this first and set `testagent_snapshot_ci_mode=True` to generate the snapshot.
@@ -277,8 +278,8 @@ async def test_tracestats(
     stats_tracer: Tracer,
     testagent_snapshot_ci_mode: bool,
     trace_sample_rate: float,
-    do_traces,
-    fail,
+    do_traces: Callable[[Span], None],
+    fail: bool,
 ) -> None:
     do_traces(stats_tracer)
     stats_tracer.shutdown()  # force out the stats
@@ -289,4 +290,3 @@ async def test_tracestats(
         assert resp.status == 400
     else:
         assert resp.status == 200
-"""

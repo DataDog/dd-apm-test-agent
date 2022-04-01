@@ -1,19 +1,36 @@
 import json
 from typing import List
+from typing import Any
+from typing import TypedDict
 
 from .checks import CheckTrace
 from .tracestats import StatsBucket
+from ddsketch.pb.ddsketch_pb2 import DDSketch
 
+
+class NormedDDSketch(TypedDict):
+    zeroCount: int
+
+
+def _normalize_ddsketch(sketch: DDSketch) -> NormedDDSketch:
+    return NormedDDSketch(
+        sketch.zeroCount,
+    )
 
 def _normalize_statsbuckets(buckets: List[StatsBucket]) -> List[StatsBucket]:
     """Normalize the stats bucket by normalizing the time buckets."""
-    # Make a copy of the buckets, note that the sketches are not copied.
+    # Make a copy of the buckets
     normed_buckets = []
     for bucket in buckets:
         bcopy = bucket.copy()
         bcopy["Stats"] = [
             aggr.copy() for aggr in bucket["Stats"]
         ]  # Copy the aggregations
+        for aggr in bcopy["Stats"]:
+            print(type(aggr["OkSummary"]))
+            print(aggr["OkSummary"].__class__)
+            aggr["OkSummary"] = _normalize_ddsketch(aggr["OkSummary"])
+            aggr["ErrorSummary"] = _normalize_ddsketch(aggr["ErrorSummary"])
         normed_buckets.append(bcopy)
 
     # Order the buckets by time
@@ -30,6 +47,7 @@ def _normalize_statsbuckets(buckets: List[StatsBucket]) -> List[StatsBucket]:
     for b in normed_buckets:
         b["Start"] -= start
 
+    print(normed_buckets)
     return normed_buckets
 
 
