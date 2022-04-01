@@ -81,8 +81,18 @@ def main(args: Optional[List[str]] = None) -> None:
     resolved_files = _resolve_files(parsed_args.files)
     log.info("Found %d snapshot files to process", len(resolved_files))
 
+    trace_files = []
+    trace_stats_files = []
+    for f in resolved_files:
+        if f.endswith("_tracestats.json"):
+            trace_stats_files.append(f)
+        else:
+            trace_files.append(f)
+    log.info("Found %d trace snapshot files to process", len(trace_files))
+    log.info("Found %d trace stats snapshot files to process", len(trace_stats_files))
+
     has_errors = False
-    for fname in resolved_files:
+    for fname in trace_files:
         log.debug("Checking snapshot file %r", fname)
         try:
             # Read the original file data
@@ -107,7 +117,7 @@ def main(args: Optional[List[str]] = None) -> None:
                     log.info("Snapshot file %r was formatted", fname)
 
         except Exception:
-            log.error("Error processing file %r", fname)
+            log.exception("Error processing file %r", fname)
             has_errors = True
 
     if has_errors:
