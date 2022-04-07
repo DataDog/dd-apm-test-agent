@@ -213,7 +213,7 @@ class Agent:
             nstats,
             "s" if nstats else "",
         )
-        return web.json_response(stats)
+        return web.HTTPOk()
 
     async def _handle_traces(
         self, request: Request, version: Literal["v0.4", "v0.5"]

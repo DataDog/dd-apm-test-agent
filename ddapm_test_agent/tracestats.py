@@ -14,6 +14,7 @@ class StatsAggr(TypedDict):
     Name: str
     Resource: str
     Type: Optional[str]  # noqa
+    HTTPStatusCode: int
     Synthetics: bool
     Hits: int
     TopLevelHits: int
@@ -46,6 +47,7 @@ def decode_v06(data: bytes) -> v06StatsPayload:
                 Name=raw_stats["Name"],
                 Resource=raw_stats["Resource"],
                 Type=raw_stats.get("Type"),
+                HTTPStatusCode=raw_stats.get("HTTPStatusCode"),
                 Synthetics=raw_stats["Synthetics"],
                 Hits=raw_stats["Hits"],
                 TopLevelHits=raw_stats["TopLevelHits"],

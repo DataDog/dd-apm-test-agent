@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Normalize trace stats snapshots using all the aggregation fields. This
+    fixes an issue where snapshots could fail due to ordering of buckets.
+  - |
+    Use HTTPStatusCode in trace stats snapshots. This field was missing.
