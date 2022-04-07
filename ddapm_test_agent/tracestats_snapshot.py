@@ -21,9 +21,17 @@ def _normalize_statsbuckets(buckets: List[StatsBucket]) -> List[StatsBucket]:
 
     # Sort aggr for a bucket alphanumerically
     for bucket in normed_buckets:
-        # Sort aggrs by name then resource then hits
+        # Sort aggrs to get a consistent list of buckets, since order does not matter.
         bucket["Stats"] = sorted(
-            bucket["Stats"], key=lambda b: (b["Name"], b["Resource"], ["Hits"])
+            bucket["Stats"],
+            key=lambda b: (
+                b["Name"],
+                b["Resource"],
+                b["Type"],
+                b.get("Synthetics"),
+                b.get("HTTPStatusCode"),
+                b["Hits"],
+            ),
         )
 
     start = normed_buckets[0]["Start"]
@@ -54,29 +62,33 @@ def snapshot(
         for i, (exp_bucket, rec_bucket) in enumerate(
             zip(normed_expected, normed_received)
         ):
-            exp_aggrs = exp_bucket["Stats"]
-            rec_aggrs = rec_bucket["Stats"]
-            assert len(exp_aggrs) == len(
-                rec_aggrs
-            ), f"Number of aggregations ({len(rec_aggrs)}) in bucket {i} doesn't match expected ({len(exp_aggrs)})."
+            with CheckTrace.add_frame(f"comparison of bucket {i}") as frame:
+                exp_aggrs = exp_bucket["Stats"]
+                rec_aggrs = rec_bucket["Stats"]
+                frame.add_item(f"Expected aggregated stats: {exp_aggrs}")
+                frame.add_item(f"Received aggregated stats: {rec_aggrs}")
+                assert len(exp_aggrs) == len(
+                    rec_aggrs
+                ), f"Number of aggregations ({len(rec_aggrs)}) in bucket {i} doesn't match expected: ({len(exp_aggrs)})."
 
-            for j, (exp_aggr, rec_aggr) in enumerate(zip(exp_aggrs, rec_aggrs)):
-                # Omit duration and sketches for now
-                # Duration and sketches will be noisy
-                for attr in (
-                    "Name",
-                    "Resource",
-                    "Type",
-                    "Synthetics",
-                    "Hits",
-                    "TopLevelHits",
-                    "Errors",
-                ):
-                    exp_value, rec_value = exp_aggr[attr], rec_aggr[attr]  # type: ignore
-                    if exp_value != rec_value:
-                        raise AssertionError(
-                            f"Expected value ('{exp_value}') for field '{attr}' does not match received value '{rec_value}'"
-                        )
+                for j, (exp_aggr, rec_aggr) in enumerate(zip(exp_aggrs, rec_aggrs)):
+                    # Omit duration and sketches for now
+                    # Duration and sketches will be noisy
+                    for attr in (
+                        "Name",
+                        "Resource",
+                        "Type",
+                        "Synthetics",
+                        "Hits",
+                        "TopLevelHits",
+                        "Errors",
+                        "HTTPStatusCode",
+                    ):
+                        exp_value, rec_value = exp_aggr[attr], rec_aggr[attr]  # type: ignore
+                        if exp_value != rec_value:
+                            raise AssertionError(
+                                f"Expected value ('{exp_value}') for field '{attr}' does not match received value: '{rec_value}'."
+                            )
 
 
 def generate(received_stats: List[StatsBucket]) -> str:

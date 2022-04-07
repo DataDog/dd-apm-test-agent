@@ -258,6 +258,7 @@ def test_generate_trace_snapshot(trace, expected):
                         # Not using all the fields of StatsAggr, hence the ignores
                         StatsAggr(  # type: ignore
                             Name="http.request",
+                            Type="http",
                             Resource="/users/list",
                             Hits=10,
                             TopLevelHits=10,
@@ -265,6 +266,7 @@ def test_generate_trace_snapshot(trace, expected):
                         ),  # noqa
                         StatsAggr(  # type: ignore
                             Name="http.request",
+                            Type="http",
                             Resource="/users/create",
                             Hits=5,
                             TopLevelHits=5,
@@ -278,6 +280,7 @@ def test_generate_trace_snapshot(trace, expected):
                     Stats=[
                         StatsAggr(  # type: ignore
                             Name="http.request",
+                            Type="http",
                             Resource="/users/list",
                             Hits=20,
                             TopLevelHits=20,
@@ -293,6 +296,7 @@ def test_generate_trace_snapshot(trace, expected):
     "Stats": [
       {
         "Name": "http.request",
+        "Type": "http",
         "Resource": "/users/create",
         "Hits": 5,
         "TopLevelHits": 5,
@@ -300,6 +304,7 @@ def test_generate_trace_snapshot(trace, expected):
       },
       {
         "Name": "http.request",
+        "Type": "http",
         "Resource": "/users/list",
         "Hits": 10,
         "TopLevelHits": 10,
@@ -313,6 +318,7 @@ def test_generate_trace_snapshot(trace, expected):
     "Stats": [
       {
         "Name": "http.request",
+        "Type": "http",
         "Resource": "/users/list",
         "Hits": 20,
         "TopLevelHits": 20,
