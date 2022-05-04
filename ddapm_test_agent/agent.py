@@ -591,6 +591,11 @@ def main(args: Optional[List[str]] = None) -> None:
             "to the agent."
         ),
     )
+    parser.add_argument(
+        "--uds-path",
+        type=str,
+        default=os.environ.get("DD_AGENT_URL") if os.environ.get("DD_AGENT_URL", "").startswith("unix://") else "/var/run/datadog/apm.socket"
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -613,7 +618,7 @@ def main(args: Optional[List[str]] = None) -> None:
         snapshot_ignored_attrs=parsed_args.snapshot_ignored_attrs,
         agent_url=parsed_args.agent_url,
     )
-    web.run_app(app, port=parsed_args.port)
+    web.run_app(app, path=os.path.abspath(parsed_args.uds_path), port=parsed_args.port)
 
 
 if __name__ == "__main__":
