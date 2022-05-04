@@ -30,6 +30,7 @@ setup(
         "aiohttp",
         "ddsketch",
         "msgpack",
+        "typing_extensions",
     ],
     tests_require=testing_deps,
     setup_requires=["setuptools_scm"],

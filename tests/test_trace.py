@@ -59,6 +59,7 @@ def test_decode_v04_bad(content_type, payload):
 @pytest.mark.parametrize(
     "trace",
     [
+        [{"name": "root"}],
         [{"name": "root", "parent_id": 0}],
         [{"name": "root", "parent_id": None}],
         [{"name": "root"}],
@@ -80,6 +81,10 @@ def test_root_span(trace):
         (
             [{"span_id": 1, "parent_id": 0, "start": 0}],
             [{"span_id": 1, "parent_id": 0, "start": 0}],
+        ),
+        (
+            [{"span_id": 1, "start": 0}],
+            [{"span_id": 1, "start": 0}],
         ),
         (
             [

@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Handle span ``parent_id`` being undefined.
