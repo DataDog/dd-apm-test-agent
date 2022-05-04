@@ -33,6 +33,7 @@ from .trace import v04TracePayload
 from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
+from .trace_checks import CheckTraceStallAsync
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 
@@ -222,10 +223,14 @@ class Agent:
         token = request["session_token"]
         checks: Checks = request.app["checks"]
 
+        await checks.check("trace_stall", headers=dict(request.headers))
+
         with CheckTrace.add_frame("headers") as f:
             f.add_item(pprint.pformat(dict(request.headers)))
-            checks.check("meta_tracer_version_header", headers=dict(request.headers))
-            checks.check(
+            await checks.check(
+                "meta_tracer_version_header", headers=dict(request.headers)
+            )
+            await checks.check(
                 "trace_content_length",
                 content_length=int(request.headers["Content-Length"]),
             )
@@ -252,7 +257,7 @@ class Agent:
             log.info("end of payload %s", "-" * 40)
 
             with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
-                checks.check(
+                await checks.check(
                     "trace_count_header",
                     headers=dict(request.headers),
                     num_traces=len(traces),
@@ -503,6 +508,7 @@ def make_app(
             CheckMetaTracerVersionHeader,
             CheckTraceCountHeader,
             CheckTraceContentLength,
+            CheckTraceStallAsync,
         ],
         disabled=disabled_checks,
     )

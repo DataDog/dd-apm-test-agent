@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict
 
 from .checks import Check
@@ -50,3 +51,23 @@ The max content size of a trace payload is 50MB.
     def check(self, content_length: int) -> None:  # type: ignore
         if content_length > 5e7:
             self.fail(f"content length {content_length} too large.")
+
+
+class CheckTraceStallAsync(Check):
+    name = "trace_stall"
+    description = """
+Stall the trace (mimicking an overwhelmed or throttled agent) for 1 second.
+
+Enable the check by submitting the X-Datadog-Test-Trace-Stall http header (unit is seconds)
+with the request.
+
+Note that only the request for this trace is stalled, subsequent requests will not be
+affected.
+""".strip()
+    default_enabled = True
+
+    async def check(self, headers: Dict[str, str]) -> None:  # type: ignore
+        if "X-Datadog-Test-Trace-Stall" in headers:
+            duration = float(headers["X-Datadog-Test-Trace-Stall"])
+
+            await asyncio.sleep(duration)
