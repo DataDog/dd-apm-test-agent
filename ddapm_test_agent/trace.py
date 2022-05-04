@@ -9,11 +9,12 @@ from typing import Literal
 from typing import Optional
 from typing import OrderedDict
 from typing import Tuple
-from typing import TypedDict
 from typing import Union
 from typing import cast
 
 import msgpack
+from typing_extensions import NotRequired
+from typing_extensions import TypedDict
 
 
 SpanId = int
@@ -46,19 +47,19 @@ SPAN_REQUIRED_ATTRS = [
 MetricType = Union[int, float]
 
 
-class Span(TypedDict, total=False):
+class Span(TypedDict):
     name: str
     span_id: SpanId
     trace_id: TraceId
     start: int
     duration: int
-    parent_id: int  # TODO: is this actually optional...it could be?
-    service: Optional[str]
-    resource: Optional[str]
-    type: Optional[str]  # noqa
-    error: Optional[int]
-    meta: Dict[str, str]
-    metrics: Dict[str, MetricType]
+    parent_id: NotRequired[Optional[int]]
+    service: NotRequired[Optional[str]]
+    resource: NotRequired[Optional[str]]
+    type: NotRequired[Optional[str]]  # noqa
+    error: NotRequired[Optional[int]]
+    meta: NotRequired[Dict[str, str]]
+    metrics: NotRequired[Dict[str, MetricType]]
 
 
 SpanAttr = Literal[
@@ -140,10 +141,12 @@ def child_map(trace: Trace) -> Dict[int, List[Span]]:
     # Initialize the map with all possible ids
     for s in trace:
         cmap[s["span_id"]] = []
-        cmap[s["parent_id"]] = []
+        parent_id = s.get("parent_id") or 0
+        cmap[parent_id] = []
 
     for s in trace:
-        cmap[s["parent_id"]].append(s)
+        parent_id = s.get("parent_id") or 0
+        cmap[parent_id].append(s)
 
     # Sort the children ascending by their start time
     for span_id in cmap:
