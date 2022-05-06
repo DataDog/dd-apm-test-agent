@@ -1,7 +1,8 @@
 # Datadog APM test agent
 
-![GitHub Workflow Status (branch)](https://img.shields.io/github/workflow/status/DataDog/dd-apm-test-agent/CI/master?style=flat-square)
-![PyPI](https://img.shields.io/pypi/v/ddapm-test-agent?style=flat-square)
+[![GitHub Workflow Status (branch)](https://img.shields.io/github/workflow/status/DataDog/dd-apm-test-agent/CI/master?style=flat-square)](https://github.com/DataDog/dd-apm-test-agent/actions?query=workflow%3ACI+branch%3Amaster)
+[![PyPI](https://img.shields.io/pypi/v/ddapm-test-agent?style=flat-square)](https://pypi.org/project/ddapm-test-agent/)
+
 
 <img align="right" src="https://user-images.githubusercontent.com/6321485/136316621-b4af42b6-4d1f-4482-a45b-bdee47e94bb8.jpeg" alt="bits agent" width="200px"/>
 
@@ -29,7 +30,7 @@ from Docker:
     # Run the test agent and mount the snapshot directory
     docker run --rm\
             -p 8126:8126\
-            -e CI_MODE=0\
+            -e SNAPSHOT_CI=0\
             -v $PWD/tests/snapshots:/snapshots\
             ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
 
