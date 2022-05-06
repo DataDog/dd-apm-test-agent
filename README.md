@@ -338,7 +338,11 @@ commit the release note with the change.
 
 ### Releasing
 
-1. Generate the release notes and use [`pandoc`](https://pandoc.org/) to format
+1. Checkout the `master` branch and make sure it's up to date.
+```bash
+    git checkout master && git pull
+```
+2. Generate the release notes and use [`pandoc`](https://pandoc.org/) to format
 them for Github:
 ```bash
     riot run -s reno report --no-show-source | pandoc -f rst -t gfm --wrap=none
