@@ -12,7 +12,7 @@ libraries.
 
 See the [features](#Features) section for the complete list of functionalities provided.
 
-See the [API](#API) section for the endpoint available.
+See the [API](#API) section for the endpoints available.
 
 See the [Development](#Development) section for how to get the test agent running locally to add additional checks or fix bugs.
 
