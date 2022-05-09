@@ -75,12 +75,12 @@ FIVE_SPAN_TRACE = random_trace(5)
         (
             [TWO_SPAN_TRACE],
             [TWO_SPAN_TRACE[:-1]],
-            "Number of traces received (1) doesn't match expected (2).",
+            "Received less spans (1) than expected (2). Expected unmatched spans: 'postgres.query'",
         ),
         (
             [TWO_SPAN_TRACE[:-1]],
             [TWO_SPAN_TRACE],
-            "Number of traces received (2) doesn't match expected (1).",
+            "Received more spans (2) than expected (1). Received unmatched spans: 'postgres.query'",
         ),
         (
             [[set_attr(copy_span(ONE_SPAN_TRACE[0]), "name", "name_expected")]],
