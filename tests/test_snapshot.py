@@ -208,7 +208,7 @@ async def test_snapshot_trace_differences(agent, expected_traces, actual_traces,
         (
             [
                 [
-                    {"parent_id": 0, "span_id": 1, "start": 0},
+                    {"span_id": 1, "start": 0},
                     {"parent_id": 1, "span_id": 2, "start": 1},
                     {"parent_id": 1, "span_id": 3, "start": 2},
                     {"parent_id": 2, "span_id": 4, "start": 4},
