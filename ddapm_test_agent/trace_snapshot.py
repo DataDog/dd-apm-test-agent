@@ -94,8 +94,9 @@ def _normalize_trace(trace: Trace, trace_id: TraceId) -> Trace:
         span["trace_id"] = trace_id
         new_id_map[span["span_id"]] = span_id
         span["span_id"] = span_id
-        if span.get("parent_id"):
-            span["parent_id"] = new_id_map[span["parent_id"]]
+        parent_id = span.get("parent_id")
+        if parent_id:
+            span["parent_id"] = new_id_map[parent_id]
         else:
             # Normalize the parent of root spans to be 0.
             span["parent_id"] = 0
