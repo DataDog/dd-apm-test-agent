@@ -236,7 +236,7 @@ def root_span(t: Trace) -> Span:
         if "parent_id" not in s or s["parent_id"] is None or s["parent_id"] == 0:
             return s
 
-    raise ValueError("root span not found in trace")
+    raise ValueError("root span not found in trace: %s" % t)
 
 
 def trace_id(t: Trace) -> TraceId:
