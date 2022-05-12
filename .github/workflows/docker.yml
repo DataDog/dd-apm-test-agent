@@ -5,28 +5,43 @@ on:
     types:
       - published
 jobs:
-  build-and-publish-latest:
+  build-and-publish:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
     steps:
     - uses: actions/checkout@v2
-    - name: Build and publish latest image
-      uses: VaultVulp/gp-docker-action@1.2.0
-      with:
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        image-name: ddapm-test-agent
-        dockerfile: Dockerfile
-        image-tag: latest
 
-  build-and-publish-release:
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - uses: actions/checkout@v2
-      - name: Build and publish latest image
-        uses: VaultVulp/gp-docker-action@1.2.0
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          image-name: ddapm-test-agent
-          dockerfile: Dockerfile
-          extract-git-tag: true
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2
+
+    - name: Set up Docker Buildx
+      id: buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Available platforms
+      run: echo ${{ steps.buildx.outputs.platforms }}
+
+    - name: Set Docker Image Tag
+      id: set_names
+      run: |
+        if [ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]; then
+          DOCKER_IMAGE_TAG=$(echo ${GITHUB_REF} | sed -e "s/refs\/tags\///g")
+        else
+          DOCKER_IMAGE_TAG="latest"
+        fi
+        DOCKER_IMAGE_NAME=ddapm-test-agent
+        DOCKER_IMAGE_NAME=$(echo ghcr.io/${GITHUB_REPOSITORY}/${DOCKER_IMAGE_NAME} | tr '[:upper:]' '[:lower:]')
+        DOCKER_IMAGE_NAME_WITH_TAG=$(echo ${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG} | tr '[:upper:]' '[:lower:]')
+        echo "Using image name '$DOCKER_IMAGE_NAME_WITH_TAG'"
+        echo "::set-output name=image_name::$DOCKER_IMAGE_NAME_WITH_TAG"
+
+    - name: Login to Docker
+      run: docker login -u publisher -p ${{ secrets.GITHUB_TOKEN }} ghcr.io
+
+    - name: Docker Build
+      uses: docker/build-push-action@v3
+      with:
+        push: true
+        tags: ${{ steps.set_names.outputs.image_name }}
+        platforms: "linux/amd64,linux/arm64/v8"
+        context: .
