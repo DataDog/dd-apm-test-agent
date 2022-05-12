@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Build an ARM64 version of the Docker image as a multi-arch image.
