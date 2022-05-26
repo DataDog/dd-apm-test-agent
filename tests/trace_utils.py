@@ -1,6 +1,7 @@
 from random import Random
 from typing import Any
 from typing import Dict
+from typing import Optional
 
 from ddapm_test_agent.trace import Span
 from ddapm_test_agent.trace import Trace
@@ -58,7 +59,7 @@ def span(rnd: Random = _random, **kwargs: Any) -> Span:
 
     for k in ["trace_id", "span_id"]:
         if k not in kwargs:
-            kwargs[k] = rnd.randint(0, 2**64)
+            kwargs[k] = random_id(rnd)
 
     # Don't assign a parent id by default
     if "parent_id" not in kwargs:
@@ -112,7 +113,12 @@ def _prufers_trace(n: int, rnd: Random = _random) -> Trace:
     return list(dfs_order(spans))
 
 
-def random_trace(nspans: int, rng: Random = _random) -> Trace:
+def random_trace(
+    nspans: int,
+    rng: Random = _random,
+    trace_id: Optional[int] = None,
+    parent_id: Optional[int] = None,
+) -> Trace:
     # TODO:
     #   represent arbitrary random services (subtrees in spans)
     #   resource names (should only be on service entry)
@@ -120,12 +126,19 @@ def random_trace(nspans: int, rng: Random = _random) -> Trace:
     #   sampling decisions
     #   dd_origin?
     assert nspans > 0
-    trace_id = rng.randint(0, 2**64)
+    if not trace_id:
+        trace_id = random_id(rng)
     t = _prufers_trace(nspans, rng)
     root = root_span(t)
+    if parent_id:
+        root["parent_id"] = parent_id
     for s in t:
         if s is not root:
             del s["type"]
             del s["resource"]
         s["trace_id"] = trace_id
     return t
+
+
+def random_id(rng: Random = _random) -> int:
+    return rng.randint(0, 2**64)
