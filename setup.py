@@ -29,7 +29,6 @@ setup(
     install_requires=[
         "aiohttp",
         "ddsketch",
-        "protobuf<4.21.0",
         "msgpack",
         "typing_extensions",
     ],
