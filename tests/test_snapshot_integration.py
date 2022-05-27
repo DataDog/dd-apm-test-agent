@@ -12,6 +12,7 @@ import aiohttp
 from aiohttp.client_exceptions import ClientConnectorError
 from aiohttp.client_exceptions import ClientOSError
 from ddtrace import Tracer
+from ddtrace.propagation.http import HTTPPropagator
 from ddtrace.sampler import DatadogSampler
 import pytest
 
@@ -213,6 +214,27 @@ async def test_trace_distributed_same_payload(testagent, tracer):
     tracer.flush()
     resp = await testagent.get(
         "http://localhost:8126/test/session/snapshot?test_session_token=test_trace_distributed_same_payload"
+    )
+    assert resp.status == 200
+
+
+async def test_trace_distributed_propagated(testagent, tracer):
+    await testagent.get(
+        "http://localhost:8126/test/session/start?test_session_token=test_trace_distributed_propagated"
+    )
+    headers = {
+        "x-datadog-trace-id": "1234",
+        "x-datadog-parent-id": "5678",
+    }
+    context = HTTPPropagator.extract(headers)
+    tracer.context_provider.activate(context)
+
+    with tracer.trace("root"):
+        with tracer.trace("child"):
+            pass
+    tracer.flush()
+    resp = await testagent.get(
+        "http://localhost:8126/test/session/snapshot?test_session_token=test_trace_distributed_propagated"
     )
     assert resp.status == 200
 

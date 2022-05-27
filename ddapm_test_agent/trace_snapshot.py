@@ -96,7 +96,9 @@ def _normalize_trace(trace: Trace, trace_id: TraceId) -> Trace:
         span["span_id"] = span_id
         parent_id = span.get("parent_id")
         if parent_id:
-            span["parent_id"] = new_id_map[parent_id]
+            # If parent_id is not in the map, assume this is a trace chunk with
+            # a parent not in the trace chunk. Eg: distributed traces.
+            span["parent_id"] = new_id_map.get(parent_id, parent_id)
         else:
             # Normalize the parent of root spans to be 0.
             span["parent_id"] = 0
