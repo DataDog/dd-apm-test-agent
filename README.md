@@ -300,6 +300,11 @@ To run the tests (in Python 3.8):
 
     riot run -p3.8 test
 
+Note: if snapshots need to be (re)generated in the tests set the environment variable `GENERATE_SNAPSHOTS=1`.
+
+    GENERATE_SNAPSHOTS=1 riot run --pass-env -p3.8 test -k test_trace_missing_received
+
+
 ### Linting and formatting
 
 To lint, format and type-check the code:

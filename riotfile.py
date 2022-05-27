@@ -58,6 +58,7 @@ venv = Venv(
                 "mypy": latest,
                 "pytest": latest,
                 "types-setuptools": latest,
+                "types-protobuf": latest,
             },
         ),
         Venv(
