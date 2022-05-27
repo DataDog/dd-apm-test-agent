@@ -1,3 +1,7 @@
+"""
+If snapshots need to be (re)generated, set GENERATE_SNAPSHOTS=1
+and run the tests as usual.
+"""
 import asyncio
 import os
 import subprocess
@@ -19,7 +23,9 @@ def testagent_port():
 @pytest.fixture(scope="module")
 def testagent_snapshot_ci_mode():
     # Default all tests in this module to be run in CI mode
-    yield True
+    # unless a special env var is passed to make generating
+    # the snapshots easier.
+    yield os.getenv("GENERATE_SNAPSHOTS") != "1"
 
 
 @pytest.fixture
