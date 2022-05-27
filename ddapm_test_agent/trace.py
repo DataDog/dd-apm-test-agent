@@ -232,11 +232,30 @@ def copy_trace(t: Trace) -> Trace:
 
 def root_span(t: Trace) -> Span:
     """Return the root span of the trace."""
+    # Follow approach used in Datadog Agent: https://github.com/DataDog/datadog-agent/blob/927f9ca9acf7983b72a4bfbdd7a69132e1da8501/pkg/trace/traceutil/trace.go#L53
+
+    if len(t) == 0:
+        raise ValueError("empty trace: %s" % t)
+
+    # common case optimization to check for span where parent_id is either not
+    # set or set to 0
     for s in t:
         if "parent_id" not in s or s["parent_id"] is None or s["parent_id"] == 0:
             return s
 
-    raise ValueError("root span not found in trace: %s" % t)
+    # collect root spans as those with parents that are not themselves spans in trace
+    span_ids = set(s["span_id"] for s in t)
+    roots = {
+        s["parent_id"]: s
+        for s in t
+        if "parent_id" in s and s["parent_id"] not in span_ids
+    }
+
+    if len(roots) != 1:
+        raise ValueError("single root span not found in trace (n=%d): %s" % (len(t), t))
+
+    # return any root candidate
+    return roots.popitem()[1]
 
 
 def trace_id(t: Trace) -> TraceId:

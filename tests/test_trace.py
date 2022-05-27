@@ -8,6 +8,7 @@ from ddapm_test_agent.trace import decode_v04
 from ddapm_test_agent.trace import dfs_order
 from ddapm_test_agent.trace import root_span
 
+from .trace_utils import random_id
 from .trace_utils import random_trace
 
 
@@ -18,6 +19,16 @@ def test_random_trace():
         assert len(t) == i
         assert dfs_order(t)
         assert bfs_order(t)
+
+
+def test_trace_chunk():
+    trace_id = random_id()
+    parent_id = random_id()
+    t = random_trace(10, trace_id=trace_id, parent_id=parent_id)
+    root = root_span(t)
+    assert root
+    assert root.get("trace_id") == trace_id
+    assert root.get("parent_id") == parent_id
 
 
 @pytest.mark.parametrize(
