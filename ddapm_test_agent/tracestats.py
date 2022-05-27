@@ -4,6 +4,7 @@ from typing import TypedDict
 
 from ddsketch import DDSketch
 from ddsketch.pb.ddsketch_pb2 import DDSketch as DDSketchProto
+from google.protobuf.json_format import MessageToDict
 import msgpack
 
 
@@ -43,6 +44,10 @@ def decode_v06(data: bytes) -> v06StatsPayload:
     for raw_bucket in payload["Stats"]:
         stats: List[StatsAggr] = []
         for raw_stats in raw_bucket["Stats"]:
+            ok_summary = DDSketchProto()
+            ok_summary.ParseFromString(raw_stats["OkSummary"])
+            err_summary = DDSketchProto()
+            err_summary.ParseFromString(raw_stats["ErrorSummary"])
             stat = StatsAggr(
                 Name=raw_stats["Name"],
                 Resource=raw_stats["Resource"],
@@ -53,8 +58,8 @@ def decode_v06(data: bytes) -> v06StatsPayload:
                 TopLevelHits=raw_stats["TopLevelHits"],
                 Duration=raw_stats["Duration"],
                 Errors=raw_stats["Errors"],
-                OkSummary=DDSketchProto().ParseFromString(raw_stats["OkSummary"]),
-                ErrorSummary=DDSketchProto().ParseFromString(raw_stats["ErrorSummary"]),
+                OkSummary=MessageToDict(ok_summary),
+                ErrorSummary=MessageToDict(err_summary),
             )
             stats.append(stat)
 
