@@ -114,6 +114,7 @@ The traces are normalized and output in JSON to a file. The following transforma
 
 - Trace ids are overwritten to match the order in which the traces were received.
 - Span ids are overwritten to be the DFS order of the spans in the trace tree.
+- Parent ids are overwritten using the normalized span ids. However, if the parent is not a span in the trace, the parent id is not overwritten. This is necessary for handling distributed traces where all spans are not sent to the same agent.
 - Span attributes are ordered to be more human-readable, with the important attributes being listed first.
 - Span attributes are otherwise ordered alphanumerically.
 - The span meta and metrics maps if empty are excluded.
