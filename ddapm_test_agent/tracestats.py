@@ -13,7 +13,7 @@ import msgpack
 class StatsAggr(TypedDict):
     Name: str
     Resource: str
-    Type: Optional[str]  # noqa
+    Type: Optional[str]
     HTTPStatusCode: int
     Synthetics: bool
     Hits: int
