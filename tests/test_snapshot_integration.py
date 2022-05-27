@@ -5,6 +5,7 @@ and run the tests as usual.
 import asyncio
 import os
 import subprocess
+from typing import Callable
 from typing import Generator
 
 import aiohttp
@@ -242,49 +243,52 @@ async def test_trace_missing_received(testagent, tracer):
     assert resp.status == 400
 
 
-# TODO: uncomment once ddtrace has stats
-"""
-def _tracestats_traces(tracer: Tracer):
+def _tracestats_traces(tracer: Tracer) -> None:
     for i in range(5):
         with tracer.trace("http.request", resource="/users/view") as span:
             if i == 4:
                 span.error = 1
 
 
-def _tracestats_traces_no_error(tracer: Tracer):
+def _tracestats_traces_no_error(tracer: Tracer) -> None:
     for i in range(5):
         with tracer.trace("http.request", resource="/users/view"):
             pass
 
 
-def _tracestats_traces_missing_trace(tracer: Tracer):
+def _tracestats_traces_missing_trace(tracer: Tracer) -> None:
     for i in range(4):
         with tracer.trace("http.request", resource="/users/view") as span:
             if i == 3:
                 span.error = 1
 
 
-def _tracestats_traces_extra_trace(tracer: Tracer):
+def _tracestats_traces_extra_trace(tracer: Tracer) -> None:
     _tracestats_traces(tracer)
     with tracer.trace("http.request", resource="/users/list"):
         pass
 
 
-# @pytest.mark.parametrize("testagent_snapshot_ci_mode", [False])
 @pytest.mark.parametrize("trace_sample_rate", [0.0])  # Don't send any traces
-@pytest.mark.parametrize("do_traces,fail", [
-    (_tracestats_traces, False),  # Keep this first and set `testagent_snapshot_ci_mode=True` to generate the snapshot.
-    (_tracestats_traces_no_error, True),
-    (_tracestats_traces_missing_trace, True),
-    (_tracestats_traces_extra_trace, True),
-])
+@pytest.mark.parametrize(
+    "do_traces,fail",
+    [
+        (
+            _tracestats_traces,
+            False,
+        ),  # Keep this parametrization first as the next ones depend on it.
+        (_tracestats_traces_no_error, True),
+        (_tracestats_traces_missing_trace, True),
+        (_tracestats_traces_extra_trace, True),
+    ],
+)
 async def test_tracestats(
     testagent: aiohttp.ClientSession,
     stats_tracer: Tracer,
     testagent_snapshot_ci_mode: bool,
     trace_sample_rate: float,
-    do_traces,
-    fail,
+    do_traces: Callable[[Tracer], None],
+    fail: bool,
 ) -> None:
     do_traces(stats_tracer)
     stats_tracer.shutdown()  # force out the stats
@@ -295,4 +299,3 @@ async def test_tracestats(
         assert resp.status == 400
     else:
         assert resp.status == 200
-"""
