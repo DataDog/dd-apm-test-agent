@@ -362,8 +362,7 @@ class Agent:
                 with open(tracestats_snap_file, mode="r") as f:
                     raw_snapshot = json.load(f)
                 tracestats_snapshot.snapshot(
-                    expected_stats=raw_snapshot,
-                    received_stats=received_stats,
+                    expected_stats=raw_snapshot, received_stats=received_stats,
                 )
             elif received_stats:
                 # Create a new snapshot for the data received
@@ -470,10 +469,7 @@ def make_app(
     agent = Agent()
     app = web.Application(
         client_max_size=int(100e6),  # 100MB - arbitrary
-        middlewares=[
-            check_failure_middleware,
-            session_token_middleware,
-        ],
+        middlewares=[check_failure_middleware, session_token_middleware,],
     )
     app.add_routes(
         [
@@ -514,8 +510,7 @@ def main(args: Optional[List[str]] = None) -> None:
     if args is None:
         args = sys.argv[1:]
     parser = argparse.ArgumentParser(
-        description="Datadog APM test agent",
-        prog="ddapm-test-agent",
+        description="Datadog APM test agent", prog="ddapm-test-agent",
     )
     parser.add_argument(
         "-v",
@@ -619,7 +614,9 @@ def main(args: Optional[List[str]] = None) -> None:
         snapshot_ignored_attrs=parsed_args.snapshot_ignored_attrs,
         agent_url=parsed_args.agent_url,
     )
-    web.run_app(app, path=os.path.abspath(parsed_args.trace_uds_socket), port=parsed_args.port)
+    web.run_app(
+        app, path=os.path.abspath(parsed_args.trace_uds_socket), port=parsed_args.port
+    )
 
 
 if __name__ == "__main__":
