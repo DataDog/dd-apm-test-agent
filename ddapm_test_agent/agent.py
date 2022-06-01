@@ -592,9 +592,12 @@ def main(args: Optional[List[str]] = None) -> None:
         ),
     )
     parser.add_argument(
-        "--uds-path",
+        "--trace-uds-socket",
         type=str,
-        default=os.environ.get("DD_AGENT_URL") if os.environ.get("DD_AGENT_URL", "").startswith("unix://") else "/var/run/datadog/apm.socket"
+        default=os.environ.get("DD_APM_RECEIVER_SOCKET"),
+        help=(
+            "Will listen for traces on the specified socket path"
+        ),
     )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
