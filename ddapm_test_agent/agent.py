@@ -595,9 +595,7 @@ def main(args: Optional[List[str]] = None) -> None:
         "--trace-uds-socket",
         type=str,
         default=os.environ.get("DD_APM_RECEIVER_SOCKET"),
-        help=(
-            "Will listen for traces on the specified socket path"
-        ),
+        help=("Will listen for traces on the specified socket path"),
     )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
