@@ -619,7 +619,7 @@ def main(args: Optional[List[str]] = None) -> None:
         snapshot_ignored_attrs=parsed_args.snapshot_ignored_attrs,
         agent_url=parsed_args.agent_url,
     )
-    web.run_app(app, path=os.path.abspath(parsed_args.uds_path), port=parsed_args.port)
+    web.run_app(app, path=os.path.abspath(parsed_args.trace_uds_socket), port=parsed_args.port)
 
 
 if __name__ == "__main__":
