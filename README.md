@@ -7,7 +7,7 @@
 
 The APM test agent is an application which emulates the APM endpoints of the [Datadog agent](https://github.com/DataDog/datadog-agent/) which can be used for testing Datadog APM client libraries.
 
-See the [features](#Features) section for the complete list of functionality provided.
+See the [features](#Features) section for the complete list of functionalities provided.
 
 See the [API](#API) section for the endpoint available.
 
@@ -16,14 +16,10 @@ See the [Development](#Development) section for how to get the test agent runnin
 
 ## Installation
 
-Once the agent is installed, you can start it like this:
-```
-    ddapm-test-agent --port=8126
-```
-
 The test agent can be installed from PyPI:
 ```
     pip install ddapm-test-agent
+    ddapm-test-agent --port=8126
 ```
 
 or from Docker:

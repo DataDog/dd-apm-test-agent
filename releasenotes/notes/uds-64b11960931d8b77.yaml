@@ -2,3 +2,4 @@
 features:
   - |
     Add unix domain socket support.
+    Enabled via environment variable `DD_APM_RECEIVER_SOCKET` or command line argument `--trace-uds-socket`.
