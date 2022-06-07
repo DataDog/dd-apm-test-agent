@@ -56,7 +56,7 @@ The max content size of a trace payload is 50MB.
 class CheckTraceStallAsync(Check):
     name = "trace_stall"
     description = """
-Stall the trace (mimicking an overwhelmed or throttled agent) for 1 second.
+Stall the trace (mimicking an overwhelmed or throttled agent) for the given duration in seconds.
 
 Enable the check by submitting the X-Datadog-Test-Trace-Stall http header (unit is seconds)
 with the request.
