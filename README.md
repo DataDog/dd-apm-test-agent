@@ -6,9 +6,7 @@
 
 <img align="right" src="https://user-images.githubusercontent.com/6321485/136316621-b4af42b6-4d1f-4482-a45b-bdee47e94bb8.jpeg" alt="bits agent" width="200px"/>
 
-The APM test agent is an application which emulates the APM endpoints of
-the [Datadog agent](https://github.com/DataDog/datadog-agent/) which can be used for testing Datadog APM client
-libraries.
+The APM test agent is an application which emulates the APM endpoints of the [Datadog agent](https://github.com/DataDog/datadog-agent/) which can be used for testing Datadog APM client libraries.
 
 See the [features](#Features) section for the complete list of functionalities provided.
 
@@ -20,13 +18,10 @@ See the [Development](#Development) section for how to get the test agent runnin
 ## Installation
 
 The test agent can be installed from PyPI:
-
     pip install ddapm-test-agent
-
     ddapm-test-agent --port=8126
 
-from Docker:
-
+or from Docker:
     # Run the test agent and mount the snapshot directory
     docker run --rm\
             -p 8126:8126\
@@ -35,16 +30,17 @@ from Docker:
             ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
 
 or from source:
-
     pip install git+https://github.com/Datadog/dd-apm-test-agent
 
+or a specific branch:
+	pip install git+https://github.com/Datadog/dd-apm-test-agent@{branch}
 
 ## Features
 
 ### Trace invariant checks
 
-Many checks are provided by the test agent which will verify trace data. All checks are enabled by default and can be
-manually disabled.
+Many checks are provided by the test agent which will verify trace data. 
+All checks are enabled by default and can be manually disabled.
 
 See the [configuration](#Configuration) section for the options.
 
@@ -64,8 +60,7 @@ All data that is submitted to the test agent can be retrieved.
 
 ### Helpful logging
 
-The `INFO` log level of the test agent outputs useful information about the requests the test agent receives. For traces
-this includes a visual representation of the traces.
+The `INFO` log level of the test agent outputs useful information about the requests the test agent receives. For traces this includes a visual representation of the traces.
 
 ```
 INFO:ddapm_test_agent.agent:received trace payload with 1 trace chunk
@@ -80,27 +75,25 @@ INFO:ddapm_test_agent.agent:end of payload -------------------------------------
 
 ### Proxy
 
-The test agent provides proxying to the Datadog agent. This is enabled by passing the agent url to the test agent
-either via the `--agent-url` commandline argument or by the `DD_TRACE_AGENT_URL` or `DD_AGENT_URL` environment
-variables.
+The test agent provides proxying to the Datadog agent. 
+This is enabled by passing the agent url to the test agent either via the `--agent-url` command-line argument or by the `DD_TRACE_AGENT_URL` or `DD_AGENT_URL` environment variables.
 
-When proxying is enabled the response from the Datadog agent will be returned instead of one from the test agent.
+When proxying is enabled, the response from the Datadog agent will be returned instead of one from the test agent.
 
 
 ### Snapshot testing
 
 The test agent provides a form of [characterization testing](https://en.wikipedia.org/wiki/Characterization_test) which
-we refer to as snapshotting. This allows library maintainers to ensure that traces don't change unexpectedly when making
-unrelated changes.
+we refer to as snapshotting. 
+This allows library maintainers to ensure that traces don't change unexpectedly when making unrelated changes.
 
-This can be used to write integration tests by having test cases use the tracer to emit traces which are collected by
-the test agent and compared against reference traces stored previously.
+This can be used to write integration tests by having test cases use the tracer to emit traces which are collected by the test agent and compared against reference traces stored previously.
 
 To do snapshot testing with the test agent:
 
 1. Ensure traces are associated with a session token (typically the name of the test case) by either:
    - Calling the `/test/session/start` with the token endpoint before emitting the traces; or
-   - Attaching an additional query param or header specifying the session token on `/vX.Y/trace` requests (see below for
+   - Attaching an additional query string parameter or header specifying the session token on `/vX.Y/trace` requests (see below for
      the API specifics). (Required for concurrent test running)
 2. Emit traces (run the integration test).
 3. Signal the end of the session and perform the snapshot comparison by calling the `/tests/session/snapshot` endpoint
@@ -157,7 +150,7 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
 - `LOG_SPAN_FMT` [`"[{name}]"`]: Format string to use when outputting spans in logs.
 
 - `SNAPSHOT_DIR` [`"./snapshots"`]: Directory in which snapshots will be stored.
-  Can be overridden by providing the `dir` query param on `/snapshot`.
+  Can be overridden by providing the `dir` query parameter on `/snapshot`.
 
 - `SNAPSHOT_CI` [`0`]: Toggles CI mode for the snapshot tests. Set to `1` to
   enable. CI mode does the following:
@@ -168,6 +161,8 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
   attributes to ignore when comparing spans in snapshots.
 
 - `DD_AGENT_URL` [`""`]: URL to a Datadog agent. When provided requests will be proxied to the agent.
+
+- `DD_APM_RECEIVER_SOCKET` [`""`]: When provided, the test agent will listen for traces on a socket at the path provided (e.g., `/var/run/datadog/apm.socket`)
 
 
 

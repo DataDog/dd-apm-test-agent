@@ -596,6 +596,12 @@ def main(args: Optional[List[str]] = None) -> None:
             "to the agent."
         ),
     )
+    parser.add_argument(
+        "--trace-uds-socket",
+        type=str,
+        default=os.environ.get("DD_APM_RECEIVER_SOCKET", None),
+        help=("Will listen for traces on the specified socket path"),
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -618,7 +624,8 @@ def main(args: Optional[List[str]] = None) -> None:
         snapshot_ignored_attrs=parsed_args.snapshot_ignored_attrs,
         agent_url=parsed_args.agent_url,
     )
-    web.run_app(app, port=parsed_args.port)
+
+    web.run_app(app, path=parsed_args.trace_uds_socket, port=parsed_args.port)
 
 
 if __name__ == "__main__":
