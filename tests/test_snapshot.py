@@ -75,12 +75,12 @@ FIVE_SPAN_TRACE = random_trace(5)
         (
             [TWO_SPAN_TRACE],
             [TWO_SPAN_TRACE[:-1]],
-            "Number of traces received (1) doesn't match expected (2).",
+            "Received fewer spans (1) than expected (2). Expected unmatched spans: 'postgres.query'",
         ),
         (
             [TWO_SPAN_TRACE[:-1]],
             [TWO_SPAN_TRACE],
-            "Number of traces received (2) doesn't match expected (1).",
+            "Received more spans (2) than expected (1). Received unmatched spans: 'postgres.query'",
         ),
         (
             [[set_attr(copy_span(ONE_SPAN_TRACE[0]), "name", "name_expected")]],
@@ -208,7 +208,7 @@ async def test_snapshot_trace_differences(agent, expected_traces, actual_traces,
         (
             [
                 [
-                    {"parent_id": 0, "span_id": 1, "start": 0},
+                    {"span_id": 1, "start": 0},
                     {"parent_id": 1, "span_id": 2, "start": 1},
                     {"parent_id": 1, "span_id": 3, "start": 2},
                     {"parent_id": 2, "span_id": 4, "start": 4},
@@ -239,7 +239,42 @@ async def test_snapshot_trace_differences(agent, expected_traces, actual_traces,
        "parent_id": 1,
        "start": 2
      }]]\n""",
-        )
+        ),
+        (
+            [
+                [
+                    {"parent_id": None, "span_id": 1, "start": 0},
+                    {"parent_id": 1, "span_id": 2, "start": 1},
+                    {"parent_id": 1, "span_id": 3, "start": 2},
+                    {"parent_id": 2, "span_id": 4, "start": 4},
+                ]
+            ],
+            """[[
+  {
+    "trace_id": 0,
+    "span_id": 1,
+    "parent_id": 0,
+    "start": 0
+  },
+     {
+       "trace_id": 0,
+       "span_id": 2,
+       "parent_id": 1,
+       "start": 1
+     },
+        {
+          "trace_id": 0,
+          "span_id": 4,
+          "parent_id": 2,
+          "start": 4
+        },
+     {
+       "trace_id": 0,
+       "span_id": 3,
+       "parent_id": 1,
+       "start": 2
+     }]]\n""",
+        ),
     ],
 )
 def test_generate_trace_snapshot(trace, expected):

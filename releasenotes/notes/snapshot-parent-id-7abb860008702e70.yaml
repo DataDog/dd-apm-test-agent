@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Fix not present parent_id in snapshots. It should be normalized to 0.

@@ -219,6 +219,7 @@ class Agent:
         self, request: Request, version: Literal["v0.4", "v0.5"]
     ) -> web.Response:
         self._requests.append(request)
+        token = request["session_token"]
         checks: Checks = request.app["checks"]
 
         with CheckTrace.add_frame("headers") as f:
@@ -232,7 +233,11 @@ class Agent:
                 traces = await self._decode_v04_traces(request)
             elif version == "v0.5":
                 traces = await self._decode_v05_traces(request)
-            log.info("received trace payload with %r trace chunks", len(traces))
+            log.info(
+                "received trace for token %r payload with %r trace chunks",
+                token,
+                len(traces),
+            )
             for i, trace in enumerate(traces):
                 try:
                     log.info(
@@ -324,7 +329,7 @@ class Agent:
                 raise AssertionError(
                     f"Trace snapshot file '{trace_snap_file}' not found. "
                     "Perhaps the file was not checked into source control? "
-                    "The snapshot file is automatically generated when the test case is run when not in CI mode."
+                    "The snapshot file is automatically generated when the test agent is not in CI mode."
                 )
             elif trace_snap_path_exists:
                 # Do the snapshot comparison

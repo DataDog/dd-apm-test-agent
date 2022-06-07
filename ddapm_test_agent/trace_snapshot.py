@@ -94,8 +94,11 @@ def _normalize_trace(trace: Trace, trace_id: TraceId) -> Trace:
         span["trace_id"] = trace_id
         new_id_map[span["span_id"]] = span_id
         span["span_id"] = span_id
-        if span["parent_id"]:
-            span["parent_id"] = new_id_map[span["parent_id"]]
+        parent_id = span.get("parent_id")
+        if parent_id:
+            # If parent_id is not in the map, assume this is a trace chunk with
+            # a parent not in the trace chunk. Eg: distributed traces.
+            span["parent_id"] = new_id_map.get(parent_id, parent_id)
         else:
             # Normalize the parent of root spans to be 0.
             span["parent_id"] = 0
@@ -140,12 +143,20 @@ def _match_traces(t1s: List[Trace], t2s: List[Trace]) -> List[Tuple[Trace, Trace
         matched_t1s.add(t1_trace_id)
         matched_t2s.add(t2_trace_id)
 
-    assert len(matched_t1s) == len(
-        t1_map
-    ), f"Unmatched expected traces {set(t1_map.keys()) - matched_t1s}"
-    assert len(matched_t2s) == len(
-        t2_map
-    ), f"Unmatched received traces {set(t2_map.keys()) - matched_t2s}"
+    if len(matched_t1s) != len(t1_map):
+        unmatched_ids = set(t1_map.keys()) - matched_t1s
+        op_names = [t1_map[tid][0]["name"] for tid in unmatched_ids]
+        raise AssertionError(
+            "Did not receive expected traces: %s"
+            % (",".join(map(lambda s: f"'{s}'", op_names)))
+        )
+    if len(matched_t2s) != len(t2_map):
+        unmatched_ids = set(t2_map.keys()) - matched_t2s
+        op_names = [t2_map[tid][0]["name"] for tid in unmatched_ids]
+        raise AssertionError(
+            "Received unmatched traces: %s"
+            % (",".join(map(lambda s: f"'{s}'", op_names)))
+        )
     return matches
 
 
@@ -208,9 +219,16 @@ def _compare_traces(expected: Trace, received: Trace, ignored: Set[str]) -> None
 
     The given traces are assumed to be in BFS order.
     """
-    assert len(expected) == len(
-        received
-    ), f"Number of traces received ({len(received)}) doesn't match expected ({len(expected)})."
+    if len(received) > len(expected):
+        names = ["'%s'" % s["name"] for s in received[len(expected) - len(received) :]]
+        raise AssertionError(
+            f"Received more spans ({len(received)}) than expected ({len(expected)}). Received unmatched spans: {', '.join(names)}"
+        )
+    elif len(expected) > len(received):
+        names = ["'%s'" % s["name"] for s in expected[len(received) - len(expected) :]]
+        raise AssertionError(
+            f"Received fewer spans ({len(received)}) than expected ({len(expected)}). Expected unmatched spans: {', '.join(names)}"
+        )
 
     for s_exp, s_rec in zip(expected, received):
         with CheckTrace.add_frame(
@@ -256,16 +274,19 @@ def snapshot(
 ) -> None:
     normed_expected = _normalize_traces(expected_traces)
     normed_received = _normalize_traces(received_traces)
-    matched = _match_traces(normed_expected, normed_received)
-    log.debug("Matched traces %r", matched)
+    with CheckTrace.add_frame(
+        f"compare of {len(normed_expected)} expected trace(s) to {len(normed_received)} received trace(s)"
+    ):
+        matched = _match_traces(normed_expected, normed_received)
+        log.debug("Matched traces %r", matched)
 
-    for exp, rec in matched:
-        with CheckTrace.add_frame(f"trace ({len(exp)}) spans"):
-            _compare_traces(exp, rec, set(ignored))
+        for exp, rec in matched:
+            with CheckTrace.add_frame(f"trace '{exp[0]['name']}' ({len(exp)} spans)"):
+                _compare_traces(exp, rec, set(ignored))
 
 
 def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
-    """Order the span to be more human readable."""
+    """Order the span to be more human-readable."""
     d = OrderedDict()
     order = [
         "name",

@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Better snapshot error messages for unexpected number of traces received.

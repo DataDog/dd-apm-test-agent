@@ -1,7 +1,8 @@
 # Datadog APM test agent
 
-![GitHub Workflow Status (branch)](https://img.shields.io/github/workflow/status/DataDog/dd-apm-test-agent/CI/master?style=flat-square)
-![PyPI](https://img.shields.io/pypi/v/ddapm-test-agent?style=flat-square)
+[![GitHub Workflow Status (branch)](https://img.shields.io/github/workflow/status/DataDog/dd-apm-test-agent/CI/master?style=flat-square)](https://github.com/DataDog/dd-apm-test-agent/actions?query=workflow%3ACI+branch%3Amaster)
+[![PyPI](https://img.shields.io/pypi/v/ddapm-test-agent?style=flat-square)](https://pypi.org/project/ddapm-test-agent/)
+
 
 <img align="right" src="https://user-images.githubusercontent.com/6321485/136316621-b4af42b6-4d1f-4482-a45b-bdee47e94bb8.jpeg" alt="bits agent" width="200px"/>
 
@@ -9,7 +10,7 @@ The APM test agent is an application which emulates the APM endpoints of the [Da
 
 See the [features](#Features) section for the complete list of functionalities provided.
 
-See the [API](#API) section for the endpoint available.
+See the [API](#API) section for the endpoints available.
 
 See the [Development](#Development) section for how to get the test agent running locally to add additional checks or fix bugs.
 
@@ -24,7 +25,7 @@ or from Docker:
     # Run the test agent and mount the snapshot directory
     docker run --rm\
             -p 8126:8126\
-            -e CI_MODE=0\
+            -e SNAPSHOT_CI=0\
             -v $PWD/tests/snapshots:/snapshots\
             ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
 
@@ -106,6 +107,7 @@ The traces are normalized and output in JSON to a file. The following transforma
 
 - Trace ids are overwritten to match the order in which the traces were received.
 - Span ids are overwritten to be the DFS order of the spans in the trace tree.
+- Parent ids are overwritten using the normalized span ids. However, if the parent is not a span in the trace, the parent id is not overwritten. This is necessary for handling distributed traces where all spans are not sent to the same agent.
 - Span attributes are ordered to be more human-readable, with the important attributes being listed first.
 - Span attributes are otherwise ordered alphanumerically.
 - The span meta and metrics maps if empty are excluded.
@@ -293,6 +295,11 @@ To run the tests (in Python 3.8):
 
     riot run -p3.8 test
 
+Note: if snapshots need to be (re)generated in the tests set the environment variable `GENERATE_SNAPSHOTS=1`.
+
+    GENERATE_SNAPSHOTS=1 riot run --pass-env -p3.8 test -k test_trace_missing_received
+
+
 ### Linting and formatting
 
 To lint, format and type-check the code:
@@ -332,7 +339,11 @@ commit the release note with the change.
 
 ### Releasing
 
-1. Generate the release notes and use [`pandoc`](https://pandoc.org/) to format
+1. Checkout the `master` branch and make sure it's up to date.
+```bash
+    git checkout master && git pull
+```
+2. Generate the release notes and use [`pandoc`](https://pandoc.org/) to format
 them for Github:
 ```bash
     riot run -s reno report --no-show-source | pandoc -f rst -t gfm --wrap=none
