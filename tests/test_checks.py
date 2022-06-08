@@ -89,7 +89,7 @@ async def test_trace_stall(
     v04_reference_http_trace_payload_data,
     agent_disabled_checks,
 ):
-    v04_reference_http_trace_payload_headers["X-Datadog-Test-Trace-Stall"] = "0.5"
+    v04_reference_http_trace_payload_headers["X-Datadog-Test-Stall-Seconds"] = "0.8"
     start = time.monotonic_ns()
     resp = await agent.put(
         "/v0.4/traces",
@@ -98,4 +98,4 @@ async def test_trace_stall(
     )
     assert resp.status == 200, await resp.text()
     end = time.monotonic_ns()
-    assert (end - start) / 1e9 >= 0.5
+    assert (end - start) / 1e9 >= 0.8

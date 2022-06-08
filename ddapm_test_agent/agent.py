@@ -12,6 +12,7 @@ from typing import List
 from typing import Literal
 from typing import Optional
 from typing import Set
+from unicodedata import decimal
 
 from aiohttp import ClientSession
 from aiohttp import web
@@ -223,7 +224,7 @@ class Agent:
         token = request["session_token"]
         checks: Checks = request.app["checks"]
 
-        await checks.check("trace_stall", headers=dict(request.headers))
+        await checks.check("trace_stall", headers=dict(request.headers), request=request)
 
         with CheckTrace.add_frame("headers") as f:
             f.add_item(pprint.pformat(dict(request.headers)))
@@ -476,6 +477,7 @@ def make_app(
     snapshot_ci_mode: bool,
     snapshot_ignored_attrs: List[str],
     agent_url: str,
+    trace_request_delay: str,
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
@@ -518,6 +520,7 @@ def make_app(
     app["log_span_fmt"] = log_span_fmt
     app["snapshot_ignored_attrs"] = snapshot_ignored_attrs
     app["agent_url"] = agent_url
+    app["trace_request_delay"] = trace_request_delay
     return app
 
 
@@ -608,6 +611,12 @@ def main(args: Optional[List[str]] = None) -> None:
         default=os.environ.get("DD_APM_RECEIVER_SOCKET", None),
         help=("Will listen for traces on the specified socket path"),
     )
+    parser.add_argument(
+        "--trace-request-delay",
+        type=str,
+        default=os.environ.get("DD_TEST_STALL_REQUEST_SECONDS", None),
+        help=("Will stall trace requests for specified amount of time"),
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -629,6 +638,7 @@ def main(args: Optional[List[str]] = None) -> None:
         snapshot_ci_mode=parsed_args.snapshot_ci_mode,
         snapshot_ignored_attrs=parsed_args.snapshot_ignored_attrs,
         agent_url=parsed_args.agent_url,
+        trace_request_delay=parsed_args.trace_request_delay,
     )
 
     web.run_app(app, path=parsed_args.trace_uds_socket, port=parsed_args.port)

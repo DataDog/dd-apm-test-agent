@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    Add support for artificially throttling requests.
+    Simulates an agent under duress.
+    Enabled via variable `DD_APM_RECEIVER_SOCKET` or request header `X-Datadog-Test-Trace-Stall`.
+    Set either with milliseconds delay/

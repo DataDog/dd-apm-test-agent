@@ -58,7 +58,7 @@ class CheckTraceStallAsync(Check):
     description = """
 Stall the trace (mimicking an overwhelmed or throttled agent) for the given duration in seconds.
 
-Enable the check by submitting the X-Datadog-Test-Trace-Stall http header (unit is seconds)
+Enable the check by submitting the X-Datadog-Test-Stall-Seconds http header (unit is seconds)
 with the request.
 
 Note that only the request for this trace is stalled, subsequent requests will not be
@@ -67,7 +67,10 @@ affected.
     default_enabled = True
 
     async def check(self, headers: Dict[str, str]) -> None:  # type: ignore
-        if "X-Datadog-Test-Trace-Stall" in headers:
-            duration = float(headers["X-Datadog-Test-Trace-Stall"])
-
+        duration = float(0);
+        if "X-Datadog-Test-Stall-Seconds" in headers:
+            duration = float(headers["X-Datadog-Test-Stall-Seconds"])
+        elif "" in request.app:
+            duration = float(request.app["trace_request_delay"])
+        if duration > 0:
             await asyncio.sleep(duration)
