@@ -1,4 +1,5 @@
 import asyncio
+from aiohttp.web import Request
 from typing import Dict
 
 from .checks import Check
@@ -66,7 +67,7 @@ affected.
 """.strip()
     default_enabled = True
 
-    async def check(self, headers: Dict[str, str]) -> None:  # type: ignore
+    async def check(self, headers: Dict[str, str], request: Request) -> None:  # type: ignore
         duration = float(0);
         if "X-Datadog-Test-Stall-Seconds" in headers:
             duration = float(headers["X-Datadog-Test-Stall-Seconds"])
