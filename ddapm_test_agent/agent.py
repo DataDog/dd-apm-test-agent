@@ -624,6 +624,10 @@ def main(args: Optional[List[str]] = None) -> None:
         print(_get_version())
         sys.exit(0)
 
+    if not parsed_args.trace_request_delay is None:
+        log.info(
+            "Trace request stall seconds setting set to %r.",
+            parsed_args.trace_request_delay)
     if not os.path.exists(parsed_args.snapshot_dir) or not os.access(
         parsed_args.snapshot_dir, os.W_OK | os.X_OK
     ):
