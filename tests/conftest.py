@@ -134,6 +134,7 @@ def v04_trace(  # type: ignore
     traces: List[Trace],
     encoding: Literal["msgpack", "json"] = "msgpack",
     token: Optional[str] = None,
+    headers: Optional[Dict[str, str]] = None,
 ):
     params = {"test_session_token": token} if token is not None else {}
     if encoding == "msgpack":

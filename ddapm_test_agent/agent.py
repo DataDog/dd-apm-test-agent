@@ -225,10 +225,7 @@ class Agent:
         with CheckTrace.add_frame("headers") as f:
             f.add_item(pprint.pformat(dict(request.headers)))
             checks.check("meta_tracer_version_header", headers=dict(request.headers))
-            checks.check(
-                "trace_content_length",
-                content_length=int(request.headers["Content-Length"]),
-            )
+            checks.check("trace_content_length", headers=dict(request.headers))
             if version == "v0.4":
                 traces = await self._decode_v04_traces(request)
             elif version == "v0.5":
