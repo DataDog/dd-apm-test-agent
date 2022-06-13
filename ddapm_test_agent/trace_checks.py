@@ -47,6 +47,11 @@ The max content size of a trace payload is 50MB.
 """.strip()
     default_enabled = True
 
-    def check(self, content_length: int) -> None:  # type: ignore
+    def check(self, headers: Dict[str, str]) -> None:  # type: ignore
+        if "Content-Length" not in headers:
+            self.fail(
+                f"content length header 'Content-Length' not in http headers {headers}"
+            )
+        content_length = int(headers["Content-Length"])
         if content_length > 5e7:
             self.fail(f"content length {content_length} too large.")
