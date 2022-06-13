@@ -18,10 +18,12 @@ See the [Development](#Development) section for how to get the test agent runnin
 ## Installation
 
 The test agent can be installed from PyPI:
+
     pip install ddapm-test-agent
     ddapm-test-agent --port=8126
 
 or from Docker:
+
     # Run the test agent and mount the snapshot directory
     docker run --rm\
             -p 8126:8126\
@@ -30,10 +32,13 @@ or from Docker:
             ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
 
 or from source:
+
     pip install git+https://github.com/Datadog/dd-apm-test-agent
 
 or a specific branch:
-	pip install git+https://github.com/Datadog/dd-apm-test-agent@{branch}
+
+    pip install git+https://github.com/Datadog/dd-apm-test-agent@{branch}
+
 
 ## Features
 
