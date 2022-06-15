@@ -51,3 +51,18 @@ async def test_trace_clear_token(
     resp = await agent.get("/test/traces", params={"trace_ids": "123456"})
     assert resp.status == 200
     assert await resp.text() == "[[]]"
+
+
+async def test_info(agent):
+    resp = await agent.get("/info")
+    assert resp.status == 200
+    assert await resp.json() == {
+        "version": "test",
+        "endpoints": [
+            "/v0.4/traces",
+            "/v0.5/traces",
+            "/v0.6/stats",
+        ],
+        "feature_flags": [],
+        "config": {},
+    }
