@@ -497,6 +497,7 @@ def make_app(
             web.put("/v0.4/traces", agent.handle_v04_traces),
             web.post("/v0.5/traces", agent.handle_v05_traces),
             web.put("/v0.5/traces", agent.handle_v05_traces),
+            web.post("/v0.6/stats", agent.handle_v06_tracestats),
             web.put("/v0.6/stats", agent.handle_v06_tracestats),
             web.get("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),

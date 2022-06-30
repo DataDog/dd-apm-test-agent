@@ -12,3 +12,16 @@ async def test_stats_basic(agent, do_reference_v06_http_stats):
     assert len(body) == 1
     assert body[0]["Hostname"] == "Host-1234"
     assert body[0]["Stats"][0]["Stats"][0]["Hits"] == 100
+
+
+async def test_stats_post(
+    agent,
+    v06_reference_http_stats_payload_headers,
+    v06_reference_http_stats_payload_data,
+):
+    resp = await agent.post(
+        "/v0.6/stats",
+        headers=v06_reference_http_stats_payload_headers,
+        data=v06_reference_http_stats_payload_data,
+    )
+    assert resp.status == 200, await resp.text()
