@@ -215,6 +215,7 @@ def v06_reference_http_stats_payload_data_raw():
                     {
                         "Name": "http.request",
                         "Resource": "/user/profile",
+                        "Service": "web-svc",
                         "Synthetics": False,
                         "Hits": ok_n + err_n,
                         "TopLevelHits": ok_n + err_n,

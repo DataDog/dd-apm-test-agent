@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Decode service field in trace stats requests, it was previously omitted.
