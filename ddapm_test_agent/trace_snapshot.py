@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 
 DEFAULT_SNAPSHOT_IGNORES = (
-    "span_id,trace_id,parent_id,duration,start,metrics.system.pid,meta.runtime-id"
+    "span_id,trace_id,parent_id,duration,start,metrics.system.pid,metrics.process_id,meta.runtime-id"
 )
 
 

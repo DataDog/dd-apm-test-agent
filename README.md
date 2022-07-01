@@ -163,7 +163,7 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
     - When snapshots are unexpectedly _generated_ from a test case a failure will
       be raised.
 
-- `SNAPSHOT_IGNORED_ATTRS` [`"span_id,trace_id,parent_id,duration,start,metrics.system.pid,meta.runtime-id"`]: The
+- `SNAPSHOT_IGNORED_ATTRS` [`"span_id,trace_id,parent_id,duration,start,metrics.system.pid,metrics.process_id,meta.runtime-id"`]: The
   attributes to ignore when comparing spans in snapshots.
 
 - `DD_AGENT_URL` [`""`]: URL to a Datadog agent. When provided requests will be proxied to the agent.
@@ -216,7 +216,7 @@ cases sharing a test token will be grouped.
 Comma-separated list of keys of which to ignore values for.
 
 The default built-in ignore list is: `span_id`, `trace_id`, `parent_id`,
-`duration`, `start`, `metrics.system.pid`, `meta.runtime-id`.
+`duration`, `start`, `metrics.system.pid`, `metrics.process_id`, `meta.runtime-id`.
 
 
 #### [optional] `?dir=`
