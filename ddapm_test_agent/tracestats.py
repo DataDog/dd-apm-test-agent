@@ -13,6 +13,7 @@ import msgpack
 class StatsAggr(TypedDict):
     Name: str
     Resource: str
+    Service: Optional[str]
     Type: Optional[str]
     HTTPStatusCode: int
     Synthetics: bool
@@ -46,6 +47,7 @@ def decode_v06(data: bytes) -> v06StatsPayload:
             stat = StatsAggr(
                 Name=raw_stats["Name"],
                 Resource=raw_stats["Resource"],
+                Service=raw_stats.get("Service"),
                 Type=raw_stats.get("Type"),
                 HTTPStatusCode=raw_stats.get("HTTPStatusCode"),
                 Synthetics=raw_stats["Synthetics"],
