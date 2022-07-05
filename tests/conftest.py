@@ -55,6 +55,11 @@ def agent_url() -> Generator[str, None, None]:
 
 
 @pytest.fixture
+def trace_request_delay() -> Generator[float, None, None]:
+    yield 0.0
+
+
+@pytest.fixture
 async def agent_app(
     aiohttp_server,
     agent_disabled_checks,
@@ -63,6 +68,7 @@ async def agent_app(
     snapshot_ci_mode,
     snapshot_ignored_attrs,
     agent_url,
+    trace_request_delay,
 ):
     app = await aiohttp_server(
         make_app(
@@ -72,6 +78,7 @@ async def agent_app(
             snapshot_ci_mode,
             snapshot_ignored_attrs,
             agent_url,
+            trace_request_delay,
         )
     )
     yield app

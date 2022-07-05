@@ -1,6 +1,13 @@
+import asyncio
+import logging
 from typing import Dict
 
+from aiohttp.web import Request
+
 from .checks import Check
+
+
+log = logging.getLogger(__name__)
 
 
 class CheckTraceCountHeader(Check):
@@ -56,3 +63,26 @@ The max content size of a trace payload is 50MB.
         content_length = int(headers["Content-Length"])
         if content_length > 5e7:
             self.fail(f"content length {content_length} too large.")
+
+
+class CheckTraceStallAsync(Check):
+    name = "trace_stall"
+    description = """
+Stall the trace (mimicking an overwhelmed or throttled agent) for the given duration in seconds.
+
+Enable the check by submitting the X-Datadog-Test-Stall-Seconds http header (unit is seconds)
+with the request.
+
+Note that only the request for this trace is stalled, subsequent requests will not be
+affected.
+""".strip()
+    default_enabled = True
+
+    async def check(self, headers: Dict[str, str], request: Request) -> None:  # type: ignore
+        if "X-Datadog-Test-Stall-Seconds" in headers:
+            duration = float(headers["X-Datadog-Test-Stall-Seconds"])
+        else:
+            duration = request.app["trace_request_delay"]
+        if duration > 0:
+            log.info("Stalling for %r seconds.", duration)
+            await asyncio.sleep(duration)
