@@ -79,11 +79,10 @@ affected.
     default_enabled = True
 
     async def check(self, headers: Dict[str, str], request: Request) -> None:  # type: ignore
-        duration = float(0)
         if "X-Datadog-Test-Stall-Seconds" in headers:
             duration = float(headers["X-Datadog-Test-Stall-Seconds"])
-        elif request.app["trace_request_delay"] is not None:
-            duration = float(request.app["trace_request_delay"])
+        else:
+            duration = request.app["trace_request_delay"]
         if duration > 0:
             log.info("Stalling for %r seconds.", duration)
             await asyncio.sleep(duration)

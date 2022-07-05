@@ -12,7 +12,6 @@ from typing import List
 from typing import Literal
 from typing import Optional
 from typing import Set
-from unicodedata import decimal
 
 from aiohttp import ClientSession
 from aiohttp import web
@@ -491,7 +490,7 @@ def make_app(
     snapshot_ci_mode: bool,
     snapshot_ignored_attrs: List[str],
     agent_url: str,
-    trace_request_delay: str,
+    trace_request_delay: float,
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
@@ -629,8 +628,8 @@ def main(args: Optional[List[str]] = None) -> None:
     )
     parser.add_argument(
         "--trace-request-delay",
-        type=str,
-        default=os.environ.get("DD_TEST_STALL_REQUEST_SECONDS", None),
+        type=float,
+        default=os.environ.get("DD_TEST_STALL_REQUEST_SECONDS", 0.0),
         help=("Will stall trace requests for specified amount of time"),
     )
     parsed_args = parser.parse_args(args=args)
@@ -640,7 +639,7 @@ def main(args: Optional[List[str]] = None) -> None:
         print(_get_version())
         sys.exit(0)
 
-    if not parsed_args.trace_request_delay is None:
+    if parsed_args.trace_request_delay is not None:
         log.info(
             "Trace request stall seconds setting set to %r.",
             parsed_args.trace_request_delay,
