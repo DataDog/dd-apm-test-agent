@@ -217,6 +217,20 @@ class Agent:
         )
         return web.HTTPOk()
 
+    async def handle_info(self, request: Request) -> web.Response:
+        return web.json_response(
+            {
+                "version": "test",
+                "endpoints": [
+                    "/v0.4/traces",
+                    "/v0.5/traces",
+                    "/v0.6/stats",
+                ],
+                "feature_flags": [],
+                "config": {},
+            }
+        )
+
     async def _handle_traces(
         self, request: Request, version: Literal["v0.4", "v0.5"]
     ) -> web.Response:
@@ -232,9 +246,9 @@ class Agent:
                 "meta_tracer_version_header", headers=dict(request.headers)
             )
             await checks.check(
-                "trace_content_length",
-                content_length=int(request.headers["Content-Length"]),
+                "trace_content_length", headers=dict(request.headers)
             )
+
             if version == "v0.4":
                 traces = await self._decode_v04_traces(request)
             elif version == "v0.5":
@@ -493,7 +507,9 @@ def make_app(
             web.put("/v0.4/traces", agent.handle_v04_traces),
             web.post("/v0.5/traces", agent.handle_v05_traces),
             web.put("/v0.5/traces", agent.handle_v05_traces),
+            web.post("/v0.6/stats", agent.handle_v06_tracestats),
             web.put("/v0.6/stats", agent.handle_v06_tracestats),
+            web.get("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/snapshot", agent.handle_snapshot),

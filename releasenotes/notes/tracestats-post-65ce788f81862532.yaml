@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Handle POST /v0.6/stats requests. Only PUT was supported before.

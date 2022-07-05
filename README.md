@@ -18,10 +18,13 @@ See the [Development](#Development) section for how to get the test agent runnin
 ## Installation
 
 The test agent can be installed from PyPI:
+
     pip install ddapm-test-agent
+
     ddapm-test-agent --port=8126
 
 or from Docker:
+
     # Run the test agent and mount the snapshot directory
     docker run --rm\
             -p 8126:8126\
@@ -30,10 +33,13 @@ or from Docker:
             ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
 
 or from source:
+
     pip install git+https://github.com/Datadog/dd-apm-test-agent
 
 or a specific branch:
-	pip install git+https://github.com/Datadog/dd-apm-test-agent@{branch}
+
+    pip install git+https://github.com/Datadog/dd-apm-test-agent@{branch}
+
 
 ## Features
 
@@ -157,7 +163,7 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
     - When snapshots are unexpectedly _generated_ from a test case a failure will
       be raised.
 
-- `SNAPSHOT_IGNORED_ATTRS` [`"span_id,trace_id,parent_id,duration,start,metrics.system.pid,meta.runtime-id"`]: The
+- `SNAPSHOT_IGNORED_ATTRS` [`"span_id,trace_id,parent_id,duration,start,metrics.system.pid,metrics.process_id,meta.runtime-id"`]: The
   attributes to ignore when comparing spans in snapshots.
 
 - `DD_AGENT_URL` [`""`]: URL to a Datadog agent. When provided requests will be proxied to the agent.
@@ -210,7 +216,7 @@ cases sharing a test token will be grouped.
 Comma-separated list of keys of which to ignore values for.
 
 The default built-in ignore list is: `span_id`, `trace_id`, `parent_id`,
-`duration`, `start`, `metrics.system.pid`, `meta.runtime-id`.
+`duration`, `start`, `metrics.system.pid`, `metrics.process_id`, `meta.runtime-id`.
 
 
 #### [optional] `?dir=`
