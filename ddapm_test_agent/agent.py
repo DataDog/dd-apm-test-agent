@@ -238,16 +238,16 @@ class Agent:
         token = request["session_token"]
         checks: Checks = request.app["checks"]
 
-        await checks.check("trace_stall", headers=dict(request.headers), request=request)
+        await checks.check(
+            "trace_stall", headers=dict(request.headers), request=request
+        )
 
         with CheckTrace.add_frame("headers") as f:
             f.add_item(pprint.pformat(dict(request.headers)))
             await checks.check(
                 "meta_tracer_version_header", headers=dict(request.headers)
             )
-            await checks.check(
-                "trace_content_length", headers=dict(request.headers)
-            )
+            await checks.check("trace_content_length", headers=dict(request.headers))
 
             if version == "v0.4":
                 traces = await self._decode_v04_traces(request)
@@ -643,7 +643,8 @@ def main(args: Optional[List[str]] = None) -> None:
     if not parsed_args.trace_request_delay is None:
         log.info(
             "Trace request stall seconds setting set to %r.",
-            parsed_args.trace_request_delay)
+            parsed_args.trace_request_delay,
+        )
     if not os.path.exists(parsed_args.snapshot_dir) or not os.access(
         parsed_args.snapshot_dir, os.W_OK | os.X_OK
     ):
