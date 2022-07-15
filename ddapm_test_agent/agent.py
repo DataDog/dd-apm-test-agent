@@ -227,6 +227,7 @@ class Agent:
                 ],
                 "feature_flags": [],
                 "config": {},
+                "client_drop_p0s": True,
             }
         )
 
