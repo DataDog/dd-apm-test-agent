@@ -65,4 +65,5 @@ async def test_info(agent):
         ],
         "feature_flags": [],
         "config": {},
+        "client_drop_p0s": True,
     }
