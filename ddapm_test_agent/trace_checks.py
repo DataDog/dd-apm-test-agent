@@ -1,5 +1,7 @@
 import asyncio
+import contextlib
 import logging
+from typing import Callable
 from typing import Dict
 from typing import List
 
@@ -97,13 +99,43 @@ The structure of HTTP client spans must match our expectations.
 """.strip()
     default_enabled = True
 
-    def http_client(self, span: Span) -> None:
-        for tagname in ["http.method", "http.status_code", "http.url"]:
-            if tagname not in span["meta"]:
-                self.fail(f"{tagname} not present in HTTP client span.")
+    @contextlib.contextmanager
+    def using_span(self, span):
+        try:
+            self.span = span
+            yield self
+        finally:
+            self.span = None
+
+    def property_matches(self, property_name: str, expected_value: str):
+        actual_value = self.span[property_name]
+        if self.span[property_name] != expected_value:
+            self.fail(f"Property '{property_name}' has value '{actual_value}', expected '{expected_value}'.")
+
+    def tag_is_present(self, tagname: str):
+        if tagname not in self.span["meta"]:
+            self.fail(f"Tag '{tagname}' is not present.")
+
+    def tag_matches(self, tagname: str, expected_value: str):
+        actual_value = self.span["meta"][tagname]
+        if self.span["meta"][tagname] != expected_value:
+            self.fail(f"Tag '{tagname}' has value '{actual_value}', expected '{expected_value}'.")
+
+    def run_check(self, spec):
+        spec(self)
 
     def check(self, traces: List[List[Span]]) -> None:  # type: ignore
         for trace in traces:
             for span in trace:
-                if span["type"] == "http" and span["meta"]["span.kind"] == "client":
-                    self.http_client(span)
+                with self.using_span(span) as assertion:
+                    if span["type"] == "http" and span["meta"]["span.kind"] == "client":
+                        assertion.run_check(SpanSpec.http_client)
+
+class SpanSpec(object):
+    @staticmethod
+    def http_client(check: CheckHttpSpanStructure) -> None:
+        check.tag_is_present("http.method") 
+        check.tag_is_present("http.status_code")
+        check.tag_is_present("http.url")
+        check.tag_matches("span.kind", "client")
+        check.property_matches("type", "http")
