@@ -34,6 +34,7 @@ from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
 from .trace_checks import CheckTraceStallAsync
+from .trace_checks import CheckHttpSpanStructure
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 
@@ -276,6 +277,11 @@ class Agent:
                     "trace_count_header",
                     headers=dict(request.headers),
                     num_traces=len(traces),
+                )
+            with CheckTrace.add_frame(f"Validating span attributes"):
+                await checks.check(
+                    "span_spec_http_client",
+                    traces
                 )
 
         agent_url = request.app["agent_url"]
@@ -527,6 +533,7 @@ def make_app(
             CheckTraceCountHeader,
             CheckTraceContentLength,
             CheckTraceStallAsync,
+            CheckHttpSpanStructure,
         ],
         disabled=disabled_checks,
     )

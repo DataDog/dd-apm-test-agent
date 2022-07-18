@@ -5,6 +5,7 @@ from typing import Dict
 from aiohttp.web import Request
 
 from .checks import Check
+from .trace import Span
 
 
 log = logging.getLogger(__name__)
@@ -86,3 +87,21 @@ affected.
         if duration > 0:
             log.info("Stalling for %r seconds.", duration)
             await asyncio.sleep(duration)
+
+class CheckHttpSpanStructure(Check):
+    name = "span_spec_http_client"
+    description = """
+The structure of HTTP client spans must match our expectations.
+""".strip()
+    default_enabled = True
+
+    def http_client(self, span: Span) -> None:
+        for tagname in ["http.method", "http.status_code", "http.url"]:
+            if tagname not in span["meta"]:
+                self.fail(f"{tagname} not present in HTTP client span.")
+
+    def check(self, traces: List[List[Span]]) -> None:  # type: ignore
+        for trace in traces:
+            for span in trace:
+                if span["type"] == "http" and span["meta"]["span.kind"] == "client":
+                    self.http_client(span)
