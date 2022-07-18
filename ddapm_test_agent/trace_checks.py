@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from typing import Dict
+from typing import List
 
 from aiohttp.web import Request
 
@@ -87,6 +88,7 @@ affected.
         if duration > 0:
             log.info("Stalling for %r seconds.", duration)
             await asyncio.sleep(duration)
+
 
 class CheckHttpSpanStructure(Check):
     name = "span_spec_http_client"

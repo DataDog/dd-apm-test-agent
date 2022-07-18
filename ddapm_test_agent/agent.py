@@ -30,11 +30,11 @@ from .trace import decode_v04 as trace_decode_v04
 from .trace import decode_v05 as trace_decode_v05
 from .trace import pprint_trace
 from .trace import v04TracePayload
+from .trace_checks import CheckHttpSpanStructure
 from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
 from .trace_checks import CheckTraceStallAsync
-from .trace_checks import CheckHttpSpanStructure
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 
@@ -278,11 +278,9 @@ class Agent:
                     headers=dict(request.headers),
                     num_traces=len(traces),
                 )
-            with CheckTrace.add_frame(f"Validating span attributes"):
-                await checks.check(
-                    "span_spec_http_client",
-                    traces
-                )
+
+        with CheckTrace.add_frame(f"validating span attributes"):
+            await checks.check("span_spec_http_client", traces)
 
         agent_url = request.app["agent_url"]
         if agent_url:

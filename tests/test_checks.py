@@ -1,3 +1,4 @@
+import random
 import time
 
 import pytest
@@ -99,3 +100,47 @@ async def test_trace_stall(
     assert resp.status == 200, await resp.text()
     end = time.monotonic_ns()
     assert (end - start) / 1e9 >= 0.8
+
+
+@pytest.mark.parametrize(
+    "v04_reference_http_trace_payload_data_raw",
+    [
+        [
+            [
+                {
+                    "name": "http.client",
+                    "service": "my-http-server",
+                    "trace_id": random.randint(0, 2**64),
+                    "span_id": random.randint(0, 2**64),
+                    "parent_id": None,
+                    "resource": "/users/",
+                    "type": "http",
+                    "start": 1342343123,
+                    "duration": 123214,
+                    "meta": {
+                        "span.kind": "client",
+                        "http.url": "http://localhost:8080/users",
+                        "http.method": "GET",
+                        # "http.status_code": "200",
+                        "http.status_msg": "OK",
+                    },
+                    "metrics": {
+                        "sampling_priority_v1": 1.0,
+                    },
+                }
+            ]
+        ]
+    ],
+)
+async def test_trace_stall(
+    agent,
+    v04_reference_http_trace_payload_headers,
+    v04_reference_http_trace_payload_data,
+    agent_disabled_checks,
+):
+    resp = await agent.put(
+        "/v0.4/traces",
+        headers=v04_reference_http_trace_payload_headers,
+        data=v04_reference_http_trace_payload_data,
+    )
+    assert resp.status == 200, await resp.text()
