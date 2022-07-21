@@ -17,6 +17,7 @@ import pytest
 
 from ddapm_test_agent.agent import _parse_csv
 from ddapm_test_agent.agent import make_app
+from ddapm_test_agent.apmtelemetry import TelemetryEvent
 from ddapm_test_agent.trace import Trace
 from ddapm_test_agent.trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
 
@@ -260,6 +261,129 @@ def do_reference_v06_http_stats(
             params=params,
             headers=v06_reference_http_stats_payload_headers,
             data=v06_reference_http_stats_payload_data,
+        )
+
+    yield fn
+
+
+@pytest.fixture
+def v2_reference_http_apmtelemetry_payload_data_raw():
+    data = {
+        "tracer_time": 1658439039,
+        "runtime_id": "3cac6e9599564813977aace04bf37d57",
+        "api_version": "v1",
+        "seq_id": 1,
+        "application": {
+            "service_name": "my-svc",
+            "service_version": "1.0.0",
+            "env": "prod",
+            "language_name": "python",
+            "language_version": "3.9.10",
+            "tracer_version": "1.3.0",
+            "runtime_name": "CPython",
+            "runtime_version": "3.9.10",
+        },
+        "host": {
+            "os": "macOS-12.4",
+            "hostname": "HELLO-COMPUTER",
+            "os_version": "12.4",
+            "kernel_name": "Darwin",
+            "kernel_release": "21.5.0",
+            "kernel_version": "Darwin Kernel Version 21.5.0: Tue Apr 26 21:08:22 PDT 2022; root:xnu-8020.121.3~4/RELEASE_X86_64",
+            "container_id": "",
+        },
+        "payload": {
+            "dependencies": [
+                {"name": "pyparsing", "version": "3.0.9"},
+                {"name": "pytest-mock", "version": "3.8.2"},
+                {"name": "setuptools", "version": "62.6.0"},
+                {"name": "sortedcontainers", "version": "2.4.0"},
+                {"name": "attrs", "version": "21.4.0"},
+                {"name": "wheel", "version": "0.37.1"},
+                {"name": "protobuf", "version": "4.21.2"},
+                {"name": "packaging", "version": "21.3"},
+                {"name": "tomli", "version": "2.0.1"},
+                {"name": "msgpack", "version": "1.0.4"},
+                {"name": "bytecode", "version": "0.13.0"},
+                {"name": "pip", "version": "22.1.2"},
+                {"name": "py", "version": "1.11.0"},
+                {"name": "ddsketch", "version": "2.0.3"},
+                {"name": "coverage", "version": "6.4.2"},
+                {"name": "pytest-cov", "version": "3.0.0"},
+                {"name": "iniconfig", "version": "1.1.1"},
+                {"name": "py-cpuinfo", "version": "8.0.0"},
+                {"name": "toml", "version": "0.10.2"},
+                {"name": "pluggy", "version": "1.0.0"},
+                {"name": "mock", "version": "4.0.3"},
+                {"name": "six", "version": "1.16.0"},
+                {"name": "opentracing", "version": "2.4.0"},
+                {"name": "pytest", "version": "6.2.5"},
+                {"name": "ddtrace", "version": "1.3.0"},
+                {"name": "tenacity", "version": "8.0.1"},
+                {"name": "hypothesis", "version": "6.45.0"},
+            ],
+            "integrations": [],
+            "configurations": [],
+        },
+        "request_type": "app-started",
+    }
+    yield data
+
+
+@pytest.fixture
+def v2_reference_http_apmtelemetry_payload_data(
+    v2_reference_http_apmtelemetry_payload_data_raw,
+):
+    yield json.dumps(v2_reference_http_apmtelemetry_payload_data_raw)
+
+
+@pytest.fixture
+def v2_reference_http_apmtelemetry_payload_headers(  # type: ignore
+    v2_reference_http_apmtelemetry_payload_data_raw,
+) -> Generator[Dict[str, str], None, None]:
+    headers = {
+        "Content-type": "application/json",
+        "DD-Telemetry-Request-Type": v2_reference_http_apmtelemetry_payload_data_raw[
+            "request_type"
+        ],
+        "DD-Telemetry-API-Version": "v1",
+    }
+    yield headers
+
+
+def v2_apmtelemetry(  # type: ignore
+    agent,
+    event: TelemetryEvent,
+    token: Optional[str] = None,
+):
+    params = {"test_session_token": token} if token is not None else {}
+    headers = {
+        "Content-type": "application/json",
+        "DD-Telemetry-Request-Type": event["request_type"],
+        "DD-Telemetry-API-Version": "v1",
+    }
+
+    return agent.post(
+        "/telemetry/proxy/api/v2/apmtelemetry",
+        params=params,
+        headers=headers,
+        data=json.dumps(event),
+    )
+
+
+@pytest.fixture
+def do_reference_v2_http_apmtelemetry(
+    agent,
+    v2_reference_http_apmtelemetry_payload_headers,
+    v2_reference_http_apmtelemetry_payload_data,
+):
+    def fn(token: Optional[str] = None) -> Awaitable[Response]:
+        params = {"test_session_token": token} if token is not None else {}
+        return agent.post(  # type: ignore
+            "/telemetry/proxy/api/v2/apmtelemetry",
+            params=params,
+            headers=v2_reference_http_apmtelemetry_payload_headers,
+            data=v2_reference_http_apmtelemetry_payload_data,
         )
 
     yield fn

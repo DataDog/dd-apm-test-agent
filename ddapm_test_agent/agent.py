@@ -21,6 +21,8 @@ from aiohttp.web import middleware
 from . import _get_version
 from . import trace_snapshot
 from . import tracestats_snapshot
+from .apmtelemetry import TelemetryEvent
+from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
@@ -130,8 +132,25 @@ class Agent:
                     _traces[trace_id].append(s)
         return _traces
 
+    async def apmtelemetry(self) -> List[TelemetryEvent]:
+        """Return the telemetry events stored by the agent"""
+        _events: List[TelemetryEvent] = []
+        for req in reversed(self._requests):
+            if req.match_info.handler == self.handle_v2_apmtelemetry:
+                _events.append(v2_apmtelemetry_decode(await req.read()))
+        return _events
+
     async def _trace_by_trace_id(self, trace_id: int) -> Trace:
         return (await self.traces())[trace_id]
+
+    async def _apmtelemetry_by_runtime_id(
+        self, runtime_id: str
+    ) -> List[TelemetryEvent]:
+        return [
+            event
+            for event in await self.apmtelemetry()
+            if event["runtime_id"] == runtime_id
+        ]
 
     def _requests_by_session(self, token: Optional[str]) -> List[Request]:
         """Return the latest requests sent with the given token.
@@ -176,6 +195,23 @@ class Agent:
                         tracemap[trace_id].append(span)
         return list(tracemap.values())
 
+    async def _apmtelemetry_by_session(
+        self, token: Optional[str]
+    ) -> List[TelemetryEvent]:
+        """Return the telemetry events that belong to the given session token.
+
+        If token is None or if the token was used to manually start a session
+        with /session-start then return all telemetry events that were sent since
+        the last /session-start request was made.
+        """
+        events: List[TelemetryEvent] = []
+        for req in self._requests_by_session(token):
+            if req.match_info.handler == self.handle_v2_apmtelemetry:
+                events.append(v2_apmtelemetry_decode(await req.read()))
+
+        # TODO: Sort the events?
+        return events
+
     async def _tracestats_by_session(
         self, token: Optional[str]
     ) -> List[v06StatsPayload]:
@@ -214,6 +250,13 @@ class Agent:
             nstats,
             "s" if nstats else "",
         )
+        return web.HTTPOk()
+
+    async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
+        self._requests.append(request)
+        v2_apmtelemetry_decode(await request.read())
+        # TODO: Validation
+        # TODO: Snapshots
         return web.HTTPOk()
 
     async def handle_info(self, request: Request) -> web.Response:
@@ -405,6 +448,11 @@ class Agent:
         traces = await self._traces_by_session(token)
         return web.json_response(traces)
 
+    async def handle_session_apmtelemetry(self, request: Request) -> web.Response:
+        token = request["session_token"]
+        events = await self._apmtelemetry_by_session(token)
+        return web.json_response(events)
+
     async def handle_session_tracestats(self, request: Request) -> web.Response:
         token = request["session_token"]
         stats = await self._tracestats_by_session(token)
@@ -418,6 +466,7 @@ class Agent:
                 self.handle_v04_traces,
                 self.handle_v05_traces,
                 self.handle_v06_tracestats,
+                self.handle_v2_apmtelemetry,
             ):
                 continue
             resp.append(
@@ -450,6 +499,24 @@ class Agent:
         else:
             traces = list((await self.traces()).values())
         return web.json_response(data=traces)
+
+    async def handle_test_apmtelemetry(self, request: Request) -> web.Response:
+        """Return requested telemetry events as JSON.
+
+        Telemetry events can be requested by providing a header X-Datadog-Runtime-Ids or
+        a query param runtime_ids.
+        """
+        raw_runtime_ids = request.url.query.get(
+            "runtime_ids", request.headers.get("X-Datadog-Runtime-Ids", "")
+        )
+        if raw_runtime_ids:
+            runtime_ids = raw_runtime_ids.split(",")
+            events: List[TelemetryEvent] = []
+            for rid in runtime_ids:
+                events.extend(await self._apmtelemetry_by_runtime_id(rid))
+        else:
+            events = await self.apmtelemetry()
+        return web.json_response(data=events)
 
     async def handle_session_clear(self, request: Request) -> web.Response:
         """Clear traces by session token or all traces if none is provided."""
@@ -509,14 +576,19 @@ def make_app(
             web.put("/v0.5/traces", agent.handle_v05_traces),
             web.post("/v0.6/stats", agent.handle_v06_tracestats),
             web.put("/v0.6/stats", agent.handle_v06_tracestats),
+            web.post(
+                "/telemetry/proxy/api/v2/apmtelemetry", agent.handle_v2_apmtelemetry
+            ),
             web.get("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/snapshot", agent.handle_snapshot),
             web.get("/test/session/traces", agent.handle_session_traces),
+            web.get("/test/session/apmtelemetry", agent.handle_session_apmtelemetry),
             web.get("/test/session/stats", agent.handle_session_tracestats),
             web.get("/test/session/requests", agent.handle_session_requests),
             web.get("/test/traces", agent.handle_test_traces),
+            web.get("/test/apmtelemetry", agent.handle_test_apmtelemetry),
             # web.get("/test/benchmark", agent.handle_test_traces),
             web.get("/test/trace/analyze", agent.handle_trace_analyze),
         ]
