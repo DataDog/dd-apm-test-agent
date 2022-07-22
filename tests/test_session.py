@@ -114,7 +114,10 @@ async def test_two_sessions(
 
 
 async def test_session_requests(
-    agent, do_reference_v04_http_trace, do_reference_v06_http_stats
+    agent,
+    do_reference_v04_http_trace,
+    do_reference_v06_http_stats,
+    do_reference_v2_http_apmtelemetry,
 ):
     resp = await agent.get(
         "/test/session/start", params={"test_session_token": "test_case"}
@@ -126,13 +129,15 @@ async def test_session_requests(
     assert resp.status == 200, await resp.text()
     resp = await do_reference_v06_http_stats(token="test_case")
     assert resp.status == 200, await resp.text()
+    resp = await do_reference_v2_http_apmtelemetry(token="test_case")
+    assert resp.status == 200, await resp.text()
 
     resp = await agent.get(
         "/test/session/requests", params={"test_session_token": "test_case"}
     )
     requests = await resp.json()
     assert resp.status == 200
-    assert len(requests) == 3
+    assert len(requests) == 4
     assert "X-Datadog-Trace-Count" in requests[0]["headers"]
     body = requests[0]["body"]
     traces = msgpack.unpackb(base64.b64decode(body))
@@ -142,3 +147,7 @@ async def test_session_requests(
     assert requests[0]["url"].endswith("/v0.4/traces?test_session_token=test_case")
     assert requests[1]["url"].endswith("/v0.4/traces?test_session_token=test_case")
     assert requests[2]["url"].endswith("/v0.6/stats?test_session_token=test_case")
+    assert requests[3]["method"] == "POST"
+    assert requests[3]["url"].endswith(
+        "/telemetry/proxy/api/v2/apmtelemetry?test_session_token=test_case"
+    )
