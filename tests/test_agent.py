@@ -62,6 +62,7 @@ async def test_info(agent):
             "/v0.4/traces",
             "/v0.5/traces",
             "/v0.6/stats",
+            "/telemetry/proxy/",
         ],
         "feature_flags": [],
         "config": {},
