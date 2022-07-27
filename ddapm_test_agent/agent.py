@@ -26,6 +26,7 @@ from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
+from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
 from .trace import decode_v04 as trace_decode_v04
@@ -123,7 +124,7 @@ class Agent:
         """
         _traces: TraceMap = OrderedDict()
         for req in reversed(self._requests):
-            traces = await self._decode_v04_traces(req)
+            traces = await self._traces_from_request(req)
             for t in traces:
                 for s in t:
                     trace_id = s["trace_id"]
@@ -175,6 +176,14 @@ class Agent:
                 reqs.append(req)
         return reqs
 
+    async def _traces_from_request(self, req: Request) -> List[List[Span]]:
+        """Return the trace from a trace request."""
+        if req.match_info.handler == self.handle_v04_traces:
+            return await self._decode_v04_traces(req)
+        elif req.match_info.handler == self.handle_v05_traces:
+            return await self._decode_v05_traces(req)
+        return []
+
     async def _traces_by_session(self, token: Optional[str]) -> List[Trace]:
         """Return the traces that belong to the given session token.
 
@@ -186,13 +195,13 @@ class Agent:
         """
         tracemap: TraceMap = OrderedDict()
         for req in self._requests_by_session(token):
-            if req.match_info.handler == self.handle_v04_traces:
-                for trace in await self._decode_v04_traces(req):
-                    for span in trace:
-                        trace_id = span["trace_id"]
-                        if trace_id not in tracemap:
-                            tracemap[trace_id] = []
-                        tracemap[trace_id].append(span)
+            traces = await self._traces_from_request(req)
+            for trace in traces:
+                for span in trace:
+                    trace_id = span["trace_id"]
+                    if trace_id not in tracemap:
+                        tracemap[trace_id] = []
+                    tracemap[trace_id].append(span)
         return list(tracemap.values())
 
     async def _apmtelemetry_by_session(
