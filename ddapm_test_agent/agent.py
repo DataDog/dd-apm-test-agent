@@ -1,10 +1,12 @@
 import argparse
+import atexit
 import base64
 from collections import OrderedDict
 import json
 import logging
 import os
 import pprint
+import socket
 import sys
 from typing import Awaitable
 from typing import Callable
@@ -722,6 +724,13 @@ def main(args: Optional[List[str]] = None) -> None:
         print(_get_version())
         sys.exit(0)
 
+    apm_sock: Optional[socket.socket] = None
+    if parsed_args.trace_uds_socket is not None:
+        apm_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        apm_sock.bind(parsed_args.trace_uds_socket)
+        os.chmod(parsed_args.trace_uds_socket, 0o722)
+        atexit.register(lambda: os.unlink(parsed_args.trace_uds_socket))
+
     if parsed_args.trace_request_delay is not None:
         log.info(
             "Trace request stall seconds setting set to %r.",
@@ -744,7 +753,7 @@ def main(args: Optional[List[str]] = None) -> None:
         trace_request_delay=parsed_args.trace_request_delay,
     )
 
-    web.run_app(app, path=parsed_args.trace_uds_socket, port=parsed_args.port)
+    web.run_app(app, sock=apm_sock, port=parsed_args.port)
 
 
 if __name__ == "__main__":
