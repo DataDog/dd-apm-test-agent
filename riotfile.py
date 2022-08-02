@@ -44,7 +44,7 @@ venv = Venv(
                 "flake8-blind-except": latest,
                 "flake8-builtins": latest,
                 "flake8-docstrings": latest,
-                "flake8-logging-format": latest,
+                # "flake8-logging-format": latest,
                 "flake8-rst-docstrings": latest,
                 "pygments": latest,
                 "toml": latest,
