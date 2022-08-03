@@ -57,8 +57,9 @@ venv = Venv(
             pkgs={
                 "mypy": latest,
                 "pytest": latest,
-                "types-setuptools": latest,
                 "types-protobuf": latest,
+                "types-requests": latest,
+                "types-setuptools": latest,
             },
         ),
         Venv(

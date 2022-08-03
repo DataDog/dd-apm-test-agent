@@ -321,3 +321,41 @@ async def test_tracestats(
         assert resp.status == 400
     else:
         assert resp.status == 200
+
+
+async def test_cmd(testagent: aiohttp.ClientSession, tracer: Tracer) -> None:
+    """Test the commands provided with the library.
+
+    Note that this test reuses the trace/snapshot from test_single_trace above.
+    """
+    env = os.environ.copy()
+    p = subprocess.run(
+        ["ddapm-test-agent-session-start", "--test-session-token=test_single_trace"],
+        env=env,
+    )
+    assert p.returncode == 0
+    with tracer.trace(
+        "root", service="custom_service", resource="/url/endpoint", span_type="web"
+    ):
+        pass
+    tracer.flush()
+    p = subprocess.run(
+        ["ddapm-test-agent-snapshot", "--test-session-token=test_single_trace"], env=env
+    )
+    assert p.returncode == 0
+
+    # Ensure failing snapshots work.
+    p = subprocess.run(
+        ["ddapm-test-agent-session-start", "--test-session-token=test_single_trace"],
+        env=env,
+    )
+    assert p.returncode == 0
+    with tracer.trace(
+        "root1234", service="custom_service", resource="/url/endpoint", span_type="web"
+    ):
+        pass
+    tracer.shutdown()
+    p = subprocess.run(
+        ["ddapm-test-agent-snapshot", "--test-session-token=test_single_trace"], env=env
+    )
+    assert p.returncode == 1
