@@ -479,6 +479,7 @@ class Agent:
                 self.handle_v05_traces,
                 self.handle_v06_tracestats,
                 self.handle_v2_apmtelemetry,
+                self.handle_v1_profiling,
             ):
                 continue
             resp.append(
@@ -529,6 +530,12 @@ class Agent:
         else:
             events = await self.apmtelemetry()
         return web.json_response(data=events)
+
+    async def handle_v1_profiling(self, request: Request) -> web.Response:
+        await request.read()
+        self._requests.append(request)
+        # TODO: valid response?
+        return web.HTTPOk()
 
     async def handle_session_clear(self, request: Request) -> web.Response:
         """Clear traces by session token or all traces if none is provided."""
@@ -591,6 +598,7 @@ def make_app(
             web.post(
                 "/telemetry/proxy/api/v2/apmtelemetry", agent.handle_v2_apmtelemetry
             ),
+            web.post("/profiling/v1/input", agent.handle_v1_profiling),
             web.get("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
