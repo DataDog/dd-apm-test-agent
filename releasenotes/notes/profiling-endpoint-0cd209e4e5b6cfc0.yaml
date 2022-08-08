@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Add basic support for profiling. Profiling requests are now handled by the
+    test agent. Nothing is done with the requests other than accepting them.

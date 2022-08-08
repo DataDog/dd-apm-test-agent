@@ -5,6 +5,7 @@ and run the tests as usual.
 import asyncio
 import os
 import subprocess
+from typing import AsyncGenerator
 from typing import Callable
 from typing import Generator
 
@@ -12,30 +13,33 @@ import aiohttp
 from aiohttp.client_exceptions import ClientConnectorError
 from aiohttp.client_exceptions import ClientOSError
 from ddtrace import Tracer
+from ddtrace.profiling import Profiler
 from ddtrace.propagation.http import HTTPPropagator
 from ddtrace.sampler import DatadogSampler
 import pytest
 
 
 @pytest.fixture
-def testagent_port():
-    yield 8126
+def testagent_port() -> str:
+    return "8126"
 
 
 @pytest.fixture(scope="module")
-def testagent_snapshot_ci_mode():
+def testagent_snapshot_ci_mode() -> bool:
     # Default all tests in this module to be run in CI mode
     # unless a special env var is passed to make generating
     # the snapshots easier.
-    yield os.getenv("GENERATE_SNAPSHOTS") != "1"
+    return os.getenv("GENERATE_SNAPSHOTS") != "1"
 
 
 @pytest.fixture
-async def testagent(loop, testagent_port, testagent_snapshot_ci_mode):
+async def testagent(
+    loop: asyncio.BaseEventLoop, testagent_port: str, testagent_snapshot_ci_mode: bool
+) -> AsyncGenerator[aiohttp.ClientSession, None]:
     env = os.environ.copy()
     env.update(
         {
-            "PORT": str(testagent_port),
+            "PORT": testagent_port,
             "SNAPSHOT_CI": "1" if testagent_snapshot_ci_mode else "0",
             "SNAPSHOT_DIR": os.path.join(
                 os.path.dirname(__file__), "integration_snapshots"
@@ -64,14 +68,14 @@ async def testagent(loop, testagent_port, testagent_snapshot_ci_mode):
 
 
 @pytest.fixture
-def tracer(testagent_port, testagent):
+def tracer(testagent_port: str, testagent: aiohttp.ClientSession) -> Tracer:
     tracer = Tracer(url=f"http://localhost:{testagent_port}")
-    yield tracer
+    return tracer
 
 
 @pytest.fixture
-def trace_sample_rate():
-    yield 1.0
+def trace_sample_rate() -> float:
+    return 1.0
 
 
 @pytest.fixture
@@ -359,3 +363,16 @@ async def test_cmd(testagent: aiohttp.ClientSession, tracer: Tracer) -> None:
         ["ddapm-test-agent-snapshot", "--test-session-token=test_single_trace"], env=env
     )
     assert p.returncode == 1
+
+
+async def test_profiling_endpoint(
+    testagent: aiohttp.ClientSession, testagent_port: int
+) -> None:
+    p = Profiler(url="http://localhost:%s" % testagent_port)
+    p.start()
+    p.stop(flush=True)
+    resp = await testagent.get("http://localhost:8126/test/session/requests")
+    assert resp.status == 200
+    data = await resp.json()
+    assert len(data) == 1
+    assert data[0]["url"].endswith("/profiling/v1/input")
