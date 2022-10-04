@@ -379,7 +379,7 @@ class Agent:
             if "X-Datadog-Test-Snapshot-Filename" in request.headers:
                 snap_file = request.headers["X-Datadog-Test-Snapshot-Filename"]
             elif "file" in request.url.query:
-                snap_file = request.url.query.get("file")
+                snap_file = request.url.query["file"]
             else:
                 snap_file = os.path.join(snap_dir, token)
 
