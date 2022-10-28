@@ -14,6 +14,7 @@ from typing import List
 from typing import Literal
 from typing import Optional
 from typing import Set
+from typing import cast
 
 from aiohttp import ClientSession
 from aiohttp import web
@@ -155,6 +156,21 @@ class Agent:
             if event["runtime_id"] == runtime_id
         ]
 
+    async def _store_request(self, request: Request) -> None:
+        """Store the request object so that it can be queried later."""
+        # Store the request data on the request object to avoid concurrent read()s of the data which can
+        # result in: RuntimeError: readany() called while another coroutine is already waiting for incoming data
+        # See: https://github.com/DataDog/dd-apm-test-agent/pull/101 for more info
+        request["_testagent_data"] = await request.read()
+        self._requests.append(request)
+
+    def _request_data(self, request: Request) -> bytes:
+        """Return the data from the request.
+
+        Note *only* use this method for requests stored with `_store_request()`.
+        """
+        return cast(bytes, request["_testagent_data"])
+
     def _requests_by_session(self, token: Optional[str]) -> List[Request]:
         """Return the latest requests sent with the given token.
 
@@ -181,9 +197,9 @@ class Agent:
     async def _traces_from_request(self, req: Request) -> List[List[Span]]:
         """Return the trace from a trace request."""
         if req.match_info.handler == self.handle_v04_traces:
-            return await self._decode_v04_traces(req)
+            return self._decode_v04_traces(req)
         elif req.match_info.handler == self.handle_v05_traces:
-            return await self._decode_v05_traces(req)
+            return self._decode_v05_traces(req)
         return []
 
     async def _traces_by_session(self, token: Optional[str]) -> List[Trace]:
@@ -229,21 +245,21 @@ class Agent:
         stats: List[v06StatsPayload] = []
         for req in self._requests_by_session(token):
             if req.match_info.handler == self.handle_v06_tracestats:
-                s = await self._decode_v06_tracestats(req)
+                s = self._decode_v06_tracestats(req)
                 stats.append(s)
         return stats
 
-    async def _decode_v04_traces(self, request: Request) -> v04TracePayload:
+    def _decode_v04_traces(self, request: Request) -> v04TracePayload:
         content_type = request.content_type
-        raw_data = await request.read()
+        raw_data = self._request_data(request)
         return trace_decode_v04(content_type, raw_data)
 
-    async def _decode_v05_traces(self, request: Request) -> v04TracePayload:
-        raw_data = await request.read()
+    def _decode_v05_traces(self, request: Request) -> v04TracePayload:
+        raw_data = self._request_data(request)
         return trace_decode_v05(raw_data)
 
-    async def _decode_v06_tracestats(self, request: Request) -> v06StatsPayload:
-        raw_data = await request.read()
+    def _decode_v06_tracestats(self, request: Request) -> v06StatsPayload:
+        raw_data = self._request_data(request)
         return tracestats_decode_v06(raw_data)
 
     async def handle_v04_traces(self, request: Request) -> web.Response:
@@ -253,8 +269,8 @@ class Agent:
         return await self._handle_traces(request, version="v0.5")
 
     async def handle_v06_tracestats(self, request: Request) -> web.Response:
-        self._requests.append(request)
-        stats = await self._decode_v06_tracestats(request)
+        await self._store_request(request)
+        stats = self._decode_v06_tracestats(request)
         nstats = len(stats["Stats"])
         log.info(
             "received /v0.6/stats payload with %r stats bucket%s",
@@ -264,8 +280,8 @@ class Agent:
         return web.HTTPOk()
 
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
-        self._requests.append(request)
-        v2_apmtelemetry_decode(await request.read())
+        await self._store_request(request)
+        v2_apmtelemetry_decode(self._request_data(request))
         # TODO: Validation
         # TODO: Snapshots
         return web.HTTPOk()
@@ -289,7 +305,7 @@ class Agent:
     async def _handle_traces(
         self, request: Request, version: Literal["v0.4", "v0.5"]
     ) -> web.Response:
-        self._requests.append(request)
+        await self._store_request(request)
         token = request["session_token"]
         checks: Checks = request.app["checks"]
 
@@ -305,9 +321,9 @@ class Agent:
             await checks.check("trace_content_length", headers=dict(request.headers))
 
             if version == "v0.4":
-                traces = await self._decode_v04_traces(request)
+                traces = self._decode_v04_traces(request)
             elif version == "v0.5":
-                traces = await self._decode_v05_traces(request)
+                traces = self._decode_v05_traces(request)
             log.info(
                 "received trace for token %r payload with %r trace chunks",
                 token,
@@ -340,7 +356,7 @@ class Agent:
                 async with session.post(
                     f"{agent_url}/v0.4/traces",
                     headers=request.headers,
-                    data=await request.read(),
+                    data=self._request_data(request),
                 ) as resp:
                     assert resp.status == 200
                     data = await resp.json()
