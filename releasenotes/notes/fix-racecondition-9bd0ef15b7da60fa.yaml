@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    Fix race condition when the test agent would simultaneously handle requests
+    which would read and write data.

@@ -8,6 +8,7 @@ from typing import List
 from typing import Literal
 from typing import Optional
 from typing import Set
+from typing import cast
 
 from aiohttp.web import Response
 from ddsketch import LogCollapsingLowestDenseDDSketch
@@ -18,6 +19,7 @@ import pytest
 from ddapm_test_agent.agent import _parse_csv
 from ddapm_test_agent.agent import make_app
 from ddapm_test_agent.apmtelemetry import TelemetryEvent
+from ddapm_test_agent.trace import Span
 from ddapm_test_agent.trace import Trace
 from ddapm_test_agent.trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
 
@@ -92,49 +94,51 @@ async def agent(agent_app, aiohttp_client, loop):
 
 
 @pytest.fixture
-def v04_reference_http_trace_payload_data_raw():
+def v04_reference_http_trace_payload_data_raw() -> List[Trace]:
     data = [
         [
-            {
-                "name": "http.request",
-                "service": "my-http-server",
-                "trace_id": random.randint(0, 2**64),
-                "span_id": random.randint(0, 2**64),
-                "parent_id": None,
-                "resource": "/users/",
-                "type": "http",
-                "start": 1342343123,
-                "duration": 123214,
-                "meta": {
-                    "http.url": "http://localhost:8080/users",
-                    "http.method": "GET",
-                    "http.status_code": "200",
-                    "http.status_msg": "OK",
-                },
-                "metrics": {
-                    "sampling_priority_v1": 1.0,
-                },
-            }
+            Span(
+                {
+                    "name": "http.request",
+                    "service": "my-http-server",
+                    "trace_id": random.randint(0, 2**64),
+                    "span_id": random.randint(0, 2**64),
+                    "parent_id": None,
+                    "resource": "/users/",
+                    "type": "http",
+                    "start": 1342343123,
+                    "duration": 123214,
+                    "meta": {
+                        "http.url": "http://localhost:8080/users",
+                        "http.method": "GET",
+                        "http.status_code": "200",
+                        "http.status_msg": "OK",
+                    },
+                    "metrics": {
+                        "sampling_priority_v1": 1.0,
+                    },
+                }
+            ),
         ]
     ]
-    yield data
+    return data
 
 
 @pytest.fixture
 def v04_reference_http_trace_payload_data(
-    v04_reference_http_trace_payload_data_raw,
-):
-    yield msgpack.packb(v04_reference_http_trace_payload_data_raw)
+    v04_reference_http_trace_payload_data_raw: List[Trace],
+) -> bytes:
+    return cast(bytes, msgpack.packb(v04_reference_http_trace_payload_data_raw))
 
 
 @pytest.fixture
-def v04_reference_http_trace_payload_headers() -> Generator[Dict[str, str], None, None]:
+def v04_reference_http_trace_payload_headers() -> Dict[str, str]:
     headers = {
         "Content-Type": "application/msgpack",
         "X-Datadog-Trace-Count": "1",
         "Datadog-Meta-Tracer-Version": "v0.1",
     }
-    yield headers
+    return headers
 
 
 def v04_trace(  # type: ignore

@@ -7,6 +7,7 @@ import os
 import subprocess
 from typing import AsyncGenerator
 from typing import Callable
+from typing import Dict
 from typing import Generator
 
 import aiohttp
@@ -22,6 +23,11 @@ import pytest
 @pytest.fixture
 def testagent_port() -> str:
     return "8126"
+
+
+@pytest.fixture
+def testagent_url(testagent_port: str) -> str:
+    return "http://localhost:%s" % testagent_port
 
 
 @pytest.fixture(scope="module")
@@ -376,3 +382,30 @@ async def test_profiling_endpoint(
     data = await resp.json()
     assert len(data) == 1
     assert data[0]["url"].endswith("/profiling/v1/input")
+
+
+async def test_race_condition(
+    testagent: aiohttp.ClientSession,
+    testagent_port: int,
+    v04_reference_http_trace_payload_headers: Dict[str, str],
+    v04_reference_http_trace_payload_data: bytes,
+    testagent_url: str,
+) -> None:
+    """
+    Reproduction of: "RuntimeError: readany() called while another coroutine is already waiting for incoming data"
+    when trace requests are made and being read simultaneously
+    """
+    reqs = []
+    for i in range(50):
+        reqs.append(
+            testagent.put(
+                testagent_url + "/v0.4/traces",
+                headers=v04_reference_http_trace_payload_headers,
+                data=v04_reference_http_trace_payload_data,
+            )
+        )
+        reqs.append(testagent.get(testagent_url + "/test/session/traces"))
+
+    resps = await asyncio.gather(*reqs)
+    for r in resps:
+        assert r.status == 200
