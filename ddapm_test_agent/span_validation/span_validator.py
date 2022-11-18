@@ -1,8 +1,10 @@
 import logging
 
+
 log = logging.getLogger(__name__)
 
 from .rules import type_metadata_rules_map
+
 
 class SpanMetadataValidator:
     _tags = {}
@@ -11,7 +13,7 @@ class SpanMetadataValidator:
         log.info("asserting on span within the validator!")
 
         self._span = span
-        
+
         # Extract tags to dictionary acting as validation queue.
         def extract_tags(span, extracted_tags):
             logging.info(span)
@@ -56,8 +58,9 @@ class SpanMetadataValidator:
         # Validation was successful if no tags are left to validate.
         self.success = self._tags == {}
         log.info(self._tags)
-        log.info(f"--------- Returning that {metadata_rules.name} span validation returned: {self.success}. ---------------")
-        
+        log.info(
+            f"--------- Returning that {metadata_rules.name} span validation returned: {self.success}. ---------------"
+        )
 
     def spanNameValidator(self, span, metadata_rules):
         log.info(f"Asserting on span name: {metadata_rules.name}")
@@ -69,16 +72,22 @@ class SpanMetadataValidator:
 
     def spanMatchingTagValidator(self, metadata_rules):
         metadata_rules_matching_tags = metadata_rules._tag_comparisons.items()
-        log.info(f"------------------- Asserting on span {metadata_rules.name} tags matching ---------------------")
+        log.info(
+            f"------------------- Asserting on span {metadata_rules.name} tags matching ---------------------"
+        )
         for expected_k, expected_v in metadata_rules_matching_tags:
             assert expected_k in self._tags.keys()
             assert expected_v == self._tags[expected_k]
-            log.info(f"             Validated presenence of {expected_k} tag with value {expected_v}")
+            log.info(
+                f"             Validated presenence of {expected_k} tag with value {expected_v}"
+            )
             del self._tags[expected_k]
 
     def spanRequiredTagValidator(self, metadata_rules):
         required_tags = metadata_rules._required_tags
-        log.info(f"------------------- Asserting on span {metadata_rules.name} required tags ---------------------")
+        log.info(
+            f"------------------- Asserting on span {metadata_rules.name} required tags ---------------------"
+        )
         for tag_name in required_tags:
             assert tag_name in self._tags.keys()
             log.info(f"             Required Tag {tag_name} validated.")
@@ -86,7 +95,9 @@ class SpanMetadataValidator:
 
     def spanOptionalTagValidator(self, metadata_rules):
         optional_tags = metadata_rules._optional_tags
-        log.info(f"------------------- Asserting on span {metadata_rules.name} optional tags ---------------------")
+        log.info(
+            f"------------------- Asserting on span {metadata_rules.name} optional tags ---------------------"
+        )
         for tag_name in optional_tags:
             if tag_name in self._tags.keys():
                 log.info(f"             Optional Tag {tag_name} validated.")

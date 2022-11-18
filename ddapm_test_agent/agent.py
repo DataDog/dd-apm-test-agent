@@ -15,12 +15,12 @@ from typing import Literal
 from typing import Optional
 from typing import Set
 from typing import cast
-from ddtrace import tracer
 
 from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
+from ddtrace import tracer
 
 from . import _get_version
 from . import trace_snapshot
@@ -30,6 +30,8 @@ from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
+from .span_validation.rules import integration_metadata_rules_map
+from .span_validation.span_validator import SpanMetadataValidator
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -43,8 +45,6 @@ from .trace_checks import CheckTraceCountHeader
 from .trace_checks import CheckTraceStallAsync
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
-from .span_validation.span_validator import SpanMetadataValidator
-from .span_validation.rules import integration_metadata_rules_map
 
 
 _Handler = Callable[[Request], Awaitable[web.Response]]
@@ -342,11 +342,14 @@ class Agent:
                     for span in trace:
                         if span["name"] in integration_metadata_rules_map.keys():
                             span_name = span["name"]
-                            log.info(
-                                f"Validating span: {span_name}."
-                            )
+                            log.info(f"Validating span: {span_name}.")
                             # try:
-                            assert SpanMetadataValidator(span, integration_metadata_rules_map[span_name]).success == True
+                            assert (
+                                SpanMetadataValidator(
+                                    span, integration_metadata_rules_map[span_name]
+                                ).success
+                                == True
+                            )
                             # except Exception as msg:
                             #     log.error(msg, exc_info=1)
                         else:
