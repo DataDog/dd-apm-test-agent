@@ -30,7 +30,10 @@ from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
-from .span_validation.rules import integration_metadata_rules_map
+from .span_validation.rules import integration_specific_span_tag_rules_map
+from .span_validation.rules import integration_general_span_tag_rules_map
+from .span_validation.rules import type_tag_rules_map
+from .span_validation.rules import span_whitelist
 from .span_validation.span_validator import SpanMetadataValidator
 from .trace import Span
 from .trace import Trace
@@ -150,14 +153,8 @@ class Agent:
     async def _trace_by_trace_id(self, trace_id: int) -> Trace:
         return (await self.traces())[trace_id]
 
-    async def _apmtelemetry_by_runtime_id(
-        self, runtime_id: str
-    ) -> List[TelemetryEvent]:
-        return [
-            event
-            for event in await self.apmtelemetry()
-            if event["runtime_id"] == runtime_id
-        ]
+    async def _apmtelemetry_by_runtime_id(self, runtime_id: str) -> List[TelemetryEvent]:
+        return [event for event in await self.apmtelemetry() if event["runtime_id"] == runtime_id]
 
     async def _store_request(self, request: Request) -> None:
         """Store the request object so that it can be queried later."""
@@ -225,9 +222,7 @@ class Agent:
                     tracemap[trace_id].append(span)
         return list(tracemap.values())
 
-    async def _apmtelemetry_by_session(
-        self, token: Optional[str]
-    ) -> List[TelemetryEvent]:
+    async def _apmtelemetry_by_session(self, token: Optional[str]) -> List[TelemetryEvent]:
         """Return the telemetry events that belong to the given session token.
 
         If token is None or if the token was used to manually start a session
@@ -242,9 +237,7 @@ class Agent:
         # TODO: Sort the events?
         return events
 
-    async def _tracestats_by_session(
-        self, token: Optional[str]
-    ) -> List[v06StatsPayload]:
+    async def _tracestats_by_session(self, token: Optional[str]) -> List[v06StatsPayload]:
         stats: List[v06StatsPayload] = []
         for req in self._requests_by_session(token):
             if req.match_info.handler == self.handle_v06_tracestats:
@@ -305,22 +298,16 @@ class Agent:
             }
         )
 
-    async def _handle_traces(
-        self, request: Request, version: Literal["v0.4", "v0.5"]
-    ) -> web.Response:
+    async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5"]) -> web.Response:
         await self._store_request(request)
         token = request["session_token"]
         checks: Checks = request.app["checks"]
 
-        await checks.check(
-            "trace_stall", headers=dict(request.headers), request=request
-        )
+        await checks.check("trace_stall", headers=dict(request.headers), request=request)
 
         with CheckTrace.add_frame("headers") as f:
             f.add_item(pprint.pformat(dict(request.headers)))
-            await checks.check(
-                "meta_tracer_version_header", headers=dict(request.headers)
-            )
+            await checks.check("meta_tracer_version_header", headers=dict(request.headers))
             await checks.check("trace_content_length", headers=dict(request.headers))
 
             if version == "v0.4":
@@ -339,25 +326,61 @@ class Agent:
                         i,
                         pprint_trace(trace, request.app["log_span_fmt"]),
                     )
-                    for span in trace:
-                        if span["name"] in integration_metadata_rules_map.keys():
+                    for i, span in enumerate(trace):
+                        component = span["meta"].get("component", "")
+                        if span["name"] in span_whitelist:
+                            log.info(f"######### WHITELISTED: Skipping validating integration {component} span: {span['name']} #########.", exc_info=1)
+                        elif span["name"] in integration_specific_span_tag_rules_map.keys():
+                            try:
+                                if component == "":
+                                    raise AttributeError(f"Span with name {span['name']} should have a component tag!")
+                                span_name = span["name"]
+                                if type(integration_specific_span_tag_rules_map[span_name]) == dict:
+                                    span_rules = integration_specific_span_tag_rules_map[span_name][component]
+                                else:
+                                    span_rules = integration_specific_span_tag_rules_map[span_name]
+                                log.info(f"Validating integration {component} specific span: {span_name}.")
+                            
+                                assert (
+                                    SpanMetadataValidator(span, span_rules, validate_first_span_in_chunk_tags=i==0).success == True, 
+                                    f"--- Expected metadata specific span rules validation to be successful for span: {span_name} from integration {component} ----"
+                                )
+                            except Exception as msg:
+                                with CheckTrace.add_frame(
+                                    f"Snapshot compare of span '{span['name']}' at position {i} in trace"
+                                ) as frame:
+                                    frame.add_item(f"Received span:\n{pprint.pprint(span, indent=2)}")
+                        elif component != "" and component in integration_general_span_tag_rules_map.keys():
                             span_name = span["name"]
-                            log.info(f"Validating span: {span_name}.")
-                            # try:
-                            assert (
-                                SpanMetadataValidator(
-                                    span, integration_metadata_rules_map[span_name]
-                                ).success
-                                == True
-                            )
-                            # except Exception as msg:
-                            #     log.error(msg, exc_info=1)
+                            log.info(f"Validating integration {component} general span: {span_name}.")
+                            try:
+                                span_rules = integration_general_span_tag_rules_map[span_name]
+                                assert (
+                                    SpanMetadataValidator(span, span_rules, validate_first_span_in_chunk_tags=i==0).success == True,
+                                     f"--- Expected metadata general integration span rules validation to be successful for span: {span_name} from integration {component} ----"
+                                )
+                            except Exception as msg:
+                                with CheckTrace.add_frame(
+                                    f"Snapshot compare of span '{span['name']}' at position {i} in trace"
+                                ) as frame:
+                                    frame.add_item(f"Received span:\n{pprint.pprint(span, indent=2)}")
                         else:
-                            log.info(span)
+                            log.info(f'------- No specific rules, validating general rules for {span["name"]} with component {component} -------|')
+                            try:
+                                span_rules = type_tag_rules_map["general"]
+                                assert (
+                                    SpanMetadataValidator(span, span_rules, validate_first_span_in_chunk_tags=i==0).success == True,
+                                    f"--- Expected metadata general span rules validation to be successful for span: {span['name']} from integration {component} ----"
+                                )
+                            except Exception as msg:
+                                with CheckTrace.add_frame(
+                                    f"Snapshot compare of span '{span['name']}' at position {i} in trace"
+                                ) as frame:
+                                    frame.add_item(f"Received span:\n{pprint.pprint(span, indent=2)}")
+                        # else:
+                        #     log.info(f'--------Skipped trace : {span["name"]} with component {component} ---------------|')
                 except ValueError:
-                    log.info(
-                        "Chunk %d could not be displayed (might be incomplete).", i
-                    )
+                    log.info("Chunk %d could not be displayed (might be incomplete).", i)
             log.info("end of payload %s", "-" * 40)
 
             with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
@@ -427,9 +450,7 @@ class Agent:
 
             frame.add_item(f"Trace File: {trace_snap_file}")
             frame.add_item(f"Stats File: {tracestats_snap_file}")
-            log.info(
-                "using snapshot files %r and %r", trace_snap_file, tracestats_snap_file
-            )
+            log.info("using snapshot files %r and %r", trace_snap_file, tracestats_snap_file)
 
             trace_snap_path_exists = os.path.exists(trace_snap_file)
 
@@ -453,17 +474,11 @@ class Agent:
                 # Create a new snapshot for the data received
                 with open(trace_snap_file, mode="w") as f:
                     f.write(trace_snapshot.generate_snapshot(received_traces))
-                log.info(
-                    "wrote new trace snapshot to %r", os.path.abspath(trace_snap_file)
-                )
+                log.info("wrote new trace snapshot to %r", os.path.abspath(trace_snap_file))
 
             # Get all stats buckets from the payloads since we don't care about the other fields (hostname, env, etc)
             # in the payload.
-            received_stats = [
-                bucket
-                for p in (await self._tracestats_by_session(token))
-                for bucket in p["Stats"]
-            ]
+            received_stats = [bucket for p in (await self._tracestats_by_session(token)) for bucket in p["Stats"]]
             tracestats_snap_path_exists = os.path.exists(tracestats_snap_file)
             if snap_ci_mode and received_stats and not tracestats_snap_path_exists:
                 raise AssertionError(
@@ -532,9 +547,7 @@ class Agent:
         Traces can be requested by providing a header X-Datadog-Trace-Ids or
         a query param trace_ids.
         """
-        raw_trace_ids = request.url.query.get(
-            "trace_ids", request.headers.get("X-Datadog-Trace-Ids", "")
-        )
+        raw_trace_ids = request.url.query.get("trace_ids", request.headers.get("X-Datadog-Trace-Ids", ""))
         if raw_trace_ids:
             trace_ids = map(int, raw_trace_ids.split(","))
             traces = []
@@ -553,9 +566,7 @@ class Agent:
         Telemetry events can be requested by providing a header X-Datadog-Runtime-Ids or
         a query param runtime_ids.
         """
-        raw_runtime_ids = request.url.query.get(
-            "runtime_ids", request.headers.get("X-Datadog-Runtime-Ids", "")
-        )
+        raw_runtime_ids = request.url.query.get("runtime_ids", request.headers.get("X-Datadog-Runtime-Ids", ""))
         if raw_runtime_ids:
             runtime_ids = raw_runtime_ids.split(",")
             events: List[TelemetryEvent] = []
@@ -588,9 +599,7 @@ class Agent:
 
             # Filter out all the requests.
             self._requests = [
-                r
-                for r in self._requests
-                if _session_token(r) != session_token and not hasattr(r, "__delete")
+                r for r in self._requests if _session_token(r) != session_token and not hasattr(r, "__delete")
             ]
         else:
             self._requests = []
@@ -629,9 +638,7 @@ def make_app(
             web.put("/v0.5/traces", agent.handle_v05_traces),
             web.post("/v0.6/stats", agent.handle_v06_tracestats),
             web.put("/v0.6/stats", agent.handle_v06_tracestats),
-            web.post(
-                "/telemetry/proxy/api/v2/apmtelemetry", agent.handle_v2_apmtelemetry
-            ),
+            web.post("/telemetry/proxy/api/v2/apmtelemetry", agent.handle_v2_apmtelemetry),
             web.post("/profiling/v1/input", agent.handle_v1_profiling),
             web.get("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),
@@ -682,9 +689,7 @@ def main(args: Optional[List[str]] = None) -> None:
         dest="version",
         help="Print version info and exit.",
     )
-    parser.add_argument(
-        "-p", "--port", type=int, default=int(os.environ.get("PORT", 8126))
-    )
+    parser.add_argument("-p", "--port", type=int, default=int(os.environ.get("PORT", 8126)))
     parser.add_argument(
         "--snapshot-dir",
         type=str,
@@ -700,13 +705,7 @@ def main(args: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--snapshot-ignored-attrs",
         type=Set[str],
-        default=set(
-            _parse_csv(
-                os.environ.get(
-                    "SNAPSHOT_IGNORED_ATTRS", trace_snapshot.DEFAULT_SNAPSHOT_IGNORES
-                )
-            )
-        ),
+        default=set(_parse_csv(os.environ.get("SNAPSHOT_IGNORED_ATTRS", trace_snapshot.DEFAULT_SNAPSHOT_IGNORES))),
         help=(
             "Comma-separated values of span attributes to ignore. "
             "meta/metrics attributes can be ignored by prefixing the key "
@@ -733,21 +732,13 @@ def main(args: Optional[List[str]] = None) -> None:
         "--log-span-fmt",
         type=str,
         default=os.environ.get("LOG_SPAN_FMT", "[{name}]"),
-        help=(
-            "Format to use when logging spans. Default is '[{name}]'. "
-            "All span attributes are available."
-        ),
+        help=("Format to use when logging spans. Default is '[{name}]'. " "All span attributes are available."),
     )
     parser.add_argument(
         "--agent-url",
         type=str,
-        default=os.environ.get(
-            "DD_TRACE_AGENT_URL", os.environ.get("DD_AGENT_URL", "")
-        ),
-        help=(
-            "Datadog agent URL. If provided, any received data will be forwarded "
-            "to the agent."
-        ),
+        default=os.environ.get("DD_TRACE_AGENT_URL", os.environ.get("DD_AGENT_URL", "")),
+        help=("Datadog agent URL. If provided, any received data will be forwarded " "to the agent."),
     )
     parser.add_argument(
         "--trace-uds-socket",
@@ -780,9 +771,7 @@ def main(args: Optional[List[str]] = None) -> None:
             "Trace request stall seconds setting set to %r.",
             parsed_args.trace_request_delay,
         )
-    if not os.path.exists(parsed_args.snapshot_dir) or not os.access(
-        parsed_args.snapshot_dir, os.W_OK | os.X_OK
-    ):
+    if not os.path.exists(parsed_args.snapshot_dir) or not os.access(parsed_args.snapshot_dir, os.W_OK | os.X_OK):
         log.warning(
             "default snapshot directory %r does not exist or is not readable. Snapshotting will not work.",
             os.path.abspath(parsed_args.snapshot_dir),
