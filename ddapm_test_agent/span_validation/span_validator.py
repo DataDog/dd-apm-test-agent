@@ -68,8 +68,8 @@ class SpanMetadataValidator:
 
         # Validate span type
         if tag_rules.type:
-            assert 'type' in span.keys(), f"ASSERTION-ERROR: Expected span: {self._span['name']} have 'type' tag with value: {tag_rules.type}"
-            assert span["type"] == tag_rules.type, f"ASSERTION-ERROR: Expected span: {self._span['name']} actual 'type' tag: {span['type']} to equal expected 'type' tag: {tag_rules.type}"
+            assert 'type' in span.keys(), f"TYPE-ASSERTION-ERROR: Expected span: {self._span['name']} have 'type' tag with value: {tag_rules.type}"
+            assert span["type"] == tag_rules.type, f"TYPE-ASSERTION-ERROR: Expected span: {self._span['name']} actual 'type' tag: {span['type']} to equal expected 'type' tag: {tag_rules.type}"
             if tag_rules.type in type_tag_rules_map.keys():
                 type_tag_rules = type_tag_rules_map[tag_rules.type]
                 self.spanRequiredTagValidator(type_tag_rules)
@@ -105,23 +105,29 @@ class SpanMetadataValidator:
     #     self._tags.pop('name', None)
 
     def spanMatchingTagValidator(self, tag_rules):
+        tag_rules_name = tag_rules.name.upper()
         tag_rules_matching_tags = tag_rules._tag_comparisons.items()
         log.info(f"------------------- Asserting on span {tag_rules.name} tags matching ---------------------")
         for expected_k, expected_v in tag_rules_matching_tags:
-            assert expected_k in self._tags.keys(), f"ASSERTION-ERROR: Expected span: {self._span['name']} to have tag: '{expected_k}' within meta: {self._tags.keys()}"
+            assert expected_k in self._tags.keys(), f"{tag_rules_name}-ASSERTION-ERROR: Expected span: {self._span['name']} to have tag: '{expected_k}' within meta: {self._tags.keys()}"
             assert expected_v == self._tags[expected_k], f"ASSERTION-ERROR: Expected span: {self._span['name']} with tag: '{expected_k}' with value: {self._tags[expected_k]} to equal expected value: {expected_v}"
             log.info(f"             Validated presence of {expected_k} tag with value {expected_v}")
             self._tags.pop(expected_k, None)
 
     def spanRequiredTagValidator(self, tag_rules=[], tags_list=[]):
+        tag_rules_name = None
+        tag_rules_name = tag_rules_name.upper()
         if not tag_rules:
             required_tags = tags_list
             log.info(f"------------------- Asserting on first span in chunk required tags ---------------------")
         else:
+            tag_rules_name = tag_rules.name.upper()
             required_tags = tag_rules._required_tags
             log.info(f"------------------- Asserting on span {tag_rules.name} required tags ---------------------")
         for tag_name in required_tags:
-            assert tag_name in self._tags.keys(), f"ASSERTION-ERROR: Expected span {self._span['name']} to have tag '{tag_name}' within meta: {self._tags.keys()}"
+            if not tag_rules_name:
+                tag_rules_name = tag_name
+            assert tag_name in self._tags.keys(), f"{tag_rules_name}-ASSERTION-ERROR: Expected span {self._span['name']} to have tag '{tag_name}' within meta: {self._tags.keys()}"
             log.info(f"             Required Tag {tag_name} validated.")
             self._tags.pop(tag_name, None)
 

@@ -150,12 +150,13 @@ class Agent:
             with open(writepath, "r") as f:
                 data = f.readlines()
                 lines = set([line.rstrip() for line in data])
+                lines.discard('')
 
         lines.add(str(message))
         with open(writepath, "w") as f:
             for line in lines:
                 if line != '':
-                    f.write('\n' + line)
+                    f.write(line +'\n')
 
     async def apmtelemetry(self) -> List[TelemetryEvent]:
         """Return the telemetry events stored by the agent"""
@@ -349,7 +350,7 @@ class Agent:
                         elif span["name"] in integration_specific_span_tag_rules_map.keys():
                             try:
                                 if component == "":
-                                    raise AttributeError(f"TAG-ASSERTION-ERROR: Span with name {span['name']} should have a component tag!")
+                                    raise AttributeError(f"COMPONENT-ASSERTION-ERROR: Span with name {span['name']} should have a component tag!")
                                 span_name = span["name"]
                                 if type(integration_specific_span_tag_rules_map[span_name]) == dict:
                                     span_rules = integration_specific_span_tag_rules_map[span_name][component]
