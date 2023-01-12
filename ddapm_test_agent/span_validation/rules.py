@@ -1,3 +1,6 @@
+from typing import Any
+from typing import Dict
+
 from .span_tag_rules import SpanTagRules
 
 
@@ -9,17 +12,14 @@ span_whitelist = ["TCPConnector.connect", "parent"]
 
 general_tag_rules = SpanTagRules(
     name="General",
-    required_tags=[
-        "component",
-        "error"
-    ],
+    required_tags=["component", "error"],
     optional_tags=[
         "language",
         "error.msg",
         "error.type",
         "error.stack",
     ],
-    first_span_in_chunk_tags=["runtime-id", "process_id"]
+    first_span_in_chunk_tags=["runtime-id", "process_id"],
 )
 internal_tag_rules = SpanTagRules(
     name="Internal",
@@ -37,32 +37,44 @@ internal_tag_rules = SpanTagRules(
 
 http_tag_rules = SpanTagRules(
     name="HTTP",
-    required_tags=["http.method", "http.url", "http.status_code", "http.status_msg"],
-    optional_tags=["http.useragent", "http.query.string", "http.route", "http.version"],
+    required_tags=["http.method", "http.url", "http.status_code"],
+    optional_tags=[
+        "http.useragent",
+        "http.query.string",
+        "http.route",
+        "http.version",
+        "http.status_msg",
+    ],
 )
 error_tag_rules = SpanTagRules(
     name="error",
     optional_tags=["error.message", "error.type", "error.stack"],
 )
 
-type_tag_rules_map = {
-    "error": error_tag_rules,
-    "general": general_tag_rules,
-    "internal": internal_tag_rules,
-    "http": http_tag_rules,
-}
+type_tag_rules_map: Dict[str, SpanTagRules] = dict(
+    {
+        "error": error_tag_rules,
+        "general": general_tag_rules,
+        "internal": internal_tag_rules,
+        "http": http_tag_rules,
+    }
+)
 
 # ------------------------- Create rules for integration basic span (ie: rules for every django span to abide by) ------------------------------|
 
-aiohttp_tag_rules = SpanTagRules(name="aiohttp", matches={ "component": "aiohttp" })
-aiohttp_client_tag_rules = SpanTagRules(name="aiohttp_client", matches={ "component": "aiohttp_client" })
-redis_tag_rules = SpanTagRules(name="redis", matches={ "component": "redis" })
+aiohttp_tag_rules = SpanTagRules(name="aiohttp", matches={"component": "aiohttp"})
+aiohttp_client_tag_rules = SpanTagRules(
+    name="aiohttp_client", matches={"component": "aiohttp_client"}
+)
+redis_tag_rules = SpanTagRules(name="redis", matches={"component": "redis"})
 
-integration_general_span_tag_rules_map = {
-    "aiohttp": aiohttp_tag_rules,
-    "aiohttp_client": aiohttp_client_tag_rules,
-    "redis": redis_tag_rules,
-}
+integration_general_span_tag_rules_map: Dict[str, Any] = dict(
+    {
+        "aiohttp": aiohttp_tag_rules,
+        "aiohttp_client": aiohttp_client_tag_rules,
+        "redis": redis_tag_rules,
+    }
+)
 
 # ------------------------ Create rules for integration specific span (ie: rules for every django.request span to abide by)---------------------|
 
@@ -71,16 +83,16 @@ aiohttp_request_tag_rules = SpanTagRules(
     # matches={
     #     "span.kind": "server",
     # },
-    type="web",
-    base_integration_tag_rules=aiohttp_tag_rules
+    span_type="web",
+    base_integration_tag_rules=aiohttp_tag_rules,
 )
 aiohttp_client_request_tag_rules = SpanTagRules(
     name="aiohttp.request",
     # matches={
     #     "span.kind": "client",
     # },
-    type="http",
-    base_integration_tag_rules=aiohttp_client_tag_rules
+    span_type="http",
+    base_integration_tag_rules=aiohttp_client_tag_rules,
 )
 redis_command_tag_rules = SpanTagRules(
     name="redis.command",
@@ -88,14 +100,16 @@ redis_command_tag_rules = SpanTagRules(
     # matches={
     #     "span.kind": "client",
     # },
-    type="redis",
-    base_integration_tag_rules=redis_tag_rules
+    span_type="redis",
+    base_integration_tag_rules=redis_tag_rules,
 )
 
-integration_specific_span_tag_rules_map = {
-    "aiohttp.request": {
-        "aiohttp": aiohttp_request_tag_rules,
-        "aiohttp_client": aiohttp_client_request_tag_rules
-    },
-    "redis.command": redis_command_tag_rules,
-}
+integration_specific_span_tag_rules_map: Dict[str, Any] = dict(
+    {
+        "aiohttp.request": {
+            "aiohttp": aiohttp_request_tag_rules,
+            "aiohttp_client": aiohttp_client_request_tag_rules,
+        },
+        "redis.command": redis_command_tag_rules,
+    }
+)

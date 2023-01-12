@@ -1,3 +1,4 @@
 ddtrace
 pytest
+pathlib
 riot
