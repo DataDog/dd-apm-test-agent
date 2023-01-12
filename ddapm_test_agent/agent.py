@@ -35,7 +35,7 @@ from .span_validation.rules import integration_general_span_tag_rules_map
 from .span_validation.rules import integration_specific_span_tag_rules_map
 from .span_validation.rules import span_whitelist
 from .span_validation.rules import type_tag_rules_map
-from .span_validation.span_validator import SpanMetadataValidator
+from .span_validation.span_validator import SpanTagValidator
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -82,7 +82,7 @@ def log_error(message):
     n = 3
     if type(message) != str:
         message = str(message)
-    msg_chunks = [str[i : i + n] for i in range(0, len(message), 80)]
+    msg_chunks = [message[i : i + n] for i in range(0, len(message), 80)]
     log.info("\n")
     log.info(space_indent + header)
     for chunk in msg_chunks:
@@ -162,7 +162,7 @@ class Agent:
 
     def log_span_tag_validation_error_to_file(self, span, message):
         lines = set([])
-        writepath = Path("tests/span_validation_tests/validation_failures.txt")
+        writepath = Path("tests/test_span_validations/validation_failures.txt")
         if writepath.is_file():
             with open(writepath, "r") as f:
                 data = f.readlines()
@@ -416,7 +416,7 @@ class Agent:
                                     space_indent
                                     + f"------------ Validating integration {component} specific span: {span_name}. -------------"
                                 )
-                                SpanMetadataValidator(
+                                SpanTagValidator(
                                     span,
                                     span_rules,
                                     validate_first_span_in_chunk_tags=i == 0,
@@ -444,7 +444,7 @@ class Agent:
                                 span_rules = integration_general_span_tag_rules_map[
                                     span_name
                                 ]
-                                SpanMetadataValidator(
+                                SpanTagValidator(
                                     span,
                                     span_rules,
                                     validate_first_span_in_chunk_tags=i == 0,
@@ -465,7 +465,7 @@ class Agent:
                             )
                             try:
                                 span_rules = type_tag_rules_map["general"]
-                                SpanMetadataValidator(
+                                SpanTagValidator(
                                     span,
                                     span_rules,
                                     validate_base_tags=False,

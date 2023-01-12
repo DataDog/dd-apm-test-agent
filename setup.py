@@ -31,7 +31,6 @@ setup(
         "ddsketch",
         "msgpack",
         "requests",
-        "pathlib",
         "typing_extensions",
         "yarl",
     ],

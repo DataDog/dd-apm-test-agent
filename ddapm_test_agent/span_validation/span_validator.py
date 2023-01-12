@@ -7,7 +7,7 @@ from .rules import type_tag_rules_map
 log = logging.getLogger(__name__)
 
 
-class SpanMetadataValidator:
+class SpanTagValidator:
     _tags: Dict[str, str] = {}
 
     def __init__(
@@ -122,7 +122,7 @@ class SpanMetadataValidator:
 
         # Validate base integration tags if the rules exist, ie: validate redis base span tags
         if tag_rules._base_integration_tag_rules:
-            self._tags = SpanMetadataValidator(
+            self._tags = SpanTagValidator(
                 span,
                 tag_rules._base_integration_tag_rules,
                 validate_base_tags=False,
