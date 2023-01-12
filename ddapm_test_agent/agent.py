@@ -15,6 +15,7 @@ from typing import Literal
 from typing import Optional
 from typing import Set
 from typing import cast
+from pathlib import Path
 
 from aiohttp import ClientSession
 from aiohttp import web
@@ -141,6 +142,20 @@ class Agent:
                         _traces[trace_id] = []
                     _traces[trace_id].append(s)
         return _traces
+
+    def log_span_tag_validation_error(self, span, message): 
+        lines = set([])
+        writepath = Path('tests/span_validation_tests/validation_failures.txt')
+        if writepath.is_file():
+            with open(writepath, "r") as f:
+                data = f.readlines()
+                lines = set([line.rstrip() for line in data])
+
+        lines.add(str(message))
+        with open(writepath, "w") as f:
+            for line in lines:
+                if line != '':
+                    f.write('\n' + line)
 
     async def apmtelemetry(self) -> List[TelemetryEvent]:
         """Return the telemetry events stored by the agent"""
@@ -299,6 +314,7 @@ class Agent:
         )
 
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5"]) -> web.Response:
+        print('############################ HANDLING TRACES #########################################')
         await self._store_request(request)
         token = request["session_token"]
         checks: Checks = request.app["checks"]
@@ -333,23 +349,24 @@ class Agent:
                         elif span["name"] in integration_specific_span_tag_rules_map.keys():
                             try:
                                 if component == "":
-                                    raise AttributeError(f"Span with name {span['name']} should have a component tag!")
+                                    raise AttributeError(f"TAG-ASSERTION-ERROR: Span with name {span['name']} should have a component tag!")
                                 span_name = span["name"]
                                 if type(integration_specific_span_tag_rules_map[span_name]) == dict:
                                     span_rules = integration_specific_span_tag_rules_map[span_name][component]
                                 else:
                                     span_rules = integration_specific_span_tag_rules_map[span_name]
                                 log.info(f"Validating integration {component} specific span: {span_name}.")
-                            
                                 assert (
                                     SpanMetadataValidator(span, span_rules, validate_first_span_in_chunk_tags=i==0).success == True, 
                                     f"--- Expected metadata specific span rules validation to be successful for span: {span_name} from integration {component} ----"
                                 )
                             except Exception as msg:
+                                log.info(msg)
                                 with CheckTrace.add_frame(
                                     f"Snapshot compare of span '{span['name']}' at position {i} in trace"
                                 ) as frame:
                                     frame.add_item(f"Received span:\n{pprint.pprint(span, indent=2)}")
+                                self.log_span_tag_validation_error(span, msg)
                         elif component != "" and component in integration_general_span_tag_rules_map.keys():
                             span_name = span["name"]
                             log.info(f"Validating integration {component} general span: {span_name}.")
@@ -360,10 +377,12 @@ class Agent:
                                      f"--- Expected metadata general integration span rules validation to be successful for span: {span_name} from integration {component} ----"
                                 )
                             except Exception as msg:
+                                log.info(msg)
                                 with CheckTrace.add_frame(
                                     f"Snapshot compare of span '{span['name']}' at position {i} in trace"
                                 ) as frame:
                                     frame.add_item(f"Received span:\n{pprint.pprint(span, indent=2)}")
+                                self.log_span_tag_validation_error(span, msg)
                         else:
                             log.info(f'------- No specific rules, validating general rules for {span["name"]} with component {component} -------|')
                             try:
@@ -373,10 +392,12 @@ class Agent:
                                     f"--- Expected metadata general span rules validation to be successful for span: {span['name']} from integration {component} ----"
                                 )
                             except Exception as msg:
+                                log.info(msg)
                                 with CheckTrace.add_frame(
                                     f"Snapshot compare of span '{span['name']}' at position {i} in trace"
                                 ) as frame:
                                     frame.add_item(f"Received span:\n{pprint.pprint(span, indent=2)}")
+                                self.log_span_tag_validation_error(span, msg)
                         # else:
                         #     log.info(f'--------Skipped trace : {span["name"]} with component {component} ---------------|')
                 except ValueError:

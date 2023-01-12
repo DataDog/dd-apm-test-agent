@@ -3,7 +3,7 @@ from .span_tag_rules import SpanTagRules
 
 # ------------------------------------------ Span WhiteList for Skipping Span Validation ----------------------------------------|
 
-span_whitelist = ["TCPConnector.connect"]
+span_whitelist = ["TCPConnector.connect", "parent"]
 
 # ------------------------------------------ Create rules for General / Internal Span Tags --------------------------------------|
 
