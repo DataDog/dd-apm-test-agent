@@ -2,8 +2,8 @@ from typing import Any
 from typing import Dict
 
 from ..span_tag_rules import SpanTagRules
-from .default_span_tag_rules_by_integration import aiohttp_tag_rules
 from .default_span_tag_rules_by_integration import aiohttp_client_tag_rules
+from .default_span_tag_rules_by_integration import aiohttp_tag_rules
 from .default_span_tag_rules_by_integration import redis_tag_rules
 
 

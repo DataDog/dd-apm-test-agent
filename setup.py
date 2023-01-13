@@ -29,7 +29,10 @@ setup(
     install_requires=[
         "aiohttp",
         "ddsketch",
+        "ddtrace",
         "msgpack",
+        "pathlib",
+        "pytest",
         "requests",
         "typing_extensions",
         "yarl",

@@ -1,7 +1,6 @@
 import logging
-import pprint
-
 from pathlib import Path
+import pprint
 
 from ..checks import CheckTrace
 from .span_validator import SpanTagValidator
