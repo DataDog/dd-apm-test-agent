@@ -5,7 +5,6 @@ from collections import OrderedDict
 import json
 import logging
 import os
-from pathlib import Path
 import pprint
 import socket
 import sys
@@ -31,11 +30,7 @@ from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
-from .span_validation.rules import integration_general_span_tag_rules_map
-from .span_validation.rules import integration_specific_span_tag_rules_map
-from .span_validation.rules import span_whitelist
-from .span_validation.rules import type_tag_rules_map
-from .span_validation.span_validator import SpanTagValidator
+from .span_validation.trace_validator import TraceValidator
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -72,23 +67,6 @@ def _parse_csv(s: str) -> List[str]:
     ['a']
     """
     return [s.strip() for s in s.split(",") if s.strip() != ""]
-
-
-header = "~" * 108
-space_indent = "~" * 24
-
-
-def log_error(message):
-    n = 3
-    if type(message) != str:
-        message = str(message)
-    msg_chunks = [message[i : i + n] for i in range(0, len(message), 80)]
-    log.info("\n")
-    log.info(space_indent + header)
-    for chunk in msg_chunks:
-        log.info(space_indent * 2 + "    " + chunk + "    " + space_indent)
-    log.info(space_indent + header)
-    log.info("\n")
 
 
 @middleware  # type: ignore
@@ -159,21 +137,6 @@ class Agent:
                         _traces[trace_id] = []
                     _traces[trace_id].append(s)
         return _traces
-
-    def log_span_tag_validation_error_to_file(self, span, message):
-        lines = set([])
-        writepath = Path("tests/test_span_validations/validation_failures.txt")
-        if writepath.is_file():
-            with open(writepath, "r") as f:
-                data = f.readlines()
-                lines = set([line.rstrip() for line in data])
-                lines.discard("")
-
-        lines.add(str(message))
-        with open(writepath, "w") as f:
-            for line in lines:
-                if line != "":
-                    f.write(line + "\n")
 
     async def apmtelemetry(self) -> List[TelemetryEvent]:
         """Return the telemetry events stored by the agent"""
@@ -369,116 +332,14 @@ class Agent:
                 len(traces),
             )
             for i, trace in enumerate(traces):
+                trace_validator = TraceValidator(self)
                 try:
                     log.info(
                         "Chunk %d\n%s",
                         i,
                         pprint_trace(trace, request.app["log_span_fmt"]),
                     )
-                    for i, span in enumerate(trace):
-                        component: str = span["meta"].get("component", "")
-
-                        if span["name"] in span_whitelist:
-                            log_error(
-                                f"WHITELISTED: Skipping validating integration {component} span: {span['name']} #########."
-                            )
-
-                        elif (
-                            span["name"]
-                            in integration_specific_span_tag_rules_map.keys()
-                        ):
-                            try:
-                                if component == "":
-                                    raise AttributeError(
-                                        f"COMPONENT-ASSERTION-ERROR: Span with name {span['name']} should have a component tag!"
-                                    )
-                                span_name: str = span["name"]
-                                if (
-                                    type(
-                                        integration_specific_span_tag_rules_map[
-                                            span_name
-                                        ]
-                                    )
-                                    == dict
-                                ):
-                                    span_rules = (
-                                        integration_specific_span_tag_rules_map[
-                                            span_name
-                                        ][component]
-                                    )
-                                else:
-                                    span_rules = (
-                                        integration_specific_span_tag_rules_map[
-                                            span_name
-                                        ]
-                                    )
-                                log.info(
-                                    space_indent
-                                    + f"------------ Validating integration {component} specific span: {span_name}. -------------"
-                                )
-                                SpanTagValidator(
-                                    span,
-                                    span_rules,
-                                    validate_first_span_in_chunk_tags=i == 0,
-                                )
-                            except Exception as msg:
-                                log_error(msg)
-                                with CheckTrace.add_frame(
-                                    f"Snapshot compare of span '{span['name']}' at position {i} in trace"
-                                ) as frame:
-                                    frame.add_item("Received span:\n")
-                                    pprint.pprint(span, indent=2)
-                                self.log_span_tag_validation_error_to_file(span, msg)
-
-                        elif (
-                            component != ""
-                            and component
-                            in integration_general_span_tag_rules_map.keys()
-                        ):
-                            span_name = span["name"]
-                            log.info(
-                                space_indent
-                                + f"------------ Validating integration {component} general span: {span_name}."
-                            )
-                            try:
-                                span_rules = integration_general_span_tag_rules_map[
-                                    span_name
-                                ]
-                                SpanTagValidator(
-                                    span,
-                                    span_rules,
-                                    validate_first_span_in_chunk_tags=i == 0,
-                                )
-                            except Exception as msg:
-                                log_error(msg)
-                                with CheckTrace.add_frame(
-                                    f"Snapshot compare of span '{span['name']}' at position {i} in trace"
-                                ) as frame:
-                                    frame.add_item("Received span:\n")
-                                    pprint.pprint(span, indent=2)
-                                self.log_span_tag_validation_error_to_file(span, msg)
-
-                        else:
-                            log.info(
-                                space_indent
-                                + f"------------ No specific rules, validating general rules for {span['name']} with component {component} -------|"
-                            )
-                            try:
-                                span_rules = type_tag_rules_map["general"]
-                                SpanTagValidator(
-                                    span,
-                                    span_rules,
-                                    validate_base_tags=False,
-                                    validate_first_span_in_chunk_tags=i == 0,
-                                )
-                            except Exception as msg:
-                                log_error(msg)
-                                with CheckTrace.add_frame(
-                                    f"Snapshot compare of span '{span['name']}' at position {i} in trace"
-                                ) as frame:
-                                    frame.add_item("Received span:\n")
-                                    pprint.pprint(span, indent=2)
-                                self.log_span_tag_validation_error_to_file(span, msg)
+                    trace_validator.validate_trace(trace)
                 except ValueError:
                     log.info(
                         "Chunk %d could not be displayed (might be incomplete).", i
