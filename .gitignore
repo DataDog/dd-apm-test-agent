@@ -36,3 +36,4 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+.python-version
