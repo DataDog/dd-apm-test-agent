@@ -20,7 +20,6 @@ from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
-from ddtrace import tracer
 
 from . import _get_version
 from . import trace_snapshot
@@ -653,8 +652,6 @@ def make_app(
 
 
 def main(args: Optional[List[str]] = None) -> None:
-    tracer.configure(hostname="localhost", port=8126, https=True)
-
     if args is None:
         args = sys.argv[1:]
     parser = argparse.ArgumentParser(

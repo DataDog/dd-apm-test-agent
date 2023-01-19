@@ -6,8 +6,7 @@ ENV SNAPSHOT_CI=1
 ENV LOG_LEVEL=INFO
 ENV SNAPSHOT_DIR=/snapshots
 
-RUN mkdir -p /src
 WORKDIR /
 COPY . /
-RUN pip install . --use-feature=in-tree-build .
+RUN pip install .
 CMD ["ddapm-test-agent"]
