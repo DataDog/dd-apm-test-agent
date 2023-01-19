@@ -15,7 +15,9 @@ log = logging.getLogger(__name__)
 header = "~" * 108
 space_indent = "~" * 20
 
-span_failure_message = lambda span, i: f"Snapshot compare of span '{span['name']}' at position {i} in trace"
+
+def span_failure_message(span, i):
+    return f"Snapshot compare of span '{span['name']}' at position {i} in trace"
 
 
 def log_error(message):
