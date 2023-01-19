@@ -233,12 +233,8 @@ def v06_reference_http_stats_payload_data_raw():
                         "TopLevelHits": ok_n + err_n,
                         "Duration": total,
                         "Errors": err_n,
-                        "OkSummary": DDSketchProto.to_proto(
-                            ok_dist
-                        ).SerializeToString(),
-                        "ErrorSummary": DDSketchProto.to_proto(
-                            err_dist
-                        ).SerializeToString(),
+                        "OkSummary": DDSketchProto.to_proto(ok_dist).SerializeToString(),
+                        "ErrorSummary": DDSketchProto.to_proto(err_dist).SerializeToString(),
                     },
                 ],
             }
@@ -347,9 +343,7 @@ def v2_reference_http_apmtelemetry_payload_headers(  # type: ignore
 ) -> Generator[Dict[str, str], None, None]:
     headers = {
         "Content-type": "application/json",
-        "DD-Telemetry-Request-Type": v2_reference_http_apmtelemetry_payload_data_raw[
-            "request_type"
-        ],
+        "DD-Telemetry-Request-Type": v2_reference_http_apmtelemetry_payload_data_raw["request_type"],
         "DD-Telemetry-API-Version": "v1",
     }
     yield headers

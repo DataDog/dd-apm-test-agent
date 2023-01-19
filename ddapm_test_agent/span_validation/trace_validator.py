@@ -4,13 +4,9 @@ import pprint
 
 from ..checks import CheckTrace
 from .span_validator import SpanTagValidator
-from .tag_rules.default_span_tag_rules_by_integration import (
-    default_span_tag_rules_by_integration_map,
-)
+from .tag_rules.default_span_tag_rules_by_integration import default_span_tag_rules_by_integration_map
 from .tag_rules.general_span_tag_rules import general_span_tag_rules_map
-from .tag_rules.root_span_tag_rules_by_integration import (
-    root_span_tag_rules_by_integration_map,
-)
+from .tag_rules.root_span_tag_rules_by_integration import root_span_tag_rules_by_integration_map
 from .tag_rules.whitelist import span_whitelist
 
 
@@ -19,9 +15,7 @@ log = logging.getLogger(__name__)
 header = "~" * 108
 space_indent = "~" * 20
 
-span_failure_message = (
-    lambda span, i: f"Snapshot compare of span '{span['name']}' at position {i} in trace"
-)
+span_failure_message = lambda span, i: f"Snapshot compare of span '{span['name']}' at position {i} in trace"
 
 
 def log_error(message):
@@ -66,9 +60,7 @@ class TraceValidator:
                     span_name: str = span["name"]
                     # if type == dict, multiple integrations produce this span name. Makes sure to get the right test case by component
                     if type(root_span_tag_rules_by_integration_map[span_name]) == dict:
-                        span_rules = root_span_tag_rules_by_integration_map[span_name][
-                            component
-                        ]
+                        span_rules = root_span_tag_rules_by_integration_map[span_name][component]
                     else:
                         span_rules = root_span_tag_rules_by_integration_map[span_name]
                     log.info("\n")
@@ -93,10 +85,7 @@ class TraceValidator:
 
             # check for an integration-level span tag test using component tag within span.
             # IE: All Django spans must abide by these tag rules.
-            elif (
-                component != ""
-                and component in default_span_tag_rules_by_integration_map.keys()
-            ):
+            elif component != "" and component in default_span_tag_rules_by_integration_map.keys():
                 span_name = span["name"]
                 log.info("\n")
                 log.info("~" * 160)

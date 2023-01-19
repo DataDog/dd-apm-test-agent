@@ -36,9 +36,7 @@ async def test_snapshot_single_trace(
     assert resp.status == 200
 
     # Do the snapshot
-    resp = await agent.get(
-        "/test/session/snapshot", params={"test_session_token": "test_case"}
-    )
+    resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test_case"})
     snap_path = snapshot_dir / "test_case.json"
     if snapshot_ci_mode:
         # No previous snapshot file exists so this should fail
@@ -55,9 +53,7 @@ async def test_snapshot_single_trace(
         resp = await do_reference_v04_http_trace(token="test_case")
         assert resp.status == 200, await resp.text()
 
-        resp = await agent.get(
-            "/test/session/snapshot", params={"test_session_token": "test_case"}
-        )
+        resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test_case"})
         assert resp.status == 200, await resp.text()
 
 
@@ -182,18 +178,14 @@ async def test_snapshot_trace_differences(agent, expected_traces, actual_traces,
     resp = await v04_trace(agent, expected_traces, token="test")
     assert resp.status == 200, await resp.text()
 
-    resp = await agent.get(
-        "/test/session/snapshot", params={"test_session_token": "test"}
-    )
+    resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test"})
     assert resp.status == 200, await resp.text()
     resp = await agent.get("/test/session/clear", params={"test_session_token": "test"})
     assert resp.status == 200, await resp.text()
 
     resp = await v04_trace(agent, actual_traces, token="test")
     assert resp.status == 200, await resp.text()
-    resp = await agent.get(
-        "/test/session/snapshot", params={"test_session_token": "test"}
-    )
+    resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test"})
     resp_text = await resp.text()
     if error:
         assert resp.status == 400, resp_text
@@ -407,19 +399,13 @@ async def test_snapshot_custom_file(agent, tmp_path, do_reference_v04_http_trace
 
 
 @pytest.mark.parametrize("snapshot_ci_mode", [False, True])
-async def test_snapshot_tracestats(
-    agent, tmp_path, snapshot_ci_mode, do_reference_v06_http_stats, snapshot_dir
-):
+async def test_snapshot_tracestats(agent, tmp_path, snapshot_ci_mode, do_reference_v06_http_stats, snapshot_dir):
     resp = await do_reference_v06_http_stats(token="test_case")
     assert resp.status == 200
 
     snap_path = snapshot_dir / "test_case_tracestats.json"
-    resp = await agent.get(
-        "/test/session/snapshot", params={"test_session_token": "test_case"}
-    )
-    resp_clear = await agent.get(
-        "/test/session/clear", params={"test_session_token": "test_case"}
-    )
+    resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test_case"})
+    resp_clear = await agent.get("/test/session/clear", params={"test_session_token": "test_case"})
     assert resp_clear.status == 200, await resp_clear.text()
 
     if snapshot_ci_mode:
@@ -437,7 +423,5 @@ async def test_snapshot_tracestats(
         resp = await do_reference_v06_http_stats(token="test_case")
         assert resp.status == 200, await resp.text()
 
-        resp = await agent.get(
-            "/test/session/snapshot", params={"test_session_token": "test_case"}
-        )
+        resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test_case"})
         assert resp.status == 200, await resp.text()

@@ -101,11 +101,7 @@ class SpanTagValidator:
             self.spanOptionalTagValidator(general_span_tag_rules_map["general"])
             # Validate first span in chunk General tags
             if validate_first_span_in_chunk_tags:
-                self.spanRequiredTagValidator(
-                    tags_list=general_span_tag_rules_map[
-                        "general"
-                    ]._first_span_in_chunk_tags
-                )
+                self.spanRequiredTagValidator(tags_list=general_span_tag_rules_map["general"]._first_span_in_chunk_tags)
 
         # Validate first span in chunk tags
         if validate_first_span_in_chunk_tags and tag_rules._first_span_in_chunk_tags:
@@ -120,9 +116,7 @@ class SpanTagValidator:
         # Validate span type if we have an assertion for it
         if tag_rules.type:
             assert "type" in self._tags.keys(), type_missing_assertion(span, tag_rules)
-            assert span["type"] == tag_rules.type, type_mismatch_assertion(
-                span, tag_rules
-            )
+            assert span["type"] == tag_rules.type, type_mismatch_assertion(span, tag_rules)
             if tag_rules.type in span_type_tag_rules_map.keys():
                 type_tag_rules = span_type_tag_rules_map[tag_rules.type]
                 self.spanRequiredTagValidator(type_tag_rules)
@@ -130,10 +124,7 @@ class SpanTagValidator:
             self._tags.pop("type", None)
 
         # Else we are validating general tags. In that case, only validate type tags if a type field is present
-        elif (
-            "type" in self._tags.keys()
-            and span["type"] in span_type_tag_rules_map.keys()
-        ):
+        elif "type" in self._tags.keys() and span["type"] in span_type_tag_rules_map.keys():
             type_tag_rules = span_type_tag_rules_map[span["type"]]
             self.spanRequiredTagValidator(type_tag_rules)
             self.spanOptionalTagValidator(type_tag_rules)
@@ -162,15 +153,7 @@ class SpanTagValidator:
                 )
                 for tag, value in self._tags.items():
                     if tag != "component":
-                        log.info(
-                            " " * 5
-                            + "*" * 14
-                            + " " * 15
-                            + f"{tag} : {value}"
-                            + " " * 15
-                            + "*" * 14
-                            + " " * 5
-                        )
+                        log.info(" " * 5 + "*" * 14 + " " * 15 + f"{tag} : {value}" + " " * 15 + "*" * 14 + " " * 5)
             log.info("\n")
             log.info(
                 "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -186,9 +169,7 @@ class SpanTagValidator:
         if tag_rules._tag_comparisons:
             tag_rules_name = tag_rules.name.upper()
             tag_rules_matching_tags = tag_rules._tag_comparisons.items()
-            log.info(
-                f"     ------------------ Asserting on span {tag_rules.name} tags matching ---------------------"
-            )
+            log.info(f"     ------------------ Asserting on span {tag_rules.name} tags matching ---------------------")
             for expected_k, expected_v in tag_rules_matching_tags:
                 assert expected_k in self._tags.keys(), tag_missing_assertion(
                     self._span, tag_rules_name, expected_k, self._tags.keys()
@@ -196,9 +177,7 @@ class SpanTagValidator:
                 assert expected_v == self._tags[expected_k], tag_mismatch_assertion(
                     self._span, tag_rules_name, expected_k, expected_v, self._tags
                 )
-                log.info(
-                    f"                       Validated presence of {expected_k} tag with value {expected_v}"
-                )
+                log.info(f"                       Validated presence of {expected_k} tag with value {expected_v}")
         else:
             log.info(
                 f"     ------------------ No tag comparisons to assert on for tag rules {tag_rules.name} ---------------------"
@@ -209,9 +188,7 @@ class SpanTagValidator:
         tag_rules_name = None
         if not tag_rules and tags_list:
             required_tags = tags_list
-            log.info(
-                "     ------------------ Asserting on first span in chunk required tags ---------------------"
-            )
+            log.info("     ------------------ Asserting on first span in chunk required tags ---------------------")
         else:
             tag_rules_name = tag_rules.name.upper()
             if tag_rules._required_tags:
@@ -221,9 +198,7 @@ class SpanTagValidator:
                     f"     ------------------ No required tags to assert on for tag rules {tag_rules.name} ---------------------"
                 )
                 return
-            log.info(
-                f"     ------------------ Asserting on span {tag_rules.name} required tags ---------------------"
-            )
+            log.info(f"     ------------------ Asserting on span {tag_rules.name} required tags ---------------------")
         for tag_name in required_tags:
             if not tag_rules_name:
                 tag_rules_name = tag_name
@@ -237,14 +212,10 @@ class SpanTagValidator:
     def spanOptionalTagValidator(self, tag_rules):
         if tag_rules._optional_tags:
             optional_tags = tag_rules._optional_tags
-            log.info(
-                f"     ------------------ Asserting on span {tag_rules.name} optional tags ---------------------"
-            )
+            log.info(f"     ------------------ Asserting on span {tag_rules.name} optional tags ---------------------")
             for tag_name in optional_tags:
                 if tag_name in self._tags.keys():
-                    log.info(
-                        f"                             Optional Tag {tag_name} validated."
-                    )
+                    log.info(f"                             Optional Tag {tag_name} validated.")
                     del self._tags[tag_name]
         else:
             log.info(

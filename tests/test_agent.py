@@ -86,15 +86,11 @@ async def test_apmtelemetry(
     rid = v2_reference_http_apmtelemetry_payload_data_raw["runtime_id"]
     resp = await agent.get("/test/apmtelemetry", params={"runtime_ids": rid})
     assert resp.status == 200
-    assert json.loads(await resp.text()) == [
-        v2_reference_http_apmtelemetry_payload_data_raw
-    ]
+    assert json.loads(await resp.text()) == [v2_reference_http_apmtelemetry_payload_data_raw]
 
     resp = await agent.get("/test/apmtelemetry")
     assert resp.status == 200
-    assert json.loads(await resp.text()) == [
-        v2_reference_http_apmtelemetry_payload_data_raw
-    ]
+    assert json.loads(await resp.text()) == [v2_reference_http_apmtelemetry_payload_data_raw]
 
     resp = await agent.get("/test/session/clear")
     assert resp.status == 200

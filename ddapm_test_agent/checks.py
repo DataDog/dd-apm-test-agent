@@ -10,9 +10,7 @@ from typing import Tuple
 from typing import Type
 
 
-CHECK_TRACE: contextvars.ContextVar["CheckTrace"] = contextvars.ContextVar(
-    "check_trace"
-)
+CHECK_TRACE: contextvars.ContextVar["CheckTrace"] = contextvars.ContextVar("check_trace")
 
 
 class CheckNotFound(IndexError):
