@@ -81,36 +81,36 @@ class SpanTagValidator:
 
         # Validate exact tag matches
         if tag_rules._tag_comparisons:
-            self.spanMatchingTagValidator(tag_rules)
+            self.span_matching_tag_validator(tag_rules)
 
         # Validate required tags exist
         if tag_rules._required_tags:
-            self.spanRequiredTagValidator(tag_rules)
+            self.span_required_tag_validator(tag_rules)
 
         # Validate optional tags existing
         if tag_rules._optional_tags:
-            self.spanOptionalTagValidator(tag_rules)
+            self.span_optional_tag_validator(tag_rules)
 
         # Validate internal tags
         if validate_internal_tags:
-            self.spanOptionalTagValidator(general_span_tag_rules_map["internal"])
+            self.span_optional_tag_validator(general_span_tag_rules_map["internal"])
 
         # Validate general and internal tags
         if validate_base_tags:
-            self.spanRequiredTagValidator(general_span_tag_rules_map["general"])
-            self.spanOptionalTagValidator(general_span_tag_rules_map["general"])
+            self.span_required_tag_validator(general_span_tag_rules_map["general"])
+            self.span_optional_tag_validator(general_span_tag_rules_map["general"])
             # Validate first span in chunk General tags
             if validate_first_span_in_chunk_tags:
-                self.spanRequiredTagValidator(tags_list=general_span_tag_rules_map["general"]._first_span_in_chunk_tags)
+                self.span_required_tag_validator(tags_list=general_span_tag_rules_map["general"]._first_span_in_chunk_tags)
 
         # Validate first span in chunk tags
         if validate_first_span_in_chunk_tags and tag_rules._first_span_in_chunk_tags:
-            self.spanRequiredTagValidator(tags_list=tag_rules._first_span_in_chunk_tags)
+            self.span_required_tag_validator(tags_list=tag_rules._first_span_in_chunk_tags)
 
             # Validate span error
             if "error" in span.keys() and span["error"] == 1:
                 error_tag_rules = general_span_tag_rules_map["error"]
-                self.spanOptionalTagValidator(error_tag_rules)
+                self.span_optional_tag_validator(error_tag_rules)
                 self._tags.pop("error", None)
 
         # Validate span type if we have an assertion for it
@@ -119,15 +119,15 @@ class SpanTagValidator:
             assert span["type"] == tag_rules.type, type_mismatch_assertion(span, tag_rules)
             if tag_rules.type in span_type_tag_rules_map.keys():
                 type_tag_rules = span_type_tag_rules_map[tag_rules.type]
-                self.spanRequiredTagValidator(type_tag_rules)
-                self.spanOptionalTagValidator(type_tag_rules)
+                self.span_required_tag_validator(type_tag_rules)
+                self.span_optional_tag_validator(type_tag_rules)
             self._tags.pop("type", None)
 
         # Else we are validating general tags. In that case, only validate type tags if a type field is present
         elif "type" in self._tags.keys() and span["type"] in span_type_tag_rules_map.keys():
             type_tag_rules = span_type_tag_rules_map[span["type"]]
-            self.spanRequiredTagValidator(type_tag_rules)
-            self.spanOptionalTagValidator(type_tag_rules)
+            self.span_required_tag_validator(type_tag_rules)
+            self.span_optional_tag_validator(type_tag_rules)
             self._tags.pop("type", None)
 
         # Validate base integration tags if the rules exist, ie: validate redis base span tags
@@ -165,7 +165,7 @@ class SpanTagValidator:
                 "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
             )
 
-    def spanMatchingTagValidator(self, tag_rules):
+    def span_matching_tag_validator(self, tag_rules):
         if tag_rules._tag_comparisons:
             tag_rules_name = tag_rules.name.upper()
             tag_rules_matching_tags = tag_rules._tag_comparisons.items()
@@ -184,7 +184,7 @@ class SpanTagValidator:
             )
             return
 
-    def spanRequiredTagValidator(self, tag_rules=None, tags_list=None):
+    def span_required_tag_validator(self, tag_rules=None, tags_list=None):
         tag_rules_name = None
         if not tag_rules and tags_list:
             required_tags = tags_list
@@ -209,7 +209,7 @@ class SpanTagValidator:
             if tag_name != "component":
                 self._tags.pop(tag_name, None)
 
-    def spanOptionalTagValidator(self, tag_rules):
+    def span_optional_tag_validator(self, tag_rules):
         if tag_rules._optional_tags:
             optional_tags = tag_rules._optional_tags
             log.info(f"     ------------------ Asserting on span {tag_rules.name} optional tags ---------------------")

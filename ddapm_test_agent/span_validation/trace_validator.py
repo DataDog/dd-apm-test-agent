@@ -138,7 +138,7 @@ class TraceValidator:
 
     def log_span_tag_validation_error_to_file(self, span, message):
         lines = set([])
-        writepath = Path("tests/test_span_validations/validation_failures.txt")
+        writepath = Path("./validation_failures.txt")
         if writepath.is_file():
             with open(writepath, "r") as f:
                 data = f.readlines()
