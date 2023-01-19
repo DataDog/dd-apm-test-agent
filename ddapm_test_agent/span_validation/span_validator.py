@@ -101,7 +101,9 @@ class SpanTagValidator:
             self.span_optional_tag_validator(general_span_tag_rules_map["general"])
             # Validate first span in chunk General tags
             if validate_first_span_in_chunk_tags:
-                self.span_required_tag_validator(tags_list=general_span_tag_rules_map["general"]._first_span_in_chunk_tags)
+                self.span_required_tag_validator(
+                    tags_list=general_span_tag_rules_map["general"]._first_span_in_chunk_tags
+                )
 
         # Validate first span in chunk tags
         if validate_first_span_in_chunk_tags and tag_rules._first_span_in_chunk_tags:
