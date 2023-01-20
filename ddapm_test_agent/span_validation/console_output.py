@@ -54,7 +54,7 @@ class OutputPrinter:
                 f'     ************** Unverified span tags below for span {span["name"]} and rules {main_tag_rules.name} *************** '
             )
             for tag, value in tags.items():
-                self._log.info(" " * 5 + "*" * 14 + " " * 15 + f"{tag} : {value}")
+                self._log.info(" " * 5 + "*" * 14 + " " * 15 + f"{tag} : {str(value)[0:100]}") # only take first 100 characters of value to prevent bad output to screen
 
         self._log.info("\n")
         self._log.info(
