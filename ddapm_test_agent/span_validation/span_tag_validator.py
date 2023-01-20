@@ -52,6 +52,7 @@ class SpanTagValidator:
         self.console_out = OutputPrinter(log)
         self.type_span_rules_exist = False
         self.keep_component_tag_for_later_match = False
+        self.validate_all_tags = False
         self.span_tag_rules_list = [GENERAL_SPAN_RULES, INTERNAL_SPAN_RULES]
 
         if first_in_chunk_span_rules:
@@ -68,26 +69,39 @@ class SpanTagValidator:
         if integration_root_span_rules:
             self.span_tag_rules_list.append(integration_root_span_rules)
 
+        # validate all span tags (no leftover tags) if all rules exist
+        if integration_base_span_rules and integration_root_span_rules:
+            self.validate_all_tags = True
+
+        self.tag_rules = self.span_tag_rules_list[0]
+
     def validate(self, span):
-        self._span = span
-        main_tag_rules = self.span_tag_rules_list[-1]
+        self.span = span
+        main_tag_rules = self.span_tag_rules_list[-1]  # last tag rule added is the main validation rule
 
         if span["error"]:
             self.span_tag_rules_list.insert(1, ERROR_SPAN_RULES)
 
-        self.console_out.print_intro_message(span, main_tag_rules)
+        if span["type"]:
+            # if we have span type and no rules for type, don't validate all spans even if we have integration tags
+            if not self.type_span_rules_exist:
+                self.validate_all_tags = False
+
+        self.console_out.print_intro_message(self)
 
         self._tags = self.extract_tags(span, {})
 
         for tag_rules in self.span_tag_rules_list:
+            self.tag_rules = tag_rules
             try:
                 tag_rules.validate(self)
 
             except AssertionError as e:
-                self.console_out.print_result(span, tag_rules, self._tags)
+                self.console_out.print_result(self)
                 raise AssertionError(e)
 
-        self.console_out.print_result(span, main_tag_rules, self._tags)
+        self.tag_rules = main_tag_rules
+        self.console_out.print_result(self)
 
     def span_matching_tag_validator(self, tag_rules):
         if tag_rules._tag_comparisons:
@@ -96,10 +110,10 @@ class SpanTagValidator:
             )
             for e_k, e_v in tag_rules._tag_comparisons.items():
                 assert e_k in self._tags.keys(), tag_missing_assertion(
-                    self._span, tag_rules.name.upper(), e_k, self._tags.keys()
+                    self.span, tag_rules.name.upper(), e_k, self._tags.keys()
                 )
                 assert e_v == self._tags[e_k], tag_mismatch_assertion(
-                    self._span, tag_rules.name.upper(), e_k, e_v, self._tags
+                    self.span, tag_rules.name.upper(), e_k, e_v, self._tags
                 )
                 del self._tags[e_k]
                 log.info(f"                       Validated presence of {e_k} tag with value {e_v}")
@@ -119,7 +133,7 @@ class SpanTagValidator:
             )
             for tag_name in required_tags:
                 assert tag_name in self._tags.keys(), tag_missing_assertion(
-                    self._span, tag_rules.name.upper(), tag_name, self._tags.keys()
+                    self.span, tag_rules.name.upper(), tag_name, self._tags.keys()
                 )
                 log.info(f"                             Required Tag {tag_name} validated.")
 

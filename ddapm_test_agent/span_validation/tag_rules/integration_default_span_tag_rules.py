@@ -17,6 +17,7 @@ aiohttp_client_tag_rules = SpanTagRules(
 )
 redis_tag_rules = SpanTagRules(
     name="redis",
+    span_type="redis",
     matches={"component": "redis"},
 )
 
