@@ -53,20 +53,25 @@ class SpanTagValidator:
         self.type_span_rules_exist = False
         self.keep_component_tag_for_later_match = False
         self.validate_all_tags = False
+        self.main_tag_rules = GENERAL_SPAN_RULES
+        self.failed_tag_rules = None
         self.span_tag_rules_list = [GENERAL_SPAN_RULES, INTERNAL_SPAN_RULES]
 
         if first_in_chunk_span_rules:
             self.span_tag_rules_list.append(first_in_chunk_span_rules)
 
         if type_span_rules:
+            self.main_tag_rules = type_span_rules
             self.type_span_rules_exist = True
             self.span_tag_rules_list.append(type_span_rules)
 
         if integration_base_span_rules:
+            self.main_tag_rules = integration_base_span_rules
             self.keep_component_tag_for_later_match = True
             self.span_tag_rules_list.append(integration_base_span_rules)
 
         if integration_root_span_rules:
+            self.main_tag_rules = integration_root_span_rules
             self.span_tag_rules_list.append(integration_root_span_rules)
 
         # validate all span tags (no leftover tags) if all rules exist
@@ -77,7 +82,6 @@ class SpanTagValidator:
 
     def validate(self, span):
         self.span = span
-        main_tag_rules = self.span_tag_rules_list[-1]  # last tag rule added is the main validation rule
 
         if span["error"]:
             self.span_tag_rules_list.insert(1, ERROR_SPAN_RULES)
@@ -93,14 +97,15 @@ class SpanTagValidator:
 
         for tag_rules in self.span_tag_rules_list:
             self.tag_rules = tag_rules
+            self.failed_tag_rules = None
             try:
                 tag_rules.validate(self)
-
             except AssertionError as e:
+                self.failed_tag_rules = tag_rules
                 self.console_out.print_result(self)
                 raise AssertionError(e)
 
-        self.tag_rules = main_tag_rules
+        self.tag_rules = self.main_tag_rules
         self.console_out.print_result(self)
 
     def span_matching_tag_validator(self, tag_rules):

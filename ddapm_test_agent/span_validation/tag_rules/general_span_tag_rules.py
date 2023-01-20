@@ -23,6 +23,7 @@ internal_tag_rules = SpanTagRules(
         "_dd.top_level",
         "_sampling_priority_v1",
         "_dd.tracer_kr",
+        "_dd1.sr.eausr",
     ],
 )
 
