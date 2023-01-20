@@ -3,6 +3,7 @@ import logging
 from ddapm_test_agent.span_validation.console_output import OutputPrinter
 
 from .tag_rules.general_span_tag_rules import general_span_tag_rules_map
+from .tag_rules.type_span_tag_rules import span_type_tag_rules_map
 
 
 log = logging.getLogger(__name__)
@@ -40,18 +41,40 @@ GENERAL_SPAN_RULES = general_span_tag_rules_map["general"]
 ERROR_SPAN_RULES = general_span_tag_rules_map["error"]
 INTERNAL_SPAN_RULES = general_span_tag_rules_map["internal"]
 
+SPAN_TYPES = set(
+    [
+        "cache",
+        "cassandra",
+        "elasticsearch",
+        "grpc",
+        "graphql",
+        "http",
+        "mongodb",
+        "redis",
+        "sql",
+        "template",
+        "test",
+        "web",
+        "worker",
+    ]
+)
+
 
 class SpanTagValidator:
     def __init__(
         self,
+        span,
         type_span_rules=None,
         integration_base_span_rules=None,
         integration_root_span_rules=None,
         first_in_chunk_span_rules=None,
     ):
         self.console_out = OutputPrinter(log)
-        self.type_span_rules_exist = False
-        self.keep_component_tag_for_later_match = False
+        self.span = span
+
+        self.integration_base_span_rules = integration_base_span_rules
+
+        # Set some basic attributes
         self.validate_all_tags = False
         self.main_tag_rules = GENERAL_SPAN_RULES
         self.failed_tag_rules = None
@@ -60,40 +83,37 @@ class SpanTagValidator:
         if first_in_chunk_span_rules:
             self.span_tag_rules_list.append(first_in_chunk_span_rules)
 
+        span_error = self.span.get("error", None)
+        if span_error and span_error == "1":
+            self.span_tag_rules_list.insert(1, ERROR_SPAN_RULES)
+
         if type_span_rules:
             self.main_tag_rules = type_span_rules
-            self.type_span_rules_exist = True
             self.span_tag_rules_list.append(type_span_rules)
 
         if integration_base_span_rules:
             self.main_tag_rules = integration_base_span_rules
-            self.keep_component_tag_for_later_match = True
             self.span_tag_rules_list.append(integration_base_span_rules)
 
         if integration_root_span_rules:
             self.main_tag_rules = integration_root_span_rules
             self.span_tag_rules_list.append(integration_root_span_rules)
 
-        # validate all span tags (no leftover tags) if all rules exist
+        # Validate all tags if we have all rules.
         if integration_base_span_rules and integration_root_span_rules:
-            self.validate_all_tags = True
+
+            span_type = self.span.get("type", None)
+            # If a span doesn't have a type, validate all. If span has a type, check the type if valid and if yes, check we have rules for type.
+            # If we type rules, validate all span tags, if we do not, do not validate all tags.
+            if span_type:
+                if span_type == "" or (span_type in SPAN_TYPES and span_type in span_type_tag_rules_map.keys()):
+                    self.validate_all_tags = True
 
         self.tag_rules = self.span_tag_rules_list[0]
 
-    def validate(self, span):
-        self.span = span
-
-        if span["error"]:
-            self.span_tag_rules_list.insert(1, ERROR_SPAN_RULES)
-
-        if span["type"]:
-            # if we have span type and no rules for type, don't validate all spans even if we have integration tags
-            if not self.type_span_rules_exist:
-                self.validate_all_tags = False
-
+    def validate(self):
         self.console_out.print_intro_message(self)
-
-        self._tags = self.extract_tags(span, {})
+        self._tags = self.extract_tags(self.span, {})
 
         for tag_rules in self.span_tag_rules_list:
             self.tag_rules = tag_rules
@@ -142,9 +162,12 @@ class SpanTagValidator:
                 )
                 log.info(f"                             Required Tag {tag_name} validated.")
 
-                # We can delete tag if not component or if it is component, only if we no dont need for later assertions
-                if tag_name != "component" or not self.keep_component_tag_for_later_match:
+                # We can delete tag unless the tag is component and we need it to assert with the integration name later
+                if tag_name == "component" and tag_rules.name.lower() == "general" and self.integration_base_span_rules:
+                    continue
+                else:
                     del self._tags[tag_name]
+
         else:
             log.info(
                 f"     ------------------ No required tags to assert on for tag rules {tag_rules.name} ---------------------"
@@ -171,10 +194,6 @@ class SpanTagValidator:
             if isinstance(v, dict):
                 extracted_tags = self.extract_tags(span[k], extracted_tags)
             elif k in IGNORED_TAGS:
-                continue
-            elif (
-                k == "type" and self.type_span_rules_exist
-            ):  # if key == type and we have type rules, delete type since it is already verified
                 continue
             else:
                 extracted_tags[k] = v

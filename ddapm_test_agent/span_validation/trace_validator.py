@@ -45,6 +45,7 @@ class TraceValidator:
             integration_base_span_rules = None
             integration_root_span_rules = None
             type_span_rules = None
+            span_type = span.get("type", None)
 
             if i == 0:
                 first_in_chunk_span_rules = general_span_tag_rules_map["chunk"]
@@ -83,20 +84,23 @@ class TraceValidator:
                         integration_base_span_rules = default_span_tag_rules_by_integration_map.get(component, None)
 
                     # get span type rules if this span has a type
-                    if span["type"]:
+                    if span_type:
+                        # validate actual and expected span types equal
                         if integration_root_span_rules.span_type:
-                            if span["type"] != integration_root_span_rules.span_type:
+                            if span_type != integration_root_span_rules.span_type:
                                 raise AssertionError(
                                     "TYPE-ASSERTION-ERROR: "
                                     + f"Integration {component} specific span: {span_name} should have span_type {integration_root_span_rules.span_type}"
                                 )
                         if integration_base_span_rules and integration_base_span_rules.span_type:
-                            if span["type"] != integration_base_span_rules.span_type:
+                            if span_type != integration_base_span_rules.span_type:
                                 raise AssertionError(
                                     "TYPE-ASSERTION-ERROR: "
                                     + f"Integration {component} specific span: {span_name} should have span_type {integration_base_span_rules.span_type}"
                                 )
-                        type_span_rules = span_type_tag_rules_map.get(span["type"], None)
+                        type_span_rules = span_type_tag_rules_map.get(span_type, None)
+
+                    # else if there are rules with expected span types, raise an error if actual span does not have type
                     else:
                         if integration_root_span_rules.span_type:
                             raise AssertionError(
@@ -121,11 +125,12 @@ class TraceValidator:
 
                     # Validate span!
                     SpanTagValidator(
+                        span=span,
                         type_span_rules=type_span_rules,
                         integration_base_span_rules=integration_base_span_rules,
                         integration_root_span_rules=integration_root_span_rules,
                         first_in_chunk_span_rules=first_in_chunk_span_rules,
-                    ).validate(span)
+                    ).validate()
 
                 except Exception as msg:
                     log_error(msg)
@@ -153,15 +158,17 @@ class TraceValidator:
                     integration_base_span_rules = default_span_tag_rules_by_integration_map[component]
 
                     # get span type rules if this span has a type
-                    if span["type"]:
+                    if span_type:
+                        # validate actual and expected span types equal
                         if integration_base_span_rules and integration_base_span_rules.span_type:
-                            if span["type"] != integration_base_span_rules.span_type:
+                            if span_type != integration_base_span_rules.span_type:
                                 raise AssertionError(
                                     "TYPE-ASSERTION-ERROR: "
                                     + f"Integration {component} specific span: {span_name} should have span_type {integration_base_span_rules.span_type}"
                                 )
-                        type_span_rules = span_type_tag_rules_map.get(span["type"], None)
+                        type_span_rules = span_type_tag_rules_map.get(span_type, None)
                     else:
+                        # else if there are rules with expected span type, raise an error if actual span does not have type
                         if integration_base_span_rules and integration_base_span_rules.span_type:
                             raise AssertionError(
                                 "TYPE-ASSERTION-ERROR: "
@@ -170,10 +177,11 @@ class TraceValidator:
 
                     # Validate Span!
                     SpanTagValidator(
+                        span=span,
                         type_span_rules=type_span_rules,
                         integration_base_span_rules=integration_base_span_rules,
                         first_in_chunk_span_rules=first_in_chunk_span_rules,
-                    ).validate(span)
+                    ).validate()
 
                 except Exception as msg:
                     log_error(msg)
@@ -194,17 +202,19 @@ class TraceValidator:
                 log.info("~" * 160)
 
                 try:
-                    # if span["type"] and span["type"] not in span_type_tag_rules_map.keys():
+                    # if span_type and span_type not in span_type_tag_rules_map.keys():
                     #     raise AttributeError(
                     #         f"TYPE-ASSERTION-ERROR: Span with name {span['name']} with span_type {span['type']}" +
                     #         f"not in officially supported list of types: {str(span_type_tag_rules_map.keys())}"
                     #     )
-                    type_span_rules = span_type_tag_rules_map.get(span["type"], None)
+                    type_span_rules = span_type_tag_rules_map.get(span_type, None)
 
                     # Validate Span!
                     SpanTagValidator(
-                        type_span_rules=type_span_rules, first_in_chunk_span_rules=first_in_chunk_span_rules
-                    ).validate(span)
+                        span=span,
+                        type_span_rules=type_span_rules,
+                        first_in_chunk_span_rules=first_in_chunk_span_rules,
+                    ).validate()
 
                 except Exception as msg:
                     log_error(msg)

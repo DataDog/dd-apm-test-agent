@@ -5,8 +5,8 @@ from ..span_tag_rules import SpanTagRules
 
 general_tag_rules = SpanTagRules(
     name="General",
-    required_tags=["component", "error"],
-    optional_tags=["language", "error.msg", "error.type", "error.stack"],
+    required_tags=["component", "error", "type"],
+    optional_tags=["language"],
 )
 
 first_span_in_chunk_tag_rules = SpanTagRules(
