@@ -14,6 +14,6 @@ class SpanTagRules:
         self._tag_comparisons = matches
 
     def validate(self, span_validator):
-        span_validator.span_matching_tag_validator(self)
-        span_validator.span_required_tag_validator(self)
-        span_validator.span_optional_tag_validator(self)
+        span_validator.span_matching_tag_validator()
+        span_validator.span_required_tag_validator()
+        span_validator.span_optional_tag_validator()

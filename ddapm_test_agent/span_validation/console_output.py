@@ -1,3 +1,17 @@
+type_missing_assertion = (
+    lambda span, tag_rules: f"TYPE-ASSERTION-ERROR: Expected span: {span['name']} have 'type' tag with value: {tag_rules.type}"
+)
+type_mismatch_assertion = (
+    lambda span, tag_rules: f"TYPE-ASSERTION-ERROR: Expected span: {span['name']} actual 'type' tag: {span['type']} to equal expected 'type' tag: {tag_rules.type}"
+)
+tag_missing_assertion = (
+    lambda span, tag_rules_name, e_k, tags: f"{tag_rules_name}-ASSERTION-ERROR: Expected span: {span['name']} to have tag: '{e_k}' within meta: {tags}"
+)
+tag_mismatch_assertion = (
+    lambda span, tag_rules_name, e_k, e_v, tags: f"{tag_rules_name}-ASSERTION-ERROR: Expected span: {span['name']} with tag: '{e_k}' with value: {tags[e_k]} to equal expected value: {e_v}"
+)
+
+
 class OutputPrinter:
     def __init__(self, log):
         self._log = log
@@ -62,3 +76,30 @@ class OutputPrinter:
             "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
         )
         self._log.info("\n")
+
+    def print_asserting_on(
+        self, span_validator, matching_tags=False, required_tags=False, optional_tags=False, error=False
+    ):
+        phrase = ""
+        if matching_tags:
+            phrase = "tag comparisons"
+        if required_tags:
+            phrase = "required tags"
+        if optional_tags:
+            phrase = "optional tags"
+
+        if error:
+            self._log.info(
+                " " * 5
+                + "-" * 18
+                + f"No {phrase} to assert on with tag rules {span_validator.tag_rules.name} "
+                + "-" * (52 - len(phrase))
+            )
+        else:
+            self._log.info(
+                " " * 5
+                + "-" * 18
+                + f"Asserting on span with {span_validator.tag_rules.name} {phrase} "
+                + " "
+                + "-" * (60 - len(phrase))
+            )
