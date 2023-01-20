@@ -8,7 +8,7 @@ log = logging.getLogger(__name__)
 
 
 def check_span_validations_results():
-    path = Path("ddapm_test_agent/span_validation/validation_failures.txt")
+    path = Path("./ddapm_test_agent/span_validation/validation_failures.txt")
     with open(path, "r+") as f:
         data = f.readlines()
         lines = set([line.rstrip() for line in data])

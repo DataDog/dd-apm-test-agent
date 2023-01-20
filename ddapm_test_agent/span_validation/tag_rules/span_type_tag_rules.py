@@ -1,6 +1,23 @@
+from enum import Enum
 from typing import Dict
 
 from ..span_tag_rules import SpanTagRules
+
+
+class SpanType(Enum):
+    CACHE = "cache"
+    CASSANDRA = "cassandra"
+    ELASTICSEARCH = "elasticsearch"
+    GRPC = "grpc"
+    GRAPHQL = "graphql"
+    HTTP = "http"
+    MONGODB = "mongodb"
+    REDIS = "redis"
+    SQL = "sql"
+    TEMPLATE = "template"
+    TEST = "test"
+    WEB = "web"
+    WORKER = "worker"
 
 
 http_tag_rules = SpanTagRules(

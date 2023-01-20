@@ -3,10 +3,11 @@ from pathlib import Path
 import pprint
 
 from ..checks import CheckTrace
-from .span_validator import SpanTagValidator
+from .span_tag_validator import SpanTagValidator
 from .tag_rules.default_span_tag_rules_by_integration import default_span_tag_rules_by_integration_map
 from .tag_rules.general_span_tag_rules import general_span_tag_rules_map
 from .tag_rules.root_span_tag_rules_by_integration import root_span_tag_rules_by_integration_map
+from .tag_rules.span_type_tag_rules import span_type_tag_rules_map
 from .tag_rules.whitelist import span_whitelist
 
 
@@ -41,6 +42,11 @@ class TraceValidator:
         for i, span in enumerate(trace):
             component: str = span["meta"].get("component", "")
 
+            if i == 0:
+                first_in_chunk_span_rules = general_span_tag_rules_map["chunk"]
+            else:
+                first_in_chunk_span_rules = None
+
             if span["name"] in span_whitelist:
                 log.info("\n")
                 log.info("~" * 160)
@@ -51,20 +57,48 @@ class TraceValidator:
                 )
                 log.info("~" * 160)
                 log.info("\n")
+
             # check if span name has an associated tag rules test, ie: web.request has a specific test case
             elif span["name"] in root_span_tag_rules_by_integration_map.keys():
                 try:
-                    # component should always be defined
+
+                    # component tag should always be defined
                     if component == "":
                         raise AttributeError(
                             f"COMPONENT-ASSERTION-ERROR: Span with name {span['name']} should have a component tag!"
                         )
-                    span_name: str = span["name"]
-                    # if type == dict, multiple integrations produce this span name. Makes sure to get the right test case by component
+                    span_name = span["name"]
+
+                    # if type == dict, multiple integrations produce this span name. Get correct integration root span rules.
                     if type(root_span_tag_rules_by_integration_map[span_name]) == dict:
-                        span_rules = root_span_tag_rules_by_integration_map[span_name][component]
+                        root_span_rules = root_span_tag_rules_by_integration_map[span_name][component]
                     else:
-                        span_rules = root_span_tag_rules_by_integration_map[span_name]
+                        root_span_rules = root_span_tag_rules_by_integration_map[span_name]
+
+                    # get integration base span rules:
+                    if component in default_span_tag_rules_by_integration_map.keys():
+                        integration_span_rules = default_span_tag_rules_by_integration_map.get(component, None)
+
+                    # get span type rules if this span has a type
+                    if span["type"]:
+                        if root_span_rules.span_type:
+                            assert span["type"] == root_span_rules.span_type
+                        if integration_span_rules and integration_span_rules.span_type:
+                            assert span["type"] == root_span_rules.span_type
+                        type_span_rules = span_type_tag_rules_map[span["type"]]
+                    else:
+                        if root_span_rules.span_type:
+                            raise AssertionError(
+                                "TYPE-ASSERTION-ERROR: "
+                                + f"Integration {component} specific span: {span_name} should have span_type {root_span_rules.span_type}"
+                            )
+
+                        if integration_span_rules and integration_span_rules.span_type:
+                            raise AssertionError(
+                                "TYPE-ASSERTION-ERROR: "
+                                + f"Integration {component} specific span: {span_name} should have span_type {integration_span_rules.span_type}"
+                            )
+
                     log.info("\n")
                     log.info("~" * 160)
                     log.info(
@@ -73,11 +107,15 @@ class TraceValidator:
                         + space_indent * 2
                     )
                     log.info("~" * 160)
+
+                    # Validate span!
                     SpanTagValidator(
-                        span,
-                        span_rules,
-                        validate_first_span_in_chunk_tags=i == 0,
-                    )
+                        type_span_rules=type_span_rules,
+                        integration_base_span_rules=integration_span_rules,
+                        integration_root_span_rules=root_span_rules,
+                        first_in_chunk_span_rules=first_in_chunk_span_rules,
+                    ).validate(span)
+
                 except Exception as msg:
                     log_error(msg)
                     with CheckTrace.add_frame(span_failure_message(span, i)) as frame:
@@ -88,7 +126,7 @@ class TraceValidator:
             # check for an integration-level span tag test using component tag within span.
             # IE: All Django spans must abide by these tag rules.
             elif component != "" and component in default_span_tag_rules_by_integration_map.keys():
-                span_name = span["name"]
+
                 log.info("\n")
                 log.info("~" * 160)
                 log.info(
@@ -97,13 +135,31 @@ class TraceValidator:
                     + space_indent * 2
                 )
                 log.info("~" * 160)
+
+                span_name = span["name"]
+
                 try:
-                    span_rules = default_span_tag_rules_by_integration_map[span_name]
+                    integration_base_span_rules = default_span_tag_rules_by_integration_map[component]
+
+                    # get span type rules if this span has a type
+                    if span["type"]:
+                        if integration_base_span_rules and integration_base_span_rules.span_type:
+                            assert span["type"] == integration_base_span_rules.span_type
+                        type_span_rules = span_type_tag_rules_map[span["type"]]
+                    else:
+                        if integration_base_span_rules and integration_base_span_rules.span_type:
+                            raise AssertionError(
+                                "TYPE-ASSERTION-ERROR: "
+                                + f"Integration {component} specific span: {span_name} should have span_type {integration_base_span_rules.span_type}"
+                            )
+
+                    # Validate Span!
                     SpanTagValidator(
-                        span,
-                        span_rules,
-                        validate_first_span_in_chunk_tags=i == 0,
-                    )
+                        type_span_rules=type_span_rules,
+                        integration_base_span_rules=integration_base_span_rules,
+                        first_in_chunk_span_rules=first_in_chunk_span_rules,
+                    ).validate(span)
+
                 except Exception as msg:
                     log_error(msg)
                     with CheckTrace.add_frame(span_failure_message(span, i)) as frame:
@@ -111,7 +167,7 @@ class TraceValidator:
                         pprint.pprint(span, indent=2)
                     self.log_span_tag_validation_error_to_file(span, msg)
 
-            # Else no specific test for the span / integration. Default to basic span test
+            # Else no specific test for the span / integration. Default to basic span test, do a type test if the span has a type as well
             else:
                 log.info("\n")
                 log.info("~" * 160)
@@ -121,14 +177,17 @@ class TraceValidator:
                     + space_indent * 2
                 )
                 log.info("~" * 160)
+
                 try:
-                    span_rules = general_span_tag_rules_map["general"]
+                    if span["type"]:
+                        assert span["type"] == span_type_tag_rules_map.keys()
+                    type_span_rules = span_type_tag_rules_map.get([span["type"]], None)
+
+                    # Validate Span!
                     SpanTagValidator(
-                        span,
-                        span_rules,
-                        validate_base_tags=False,
-                        validate_first_span_in_chunk_tags=i == 0,
-                    )
+                        type_span_rules=type_span_rules, first_in_chunk_span_rules=first_in_chunk_span_rules
+                    ).validate(span)
+
                 except Exception as msg:
                     log_error(msg)
                     with CheckTrace.add_frame(span_failure_message(span, i)) as frame:
@@ -138,7 +197,7 @@ class TraceValidator:
 
     def log_span_tag_validation_error_to_file(self, span, message):
         lines = set([])
-        writepath = Path("./validation_failures.txt")
+        writepath = Path("./ddapm_test_agent/span_validation/validation_failures.txt")
         if writepath.is_file():
             with open(writepath, "r") as f:
                 data = f.readlines()
