@@ -71,7 +71,7 @@ class SpanTagValidator:
             self.span_tag_rules_list.append(first_in_chunk_span_rules)
 
         span_error = self.span.get("error", None)
-        if span_error and span_error == "1":
+        if span_error and span_error == 1:
             self.span_tag_rules_list.insert(1, ERROR_SPAN_RULES)
 
         if type_span_rules:
@@ -97,7 +97,7 @@ class SpanTagValidator:
                     self.validate_all_tags = True
 
         self.tag_rules = self.span_tag_rules_list[0]
-        self._tags = self.extract_tags({})
+        self._tags = self.extract_tags(span, {})
 
     def validate(self):
         self.console_out.print_intro_message(self)
@@ -166,10 +166,10 @@ class SpanTagValidator:
             self.console_out.print_asserting_on(self, optional_tags=True, error=True)
             return
 
-    def extract_tags(self, extracted_tags):
-        for k, v in self.span.items():
+    def extract_tags(self, span, extracted_tags):
+        for k, v in span.items():
             if isinstance(v, dict):
-                extracted_tags = self.extract_tags(extracted_tags)
+                extracted_tags = self.extract_tags(v, extracted_tags)
             elif k in IGNORED_TAGS:
                 continue
             else:
