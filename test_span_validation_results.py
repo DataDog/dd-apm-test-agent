@@ -7,7 +7,7 @@ import pytest
 log = logging.getLogger(__name__)
 
 
-def check_span_validations_results():
+def test_span_validations_results():
     path = Path("./validation_failures.txt")
     with open(path, "r+") as f:
         data = f.readlines()
@@ -18,8 +18,10 @@ def check_span_validations_results():
     if len(lines) > 0:
         for error in lines:
             log.error(error)
-        pytest.fail(pytrace=False, reason=f"{len(lines)} Span Tag Validation Errors Occurred.")
+        pytest.fail(reason=f"{len(lines)} Span Tag Validation Errors Occurred.")
+    else:
+        log.info("APM-TEST-AGENT-SPAN-VALIDATION ------------------------------> SUCCESS")
 
 
 if __name__ == "__main__":
-    check_span_validations_results()
+    test_span_validations_results()
