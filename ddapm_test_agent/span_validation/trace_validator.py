@@ -4,10 +4,10 @@ import pprint
 
 from ..checks import CheckTrace
 from .span_tag_validator import SpanTagValidator
-from .tag_rules.default_span_tag_rules_by_integration import default_span_tag_rules_by_integration_map
+from .tag_rules.integration_default_span_tag_rules import default_span_tag_rules_by_integration_map
 from .tag_rules.general_span_tag_rules import general_span_tag_rules_map
-from .tag_rules.root_span_tag_rules_by_integration import root_span_tag_rules_by_integration_map
-from .tag_rules.span_type_tag_rules import span_type_tag_rules_map
+from .tag_rules.integration_root_span_tag_rules import root_span_tag_rules_by_integration_map
+from .tag_rules.type_span_tag_rules import span_type_tag_rules_map
 from .tag_rules.whitelist import span_whitelist
 
 
