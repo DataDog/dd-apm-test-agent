@@ -144,23 +144,15 @@ def _match_traces(t1s: List[Trace], t2s: List[Trace]) -> List[Tuple[Trace, Trace
     if len(matched_t1s) != len(t1_map):
         unmatched_ids = set(t1_map.keys()) - matched_t1s
         op_names = [t1_map[tid][0]["name"] for tid in unmatched_ids]
-        raise AssertionError(
-            "Did not receive expected traces: %s"
-            % (",".join(map(lambda s: f"'{s}'", op_names)))
-        )
+        raise AssertionError("Did not receive expected traces: %s" % (",".join(map(lambda s: f"'{s}'", op_names))))
     if len(matched_t2s) != len(t2_map):
         unmatched_ids = set(t2_map.keys()) - matched_t2s
         op_names = [t2_map[tid][0]["name"] for tid in unmatched_ids]
-        raise AssertionError(
-            "Received unmatched traces: %s"
-            % (",".join(map(lambda s: f"'{s}'", op_names)))
-        )
+        raise AssertionError("Received unmatched traces: %s" % (",".join(map(lambda s: f"'{s}'", op_names))))
     return matches
 
 
-def _diff_spans(
-    s1: Span, s2: Span, ignored: Set[str]
-) -> Tuple[List[str], List[str], List[str]]:
+def _diff_spans(s1: Span, s2: Span, ignored: Set[str]) -> Tuple[List[str], List[str], List[str]]:
     """Return differing attributes between two spans and their meta/metrics maps.
 
     It is assumed that the spans have passed through preliminary validation
@@ -234,9 +226,7 @@ def _compare_traces(expected: Trace, received: Trace, ignored: Set[str]) -> None
         ) as frame:
             frame.add_item(f"Expected span:\n{pprint.pformat(s_exp)}")
             frame.add_item(f"Received span:\n{pprint.pformat(s_rec)}")
-            top_level_diffs, meta_diffs, metrics_diffs = _diff_spans(
-                s_exp, s_rec, ignored
-            )
+            top_level_diffs, meta_diffs, metrics_diffs = _diff_spans(s_exp, s_rec, ignored)
 
             for diffs, diff_type, d_exp, d_rec in [
                 (top_level_diffs, "span", s_exp, s_rec),
@@ -267,9 +257,7 @@ class SnapshotCheck(Check):
         pass
 
 
-def snapshot(
-    expected_traces: List[Trace], received_traces: List[Trace], ignored: List[str]
-) -> None:
+def snapshot(expected_traces: List[Trace], received_traces: List[Trace], ignored: List[str]) -> None:
     normed_expected = _normalize_traces(expected_traces)
     normed_received = _normalize_traces(received_traces)
     with CheckTrace.add_frame(
@@ -328,9 +316,7 @@ def _snapshot_trace_str(trace: Trace) -> str:
             else:
                 stack.insert(0, (prefix + 3, child))
 
-        s += textwrap.indent(
-            json.dumps(_ordered_span(span), indent=2), " " * (prefix + 2)
-        )
+        s += textwrap.indent(json.dumps(_ordered_span(span), indent=2), " " * (prefix + 2))
         if stack:
             s += ",\n"
     s += "]"

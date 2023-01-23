@@ -42,9 +42,7 @@ def main_session_start() -> None:
     _add_token_arg(parser)
     parsed_args = parser.parse_args(sys.argv[1:])
     url = yarl.URL(parsed_args.agent_url).with_path("/test/session/start")
-    resp = requests.get(
-        str(url), params={"test_session_token": parsed_args.test_session_token}
-    )
+    resp = requests.get(str(url), params={"test_session_token": parsed_args.test_session_token})
     if resp.status_code != 200:
         print(resp.text)
         sys.exit(1)
@@ -68,9 +66,7 @@ def main_snapshot() -> None:
         )
         sys.exit(1)
     url = yarl.URL(parsed_args.agent_url).with_path("/test/session/snapshot")
-    resp = requests.get(
-        str(url), params={"test_session_token": parsed_args.test_session_token}
-    )
+    resp = requests.get(str(url), params={"test_session_token": parsed_args.test_session_token})
     if resp.status_code != 200:
         print(resp.text)
         sys.exit(1)

@@ -6,8 +6,10 @@ known_first_party = "ddapm_test_agent"
 default_section = "THIRDPARTY"
 skip = [".riot/", ".venv/", "public_api/"]
 line_length = 120
+profile = "black"
 
 [tool.black]
+line_length = 120
 exclude = '''
 (
   /(
