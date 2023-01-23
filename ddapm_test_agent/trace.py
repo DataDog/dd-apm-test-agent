@@ -76,9 +76,7 @@ SpanAttr = Literal[
     "meta",
     "metrics",
 ]
-TopLevelSpanValue = Union[
-    None, SpanId, TraceId, int, str, Dict[str, str], Dict[str, MetricType]
-]
+TopLevelSpanValue = Union[None, SpanId, TraceId, int, str, Dict[str, str], Dict[str, MetricType]]
 Trace = List[Span]
 v04TracePayload = List[List[Span]]
 TraceMap = OrderedDict[int, Trace]
@@ -245,11 +243,7 @@ def root_span(t: Trace) -> Span:
 
     # collect root spans as those with parents that are not themselves spans in trace
     span_ids = set(s["span_id"] for s in t)
-    roots = {
-        s["parent_id"]: s
-        for s in t
-        if "parent_id" in s and s["parent_id"] not in span_ids
-    }
+    roots = {s["parent_id"]: s for s in t if "parent_id" in s and s["parent_id"] not in span_ids}
 
     if len(roots) != 1:
         raise ValueError("single root span not found in trace (n=%d): %s" % (len(t), t))
@@ -290,15 +284,9 @@ def decode_v04(content_type: str, data: bytes) -> v04TracePayload:
 def decode_v05(data: bytes) -> v04TracePayload:
     payload = msgpack.unpackb(data, strict_map_key=False)
     if not isinstance(payload, list):
-        raise TypeError(
-            "Trace payload must be an array containing two elements, got type %r."
-            % type(payload)
-        )
+        raise TypeError("Trace payload must be an array containing two elements, got type %r." % type(payload))
     if len(payload) != 2:
-        raise TypeError(
-            "Trace payload must contain two elements, got an array with %r elements."
-            % len(payload)
-        )
+        raise TypeError("Trace payload must contain two elements, got an array with %r elements." % len(payload))
 
     maybe_string_table = payload[0]
     for s in maybe_string_table:
@@ -312,14 +300,9 @@ def decode_v05(data: bytes) -> v04TracePayload:
         trace: List[Span] = []
         for v05_span in v05_trace:
             if not isinstance(v05_span, list):
-                raise TypeError(
-                    "Span data was not an array, got type %r." % type(v05_span)
-                )
+                raise TypeError("Span data was not an array, got type %r." % type(v05_span))
             if len(v05_span) != 12:
-                raise TypeError(
-                    "Span data was not an array of size 12, got array of size %r"
-                    % len(v05_span)
-                )
+                raise TypeError("Span data was not an array of size 12, got array of size %r" % len(v05_span))
 
             v05_meta = v05_span[9]
             meta: Dict[str, str] = {}
