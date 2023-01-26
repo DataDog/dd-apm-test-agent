@@ -29,7 +29,6 @@ from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
-from .span_validation.trace_validator import TraceValidator
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -41,6 +40,7 @@ from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
 from .trace_checks import CheckTraceStallAsync
+from .span_validation.trace_tag_validation_check import TraceTagValidationCheck
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 
@@ -315,14 +315,14 @@ class Agent:
                 len(traces),
             )
             for i, trace in enumerate(traces):
-                trace_validator = TraceValidator(self)
                 try:
                     log.info(
                         "Chunk %d\n%s",
                         i,
                         pprint_trace(trace, request.app["log_span_fmt"]),
                     )
-                    trace_validator.validate_trace(trace)
+                    with CheckTrace.add_frame(f"Checking Trace with {len(trace)} spans for Span Validations: "):
+                        TraceTagValidationCheck.check(trace)
                 except ValueError:
                     log.info("Chunk %d could not be displayed (might be incomplete).", i)
             log.info("end of payload %s", "-" * 40)
