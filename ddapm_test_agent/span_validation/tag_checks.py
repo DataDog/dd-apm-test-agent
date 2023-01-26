@@ -103,7 +103,7 @@ class SpanTagChecksLoader:
         ] = {}  # { <INTEGRATION_NAME>: { <SPEC_NAME> : <SPEC_INDEX_IN_FILE> } }
 
         if not self.integration_spec_path.is_dir():
-            self.fail(
+            raise FileNotFoundError(
                 f"Integration Path {self.integration_spec_path} not found! Ensure you mounted specification directory."
             )
 
@@ -120,7 +120,7 @@ class SpanTagChecksLoader:
 
                 self.integration_specs[str(spec_file.name)[:-10]] = integration_specs
 
-    def load_span_tag_check(self, path: Path, spec_index=None) -> SpanTagChecks:
+    def load_span_tag_check(self, path: Path, spec_index: int = None) -> SpanTagChecks:
         if path.is_file():
             f = open(path)
             data = json.load(f)
