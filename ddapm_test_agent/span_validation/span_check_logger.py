@@ -1,3 +1,6 @@
+from pathlib import Path
+
+
 type_missing_assertion = (
     lambda span, tag_rules: f"TYPE-ASSERTION-ERROR: Expected span: {span['name']} have 'type' tag with value: {tag_rules.type}"
 )
@@ -16,6 +19,23 @@ class ConsoleSpanCheckLogger:
     def __init__(self, log):
         self._log = log
         self.length = 120
+
+    def log_failure_message_to_file(self, message):
+        lines = set([])
+        writepath = Path("validation_failures.txt")
+        if writepath.is_file():
+            with open(writepath, "r") as f:
+                data = f.readlines()
+                lines = set([line.rstrip() for line in data])
+                self._log.info("opening")
+                lines.discard("")
+
+        lines.add(str(message))
+        with open(writepath, "w") as f:
+            for line in lines:
+                if line != "":
+                    self._log.info("writing")
+                    f.write(line + "\n")
 
     def print_intro_message(self, span_validation_check):
         self._log.info("\n")

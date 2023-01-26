@@ -17,6 +17,8 @@ logger: ConsoleSpanCheckLogger = ConsoleSpanCheckLogger(log)
 indent1 = "-" * 20
 indent2 = " " * 30
 
+TESTED_SPAN_TYPES = ["http"]  # remove later once all are added
+
 
 def unpack(data, initial={}):
     for k, v in data.items():
@@ -35,29 +37,38 @@ class TagCheck(Check):
         self.value: Any = value
         self._failed: bool = False
 
-    def check(self, span: Span) -> None:
+    def check(self, span: Span, span_check_name: str) -> None:
         flattened_span = unpack(span)
         if self.required and self.value:
             logger.log_message(
-                f" Asserting on span: {span['name']} having matching expected tag: {self.name} with value: {self.value} ",
+                f" Asserting on span '{span['name']}' having matching expected tag '{self.name}' with value: '{self.value}' ",
                 indent2,
             )
-            if flattened_span["name"] != self.value:
-                self.fail(f"Expected tag: {self.name} to be have value: {self.value} for span: {span['name']}")
+            if self.name not in flattened_span.keys():
+                message = f"REQUIRED-TAG-ERROR: Expected tag '{self.name}' to be found within span: '{span['name']}' during Check: '{span_check_name}'"
+                logger.log_failure_message_to_file(message)
+                self.fail(message)
+
+            if flattened_span[self.name] != self.value:
+                message = f"MATCHING-TAG-ERROR: Expected tag '{self.name}' to be have value: '{self.value}' for span: '{span['name']}' during Check: '{span_check_name}'"
+                logger.log_failure_message_to_file(message)
+                self.fail(message)
 
         elif self.required:
-            logger.log_message(f" Asserting on span: {span['name']} having required tag: {self.name} ", indent2)
+            logger.log_message(f" Asserting on span: '{span['name']}' having required tag: '{self.name}' ", indent2)
             if self.name not in flattened_span.keys():
-                self.fail(f"Expected tag: {self.name} to be found within span: {span['name']}")
+                message = f"REQUIRED-TAG-ERROR: Expected tag '{self.name}' to be found within span: '{span['name']}' during Check: '{span_check_name}'"
+                logger.log_failure_message_to_file(message)
+                self.fail(message)
 
         else:
             if self.name not in flattened_span.keys():
                 logger.log_message(
-                    f" Assertion on span: {span['name']} having optional tag: {self.name} found FALSE ", indent2
+                    f" Assertion on span: '{span['name']}' having optional tag: '{self.name}' --------> FALSE ", indent2
                 )
             else:
                 logger.log_message(
-                    f" Assertion on span: {span['name']} having optional tag: {self.name} found TRUE ", indent2
+                    f" Assertion on span: '{span['name']}' having optional tag: '{self.name}' --------> TRUE ", indent2
                 )
 
 
@@ -85,7 +96,7 @@ class SpanTagChecks(Check):
         with CheckTrace.add_frame(f"SpanTagChecks: {self.name}") as f:
             for tag_check in self.tag_checks:
                 f.add_check(tag_check)
-                tag_check.check(span_validator_check.span)
+                tag_check.check(span_validator_check.span, self.name)
 
                 # if f.has_fails():
                 #     self.fail(f"Span Tag Checks: {self.name} has failed for span: {span_validator_check.span['name']}.")
@@ -138,12 +149,11 @@ class SpanTagChecksLoader:
             raise FileNotFoundError(f"Specification file not found for path {path}")
 
     def find_span_tag_check(self, span: Span) -> dict[str, SpanTagChecks]:
-        component: str = span.get("component", "")
+        component: str = span.get("meta", {}).get("component", "")
         span_name: str = span.get("name")
         span_checks: dict[str, SpanTagChecks] = {}
 
         if component != "" and component in self.integration_specs.keys():
-
             if span_name in self.integration_specs[component].keys():
                 spec_index = self.integration_specs[component][span_name]
             else:
@@ -155,12 +165,15 @@ class SpanTagChecksLoader:
             if span_checks["integration_span_check"].span_type:
                 span_type = span_checks["integration_span_check"].span_type
 
-                span_checks["type_span_check"] = self.load_span_tag_check(
-                    self.general_spec_path / (span_type + "-spec.json")
-                )
+                if span_type in TESTED_SPAN_TYPES:  # remove later once all types added
+                    span_checks["type_span_check"] = self.load_span_tag_check(
+                        self.general_spec_path / (span_type + "-spec.json")
+                    )
 
         span_type = span.get("type", None)
-        if span_type and "integration_span_check" not in span_checks.keys():
+        if (
+            span_type and "integration_span_check" not in span_checks.keys() and span_type in TESTED_SPAN_TYPES
+        ):  # remove later once all types added
             span_checks["type_span_check"] = self.load_span_tag_check(
                 self.general_spec_path / (span_type + "-spec.json")
             )

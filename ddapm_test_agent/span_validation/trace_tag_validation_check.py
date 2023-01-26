@@ -54,7 +54,7 @@ class TraceTagValidationCheck(Check):
                 # log to file??
 
 
-def log_span_tag_validation_error_to_file(span, message):
+def log_span_tag_validation_error_to_file(message):
     lines = set([])
     writepath = Path("./validation_failures.txt")
     if writepath.is_file():

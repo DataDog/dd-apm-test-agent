@@ -44,6 +44,8 @@ SPAN_TYPES = set(
     ]
 )
 
+TESTED_SPAN_TYPES = ["http"]  # remove later once all are added
+
 GENERAL_SPAN_CHECK = SpanTagChecksLoader().load_span_tag_check(path=Path("./specifications/ddtrace/general-spec.json"))
 ERROR_SPAN_CHECK = SpanTagChecksLoader().load_span_tag_check(path=Path("./specifications/ddtrace/error-spec.json"))
 INTERNAL_SPAN_CHECK = SpanTagChecksLoader().load_span_tag_check(
@@ -92,7 +94,7 @@ class SpanTagValidationCheck(Check):
             # If a span doesn't have a type, validate all. If span has a type, check the type is valid and if yes, check we have check for type.
             # If we type check, validate all span tags, if we do not, do not validate all tags.
             if span_type:
-                if span_type == "" or span_type in SPAN_TYPES:
+                if span_type == "" or (span_type in SPAN_TYPES and span_type in TESTED_SPAN_TYPES):
                     self.validate_all_tags = True
 
         self.tag_check = self.span_tags_checks[0]
@@ -106,10 +108,13 @@ class SpanTagValidationCheck(Check):
 
         if len(self._tags) > 0:
             if self.validate_all_tags:
-                self.logger.warn_tags_not_asserted_on(self)
-                self.fail(
-                    f"Span Tag Validation failed for span: {self.span['name']} for Span Tag Check: {span_tags_check.name}."
+                message = (
+                    f"UNVALIDATED-TAGS-ERROR: Span Tag Validation failed for span: {self.span['name']} for Span Tag Check: {span_tags_check.name}."
+                    + str(self._tags.keys())
                 )
+                self.logger.log_failure_message_to_file(message)
+                self.logger.warn_tags_not_asserted_on(self)
+                self.fail(message)
             else:
                 self.logger.warn_tags_not_asserted_on(self)
         else:
