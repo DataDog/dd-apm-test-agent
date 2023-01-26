@@ -1,6 +1,5 @@
 import logging
 from pathlib import Path
-import pprint
 
 from ..checks import Check
 from ..checks import CheckTrace

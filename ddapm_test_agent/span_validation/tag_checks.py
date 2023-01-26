@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
+from typing import Any
 from typing import Optional
-from typing import Type
 
 from ddapm_test_agent.trace import Span
 
@@ -11,9 +11,14 @@ from ..checks import Check
 class TagCheck(Check):
     val_type: type
     required: bool
-    value: Optional[Type[val_type]]
+    value: Optional[Any]
 
-    def check(self, span: Span):
+    def __init__(self, val_type, required, value=None):
+        self.val_type = val_type
+        self.required = required
+        self.value = value
+
+    def check(self, span: Span) -> None:
         # doing assertion for tag check blah blah blah
         if self.required:
             if self.name not in span.keys():
@@ -21,7 +26,7 @@ class TagCheck(Check):
             # Verified existence of tag
             if self.value:
                 # aserting on matching tags value
-                if span[self.name] != self.value:
+                if span.get([self.name]) != self.value:
                     self.fail(f"Expected tag: {self.name} to be have value: {self.value} for span: {span['name']}")
         else:
             # print verified
@@ -54,10 +59,10 @@ class SpanTagChecks(Check):
                 tag_check.check(span_validator_check.span)
                 if self.name in span_validator_check._tags.keys():
                     del span_validator_check._tags[tag_check.name]
-        except:
+        except Exception as e:
             # failed check
             # print failed check of some sort
-            self.fail()
+            self.fail(str(e))
 
 
 class SpanTagChecksLoader:
@@ -86,7 +91,7 @@ class SpanTagChecksLoader:
 
                 self.integration_specs[spec_file[:-10]] = integration_specs
 
-    def load_span_tag_check(path: Path, spec_index: int = None) -> SpanTagChecks:
+    def load_span_tag_check(self, path: Path, spec_index: Any = None) -> SpanTagChecks:
         if path.is_file():
             f = open(path)
             data = json.load(f)
@@ -100,19 +105,22 @@ class SpanTagChecksLoader:
             tag_checks_json = data.get("specification", {}).get("tags", {})
 
             return SpanTagChecks(name=name, tags=tag_checks_json, span_type=span_type)
+        else:
+            raise FileNotFoundError(f"Specification file not found for path {path}")
 
-    def find_span_tag_check(self, span: Span):
-        component = span.get("component", None)
+    def find_span_tag_check(self, span: Span) -> dict[str, SpanTagChecks]:
+        component: str = span.get("component", "")
+        span_name: str = span.get("name")
         span_checks: dict[str, SpanTagChecks] = {}
 
         if component in self.integration_specs.keys():
 
-            if span.get["name"] in self.integration_specs[component].keys():
-                spec_index = self.integration_specs[component][span.get["name"]]
+            if span_name in self.integration_specs[component].keys():
+                spec_index = self.integration_specs[component][span_name]
             else:
                 spec_index = self.integration_specs[component][component + ".*"]
             span_checks["integration_span_check"] = self.load_span_tag_check(
-                Path(self.integration_spec_path + component + "-spec.json"), spec_index=spec_index
+                Path(str(self.integration_spec_path) + component + "-spec.json"), spec_index=spec_index
             )
 
             if span_checks["integration_span_check"].span_type:
