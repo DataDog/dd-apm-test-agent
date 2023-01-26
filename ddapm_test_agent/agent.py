@@ -321,8 +321,12 @@ class Agent:
                         i,
                         pprint_trace(trace, request.app["log_span_fmt"]),
                     )
-                    with CheckTrace.add_frame(f"Checking Trace with {len(trace)} spans for Span Validations: "):
-                        TraceTagValidationCheck.check(trace)
+                    with CheckTrace.add_frame(f"Performing Span Validation for trace with {len(trace)} spans"):
+                        # Register the check with the current trace
+                        check = TraceTagValidationCheck()
+                        CheckTrace.add_check(check)
+                        check.check(trace)
+
                 except ValueError:
                     log.info("Chunk %d could not be displayed (might be incomplete).", i)
             log.info("end of payload %s", "-" * 40)

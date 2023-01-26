@@ -1,6 +1,9 @@
 import logging
+from pathlib import Path
 
 from ..checks import Check
+from ..checks import CheckTrace
+from .span_check_logger import ConsoleSpanCheckLogger
 from .tag_checks import SpanTagChecks
 from .tag_checks import SpanTagChecksLoader
 
@@ -41,9 +44,15 @@ SPAN_TYPES = set(
     ]
 )
 
-GENERAL_SPAN_CHECK = SpanTagChecksLoader.load_span_tag_check("./specifications/ddtrace/general-spec.json")
-ERROR_SPAN_CHECK = SpanTagChecksLoader.load_span_tag_check("./specifications/ddtrace/error-spec.json")
-INTERNAL_SPAN_CHECK = SpanTagChecksLoader.load_span_tag_check("./specifications/ddtrace/internal-spec.json")
+GENERAL_SPAN_CHECK = SpanTagChecksLoader().load_span_tag_check(path=Path("./specifications/ddtrace/general-spec.json"))
+ERROR_SPAN_CHECK = SpanTagChecksLoader().load_span_tag_check(path=Path("./specifications/ddtrace/error-spec.json"))
+INTERNAL_SPAN_CHECK = SpanTagChecksLoader().load_span_tag_check(
+    path=Path("./specifications/ddtrace/internal-spec.json")
+)
+
+
+def span_failure_message(check):
+    return f"Span Validation Failure for span '{check.span['name']}'"
 
 
 class SpanTagValidationCheck(Check):
@@ -55,6 +64,8 @@ class SpanTagValidationCheck(Check):
         first_in_chunk_span_check=None,
     ):
         self.span = span
+        self.logger: ConsoleSpanCheckLogger = ConsoleSpanCheckLogger(log)
+        self._failed: bool = False
 
         # Set some basic attributes
         self.validate_all_tags = False
@@ -88,22 +99,21 @@ class SpanTagValidationCheck(Check):
         self._tags = self.extract_tags(span, {})
 
     def check(self):
+        self.logger.print_intro_message(self)
         for span_tags_check in self.span_tags_checks:
+            CheckTrace.add_check(span_tags_check)
             span_tags_check.check(self)
 
-        if self.validate_all_tags:
-            if len(self._tags) > 0:
+        if len(self._tags) > 0:
+            if self.validate_all_tags:
+                self.logger.warn_tags_not_asserted_on(self)
                 self.fail(
-                    f"Span validation failed for span: {self.span['name']} with rules: {self.main_tags_check.name}."
+                    f"Span Tag Validation failed for span: {self.span['name']} for Span Tag Check: {span_tags_check.name}."
                 )
+            else:
+                self.logger.warn_tags_not_asserted_on(self)
         else:
-            # warn about not asserting on all tags
-            return
-
-            # except AssertionError as e:
-            #     self.console_out.print_result(self)
-        #         raise AssertionError(e)
-        # self.console_out.print_result(self)
+            self.logger.print_validation_success(self)
 
     def extract_tags(self, span, extracted_tags):
         for k, v in span.items():
