@@ -2,6 +2,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Any
+from typing import Dict
 
 from ddapm_test_agent.trace import Span
 
@@ -109,8 +110,8 @@ class SpanTagChecksLoader:
     def __init__(self):
         self.integration_spec_path: Path = Path("./specifications/integration/")
         self.general_spec_path: Path = Path("./specifications/ddtrace/")
-        self.integration_specs: dict[
-            str, dict[str, int]
+        self.integration_specs: Dict[
+            str, Dict[str, int]
         ] = {}  # { <INTEGRATION_NAME>: { <SPEC_NAME> : <SPEC_INDEX_IN_FILE> } }
 
         if not self.integration_spec_path.is_dir():
@@ -148,10 +149,10 @@ class SpanTagChecksLoader:
         else:
             raise FileNotFoundError(f"Specification file not found for path {path}")
 
-    def find_span_tag_check(self, span: Span) -> dict[str, SpanTagChecks]:
+    def find_span_tag_check(self, span: Span) -> Dict[str, SpanTagChecks]:
         component: str = span.get("meta", {}).get("component", "")
         span_name: str = span.get("name")
-        span_checks: dict[str, SpanTagChecks] = {}
+        span_checks: Dict[str, SpanTagChecks] = {}
 
         if component != "" and component in self.integration_specs.keys():
             if span_name in self.integration_specs[component].keys():

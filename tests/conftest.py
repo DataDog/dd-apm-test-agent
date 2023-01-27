@@ -108,13 +108,18 @@ def v04_reference_http_trace_payload_data_raw() -> List[Trace]:
                     "type": "http",
                     "start": 1342343123,
                     "duration": 123214,
+                    "error": 0,
                     "meta": {
+                        "component": "",
                         "http.url": "http://localhost:8080/users",
                         "http.method": "GET",
                         "http.status_code": "200",
                         "http.status_msg": "OK",
+                        "language": "python",
+                        "runtime-id": "2d377516ca12429aaf072f037ed2e4cc",
                     },
                     "metrics": {
+                        "process_id": 111,
                         "sampling_priority_v1": 1.0,
                     },
                 }
