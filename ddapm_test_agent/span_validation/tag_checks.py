@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 from typing import Dict
@@ -17,6 +18,8 @@ logger: ConsoleSpanCheckLogger = ConsoleSpanCheckLogger(log)
 
 indent1 = "-" * 20
 indent2 = " " * 30
+
+LANGUAGE = os.environ.get("TRACE_LANGUAGE", "default")
 
 TESTED_SPAN_TYPES = ["http"]  # remove later once all are added
 
@@ -109,7 +112,7 @@ class SpanTagChecks(Check):
 class SpanTagChecksLoader:
     def __init__(self):
         self.integration_spec_path: Path = Path("./specifications/integration/")
-        self.general_spec_path: Path = Path("./specifications/ddtrace/")
+        self.general_spec_path: Path = Path(f"./specifications/ddtrace/{LANGUAGE}/")
         self.integration_specs: Dict[
             str, Dict[str, int]
         ] = {}  # { <INTEGRATION_NAME>: { <SPEC_NAME> : <SPEC_INDEX_IN_FILE> } }

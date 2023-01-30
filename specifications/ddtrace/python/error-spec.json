@@ -1,0 +1,19 @@
+{
+    "name": "error",
+    "specification": {
+        "tags": {
+            "error.message": {
+                "type": "str",
+                "required": false
+            },
+            "error.stack": {
+                "type": "int",
+                "required": false
+            },
+            "error.type": {
+                "type": "str",
+                "required": false
+            }
+        }
+    }
+}

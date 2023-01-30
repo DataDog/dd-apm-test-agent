@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 from ..checks import Check
@@ -46,10 +47,16 @@ SPAN_TYPES = set(
 
 TESTED_SPAN_TYPES = ["http"]  # remove later once all are added
 
-GENERAL_SPAN_CHECK = SpanTagChecksLoader().load_span_tag_check(path=Path("./specifications/ddtrace/general-spec.json"))
-ERROR_SPAN_CHECK = SpanTagChecksLoader().load_span_tag_check(path=Path("./specifications/ddtrace/error-spec.json"))
+LANGUAGE = os.environ.get("TRACE_LANGUAGE", "default")
+
+GENERAL_SPAN_CHECK = SpanTagChecksLoader().load_span_tag_check(
+    path=Path(f"./specifications/ddtrace/{LANGUAGE}/general-spec.json")
+)
+ERROR_SPAN_CHECK = SpanTagChecksLoader().load_span_tag_check(
+    path=Path(f"./specifications/ddtrace/{LANGUAGE}/error-spec.json")
+)
 INTERNAL_SPAN_CHECK = SpanTagChecksLoader().load_span_tag_check(
-    path=Path("./specifications/ddtrace/internal-spec.json")
+    path=Path(f"./specifications/ddtrace/{LANGUAGE}/internal-spec.json")
 )
 
 

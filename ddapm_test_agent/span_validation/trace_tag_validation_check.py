@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 import pprint
 
@@ -12,9 +13,10 @@ from .whitelist import span_whitelist
 
 log = logging.getLogger(__name__)
 
+LANGUAGE = os.environ.get("TRACE_LANGUAGE", "default")
 
 FIRST_SPAN_IN_CHUNK_CHECK = SpanTagChecksLoader().load_span_tag_check(
-    path=Path("./specifications/ddtrace/root-span-in-chunk-spec.json")
+    path=Path(f"./specifications/ddtrace/{LANGUAGE}/root-span-in-chunk-spec.json")
 )
 
 
