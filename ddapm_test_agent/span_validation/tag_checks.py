@@ -141,7 +141,7 @@ class SpanTagChecksLoader:
             data = json.load(f)
 
             # if we have an index for a spec, there are a list of specs in the file and we need to get correct one
-            if spec_index:
+            if spec_index is not None:
                 data = data[spec_index]
 
             name = data.get("name")
