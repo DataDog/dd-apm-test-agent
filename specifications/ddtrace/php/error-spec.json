@@ -7,7 +7,7 @@
                 "required": false
             },
             "error.stack": {
-                "type": "int",
+                "type": "str",
                 "required": false
             },
             "error.type": {

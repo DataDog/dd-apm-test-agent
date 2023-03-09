@@ -49,15 +49,7 @@ TESTED_SPAN_TYPES = ["http"]  # remove later once all are added
 
 LANGUAGE = os.environ.get("TRACE_LANGUAGE", "default")
 
-GENERAL_SPAN_CHECK = SpanTagChecksLoader().load_span_tag_check(
-    path=Path(f"./specifications/ddtrace/{LANGUAGE}/general-spec.json")
-)
-ERROR_SPAN_CHECK = SpanTagChecksLoader().load_span_tag_check(
-    path=Path(f"./specifications/ddtrace/{LANGUAGE}/error-spec.json")
-)
-INTERNAL_SPAN_CHECK = SpanTagChecksLoader().load_span_tag_check(
-    path=Path(f"./specifications/ddtrace/{LANGUAGE}/internal-spec.json")
-)
+span_tag_check_loader = SpanTagChecksLoader()
 
 
 def span_failure_message(check):
@@ -73,13 +65,27 @@ class SpanTagValidationCheck(Check):
         first_in_chunk_span_check=None,
     ):
         self.span = span
+        self.language = span.get("language", LANGUAGE)
         self.logger: ConsoleSpanCheckLogger = ConsoleSpanCheckLogger(log)
         self._failed: bool = False
+
+        GENERAL_SPAN_CHECK = span_tag_check_loader.load_span_tag_check(
+            path=Path(f"./specifications/ddtrace/{self.language}/general-spec.json")
+        )
+        ERROR_SPAN_CHECK = span_tag_check_loader.load_span_tag_check(
+            path=Path(f"./specifications/ddtrace/{self.language}/error-spec.json")
+        )
+        INTERNAL_SPAN_CHECK = span_tag_check_loader.load_span_tag_check(
+            path=Path(f"./specifications/ddtrace/{self.language}/internal-spec.json")
+        )
 
         # Set some basic attributes
         self.validate_all_tags = False
         self.main_tags_check = GENERAL_SPAN_CHECK
-        self.span_tags_checks: list[SpanTagChecks] = [GENERAL_SPAN_CHECK, INTERNAL_SPAN_CHECK]
+        self.span_tags_checks: list[SpanTagChecks] = [
+            GENERAL_SPAN_CHECK,
+            INTERNAL_SPAN_CHECK,
+        ]
 
         if first_in_chunk_span_check:
             self.span_tags_checks.append(first_in_chunk_span_check)

@@ -1,0 +1,11 @@
+{
+    "name": "1st span in chunk",
+    "specification": {
+        "tags": {
+            "process_id": {
+                "type": "float",
+                "required": true
+            }
+        }
+    }
+}

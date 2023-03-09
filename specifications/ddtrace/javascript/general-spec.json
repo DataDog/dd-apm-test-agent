@@ -1,0 +1,27 @@
+{
+    "name": "general",
+    "specification": {
+        "tags": {
+            "component": {
+                "type": "str",
+                "required": true
+            },
+            "error": {
+                "type": "int",
+                "required": true
+            },
+            "type": {
+                "type": "str",
+                "required": true
+            },
+            "language": {
+                "type": "str",
+                "required": true
+            },
+            "runtime-id": {
+                "type": "str",
+                "required": true
+            }
+        }
+    }
+}

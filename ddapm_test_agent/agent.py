@@ -341,16 +341,55 @@ class Agent:
         agent_url = request.app["agent_url"]
         if agent_url:
             log.info("Forwarding request to agent at %r", agent_url)
-            async with ClientSession() as session:
-                async with session.post(
-                    f"{agent_url}/v0.4/traces",
-                    headers=request.headers,
-                    data=self._request_data(request),
-                ) as resp:
-                    assert resp.status == 200
-                    data = await resp.json()
-                    log.info("Got response %r from agent", data)
-                    return web.json_response(data=data)
+            data = self._request_data(request)
+            try:
+                async with ClientSession() as session:
+                    async with session.put(
+                        f"{agent_url}/v0.4/traces",
+                        headers=request.headers,
+                        data=data,
+                    ) as resp:
+                        assert resp.status == 200
+                        data = await resp.json()
+                        log.info("Got response %r from agent", data)
+                        return web.json_response(data=data)
+            except Exception as e:
+                log.info(e)
+                log.info(data)
+                log.info(request.headers)
+                log.info(request)
+        # agent_url = "http://request-replayer"
+        # agent_port = 80
+        # if agent_url:
+        #     log.info(f"Forwarding request to agent at {agent_url}:{agent_port}")
+
+        #     if agent_url == "http://request-replayer":
+        #         data = self._request_data(request)
+        #         log.info(data)
+        #         resp = requests.post(
+        #             url=f"{agent_url}:{agent_port}/v0.4/traces",
+        #             data=data,
+        #             headers={"Content-Type": "application/msgpack"},
+        #         )
+        #         assert resp.status_code == 200
+        #         data = resp.content
+        #         log.info("Got response %r from agent", data)
+        #         if version == "v0.4":
+        #             data = self._decode_v04_traces(resp)
+        #         elif version == "v0.5":
+        #             data = self._decode_v05_traces(resp)
+        #         return web.json_response(data=json.loads(data))
+
+        # else:
+        #     headers=request.headers
+        #     data=self._request_data(request)
+
+        # # async with ClientSession() as session:
+        # #     async with session.post(
+        # #         f"{agent_url}:{agent_port}/v0.4/traces",
+        # #         headers=headers,
+        # #         data=data,
+        # #     ) as resp:
 
         # TODO: implement sampling logic
         return web.json_response(data={"rate_by_service": {}})
@@ -560,6 +599,13 @@ class Agent:
         # wait 1s, gather traces and assert tags
         raise NotImplementedError
 
+    async def handle_update_agent_port(self, request: Request) -> web.Response:
+        log.info(request)
+        port = request.query.get("agent_port")
+        print(request.query)
+        request.app["agent_url"] = f"http://127.0.0.1:{port}"
+        return web.HTTPOk()
+
 
 def make_app(
     disabled_checks: List[str],
@@ -593,6 +639,7 @@ def make_app(
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/snapshot", agent.handle_snapshot),
             web.get("/test/session/traces", agent.handle_session_traces),
+            web.get("/test/session/agent_port", agent.handle_update_agent_port),
             web.get("/test/session/apmtelemetry", agent.handle_session_apmtelemetry),
             web.get("/test/session/stats", agent.handle_session_tracestats),
             web.get("/test/session/requests", agent.handle_session_requests),
