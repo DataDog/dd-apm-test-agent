@@ -51,6 +51,9 @@ _Handler = Callable[[Request], Awaitable[web.Response]]
 log = logging.getLogger(__name__)
 
 
+AGENT_PROXY_HOST = os.environ.get("PROXY_HOST", "127.0.0.1")
+
+
 def _parse_csv(s: str) -> List[str]:
     """Return the values of a csv string.
 
@@ -603,7 +606,7 @@ class Agent:
         log.info(request)
         port = request.query.get("agent_port")
         print(request.query)
-        request.app["agent_url"] = f"http://127.0.0.1:{port}"
+        request.app["agent_url"] = f"http://{AGENT_PROXY_HOST}:{port}"
         return web.HTTPOk()
 
 
