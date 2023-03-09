@@ -21,6 +21,10 @@
             "runtime-id": {
                 "type": "str",
                 "required": true
+            },
+            "process_id": {
+                "type": "float",
+                "required": true
             }
         }
     }
