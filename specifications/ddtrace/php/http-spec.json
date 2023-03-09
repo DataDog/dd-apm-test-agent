@@ -11,7 +11,7 @@
                 "required": true
             },
             "http.status_code": {
-                "type": "int",
+                "type": "str",
                 "required": true
             },
             "http.useragent": {
@@ -31,7 +31,7 @@
                 "required": false
             },
             "http.status_msg": {
-                "type": "int",
+                "type": "str",
                 "required": false
             }
         }

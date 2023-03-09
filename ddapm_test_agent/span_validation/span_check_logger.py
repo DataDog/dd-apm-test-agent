@@ -27,14 +27,12 @@ class ConsoleSpanCheckLogger:
             with open(writepath, "r") as f:
                 data = f.readlines()
                 lines = set([line.rstrip() for line in data])
-                self._log.info("opening")
                 lines.discard("")
 
         lines.add(str(message))
         with open(writepath, "w") as f:
             for line in lines:
                 if line != "":
-                    self._log.info("writing")
                     f.write(line + "\n")
 
     def print_intro_message(self, span_validation_check):

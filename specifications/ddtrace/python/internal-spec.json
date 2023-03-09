@@ -14,10 +14,10 @@
                 "type": "float",
                 "required": false
             },"_dd.top_level": {
-                "type": "float",
+                "type": "int",
                 "required": false
             },"_sampling_priority_v1": {
-                "type": "float",
+                "type": "int",
                 "required": false
             },"_dd.tracer_kr": {
                 "type": "float",
