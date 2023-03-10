@@ -50,6 +50,17 @@ SPAN_REQUIRED_ATTRS = [
 MetricType = Union[int, float]
 
 
+def convert_numbers_to_ints(obj):
+    if isinstance(obj, (int, float)):
+        return int(obj)
+    elif isinstance(obj, dict):
+        return {k: convert_numbers_to_ints(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [convert_numbers_to_ints(elem) for elem in obj]
+    else:
+        return obj
+
+
 class Span(TypedDict):
     name: str
     span_id: SpanId
@@ -127,6 +138,7 @@ def v04_verify_trace(maybe_trace: Any) -> Trace:
     if not isinstance(maybe_trace, list):
         raise TypeError("Trace must be a list.")
     for maybe_span in maybe_trace:
+        maybe_span = convert_numbers_to_ints(maybe_span)
         verify_span(maybe_span)
     return cast(Trace, maybe_trace)
 
