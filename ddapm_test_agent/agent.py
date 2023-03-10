@@ -346,10 +346,14 @@ class Agent:
             log.info("Forwarding request to agent at %r", agent_url)
             data = self._request_data(request)
             try:
+                headers = {
+                    "Content-Type": "application/msgpack",
+                    **{k: v for k, v in request.headers.items() if "Datadog" in k},
+                }
                 async with ClientSession() as session:
                     async with session.put(
                         f"{agent_url}/v0.4/traces",
-                        #headers=request.headers,
+                        headers=headers,
                         data=data,
                     ) as resp:
                         assert resp.status == 200
@@ -367,7 +371,7 @@ class Agent:
             except Exception as e:
                 log.info(e)
                 log.info(data)
-                log.info(request.headers)
+                log.info(headers)
                 log.info(request)
         # agent_url = "http://request-replayer"
         # agent_port = 80
