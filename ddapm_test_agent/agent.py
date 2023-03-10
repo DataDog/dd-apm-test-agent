@@ -349,7 +349,7 @@ class Agent:
                 async with ClientSession() as session:
                     async with session.put(
                         f"{agent_url}/v0.4/traces",
-                        headers=request.headers,
+                        #headers=request.headers,
                         data=data,
                     ) as resp:
                         assert resp.status == 200
