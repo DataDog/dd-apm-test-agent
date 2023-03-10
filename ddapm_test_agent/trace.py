@@ -1,5 +1,6 @@
 """Tracing specific functions and types"""
 import json
+import logging
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -15,6 +16,8 @@ from typing import cast
 import msgpack
 from typing_extensions import NotRequired
 from typing_extensions import TypedDict
+
+log = logging.getLogger(__name__)
 
 
 SpanId = int
@@ -115,6 +118,8 @@ def verify_span(d: Any) -> Span:
                 assert isinstance(v, (int, float))
         return cast(Span, d)
     except AssertionError as e:
+        log.info(d)
+        log.info(e)
         raise TypeError(*e.args) from e
 
 
