@@ -53,6 +53,7 @@ class TagCheck(Check):
 
     def check(self, span: Span, span_check_name: str) -> None:
         flattened_span = unpack(span)
+        log.info(flattened_span)
         if self.required and self.value:
             logger.log_message(
                 f" Asserting on span '{span['name']}' having matching expected tag '{self.name}' with value: '{self.value}' ",
