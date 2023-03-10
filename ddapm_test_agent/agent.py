@@ -303,6 +303,11 @@ class Agent:
 
         await checks.check("trace_stall", headers=dict(request.headers), request=request)
 
+        proxy_to_agent = True
+        if "do_not_proxy_to_agent" in request.headers:
+            request.headers.pop("do_not_proxy_to_agent")
+            proxy_to_agent = False
+
         with CheckTrace.add_frame("headers") as f:
             f.add_item(pprint.pformat(dict(request.headers)))
             await checks.check("meta_tracer_version_header", headers=dict(request.headers))
@@ -342,7 +347,7 @@ class Agent:
                 )
 
         agent_url = request.app["agent_url"]
-        if agent_url:
+        if agent_url and proxy_to_agent:
             log.info("Forwarding request to agent at %r", agent_url)
             data = self._request_data(request)
             try:
