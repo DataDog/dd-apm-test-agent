@@ -11,7 +11,7 @@
                 "required": false
             },
             "process_id": {
-                "type": "int",
+                "type": "float",
                 "required": true
             }
         }
