@@ -4,6 +4,7 @@ import base64
 from collections import OrderedDict
 import json
 import logging
+from multidict import CIMultiDict
 import os
 import pprint
 import socket
@@ -305,13 +306,14 @@ class Agent:
 
         proxy_to_agent = True
         if "do_not_proxy_to_agent" in request.headers:
-            request.headers.pop("do_not_proxy_to_agent")
+            headers = CIMultiDict(request.headers)
+            headers.pop("do_not_proxy_to_agent")
             proxy_to_agent = False
 
         with CheckTrace.add_frame("headers") as f:
-            f.add_item(pprint.pformat(dict(request.headers)))
-            await checks.check("meta_tracer_version_header", headers=dict(request.headers))
-            await checks.check("trace_content_length", headers=dict(request.headers))
+            f.add_item(pprint.pformat(dict(headers)))
+            await checks.check("meta_tracer_version_header", headers=dict(headers))
+            await checks.check("trace_content_length", headers=dict(headers))
 
             if version == "v0.4":
                 traces = self._decode_v04_traces(request)
@@ -342,7 +344,7 @@ class Agent:
             with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
                 await checks.check(
                     "trace_count_header",
-                    headers=dict(request.headers),
+                    headers=dict(headers),
                     num_traces=len(traces),
                 )
 
@@ -353,7 +355,7 @@ class Agent:
             try:
                 headers = {
                     'Content-Type': 'application/msgpack',
-                    **{ k: v for k, v in request.headers.items() if "Datadog" in k}
+                    **{ k: v for k, v in headers.items() if "Datadog" in k}
                 }
                 async with ClientSession() as session:
                     async with session.put(
