@@ -347,8 +347,8 @@ class Agent:
             data = self._request_data(request)
             try:
                 headers = {
-                    "Content-Type": "application/msgpack",
-                    **{k: v for k, v in request.headers.items() if "Datadog" in k},
+                    'Content-Type': 'application/msgpack',
+                    **{ k: v for k, v in request.headers.items() if "Datadog" in k}
                 }
                 async with ClientSession() as session:
                     async with session.put(
