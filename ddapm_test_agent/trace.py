@@ -54,7 +54,7 @@ def convert_numbers(data):
     if isinstance(data, list):
         return [convert_numbers(item) for item in data]
     elif isinstance(data, dict):
-        return {key: convert_numbers(value) for key, value in data.items()}
+        return {key: convert_numbers(value) for key, value in data.items() if key != "meta"}
     elif isinstance(data, str) and data.isnumeric():
         return int(data)
     elif isinstance(data, str) and "." in data and all(part.isnumeric() for part in data.split(".", 1)):
