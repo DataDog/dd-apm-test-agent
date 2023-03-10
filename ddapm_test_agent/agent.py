@@ -353,8 +353,11 @@ class Agent:
                         data=data,
                     ) as resp:
                         assert resp.status == 200
-                        data = await resp.json()
-                        log.info("Got response %r from agent", data)
+                        if "text/html" in resp.content_type:
+                            data = await resp.read()
+                        else:
+                            data = await resp.json()
+                        log.info("Got response %r from agent:", data)
                         return web.json_response(data=data)
             except Exception as e:
                 log.info(e)
