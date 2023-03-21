@@ -326,7 +326,7 @@ docker build --tag testagent .
 Run the tagged image:
 
 ```bash
-docker run --rm -v ${PWD}/snaps:/snapshots --publish 8126:8126 agent
+docker run --rm -v ${PWD}/snaps:/snapshots --publish 8126:8126 testagent
 ```
 
 

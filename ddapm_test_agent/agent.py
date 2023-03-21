@@ -2,6 +2,8 @@ import argparse
 import atexit
 import base64
 from collections import OrderedDict
+import datetime
+import hashlib
 import json
 import logging
 import os
@@ -29,6 +31,7 @@ from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
+from .responses import ResponsesMixin
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -107,7 +110,7 @@ async def session_token_middleware(request: Request, handler: _Handler) -> web.R
     return await handler(request)
 
 
-class Agent:
+class Agent(ResponsesMixin):
     def __init__(self):
         """Only store the requests sent to the agent. There are many representations
         of data but typically information is lost while transforming the data.
@@ -269,6 +272,34 @@ class Agent:
         )
         return web.HTTPOk()
 
+    async def handle_v07_remoteconfig(self, request: Request) -> web.Response:
+        """Emulates Remote Config endpoint: /v0.7/config"""
+        await self._store_request(request)
+        data = await self.get_config_response()
+        return web.json_response(data)
+
+    async def handle_v07_remoteconfig_create(self, request: Request) -> web.Response:
+        """Configure the response payload of /v0.7/config. """
+        raw_data = await request.read()
+        self.create_config_response(json.loads(raw_data))
+        return web.HTTPAccepted()
+
+    async def handle_v07_remoteconfig_path_create(self, request: Request) -> web.Response:
+        """Remote Config payloads are quite complex. This endpoints builds a remote config payload with a target
+        file path and the content of it (msg)"""
+        raw_data = await request.read()
+        content = json.loads(raw_data)
+        path = content["path"]
+        msg = content["msg"]
+        self.create_config_path_response(path, msg)
+        return web.HTTPAccepted()
+
+    async def handle_v07_remoteconfig_put(self, request: Request) -> web.Response:
+        """Configure the response payload of /v0.7/config"""
+        raw_data = await request.read()
+        self.update_config_response(json.loads(raw_data))
+        return web.HTTPAccepted()
+
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
         await self._store_request(request)
         v2_apmtelemetry_decode(self._request_data(request))
@@ -285,6 +316,7 @@ class Agent:
                     "/v0.5/traces",
                     "/v0.6/stats",
                     "/telemetry/proxy/",
+                    "/v0.7/config",
                 ],
                 "feature_flags": [],
                 "config": {},
@@ -579,6 +611,7 @@ def make_app(
             web.put("/v0.5/traces", agent.handle_v05_traces),
             web.post("/v0.6/stats", agent.handle_v06_tracestats),
             web.put("/v0.6/stats", agent.handle_v06_tracestats),
+            web.post("/v0.7/config", agent.handle_v07_remoteconfig),
             web.post("/telemetry/proxy/api/v2/apmtelemetry", agent.handle_v2_apmtelemetry),
             web.post("/profiling/v1/input", agent.handle_v1_profiling),
             web.get("/info", agent.handle_info),
@@ -589,6 +622,9 @@ def make_app(
             web.get("/test/session/apmtelemetry", agent.handle_session_apmtelemetry),
             web.get("/test/session/stats", agent.handle_session_tracestats),
             web.get("/test/session/requests", agent.handle_session_requests),
+            web.post("/test/session/responses/config", agent.handle_v07_remoteconfig_create),
+            web.post("/test/session/responses/config/path", agent.handle_v07_remoteconfig_path_create),
+            web.put("/test/session/responses/config", agent.handle_v07_remoteconfig_put),
             web.get("/test/traces", agent.handle_test_traces),
             web.get("/test/apmtelemetry", agent.handle_test_apmtelemetry),
             # web.get("/test/benchmark", agent.handle_test_traces),
