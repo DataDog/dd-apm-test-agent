@@ -283,8 +283,10 @@ class Agent(ResponsesMixin):
         return web.HTTPAccepted()
 
     async def handle_v07_remoteconfig_path_create(self, request: Request) -> web.Response:
-        """Remote Config payloads are quite complex. This endpoints builds a remote config payload with a target
-        file path and the content of it (msg)"""
+        """
+        Remote Config payloads are quite complex. This endpoints builds a remote config payload with a target
+        file path and the content of it (msg)
+        """
         raw_data = await request.read()
         content = json.loads(raw_data)
         path = content["path"]
