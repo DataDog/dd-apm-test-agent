@@ -2,8 +2,6 @@ import argparse
 import atexit
 import base64
 from collections import OrderedDict
-import datetime
-import hashlib
 import json
 import logging
 import os
