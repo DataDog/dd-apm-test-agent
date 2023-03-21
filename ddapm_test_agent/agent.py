@@ -279,7 +279,7 @@ class Agent(ResponsesMixin):
         return web.json_response(data)
 
     async def handle_v07_remoteconfig_create(self, request: Request) -> web.Response:
-        """Configure the response payload of /v0.7/config. """
+        """Configure the response payload of /v0.7/config."""
         raw_data = await request.read()
         self.create_config_response(json.loads(raw_data))
         return web.HTTPAccepted()
