@@ -291,7 +291,7 @@ curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"root
 ```
 
 ## /test/session/responses/config/path (POST)
-Due to Remote Config payload is quite complicated, this endpoint works like `/test/session/responses/config (POST)` 
+Due to Remote Config payload being quite complicated, this endpoint works like `/test/session/responses/config (POST)` 
 but you should send a path and a message and this endpoint builds the Remote Config payload.
 
 The keys of the JSON body are `path` and `msg`
