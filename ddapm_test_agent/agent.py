@@ -29,7 +29,7 @@ from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
-from .responses import ResponsesMixin
+from .remoteconfig import RemoteConfigServer
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -108,7 +108,7 @@ async def session_token_middleware(request: Request, handler: _Handler) -> web.R
     return await handler(request)
 
 
-class Agent(ResponsesMixin):
+class Agent:
     def __init__(self):
         """Only store the requests sent to the agent. There are many representations
         of data but typically information is lost while transforming the data.
@@ -118,6 +118,7 @@ class Agent(ResponsesMixin):
         """
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
+        self._rc_server = RemoteConfigServer()
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -273,13 +274,13 @@ class Agent(ResponsesMixin):
     async def handle_v07_remoteconfig(self, request: Request) -> web.Response:
         """Emulates Remote Config endpoint: /v0.7/config"""
         await self._store_request(request)
-        data = await self.get_config_response()
+        data = await self._rc_server.get_config_response()
         return web.json_response(data)
 
     async def handle_v07_remoteconfig_create(self, request: Request) -> web.Response:
         """Configure the response payload of /v0.7/config."""
         raw_data = await request.read()
-        self.create_config_response(json.loads(raw_data))
+        self._rc_server.create_config_response(json.loads(raw_data))
         return web.HTTPAccepted()
 
     async def handle_v07_remoteconfig_path_create(self, request: Request) -> web.Response:
@@ -291,13 +292,13 @@ class Agent(ResponsesMixin):
         content = json.loads(raw_data)
         path = content["path"]
         msg = content["msg"]
-        self.create_config_path_response(path, msg)
+        self._rc_server.create_config_path_response(path, msg)
         return web.HTTPAccepted()
 
     async def handle_v07_remoteconfig_put(self, request: Request) -> web.Response:
         """Configure the response payload of /v0.7/config"""
         raw_data = await request.read()
-        self.update_config_response(json.loads(raw_data))
+        self._rc_server.update_config_response(json.loads(raw_data))
         return web.HTTPAccepted()
 
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:

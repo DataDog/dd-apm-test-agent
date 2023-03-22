@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from ddapm_test_agent.responses import ResponsesMixin
+from ddapm_test_agent.remoteconfig import RemoteConfigServer
 
 
 @pytest.fixture
@@ -127,4 +127,4 @@ async def test_remoteconfig_create_path_payload(
     resp = await rc_agent.post("/v0.7/config")
     content = await resp.text()
     assert resp.status == 200
-    assert json.loads(content) == ResponsesMixin._build_config_path_response(data["path"], data["msg"])
+    assert json.loads(content) == RemoteConfigServer._build_config_path_response(data["path"], data["msg"])

@@ -6,7 +6,7 @@ from typing import Any
 from typing import Dict
 
 
-class ResponsesMixin:
+class RemoteConfigServer:
     _responses: Dict[str, Any] = {}
 
     def _update_response(self, endpoint_key: str, data: Dict[str, Any]) -> None:

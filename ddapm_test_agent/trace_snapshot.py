@@ -134,7 +134,7 @@ def _match_traces(t1s: List[Trace], t2s: List[Trace]) -> List[Tuple[Trace, Trace
     matched_t1s = set()
     matched_t2s = set()
     matches: List[Tuple[Trace, Trace]] = []
-    for t1_trace_id, t2_trace_id, score in similarities:
+    for (t1_trace_id, t2_trace_id, score) in similarities:
         if (t1_trace_id in matched_t1s) or (t2_trace_id in matched_t2s):
             continue
         matches.append((t1_map[t1_trace_id], t2_map[t2_trace_id]))
