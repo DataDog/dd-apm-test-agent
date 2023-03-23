@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Fix case sensitive headers for trace checks.
