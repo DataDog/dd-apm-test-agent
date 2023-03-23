@@ -19,6 +19,22 @@ async def test_reference(
     assert resp.status == 200, await resp.text()
 
 
+async def test_reference_case_insensitive(
+    agent,
+    v04_reference_http_trace_payload_data,
+):
+    resp = await agent.put(
+        "/v0.4/traces",
+        headers={
+            "content-type": "application/msgpack",
+            "x-datadog-trace-count": "1",
+            "datadog-meta-tracer-version": "v0.1",
+        },
+        data=v04_reference_http_trace_payload_data,
+    )
+    assert resp.status == 200, await resp.text()
+
+
 @pytest.mark.parametrize("agent_disabled_checks", [[], ["trace_count_header"]])
 async def test_trace_count_header(
     agent,
