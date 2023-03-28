@@ -316,46 +316,51 @@ class Agent:
             await checks.check("meta_tracer_version_header", headers=dict(headers))
             await checks.check("trace_content_length", headers=dict(headers))
 
-            if version == "v0.4":
-                traces = self._decode_v04_traces(request)
-            elif version == "v0.5":
-                traces = self._decode_v05_traces(request)
-            log.info(
-                "received trace for token %r payload with %r trace chunks",
-                token,
-                len(traces),
-            )
-            for i, trace in enumerate(traces):
-                try:
-                    log.info(
-                        "Chunk %d\n%s",
-                        i,
-                        pprint_trace(trace, request.app["log_span_fmt"]),
-                    )
+            try:
+                if version == "v0.4":
+                    traces = self._decode_v04_traces(request)
+                elif version == "v0.5":
+                    traces = self._decode_v05_traces(request)
+                log.info(
+                    "received trace for token %r payload with %r trace chunks",
+                    token,
+                    len(traces),
+                )
+                for i, trace in enumerate(traces):
+                    try:
+                        log.info(
+                            "Chunk %d\n%s",
+                            i,
+                            pprint_trace(trace, request.app["log_span_fmt"]),
+                        )
+                    except ValueError:
+                        log.info("Chunk %d could not be displayed (might be incomplete).", i)
+
                     with CheckTrace.add_frame(f"Performing Span Validation for trace with {len(trace)} spans"):
                         # Register the check with the current trace
                         await checks.check("trace_tag_validation", trace=trace)
 
-                except ValueError:
-                    log.info("Chunk %d could not be displayed (might be incomplete).", i)
-            log.info("end of payload %s", "-" * 40)
+                log.info("end of payload %s", "-" * 40)
 
-            with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
-                await checks.check(
-                    "trace_count_header",
-                    headers=dict(headers),
-                    num_traces=len(traces),
-                )
+                with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
+                    await checks.check(
+                        "trace_count_header",
+                        headers=dict(headers),
+                        num_traces=len(traces),
+                    )
+            except Exception as e:
+                log.error(e)
 
         agent_url = request.app["agent_url"]
         if agent_url and proxy_to_agent:
             log.info("Forwarding request to agent at %r", agent_url)
             data = self._request_data(request)
-            
+
             headers = {
                 "Content-Type": "application/msgpack",
                 **{k: v for k, v in headers.items() if "Datadog" in k},
             }
+
             async def proxy_trace_request(agent_url, data, headers):
                 async with ClientSession() as session:
                     async with session.put(f"{agent_url}/v0.4/traces", headers=headers, data=data) as resp:
@@ -371,12 +376,15 @@ class Agent:
                             data = await resp.json()
                             log.info("Got response %r from agent:", data)
                             return web.json_response(data=data)
+
             try:
                 await proxy_trace_request(agent_url=agent_url, data=data, headers=headers)
             except Exception as e:
                 for backup_port in self._proxy_backup_ports:
                     try:
-                        await proxy_trace_request(agent_url=f"http://{AGENT_PROXY_HOST}:{backup_port}", data=data, headers=headers)
+                        await proxy_trace_request(
+                            agent_url=f"http://{AGENT_PROXY_HOST}:{backup_port}", data=data, headers=headers
+                        )
                     except:
                         pass
                 log.info(e)

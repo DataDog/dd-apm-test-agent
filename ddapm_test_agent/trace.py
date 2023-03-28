@@ -293,7 +293,12 @@ def set_metric_tag(s: Span, k: str, v: MetricType) -> Span:
 
 def decode_v04(content_type: str, data: bytes) -> v04TracePayload:
     if content_type == "application/msgpack":
-        payload = msgpack.unpackb(data)
+        try:
+            payload = msgpack.unpackb(data)
+        except Exception as e:
+            log.error(e)
+            log.error(data)
+            raise e
     elif content_type == "application/json":
         payload = json.loads(data)
     else:
@@ -302,7 +307,12 @@ def decode_v04(content_type: str, data: bytes) -> v04TracePayload:
 
 
 def decode_v05(data: bytes) -> v04TracePayload:
-    payload = msgpack.unpackb(data, strict_map_key=False)
+    try:
+        payload = msgpack.unpackb(data, strict_map_key=False)
+    except Exception as e:
+        log.error(e)
+        log.error(data)
+        raise e
     if not isinstance(payload, list):
         raise TypeError("Trace payload must be an array containing two elements, got type %r." % type(payload))
     if len(payload) != 2:

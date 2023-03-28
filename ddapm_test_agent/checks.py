@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import contextvars
 import dataclasses
+import logging
 import textwrap
 from typing import Any
 from typing import Generator
@@ -9,7 +10,6 @@ from typing import List
 from typing import Tuple
 from typing import Type
 
-import logging
 
 log = logging.getLogger(__name__)
 
