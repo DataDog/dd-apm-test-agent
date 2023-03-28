@@ -158,8 +158,8 @@ class Checks:
     async def check(self, name: str, *args: Any, **kwargs: Any) -> None:
         """Find and run the check with the given ``name`` if it is enabled."""
         check = self._get_check(name)()
-        log.info("name", name)
-        log.info("enabled?: ", self.is_enabled(name))
+        log.info("name" + str(name))
+        log.info("enabled?: " + str(self.is_enabled(name)))
         log.info(self.disabled)
 
         if self.is_enabled(name):

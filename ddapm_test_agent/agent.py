@@ -333,7 +333,7 @@ class Agent:
                     )
                     with CheckTrace.add_frame(f"Performing Span Validation for trace with {len(trace)} spans"):
                         # Register the check with the current trace
-                        await checks.check("trace_tag_validation", trace)
+                        await checks.check("trace_tag_validation", trace=trace)
 
                 except ValueError:
                     log.info("Chunk %d could not be displayed (might be incomplete).", i)
