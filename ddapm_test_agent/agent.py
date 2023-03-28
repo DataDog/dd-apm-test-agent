@@ -358,11 +358,7 @@ class Agent:
             }
             async def proxy_trace_request(agent_url):
                 async with ClientSession() as session:
-                    async with session.put(
-                        f"{agent_url}/v0.4/traces",
-                        headers=headers,
-                        data=data,
-                    ) as resp:
+                    async with session.put(f"{agent_url}/v0.4/traces", headers=headers, data=data) as resp:
                         assert resp.status == 200
                         if "text/html" in resp.content_type:
                             data = await resp.read()
@@ -376,6 +372,7 @@ class Agent:
                             log.info("Got response %r from agent:", data)
                             return web.json_response(data=data)
             try:
+                data = self._request_data(request)
                 await proxy_trace_request(agent_url)
             except Exception as e:
                 for backup_port in self._proxy_backup_ports:
@@ -384,7 +381,8 @@ class Agent:
                     except:
                         pass
                 log.info(e)
-                log.info(data)
+                if data:
+                    log.info(data)
                 log.info(headers)
                 log.info(request)
         # agent_url = "http://request-replayer"
