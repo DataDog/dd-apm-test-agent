@@ -619,7 +619,7 @@ class Agent:
         # wait 1s, gather traces and assert tags
         raise NotImplementedError
 
-    async def handle_update_agent_port(self, request: Request) -> web.Response:
+    def handle_update_agent_port(self, request: Request) -> web.Response:
         log.info(request)
         port = request.query.get("agent_port")
         print(request.query)
