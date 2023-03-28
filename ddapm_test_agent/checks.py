@@ -9,6 +9,10 @@ from typing import List
 from typing import Tuple
 from typing import Type
 
+import logging
+
+log = logging.getLogger(__name__)
+
 
 CHECK_TRACE: contextvars.ContextVar["CheckTrace"] = contextvars.ContextVar("check_trace")
 
@@ -154,6 +158,9 @@ class Checks:
     async def check(self, name: str, *args: Any, **kwargs: Any) -> None:
         """Find and run the check with the given ``name`` if it is enabled."""
         check = self._get_check(name)()
+        log.info("name", name)
+        log.info("enabled?: ", self.is_enabled(name))
+        log.info(self.disabled)
 
         if self.is_enabled(name):
             # Register the check with the current trace
