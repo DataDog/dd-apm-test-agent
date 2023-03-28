@@ -44,9 +44,10 @@ string_to_type_map = {
 
 
 class TagCheck(Check):
-    def __init__(self, name: str, val_type: str, required: bool, value: Any = None):
+    def __init__(self, name: str, val_type: Any, required: bool, value: Any = None):
         self.name = name
-        self.val_type: str = val_type
+        self.val_type = val_type if isinstance(val_type, str) else None
+        self.val_types = val_type if isinstance(val_type, list) else None
         self.required: bool = required
         self.value: Any = value
         self._failed: bool = False
@@ -76,9 +77,22 @@ class TagCheck(Check):
                 self.fail(message)
 
             if self.val_type:
-                actual_val_type = type(flattened_span[self.name])
+                actual_val_type = type(
+                    flattened_span.get(self.name, None)
+                )  # if None, will be a <class> NoneType object
                 if actual_val_type != string_to_type_map[self.val_type]:
                     message = f"TAG-VALUE-TYPE-ERROR: Expected tag '{self.name}' to have expected type '{self.val_type}', got: '{actual_val_type}'"
+                    logger.log_failure_message_to_file(message)
+                    self.fail(message)
+            elif self.val_types:
+                actual_val_type = type(
+                    flattened_span.get(self.name, None)
+                )  # if None, will be a <class> NoneType object
+                expected_val_types = []
+                for type_str in self.val_types:
+                    expected_val_types.append(string_to_type_map[type_str])
+                if actual_val_type not in expected_val_types:
+                    message = f"TAG-VALUE-TYPE-ERROR: Expected tag '{self.name}' to have expected type of one of '{self.val_types}', got: '{actual_val_type}'"
                     logger.log_failure_message_to_file(message)
                     self.fail(message)
         else:
@@ -88,12 +102,22 @@ class TagCheck(Check):
                 )
             else:
                 if self.val_type:
-                    actual_val_type = type(flattened_span[self.name])
+                    actual_val_type = type(flattened_span.get(self.name, None))
                     if actual_val_type != string_to_type_map[self.val_type]:
                         message = f"TAG-VALUE-TYPE-ERROR: Expected tag '{self.name}' to have expected type '{self.val_type}', got: '{actual_val_type}'"
                         logger.log_failure_message_to_file(message)
                         self.fail(message)
-
+                elif self.val_types:
+                    actual_val_type = type(
+                        flattened_span.get(self.name, None)
+                    )  # if None, will be a <class> NoneType object
+                    expected_val_types = []
+                    for type_str in self.val_types:
+                        expected_val_types.append(string_to_type_map[type_str])
+                    if actual_val_type not in expected_val_types:
+                        message = f"TAG-VALUE-TYPE-ERROR: Expected tag '{self.name}' to have expected type of one of '{self.val_types}', got: '{actual_val_type}'"
+                        logger.log_failure_message_to_file(message)
+                        self.fail(message)
                 logger.log_message(
                     f" Assertion on span: '{span['name']}' having optional tag: '{self.name}' --------> TRUE ", indent2
                 )

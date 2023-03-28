@@ -4,7 +4,6 @@ import base64
 from collections import OrderedDict
 import json
 import logging
-from multidict import CIMultiDict
 import os
 import pprint
 import socket
@@ -21,6 +20,7 @@ from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
+from multidict import CIMultiDict
 
 from . import _get_version
 from . import trace_snapshot
@@ -301,12 +301,12 @@ class Agent:
         await self._store_request(request)
         token = request["session_token"]
         checks: Checks = request.app["checks"]
+        headers = CIMultiDict(request.headers)
 
-        await checks.check("trace_stall", headers=dict(request.headers), request=request)
+        await checks.check("trace_stall", headers=dict(headers), request=request)
 
         proxy_to_agent = True
-        if "do_not_proxy_to_agent" in request.headers:
-            headers = CIMultiDict(request.headers)
+        if "do_not_proxy_to_agent" in headers:
             headers.pop("do_not_proxy_to_agent")
             proxy_to_agent = False
 
@@ -333,9 +333,7 @@ class Agent:
                     )
                     with CheckTrace.add_frame(f"Performing Span Validation for trace with {len(trace)} spans"):
                         # Register the check with the current trace
-                        check = TraceTagValidationCheck()
-                        CheckTrace.add_check(check)
-                        check.check(trace)
+                        await checks.check("trace_tag_validation", trace)
 
                 except ValueError:
                     log.info("Chunk %d could not be displayed (might be incomplete).", i)
@@ -354,8 +352,8 @@ class Agent:
             data = self._request_data(request)
             try:
                 headers = {
-                    'Content-Type': 'application/msgpack',
-                    **{ k: v for k, v in headers.items() if "Datadog" in k}
+                    "Content-Type": "application/msgpack",
+                    **{k: v for k, v in headers.items() if "Datadog" in k},
                 }
                 async with ClientSession() as session:
                     async with session.put(
@@ -677,6 +675,7 @@ def make_app(
             CheckTraceCountHeader,
             CheckTraceContentLength,
             CheckTraceStallAsync,
+            TraceTagValidationCheck,
         ],
         disabled=disabled_checks,
     )
@@ -730,7 +729,7 @@ def main(args: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--disabled-checks",
         type=List[str],
-        default=_parse_csv(os.environ.get("DISABLED_CHECKS", "")),
+        default=_parse_csv(os.environ.get("DISABLED_CHECKS", "trace_tag_validation")),
         help=(
             "Comma-separated values of checks to disable. None are disabled "
             " by default. For the list of values see "

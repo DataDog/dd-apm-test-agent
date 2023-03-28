@@ -17,6 +17,7 @@ import msgpack
 from typing_extensions import NotRequired
 from typing_extensions import TypedDict
 
+
 log = logging.getLogger(__name__)
 
 

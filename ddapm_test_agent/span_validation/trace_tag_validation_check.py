@@ -29,6 +29,12 @@ def span_whitelisted_message(span):
 
 
 class TraceTagValidationCheck(Check):
+    name = "trace_tag_validation"
+    description = """
+Perform tag validation on traces to ensure span tagging is in compliance with Datadog Unified Naming Convention work.
+""".strip()
+    default_enabled = False
+
     def check(self, trace):
         for i, span in enumerate(trace):
 
