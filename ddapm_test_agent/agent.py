@@ -122,6 +122,7 @@ class Agent:
         """
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
+        self._proxy_backup_ports = []
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -350,11 +351,12 @@ class Agent:
         if agent_url and proxy_to_agent:
             log.info("Forwarding request to agent at %r", agent_url)
             data = self._request_data(request)
-            try:
-                headers = {
-                    "Content-Type": "application/msgpack",
-                    **{k: v for k, v in headers.items() if "Datadog" in k},
-                }
+            
+            headers = {
+                "Content-Type": "application/msgpack",
+                **{k: v for k, v in headers.items() if "Datadog" in k},
+            }
+            async def proxy_trace_request(agent_url):
                 async with ClientSession() as session:
                     async with session.put(
                         f"{agent_url}/v0.4/traces",
@@ -373,7 +375,14 @@ class Agent:
                             data = await resp.json()
                             log.info("Got response %r from agent:", data)
                             return web.json_response(data=data)
+            try:
+                await proxy_trace_request(agent_url)
             except Exception as e:
+                for backup_port in self._proxy_backup_ports:
+                    try:
+                        await proxy_trace_request(f"http://{AGENT_PROXY_HOST}:{backup_port}")
+                    except:
+                        pass
                 log.info(e)
                 log.info(data)
                 log.info(headers)
@@ -622,6 +631,7 @@ class Agent:
     async def handle_update_agent_port(self, request: Request) -> web.Response:
         log.info(request)
         port = request.query.get("agent_port")
+        self._proxy_backup_ports.append(port)
         print(request.query)
         request.app["agent_url"] = f"http://{AGENT_PROXY_HOST}:{port}"
         return web.HTTPOk()
