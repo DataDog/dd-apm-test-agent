@@ -356,7 +356,7 @@ class Agent:
                 "Content-Type": "application/msgpack",
                 **{k: v for k, v in headers.items() if "Datadog" in k},
             }
-            async def proxy_trace_request(agent_url):
+            async def proxy_trace_request(agent_url, data, headers):
                 async with ClientSession() as session:
                     async with session.put(f"{agent_url}/v0.4/traces", headers=headers, data=data) as resp:
                         assert resp.status == 200
@@ -372,12 +372,11 @@ class Agent:
                             log.info("Got response %r from agent:", data)
                             return web.json_response(data=data)
             try:
-                data = self._request_data(request)
-                await proxy_trace_request(agent_url)
+                await proxy_trace_request(agent_url=agent_url, data=data, headers=headers)
             except Exception as e:
                 for backup_port in self._proxy_backup_ports:
                     try:
-                        await proxy_trace_request(f"http://{AGENT_PROXY_HOST}:{backup_port}")
+                        await proxy_trace_request(agent_url=f"http://{AGENT_PROXY_HOST}:{backup_port}", data=data, headers=headers)
                     except:
                         pass
                 log.info(e)
