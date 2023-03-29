@@ -338,11 +338,6 @@ class Agent:
 
         await checks.check("trace_stall", headers=dict(headers), request=request)
 
-        proxy_to_agent = True
-        if "do_not_proxy_to_agent" in headers:
-            headers.pop("do_not_proxy_to_agent")
-            proxy_to_agent = False
-
         with CheckTrace.add_frame("headers") as f:
             f.add_item(pprint.pformat(dict(headers)))
             await checks.check("meta_tracer_version_header", headers=dict(headers))
@@ -379,46 +374,25 @@ class Agent:
                 log.error(e)
 
         agent_url = request.app["agent_url"]
-        if agent_url and proxy_to_agent:
+        if agent_url:
             log.info("Forwarding request to agent at %r", agent_url)
-            data = self._request_data(request)
-
-            headers = {
-                "Content-Type": "application/msgpack",
-                **{k: v for k, v in headers.items() if "Datadog" in k},
-            }
-
-            async def proxy_trace_request(agent_url, data, headers):
-                async with ClientSession() as session:
-                    async with session.put(f"{agent_url}/v0.4/traces", headers=headers, data=data) as resp:
-                        assert resp.status == 200
-                        if "text/html" in resp.content_type:
-                            data = await resp.read()
-                            if len(data) == 0:
-                                return web.HTTPOk()
-                            else:
-                                log.info("Got response %r from agent:", data)
-                                return web.json_response(data={"data": data})
+            async with ClientSession() as session:
+                async with session.put(
+                    f"{agent_url}/v0.4/traces",
+                    headers=request.headers,
+                    data=self._request_data(request),
+                ) as resp:
+                    if "text/html" in resp.content_type:
+                        data = await resp.read()
+                        if len(data) == 0:
+                            return web.HTTPOk()
                         else:
-                            data = await resp.json()
                             log.info("Got response %r from agent:", data)
-                            return web.json_response(data=data)
-
-            try:
-                await proxy_trace_request(agent_url=agent_url, data=data, headers=headers)
-            except Exception as e:
-                for backup_port in self._proxy_backup_ports:
-                    try:
-                        await proxy_trace_request(
-                            agent_url=f"http://{AGENT_PROXY_HOST}:{backup_port}", data=data, headers=headers
-                        )
-                    except:
-                        pass
-                log.info(e)
-                if data:
-                    log.info(data)
-                log.info(headers)
-                log.info(request)
+                            return web.json_response(data={"data": data})
+                    else:
+                        data = await resp.json()
+                        log.info("Got response %r from agent:", data)
+                        return web.json_response(data=data)
 
         # TODO: implement sampling logic
         return web.json_response(data={"rate_by_service": {}})
