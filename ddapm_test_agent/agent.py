@@ -20,7 +20,6 @@ from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
-from multidict import CIMultiDict
 
 from . import _get_version
 from . import trace_snapshot
@@ -122,7 +121,6 @@ class Agent:
         """
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
-        self._proxy_backup_ports = []
         self._rc_server = RemoteConfigServer()
 
     async def traces(self) -> TraceMap:
@@ -334,14 +332,13 @@ class Agent:
         await self._store_request(request)
         token = request["session_token"]
         checks: Checks = request.app["checks"]
-        headers = CIMultiDict(request.headers)
 
-        await checks.check("trace_stall", headers=dict(headers), request=request)
+        await checks.check("trace_stall", headers=dict(request.headers), request=request)
 
         with CheckTrace.add_frame("headers") as f:
-            f.add_item(pprint.pformat(dict(headers)))
-            await checks.check("meta_tracer_version_header", headers=dict(headers))
-            await checks.check("trace_content_length", headers=dict(headers))
+            f.add_item(pprint.pformat(dict(request.headers)))
+            await checks.check("meta_tracer_version_header", headers=dict(request.headers))
+            await checks.check("trace_content_length", headers=dict(request.headers))
 
             try:
                 if version == "v0.4":
@@ -367,7 +364,7 @@ class Agent:
                 with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
                     await checks.check(
                         "trace_count_header",
-                        headers=dict(headers),
+                        headers=dict(request.headers),
                         num_traces=len(traces),
                     )
             except Exception as e:
@@ -602,14 +599,6 @@ class Agent:
         # wait 1s, gather traces and assert tags
         raise NotImplementedError
 
-    async def handle_update_agent_port(self, request: Request) -> web.Response:
-        log.info(request)
-        port = request.query.get("agent_port")
-        self._proxy_backup_ports.append(port)
-        print(request.query)
-        request.app["agent_url"] = f"http://{AGENT_PROXY_HOST}:{port}"
-        return web.HTTPOk()
-
 
 def make_app(
     disabled_checks: List[str],
@@ -644,7 +633,6 @@ def make_app(
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/snapshot", agent.handle_snapshot),
             web.get("/test/session/traces", agent.handle_session_traces),
-            web.get("/test/session/agent_port", agent.handle_update_agent_port),
             web.get("/test/session/apmtelemetry", agent.handle_session_apmtelemetry),
             web.get("/test/session/stats", agent.handle_session_tracestats),
             web.get("/test/session/requests", agent.handle_session_requests),
