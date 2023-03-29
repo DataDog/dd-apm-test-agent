@@ -283,6 +283,22 @@ Return stats that have been received by the agent for the given session token.
 
 Stats are returned as a JSON list of the stats payloads received.
 
+## /test/session/responses/config (POST)
+Create a Remote Config payload to retrieve in endpoint `/v0.7/config`
+
+```
+curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"roots": ["eyJ....fX0="], "targets": "ey...19", "target_files": [{"path": "datadog/2/ASM_DATA/blocked_users/config", "raw": "eyJydWxlc19kYXRhIjogW119"}], "client_configs": ["datadog/2/ASM_DATA/blocked_users/config"]}'
+```
+
+## /test/session/responses/config/path (POST)
+Due to Remote Config payload being quite complicated, this endpoint works like `/test/session/responses/config (POST)` 
+but you should send a path and a message and this endpoint builds the Remote Config payload.
+
+The keys of the JSON body are `path` and `msg`
+
+```
+curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"path": "datadog/2/ASM_DATA/blocked_users/config", "msg": {"rules_data": []}}'
+```
 
 ## Development
 

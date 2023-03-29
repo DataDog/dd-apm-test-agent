@@ -30,6 +30,7 @@ from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
+from .remoteconfig import RemoteConfigServer
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -122,6 +123,7 @@ class Agent:
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
         self._proxy_backup_ports = []
+        self._rc_server = RemoteConfigServer()
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -274,6 +276,36 @@ class Agent:
         )
         return web.HTTPOk()
 
+    async def handle_v07_remoteconfig(self, request: Request) -> web.Response:
+        """Emulates Remote Config endpoint: /v0.7/config"""
+        await self._store_request(request)
+        data = await self._rc_server.get_config_response()
+        return web.json_response(data)
+
+    async def handle_v07_remoteconfig_create(self, request: Request) -> web.Response:
+        """Configure the response payload of /v0.7/config."""
+        raw_data = await request.read()
+        self._rc_server.create_config_response(json.loads(raw_data))
+        return web.HTTPAccepted()
+
+    async def handle_v07_remoteconfig_path_create(self, request: Request) -> web.Response:
+        """
+        Remote Config payloads are quite complex. This endpoints builds a remote config payload with a target
+        file path and the content of it (msg)
+        """
+        raw_data = await request.read()
+        content = json.loads(raw_data)
+        path = content["path"]
+        msg = content["msg"]
+        self._rc_server.create_config_path_response(path, msg)
+        return web.HTTPAccepted()
+
+    async def handle_v07_remoteconfig_put(self, request: Request) -> web.Response:
+        """Configure the response payload of /v0.7/config"""
+        raw_data = await request.read()
+        self._rc_server.update_config_response(json.loads(raw_data))
+        return web.HTTPAccepted()
+
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
         await self._store_request(request)
         v2_apmtelemetry_decode(self._request_data(request))
@@ -290,6 +322,7 @@ class Agent:
                     "/v0.5/traces",
                     "/v0.6/stats",
                     "/telemetry/proxy/",
+                    "/v0.7/config",
                 ],
                 "feature_flags": [],
                 "config": {},
@@ -304,7 +337,7 @@ class Agent:
         headers = CIMultiDict(request.headers)
 
         await checks.check("trace_stall", headers=dict(headers), request=request)
-
+        
         proxy_to_agent = True
         if "do_not_proxy_to_agent" in headers:
             headers.pop("do_not_proxy_to_agent")
@@ -334,7 +367,6 @@ class Agent:
                         )
                     except ValueError:
                         log.info("Chunk %d could not be displayed (might be incomplete).", i)
-
                 log.info("end of payload %s", "-" * 40)
 
                 with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
@@ -630,6 +662,7 @@ def make_app(
             web.put("/v0.5/traces", agent.handle_v05_traces),
             web.post("/v0.6/stats", agent.handle_v06_tracestats),
             web.put("/v0.6/stats", agent.handle_v06_tracestats),
+            web.post("/v0.7/config", agent.handle_v07_remoteconfig),
             web.post("/telemetry/proxy/api/v2/apmtelemetry", agent.handle_v2_apmtelemetry),
             web.post("/profiling/v1/input", agent.handle_v1_profiling),
             web.get("/info", agent.handle_info),
@@ -641,6 +674,9 @@ def make_app(
             web.get("/test/session/apmtelemetry", agent.handle_session_apmtelemetry),
             web.get("/test/session/stats", agent.handle_session_tracestats),
             web.get("/test/session/requests", agent.handle_session_requests),
+            web.post("/test/session/responses/config", agent.handle_v07_remoteconfig_create),
+            web.post("/test/session/responses/config/path", agent.handle_v07_remoteconfig_path_create),
+            web.put("/test/session/responses/config", agent.handle_v07_remoteconfig_put),
             web.get("/test/traces", agent.handle_test_traces),
             web.get("/test/apmtelemetry", agent.handle_test_apmtelemetry),
             # web.get("/test/benchmark", agent.handle_test_traces),
