@@ -373,14 +373,19 @@ class Agent:
         agent_url = request.app["agent_url"]
         if agent_url:
             log.info("Forwarding request to agent at %r", agent_url)
+
+            headers = {
+                "Content-Type": "application/msgpack",
+                **{k: v for k, v in request.headers.items() if "Datadog" in k},
+            }
             async with ClientSession() as session:
-                async with session.post(
+                async with session.put(
                     f"{agent_url}/v0.4/traces",
-                    headers=request.headers,
+                    headers=headers,
                     data=self._request_data(request),
                 ) as resp:
                     assert resp.status == 200
-
+                    
                     if "text/html" in resp.content_type:
                         data = await resp.read()
                         if len(data) == 0:
