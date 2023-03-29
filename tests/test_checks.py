@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from .conftest import v04_trace
@@ -97,19 +99,19 @@ async def test_trace_content_length(agent):
     assert "Check 'trace_content_length' failed: content length" in await resp.text()
 
 
-# async def test_trace_stall(
-#     agent,
-#     v04_reference_http_trace_payload_headers,
-#     v04_reference_http_trace_payload_data,
-#     agent_disabled_checks,
-# ):
-#     v04_reference_http_trace_payload_headers["X-Datadog-Test-Stall-Seconds"] = "0.8"
-#     start = time.monotonic_ns()
-#     resp = await agent.put(
-#         "/v0.4/traces",
-#         headers=v04_reference_http_trace_payload_headers,
-#         data=v04_reference_http_trace_payload_data,
-#     )
-#     assert resp.status == 200, await resp.text()
-#     end = time.monotonic_ns()
-#     assert (end - start) / 1e9 >= 0.8
+async def test_trace_stall(
+    agent,
+    v04_reference_http_trace_payload_headers,
+    v04_reference_http_trace_payload_data,
+    agent_disabled_checks,
+):
+    v04_reference_http_trace_payload_headers["X-Datadog-Test-Stall-Seconds"] = "0.8"
+    start = time.monotonic_ns()
+    resp = await agent.put(
+        "/v0.4/traces",
+        headers=v04_reference_http_trace_payload_headers,
+        data=v04_reference_http_trace_payload_data,
+    )
+    assert resp.status == 200, await resp.text()
+    end = time.monotonic_ns()
+    assert (end - start) / 1e9 >= 0.8
