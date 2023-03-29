@@ -337,7 +337,7 @@ class Agent:
         headers = CIMultiDict(request.headers)
 
         await checks.check("trace_stall", headers=dict(headers), request=request)
-        
+
         proxy_to_agent = True
         if "do_not_proxy_to_agent" in headers:
             headers.pop("do_not_proxy_to_agent")
