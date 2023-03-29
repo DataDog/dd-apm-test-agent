@@ -2,16 +2,12 @@ import asyncio
 import contextlib
 import contextvars
 import dataclasses
-import logging
 import textwrap
 from typing import Any
 from typing import Generator
 from typing import List
 from typing import Tuple
 from typing import Type
-
-
-log = logging.getLogger(__name__)
 
 
 CHECK_TRACE: contextvars.ContextVar["CheckTrace"] = contextvars.ContextVar("check_trace")

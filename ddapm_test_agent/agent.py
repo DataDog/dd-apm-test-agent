@@ -30,7 +30,6 @@ from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
-from .span_validation.trace_tag_validation_check import TraceTagValidationCheck
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -336,10 +335,6 @@ class Agent:
                     except ValueError:
                         log.info("Chunk %d could not be displayed (might be incomplete).", i)
 
-                    with CheckTrace.add_frame(f"Performing Span Validation for trace with {len(trace)} spans"):
-                        # Register the check with the current trace
-                        await checks.check("trace_tag_validation", trace=trace)
-
                 log.info("end of payload %s", "-" * 40)
 
                 with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
@@ -392,38 +387,6 @@ class Agent:
                     log.info(data)
                 log.info(headers)
                 log.info(request)
-        # agent_url = "http://request-replayer"
-        # agent_port = 80
-        # if agent_url:
-        #     log.info(f"Forwarding request to agent at {agent_url}:{agent_port}")
-
-        #     if agent_url == "http://request-replayer":
-        #         data = self._request_data(request)
-        #         log.info(data)
-        #         resp = requests.post(
-        #             url=f"{agent_url}:{agent_port}/v0.4/traces",
-        #             data=data,
-        #             headers={"Content-Type": "application/msgpack"},
-        #         )
-        #         assert resp.status_code == 200
-        #         data = resp.content
-        #         log.info("Got response %r from agent", data)
-        #         if version == "v0.4":
-        #             data = self._decode_v04_traces(resp)
-        #         elif version == "v0.5":
-        #             data = self._decode_v05_traces(resp)
-        #         return web.json_response(data=json.loads(data))
-
-        # else:
-        #     headers=request.headers
-        #     data=self._request_data(request)
-
-        # # async with ClientSession() as session:
-        # #     async with session.post(
-        # #         f"{agent_url}:{agent_port}/v0.4/traces",
-        # #         headers=headers,
-        # #         data=data,
-        # #     ) as resp:
 
         # TODO: implement sampling logic
         return web.json_response(data={"rate_by_service": {}})
@@ -690,7 +653,6 @@ def make_app(
             CheckTraceCountHeader,
             CheckTraceContentLength,
             CheckTraceStallAsync,
-            TraceTagValidationCheck,
         ],
         disabled=disabled_checks,
     )
@@ -744,7 +706,7 @@ def main(args: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--disabled-checks",
         type=List[str],
-        default=_parse_csv(os.environ.get("DISABLED_CHECKS", "trace_tag_validation")),
+        default=_parse_csv(os.environ.get("DISABLED_CHECKS", "")),
         help=(
             "Comma-separated values of checks to disable. None are disabled "
             " by default. For the list of values see "
