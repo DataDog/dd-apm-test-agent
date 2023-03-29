@@ -374,11 +374,13 @@ class Agent:
         if agent_url:
             log.info("Forwarding request to agent at %r", agent_url)
             async with ClientSession() as session:
-                async with session.put(
+                async with session.post(
                     f"{agent_url}/v0.4/traces",
                     headers=request.headers,
                     data=self._request_data(request),
                 ) as resp:
+                    assert resp.status == 200
+
                     if "text/html" in resp.content_type:
                         data = await resp.read()
                         if len(data) == 0:
