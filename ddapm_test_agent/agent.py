@@ -385,7 +385,7 @@ class Agent:
                     data=self._request_data(request),
                 ) as resp:
                     assert resp.status == 200
-                    
+
                     if "text/html" in resp.content_type:
                         data = await resp.read()
                         if len(data) == 0:
