@@ -379,7 +379,7 @@ class Agent:
                 **{k: v for k, v in request.headers.items() if "Datadog" in k},
             }
             async with ClientSession() as session:
-                async with session.put(
+                async with session.post(
                     f"{agent_url}/v0.4/traces",
                     headers=headers,
                     data=self._request_data(request),
