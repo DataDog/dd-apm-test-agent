@@ -407,13 +407,15 @@ class Agent:
             try:
                 await proxy_trace_request(agent_url=agent_url, data=data, headers=headers)
             except Exception as e:
-                for backup_port in self._proxy_backup_ports:
+                log.info(f"Error forwarding to agent at {agent_url}, trying new ports.")
+                for i in range(len(self._proxy_backup_ports), 0, -1):
+                    backup_port = self._proxy_backup_ports[i]
                     try:
                         await proxy_trace_request(
                             agent_url=f"http://{AGENT_PROXY_HOST}:{backup_port}", data=data, headers=headers
                         )
                     except:
-                        pass
+                        log.info(f"Error forwarding to agent with port: {backup_port}")
                 log.info(e)
                 if data:
                     log.info(data)
