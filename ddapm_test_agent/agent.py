@@ -391,10 +391,12 @@ class Agent:
             async def proxy_trace_request(agent_url, data, headers):
                 async with ClientSession() as session:
                     async with session.put(f"{agent_url}/v0.4/traces", headers=headers, data=data) as resp:
+                        log.info(f"Response from agent: {resp.status}")
                         assert resp.status == 200
                         if "text/html" in resp.content_type:
                             data = await resp.read()
                             if len(data) == 0:
+                                log.info("Got response %r from agent, no data")
                                 return web.HTTPOk()
                             else:
                                 log.info("Got response %r from agent:", data)
@@ -408,6 +410,7 @@ class Agent:
                 await proxy_trace_request(agent_url=agent_url, data=data, headers=headers)
             except Exception as e:
                 log.info(f"Error forwarding to agent at {agent_url}, trying new ports.")
+                log.info(e)
                 for i in range(len(self._proxy_backup_ports)-1, -1, -1):
                     backup_port = self._proxy_backup_ports[i]
                     try:
@@ -416,11 +419,6 @@ class Agent:
                         )
                     except:
                         log.info(f"Error forwarding to agent with port: {backup_port}")
-                log.info(e)
-                if data:
-                    log.info(data)
-                log.info(headers)
-                log.info(request)
 
         # TODO: implement sampling logic
         return web.json_response(data={"rate_by_service": {}})
