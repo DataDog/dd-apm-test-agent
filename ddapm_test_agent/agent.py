@@ -408,7 +408,7 @@ class Agent:
                 await proxy_trace_request(agent_url=agent_url, data=data, headers=headers)
             except Exception as e:
                 log.info(f"Error forwarding to agent at {agent_url}, trying new ports.")
-                for i in range(len(self._proxy_backup_ports), 0, -1):
+                for i in range(len(self._proxy_backup_ports)-1, -1, -1):
                     backup_port = self._proxy_backup_ports[i]
                     try:
                         await proxy_trace_request(
