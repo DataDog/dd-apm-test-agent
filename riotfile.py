@@ -50,18 +50,18 @@ venv = Venv(
                 "toml": latest,
             },
         ),
-        # Venv(
-        #     name="mypy",
-        #     create=True,
-        #     command="mypy {cmdargs}",
-        #     pkgs={
-        #         "mypy": latest,
-        #         "pytest": latest,
-        #         "types-protobuf": latest,
-        #         "types-requests": latest,
-        #         "types-setuptools": latest,
-        #     },
-        # ),
+        Venv(
+            name="mypy",
+            create=True,
+            command="mypy {cmdargs}",
+            pkgs={
+                "mypy": latest,
+                "pytest": latest,
+                "types-protobuf": latest,
+                "types-requests": latest,
+                "types-setuptools": latest,
+            },
+        ),
         Venv(
             name="reno",
             pkgs={
