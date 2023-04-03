@@ -644,7 +644,7 @@ def make_app(
     app = web.Application(
         client_max_size=int(100e6),  # 100MB - arbitrary
         middlewares=[
-            # check_failure_middleware,
+            check_failure_middleware,
             session_token_middleware,
         ],
     )
