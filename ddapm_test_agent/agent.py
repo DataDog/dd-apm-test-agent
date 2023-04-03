@@ -340,7 +340,6 @@ class Agent:
         await checks.check("trace_stall", headers=dict(headers), request=request)
         
         proxy_to_agent = True
-        log.info(headers)
         if "dd-proxy-port" in headers:
             port = headers.pop("dd-proxy-port")
             self._proxy_backup_ports.append(port)
@@ -359,7 +358,7 @@ class Agent:
                 elif version == "v0.5":
                     traces = self._decode_v05_traces(request)
                 log.info(
-                    "received trace for token %r payload with %r trace chunks",
+                    "Received trace for token %r payload with %r trace chunks",
                     token,
                     len(traces),
                 )
@@ -372,7 +371,7 @@ class Agent:
                         )
                     except ValueError:
                         log.info("Chunk %d could not be displayed (might be incomplete).", i)
-                log.info("end of payload %s", "-" * 40)
+                log.info("End of payload %s", "-" * 40)
 
                 with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
                     await checks.check(
@@ -381,7 +380,7 @@ class Agent:
                         num_traces=len(traces),
                     )
             except Exception as e:
-                log.error(e)
+                log.info(e)
 
         agent_url = request.app["agent_url"]
         if agent_url and proxy_to_agent:
@@ -412,15 +411,15 @@ class Agent:
             try:
                 await proxy_trace_request(agent_url=agent_url, data=data, headers=headers)
             except Exception as e:
-                log.error(f"Error forwarding to agent at {agent_url}, trying again in a few seconds.")
+                log.info(f"Error forwarding to agent at {agent_url}, trying again in a few seconds.")
                 time.sleep(10)
-                log.error(e)
+                log.info(e)
                 for i in range(10):
                     try:
                         await proxy_trace_request(agent_url=agent_url, data=data, headers=headers)
                     except:
-                        log.error(f"Error forwarding to agent at {agent_url}, trying again, maybe.")
-                        log.error(e)
+                        log.info(f"Error forwarding to agent at {agent_url}, trying again, maybe.")
+                        log.info(e)
                         time.sleep(10)
 
         # TODO: implement sampling logic
@@ -645,7 +644,7 @@ def make_app(
     app = web.Application(
         client_max_size=int(100e6),  # 100MB - arbitrary
         middlewares=[
-            check_failure_middleware,
+            # check_failure_middleware,
             session_token_middleware,
         ],
     )
