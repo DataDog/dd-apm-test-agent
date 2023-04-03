@@ -4,6 +4,7 @@ import base64
 from collections import OrderedDict
 import json
 import logging
+import msgpack
 import os
 import pprint
 import socket
@@ -393,6 +394,11 @@ class Agent:
                         else:
                             log.info("Got response %r from agent:", data)
                             return web.json_response(data={"data": data})
+                    elif "application/msgpack" in resp.content_type:
+                        log.info("Got response %r from agent, decoding.")
+                        payload = msgpack.unpackb(data)
+                        log.info("Response:", payload)
+                        return web.json_response(data={"data": payload})
                     else:
                         data = await resp.json()
                         log.info("Got response %r from agent:", data)
