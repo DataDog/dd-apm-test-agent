@@ -339,8 +339,9 @@ class Agent:
         await checks.check("trace_stall", headers=dict(headers), request=request)
         
         proxy_to_agent = True
-        if "_dd_proxy_port" in headers:
-            port = headers.pop("_dd_proxy_port")
+        log.info(headers)
+        if "dd-proxy-port" in headers:
+            port = headers.pop("dd-proxy-port")
             self._proxy_backup_ports.append(port)
             request.app["agent_url"] = f"http://{AGENT_PROXY_HOST}:{port}"
             log.info("Found port in headers, new agent URL is: {}".format(request.app["agent_url"]))
