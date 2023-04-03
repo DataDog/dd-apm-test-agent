@@ -412,15 +412,14 @@ class Agent:
                 await proxy_trace_request(agent_url=agent_url, data=data, headers=headers)
             except Exception as e:
                 log.info(f"Error forwarding to agent at {agent_url}, trying again in a few seconds.")
-                time.sleep(10)
                 log.info(e)
                 for i in range(10):
                     try:
                         await proxy_trace_request(agent_url=agent_url, data=data, headers=headers)
+                        break
                     except:
                         log.info(f"Error forwarding to agent at {agent_url}, trying again, maybe.")
                         log.info(e)
-                        time.sleep(10)
 
         # TODO: implement sampling logic
         return web.json_response(data={"rate_by_service": {}})
