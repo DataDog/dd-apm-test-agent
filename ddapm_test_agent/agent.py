@@ -390,7 +390,7 @@ class Agent:
 
             async def proxy_trace_request(agent_url, data, headers):
                 async with ClientSession() as session:
-                    async with session.post(f"{agent_url}/v0.4/traces", headers=headers, data=data) as resp:
+                    async with session.put(f"{agent_url}/v0.4/traces", headers=headers, data=data) as resp:
                         log.info(f"Response from agent: {resp.status}")
                         log.info(resp)
                         if "text/html" in resp.content_type:
