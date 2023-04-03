@@ -52,7 +52,7 @@ _Handler = Callable[[Request], Awaitable[web.Response]]
 log = logging.getLogger(__name__)
 
 
-AGENT_PROXY_HOST = os.environ.get("PROXY_HOST", "testrunner")
+AGENT_PROXY_HOST = os.environ.get("PROXY_HOST", "host.docker.internal")
 
 
 def _parse_csv(s: str) -> List[str]:
