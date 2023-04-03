@@ -333,12 +333,12 @@ class Agent:
         token = request["session_token"]
         checks: Checks = request.app["checks"]
 
-        await checks.check("trace_stall", headers=dict(request.headers), request=request)
+        await checks.check("trace_stall", headers=request.headers, request=request)
 
         with CheckTrace.add_frame("headers") as f:
-            f.add_item(pprint.pformat(dict(request.headers)))
-            await checks.check("meta_tracer_version_header", headers=dict(request.headers))
-            await checks.check("trace_content_length", headers=dict(request.headers))
+            f.add_item(pprint.pformat(request.headers))
+            await checks.check("meta_tracer_version_header", headers=request.headers)
+            await checks.check("trace_content_length", headers=request.headers)
 
             try:
                 if version == "v0.4":
@@ -364,7 +364,7 @@ class Agent:
                 with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
                     await checks.check(
                         "trace_count_header",
-                        headers=dict(request.headers),
+                        headers=request.headers,
                         num_traces=len(traces),
                     )
             except Exception as e:

@@ -28,11 +28,11 @@ venv = Venv(
                 ),
                 Venv(
                     name="fmt",
-                    command="isort --profile black . && black .",
+                    command="isort . && black .",
                 ),
                 Venv(
                     name="check_fmt",
-                    command="isort --check --profile black . && black --check .",
+                    command="isort --check . && black --check .",
                 ),
             ],
         ),

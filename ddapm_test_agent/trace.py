@@ -107,8 +107,8 @@ def verify_span(d: Any) -> Span:
         for attr in required_attrs:
             assert attr in d, f"'{attr}' required in span"
         NoneType = type(None)
-        assert isinstance(d["span_id"], (float, int))
-        assert isinstance(d["trace_id"], (float, int))
+        assert isinstance(d["span_id"], int)
+        assert isinstance(d["trace_id"], int)
         assert isinstance(d["name"], str)
         if "resource" in d:
             assert isinstance(d["resource"], (str, NoneType))  # type: ignore
