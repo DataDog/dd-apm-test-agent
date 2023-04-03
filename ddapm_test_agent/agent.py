@@ -392,7 +392,7 @@ class Agent:
                 async with ClientSession() as session:
                     async with session.post(f"{agent_url}/v0.4/traces", headers=headers, data=data) as resp:
                         log.info(f"Response from agent: {resp.status}")
-                        assert resp.status == 200
+                        log.info(resp)
                         if "text/html" in resp.content_type:
                             data = await resp.read()
                             if len(data) == 0:
