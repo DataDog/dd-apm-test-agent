@@ -8,6 +8,7 @@ import os
 import pprint
 import socket
 import sys
+import time
 from typing import Awaitable
 from typing import Callable
 from typing import List
@@ -395,34 +396,32 @@ class Agent:
             async def proxy_trace_request(agent_url, data, headers):
                 async with ClientSession() as session:
                     async with session.put(f"{agent_url}/v0.4/traces", headers=headers, data=data) as resp:
-                        log.info(f"Response from agent: {resp.status}")
-                        log.info(resp)
+                        log.info(f"Response from agent: {resp}")
                         if "text/html" in resp.content_type:
                             data = await resp.read()
                             if len(data) == 0:
-                                log.info("Got response %r from agent, no data")
                                 return web.HTTPOk()
                             else:
-                                log.info("Got response %r from agent:", data)
+                                log.info("Response %r:", data)
                                 return web.json_response(data={"data": data})
                         else:
                             data = await resp.json()
-                            log.info("Got response %r from agent:", data)
+                            log.info("Response %r:", data)
                             return web.json_response(data=data)
 
             try:
                 await proxy_trace_request(agent_url=agent_url, data=data, headers=headers)
             except Exception as e:
-                log.info(f"Error forwarding to agent at {agent_url}, trying new ports.")
-                log.info(e)
-                for i in range(len(self._proxy_backup_ports)-1, -1, -1):
-                    backup_port = self._proxy_backup_ports[i]
+                log.error(f"Error forwarding to agent at {agent_url}, trying again in a few seconds.")
+                time.sleep(10)
+                log.error(e)
+                for i in range(10):
                     try:
-                        await proxy_trace_request(
-                            agent_url=f"http://{AGENT_PROXY_HOST}:{backup_port}", data=data, headers=headers
-                        )
+                        await proxy_trace_request(agent_url=agent_url, data=data, headers=headers)
                     except:
-                        log.info(f"Error forwarding to agent with port: {backup_port}")
+                        log.error(f"Error forwarding to agent at {agent_url}, trying again, maybe.")
+                        log.error(e)
+                        time.sleep(10)
 
         # TODO: implement sampling logic
         return web.json_response(data={"rate_by_service": {}})
@@ -632,14 +631,6 @@ class Agent:
         # wait 1s, gather traces and assert tags
         raise NotImplementedError
 
-    async def handle_update_agent_port(self, request: Request) -> web.Response:
-        log.info(request)
-        port = request.query.get("agent_port")
-        self._proxy_backup_ports.append(port)
-        print(request.query)
-        request.app["agent_url"] = f"http://{AGENT_PROXY_HOST}:{port}"
-        return web.HTTPOk()
-
 
 def make_app(
     disabled_checks: List[str],
@@ -674,7 +665,6 @@ def make_app(
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/snapshot", agent.handle_snapshot),
             web.get("/test/session/traces", agent.handle_session_traces),
-            web.get("/test/session/agent_port", agent.handle_update_agent_port),
             web.get("/test/session/apmtelemetry", agent.handle_session_apmtelemetry),
             web.get("/test/session/stats", agent.handle_session_tracestats),
             web.get("/test/session/requests", agent.handle_session_requests),
