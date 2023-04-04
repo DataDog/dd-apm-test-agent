@@ -4,7 +4,6 @@ import base64
 from collections import OrderedDict
 import json
 import logging
-import msgpack
 import os
 import pprint
 import socket
@@ -50,9 +49,6 @@ _Handler = Callable[[Request], Awaitable[web.Response]]
 
 
 log = logging.getLogger(__name__)
-
-
-AGENT_PROXY_HOST = os.environ.get("PROXY_HOST", "127.0.0.1")
 
 
 def _parse_csv(s: str) -> List[str]:
@@ -386,16 +382,21 @@ class Agent:
                     data=self._request_data(request),
                 ) as resp:
                     assert resp.status == 200
-                    
+
                     if "text/html" in resp.content_type:
                         data = await resp.read()
                         if len(data) == 0:
                             return web.HTTPOk()
                         else:
                             if isinstance(data, bytes):
-                                data = data.decode('utf-8')
+                                data = data.decode("utf-8")
+                            try:
+                                response_data = {"data": json.loads(data)}
+                            except json.JSONDecodeError as e:
+                                log.warning("Error decoding response data: %s, data=%r", str(e), data)
+                                response_data = {}
                             log.info("Got response %r from agent:", data)
-                            return web.json_response(data={"data": data})
+                            return web.json_response(data=response_data)
                     else:
                         data = await resp.json()
                         log.info("Got response %r from agent:", data)

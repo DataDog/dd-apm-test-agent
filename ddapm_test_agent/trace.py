@@ -293,12 +293,7 @@ def set_metric_tag(s: Span, k: str, v: MetricType) -> Span:
 
 def decode_v04(content_type: str, data: bytes) -> v04TracePayload:
     if content_type == "application/msgpack":
-        try:
-            payload = msgpack.unpackb(data)
-        except Exception as e:
-            log.error(e)
-            log.error(data)
-            raise e
+        payload = msgpack.unpackb(data)
     elif content_type == "application/json":
         payload = json.loads(data)
     else:
