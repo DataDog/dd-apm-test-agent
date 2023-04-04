@@ -302,12 +302,7 @@ def decode_v04(content_type: str, data: bytes) -> v04TracePayload:
 
 
 def decode_v05(data: bytes) -> v04TracePayload:
-    try:
-        payload = msgpack.unpackb(data, strict_map_key=False)
-    except Exception as e:
-        log.error(e)
-        log.error(data)
-        raise e
+    payload = msgpack.unpackb(data, strict_map_key=False)
     if not isinstance(payload, list):
         raise TypeError("Trace payload must be an array containing two elements, got type %r." % type(payload))
     if len(payload) != 2:
