@@ -47,19 +47,6 @@ SPAN_REQUIRED_ATTRS = [
 MetricType = Union[int, float]
 
 
-def convert_numbers(data):
-    if isinstance(data, list):
-        return [convert_numbers(item) for item in data]
-    elif isinstance(data, dict):
-        return {key: convert_numbers(value) for key, value in data.items() if key != "meta"}
-    elif isinstance(data, str) and data.isnumeric():
-        return int(data)
-    elif isinstance(data, str) and "." in data and all(part.isnumeric() for part in data.split(".", 1)):
-        return float(data)
-    else:
-        return data
-
-
 class Span(TypedDict):
     name: str
     span_id: SpanId
@@ -103,31 +90,33 @@ def verify_span(d: Any) -> Span:
         for attr in required_attrs:
             assert attr in d, f"'{attr}' required in span"
         NoneType = type(None)
-        assert isinstance(d["span_id"], int), "Expected 'span_id' to be of type: 'int', got: " + type(d["span_id"])
-        assert isinstance(d["trace_id"], int), "Expected 'trace_id' to be of type: 'int', got: " + type(d["trace_id"])
-        assert isinstance(d["name"], str), "Expected 'name' to be of type: 'str', got: " + type(d["name"])
+        assert isinstance(d["span_id"], int), "Expected 'span_id' to be of type: 'int', got: " + str(type(d["span_id"]))
+        assert isinstance(d["trace_id"], int), "Expected 'trace_id' to be of type: 'int', got: " + str(
+            type(d["trace_id"])
+        )
+        assert isinstance(d["name"], str), "Expected 'name' to be of type: 'str', got: " + str(type(d["name"]))
         if "resource" in d:
-            assert isinstance(d["resource"], (str, NoneType)), "Expected 'resource' to be of type: 'str', got: " + type(d["resource"])  # type: ignore
+            assert isinstance(d["resource"], (str, NoneType)), "Expected 'resource' to be of type: 'str', got: " + str(type(d["resource"]))  # type: ignore
         if "service" in d:
-            assert isinstance(d["service"], (str, NoneType)), "Expected 'service' to be of type: 'str', got: " + type(d["service"])  # type: ignore
+            assert isinstance(d["service"], (str, NoneType)), "Expected 'service' to be of type: 'str', got: " + str(type(d["service"]))  # type: ignore
         if "type" in d:
-            assert isinstance(d["type"], (str, NoneType)), "Expected 'type' to be of type: 'str', got: " + type(d["type"])  # type: ignore
+            assert isinstance(d["type"], (str, NoneType)), "Expected 'type' to be of type: 'str', got: " + str(type(d["type"]))  # type: ignore
         if "parent_id" in d:
-            assert isinstance(d["parent_id"], (int, NoneType)), "Expected 'parent_id' to be of type: 'int', got: " + type(d["parent_id"])  # type: ignore
+            assert isinstance(d["parent_id"], (int, NoneType)), "Expected 'parent_id' to be of type: 'int', got: " + str(type(d["parent_id"]))  # type: ignore
         if "error" in d:
-            assert isinstance(d["error"], int), "Expected error to be of type: 'int', got: " + type(d["error"])
+            assert isinstance(d["error"], int), "Expected error to be of type: 'int', got: " + str(type(d["error"]))
         if "meta" in d:
             assert isinstance(d["meta"], dict)
             for k, v in d["meta"].items():
-                assert isinstance(k, str), f"Expected key 'meta.{k}' to be of type: 'str', got: " + type(k)
-                assert isinstance(v, str), f"Expected value of key 'meta.{k}' to be of type: 'str', got: " + type(v)
+                assert isinstance(k, str), f"Expected key 'meta.{k}' to be of type: 'str', got: {type(k)}"
+                assert isinstance(v, str), f"Expected value of key 'meta.{k}' to be of type: 'str', got: {type(v)}"
         if "metrics" in d:
             assert isinstance(d["metrics"], dict)
             for k, v in d["metrics"].items():
-                assert isinstance(k, str), f"Expected key 'metrics.{k}' to be of type: 'str', got: " + type(k)
+                assert isinstance(k, str), f"Expected key 'metrics.{k}' to be of type: 'str', got: {type(k)}"
                 assert isinstance(
                     v, (int, float)
-                ), f"Expected value of key 'metrics.{k}' to be of type: 'float/int', got: " + type(v)
+                ), f"Expected value of key 'metrics.{k}' to be of type: 'float/int', got: {type(v)}"
         return cast(Span, d)
     except AssertionError as e:
         raise TypeError(*e.args) from e
@@ -137,7 +126,6 @@ def v04_verify_trace(maybe_trace: Any) -> Trace:
     if not isinstance(maybe_trace, list):
         raise TypeError("Trace must be a list.")
     for maybe_span in maybe_trace:
-        maybe_span = convert_numbers(maybe_span)
         verify_span(maybe_span)
     return cast(Trace, maybe_trace)
 

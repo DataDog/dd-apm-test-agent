@@ -334,7 +334,7 @@ class Agent:
         headers = CIMultiDict(request.headers)
 
         log.debug(f"New request: {request} with headers: {headers}")
-        log.debug(f"Request Data: {self._request_data(request)!r}")  # noqa
+        log.debug(f"Request Data: {self._request_data(request)!r}")
 
         await checks.check("trace_stall", headers=headers, request=request)
 
@@ -349,6 +349,7 @@ class Agent:
             await checks.check("trace_content_length", headers=headers)
 
             try:
+                disable_trace_count_header = False
                 traces: List[List[Span]] = []
                 if version == "v0.4":
                     traces = self._decode_v04_traces(request)
@@ -360,11 +361,13 @@ class Agent:
                     len(traces),
                 )
             except TypeError as e:
+                disable_trace_count_header = True
                 log.error(f"Error decoding trace: {str(e)}, error {e}")
             except MsgPackExtraDataException as e:
+                disable_trace_count_header = True
                 log.error(f"Error unpacking trace bytes with Msgpack: {str(e)}, error {e}")
 
-            for i, trace in enumerate(traces):  # noqa
+            for i, trace in enumerate(traces):
                 try:
                     log.info(
                         "Chunk %d\n%s",
@@ -375,12 +378,13 @@ class Agent:
                     log.info("Chunk %d could not be displayed (might be incomplete).", i)
             log.info("end of payload %s", "-" * 40)
 
-            with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):  # noqa
-                await checks.check(
-                    "trace_count_header",
-                    headers=headers,
-                    num_traces=len(traces),  # noqa
-                )
+            if not disable_trace_count_header:
+                with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
+                    await checks.check(
+                        "trace_count_header",
+                        headers=headers,
+                        num_traces=len(traces),
+                    )
 
         agent_url = request.app["agent_url"]
         if agent_url and proxy_to_agent:
