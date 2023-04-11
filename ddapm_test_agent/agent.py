@@ -4,8 +4,6 @@ import base64
 from collections import OrderedDict
 import json
 import logging
-from msgpack.exceptions import ExtraData as MsgPackExtraDataException
-from multidict import CIMultiDict
 import os
 import pprint
 import socket
@@ -22,6 +20,8 @@ from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
+from msgpack.exceptions import ExtraData as MsgPackExtraDataException
+from multidict import CIMultiDict
 
 from . import _get_version
 from . import trace_snapshot
@@ -332,16 +332,16 @@ class Agent:
         token = request["session_token"]
         checks: Checks = request.app["checks"]
         headers = CIMultiDict(request.headers)
-        
+
         log.debug(f"New request: {request} with headers: {headers}")
         log.debug(f"Request Data: {self._request_data(request)}")
 
         await checks.check("trace_stall", headers=headers, request=request)
 
         proxy_to_agent = True
-        if 'Do-Not-Proxy-To-Agent' in headers:
-            headers.pop('Do-Not-Proxy-To-Agent')
-            proxy_to_agent=False
+        if "Do-Not-Proxy-To-Agent" in headers:
+            headers.pop("Do-Not-Proxy-To-Agent")
+            proxy_to_agent = False
 
         with CheckTrace.add_frame("headers") as f:
             f.add_item(pprint.pformat(headers))
@@ -387,8 +387,8 @@ class Agent:
             log.info("Forwarding request to agent at %r", agent_url)
 
             proxy_headers = {
-                "Content-Type": headers.get('Content-Type', "application/msgpack"),
-                **{k: v for k, v in headers.items() if "Datadog" in k}
+                "Content-Type": headers.get("Content-Type", "application/msgpack"),
+                **{k: v for k, v in headers.items() if "Datadog" in k},
             }
             async with ClientSession() as session:
                 async with session.post(

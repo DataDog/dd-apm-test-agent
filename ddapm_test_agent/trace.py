@@ -17,6 +17,7 @@ import msgpack
 from typing_extensions import NotRequired
 from typing_extensions import TypedDict
 
+
 log = logging.getLogger(__name__)
 
 SpanId = int
@@ -109,13 +110,13 @@ def verify_span(d: Any) -> Span:
         assert isinstance(d["trace_id"], int), f"Expected 'trace_id' to be of type: 'int', got: " + type(d["trace_id"])
         assert isinstance(d["name"], str), f"Expected 'name' to be of type: 'str', got: " + type(d["name"])
         if "resource" in d:
-            assert isinstance(d["resource"], (str, NoneType)), f"Expected 'resource' to be of type: 'str', got: " + type(d["resource"]) # type: ignore
+            assert isinstance(d["resource"], (str, NoneType)), f"Expected 'resource' to be of type: 'str', got: " + type(d["resource"])  # type: ignore
         if "service" in d:
-            assert isinstance(d["service"], (str, NoneType)), f"Expected 'service' to be of type: 'str', got: " + type(d["service"]) # type: ignore
+            assert isinstance(d["service"], (str, NoneType)), f"Expected 'service' to be of type: 'str', got: " + type(d["service"])  # type: ignore
         if "type" in d:
-            assert isinstance(d["type"], (str, NoneType)), f"Expected 'type' to be of type: 'str', got: " + type(d["type"]) # type: ignore
+            assert isinstance(d["type"], (str, NoneType)), f"Expected 'type' to be of type: 'str', got: " + type(d["type"])  # type: ignore
         if "parent_id" in d:
-            assert isinstance(d["parent_id"], (int, NoneType)), f"Expected 'parent_id' to be of type: 'int', got: " + type(d["parent_id"]) # type: ignore
+            assert isinstance(d["parent_id"], (int, NoneType)), f"Expected 'parent_id' to be of type: 'int', got: " + type(d["parent_id"])  # type: ignore
         if "error" in d:
             assert isinstance(d["error"], int), f"Expected error to be of type: 'int', got: " + type(d["error"])
         if "meta" in d:
@@ -127,7 +128,9 @@ def verify_span(d: Any) -> Span:
             assert isinstance(d["metrics"], dict)
             for k, v in d["metrics"].items():
                 assert isinstance(k, str), f"Expected key 'metrics.{k}' to be of type: 'str', got: " + type(k)
-                assert isinstance(v, (int, float)), f"Expected value of key 'metrics.{k}' to be of type: 'float/int', got: " + type(v)
+                assert isinstance(
+                    v, (int, float)
+                ), f"Expected value of key 'metrics.{k}' to be of type: 'float/int', got: " + type(v)
         return cast(Span, d)
     except AssertionError as e:
         raise TypeError(*e.args) from e
