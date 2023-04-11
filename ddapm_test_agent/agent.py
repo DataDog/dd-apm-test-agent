@@ -334,7 +334,7 @@ class Agent:
         headers = CIMultiDict(request.headers)
 
         log.debug(f"New request: {request} with headers: {headers}")
-        log.debug(f"Request Data: {self._request_data(request)!r}") # noqa
+        log.debug(f"Request Data: {self._request_data(request)!r}")  # noqa
 
         await checks.check("trace_stall", headers=headers, request=request)
 
