@@ -4,6 +4,8 @@ import base64
 from collections import OrderedDict
 import json
 import logging
+from msgpack.exceptions import ExtraData as MsgPackExtraDataException
+from multidict import CIMultiDict
 import os
 import pprint
 import socket
@@ -329,15 +331,25 @@ class Agent:
         await self._store_request(request)
         token = request["session_token"]
         checks: Checks = request.app["checks"]
+        headers = CIMultiDict(request.headers)
+        
+        log.debug(f"New request: {request} with headers: {headers}")
+        log.debug(f"Request Data: {self._request_data(request)}")
 
-        await checks.check("trace_stall", headers=request.headers, request=request)
+        await checks.check("trace_stall", headers=headers, request=request)
+
+        proxy_to_agent = True
+        if 'Do-Not-Proxy-To-Agent' in headers:
+            headers.pop('Do-Not-Proxy-To-Agent')
+            proxy_to_agent=False
 
         with CheckTrace.add_frame("headers") as f:
-            f.add_item(pprint.pformat(request.headers))
-            await checks.check("meta_tracer_version_header", headers=request.headers)
-            await checks.check("trace_content_length", headers=request.headers)
+            f.add_item(pprint.pformat(headers))
+            await checks.check("meta_tracer_version_header", headers=headers)
+            await checks.check("trace_content_length", headers=headers)
 
             try:
+                traces = None
                 if version == "v0.4":
                     traces = self._decode_v04_traces(request)
                 elif version == "v0.5":
@@ -347,59 +359,66 @@ class Agent:
                     token,
                     len(traces),
                 )
-                for i, trace in enumerate(traces):
-                    try:
-                        log.info(
-                            "Chunk %d\n%s",
-                            i,
-                            pprint_trace(trace, request.app["log_span_fmt"]),
-                        )
-                    except ValueError:
-                        log.info("Chunk %d could not be displayed (might be incomplete).", i)
-                log.info("end of payload %s", "-" * 40)
+            except TypeError as e:
+                log.error(f"Error decoding trace: {str(e)}, error {e}")
+            except MsgPackExtraDataException as e:
+                log.error(f"Error unpacking trace bytes with Msgpack: {str(e)}, error {e}")
 
-                with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
-                    await checks.check(
-                        "trace_count_header",
-                        headers=request.headers,
-                        num_traces=len(traces),
+            for i, trace in enumerate(traces):
+                try:
+                    log.info(
+                        "Chunk %d\n%s",
+                        i,
+                        pprint_trace(trace, request.app["log_span_fmt"]),
                     )
-            except Exception as e:
-                log.error(e)
+                except ValueError:
+                    log.info("Chunk %d could not be displayed (might be incomplete).", i)
+            log.info("end of payload %s", "-" * 40)
+
+            with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
+                await checks.check(
+                    "trace_count_header",
+                    headers=headers,
+                    num_traces=len(traces),
+                )
 
         agent_url = request.app["agent_url"]
-        if agent_url:
+        if agent_url and proxy_to_agent:
             log.info("Forwarding request to agent at %r", agent_url)
 
-            headers = {
-                "Content-Type": "application/msgpack",
-                **{k: v for k, v in request.headers.items() if "Datadog" in k},
+            proxy_headers = {
+                "Content-Type": headers.get('Content-Type', "application/msgpack"),
+                **{k: v for k, v in headers.items() if "Datadog" in k}
             }
             async with ClientSession() as session:
                 async with session.post(
                     f"{agent_url}/v0.4/traces",
-                    headers=headers,
+                    headers=proxy_headers,
                     data=self._request_data(request),
                 ) as resp:
-                    assert resp.status == 200
+                    log.info("Got response from agent with status: %s", resp.status)
+
+                    assert resp.status == 200, f"Request to agent unsuccessful, received [{resp.status}] response."
 
                     if "text/html" in resp.content_type:
                         data = await resp.read()
                         if len(data) == 0:
+                            log.info("Received empty response: %r from agent.", data)
                             return web.HTTPOk()
                         else:
                             if isinstance(data, bytes):
-                                data = data.decode("utf-8")
+                                data = data.decode()
                             try:
-                                response_data = {"data": json.loads(data)}
+                                response_data = json.loads(data)
                             except json.JSONDecodeError as e:
                                 log.warning("Error decoding response data: %s, data=%r", str(e), data)
+                                log.warning("Original Request: %r", self._request_data(request))
                                 response_data = {}
-                            log.info("Got response %r from agent:", data)
+                            log.info("Response %r from agent:", data)
                             return web.json_response(data=response_data)
                     else:
                         data = await resp.json()
-                        log.info("Got response %r from agent:", data)
+                        log.info("Response %r from agent:", data)
                         return web.json_response(data=data)
 
         # TODO: implement sampling logic
