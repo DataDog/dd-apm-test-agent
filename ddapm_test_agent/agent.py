@@ -356,7 +356,7 @@ class Agent:
         if "Datadog-Proxy-Port" in headers:
             port = headers.pop("Datadog-Proxy-Port")
             old_port, request.app["agent_url"] = update_url_port(request.app["agent_url"], new_port=port)
-            self._proxy_backup_ports.append(old_port)
+            self._proxy_backup_ports.add(old_port)
             log.info("Found port in headers, new agent URL is: {}".format(request.app["agent_url"]))
 
         proxy_to_agent = True
