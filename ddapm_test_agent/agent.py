@@ -16,11 +16,14 @@ from typing import Literal
 from typing import Optional
 from typing import Set
 from typing import cast
+from urllib.parse import urlparse
+from urllib.parse import urlunparse
 
 from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
+from msgpack.exceptions import ExtraData as MsgPackExtraDataException
 from multidict import CIMultiDict
 
 from . import _get_version
@@ -51,9 +54,6 @@ _Handler = Callable[[Request], Awaitable[web.Response]]
 
 
 log = logging.getLogger(__name__)
-
-
-AGENT_PROXY_HOST = os.environ.get("PROXY_HOST", "host.docker.internal")
 
 
 def _parse_csv(s: str) -> List[str]:
@@ -113,6 +113,17 @@ async def session_token_middleware(request: Request, handler: _Handler) -> web.R
     return await handler(request)
 
 
+def update_url_port(url, new_port):
+    # Updates the Agent URL with a new port number, returning the updated URL and old port
+    parsed_url = urlparse(url)
+    old_port = parsed_url.port
+    new_netloc = parsed_url.netloc.replace(f":{old_port}", f":{new_port}")
+    new_url = urlunparse(
+        (parsed_url.scheme, new_netloc, parsed_url.path, parsed_url.params, parsed_url.query, parsed_url.fragment)
+    )
+    return old_port, new_url
+
+
 class Agent:
     def __init__(self):
         """Only store the requests sent to the agent. There are many representations
@@ -123,8 +134,8 @@ class Agent:
         """
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
-        self._proxy_backup_ports = []
         self._rc_server = RemoteConfigServer()
+        self._proxy_backup_ports = set()
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -337,22 +348,30 @@ class Agent:
         checks: Checks = request.app["checks"]
         headers = CIMultiDict(request.headers)
 
-        await checks.check("trace_stall", headers=dict(headers), request=request)
-        
-        proxy_to_agent = True
-        if "dd-proxy-port" in headers:
-            port = headers.pop("dd-proxy-port")
-            self._proxy_backup_ports.append(port)
-            request.app["agent_url"] = f"http://{AGENT_PROXY_HOST}:{port}"
+        log.debug(f"New request: {request} with headers: {headers}")
+        log.debug(f"Request Data: {self._request_data(request)!r}")
+
+        await checks.check("trace_stall", headers=headers, request=request)
+
+        if "Datadog-Proxy-Port" in headers:
+            port = headers.pop("Datadog-Proxy-Port")
+            old_port, request.app["agent_url"] = update_url_port(request.app["agent_url"], new_port=port)
+            self._proxy_backup_ports.append(old_port)
             log.info("Found port in headers, new agent URL is: {}".format(request.app["agent_url"]))
-            
+
+        proxy_to_agent = True
+        if "Do-Not-Proxy-To-Agent" in headers:
+            headers.pop("Do-Not-Proxy-To-Agent")
+            proxy_to_agent = False
 
         with CheckTrace.add_frame("headers") as f:
-            f.add_item(pprint.pformat(dict(headers)))
-            await checks.check("meta_tracer_version_header", headers=dict(headers))
-            await checks.check("trace_content_length", headers=dict(headers))
+            f.add_item(pprint.pformat(headers))
+            await checks.check("meta_tracer_version_header", headers=headers)
+            await checks.check("trace_content_length", headers=headers)
 
             try:
+                disable_trace_count_header = False
+                traces: List[List[Span]] = []
                 if version == "v0.4":
                     traces = self._decode_v04_traces(request)
                 elif version == "v0.5":
@@ -372,53 +391,82 @@ class Agent:
                     except ValueError:
                         log.info("Chunk %d could not be displayed (might be incomplete).", i)
                 log.info("End of payload %s", "-" * 40)
+            except TypeError as e:
+                disable_trace_count_header = True
+                log.error(f"Error decoding trace: {str(e)}, error {e}")
+            except MsgPackExtraDataException as e:
+                disable_trace_count_header = True
+                log.error(f"Error unpacking trace bytes with Msgpack: {str(e)}, error {e}")
 
+            for i, trace in enumerate(traces):
+                try:
+                    log.info(
+                        "Chunk %d\n%s",
+                        i,
+                        pprint_trace(trace, request.app["log_span_fmt"]),
+                    )
+                except ValueError:
+                    log.info("Chunk %d could not be displayed (might be incomplete).", i)
+            log.info("end of payload %s", "-" * 40)
+
+            if not disable_trace_count_header:
                 with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
                     await checks.check(
                         "trace_count_header",
-                        headers=dict(headers),
+                        headers=headers,
                         num_traces=len(traces),
                     )
-            except Exception as e:
-                log.info(e)
 
         agent_url = request.app["agent_url"]
         if agent_url and proxy_to_agent:
             log.info("Forwarding request to agent at %r", agent_url)
-            data = self._request_data(request)
 
-            headers = {
-                "Content-Type": "application/msgpack",
+            proxy_headers = {
+                "Content-Type": headers.get("Content-Type", "application/msgpack"),
                 **{k: v for k, v in headers.items() if "Datadog" in k},
             }
 
             async def proxy_trace_request(agent_url, data, headers):
                 async with ClientSession() as session:
                     async with session.put(f"{agent_url}/v0.4/traces", headers=headers, data=data) as resp:
-                        log.info(f"Response from agent: {resp}")
+
+                        log.info("Got response from agent with status: %s", resp.status)
+                        assert resp.status == 200, f"Request to agent unsuccessful, received [{resp.status}] response."
+
                         if "text/html" in resp.content_type:
                             data = await resp.read()
                             if len(data) == 0:
+                                log.info("Received empty response: %r from agent.", data)
                                 return web.HTTPOk()
                             else:
-                                log.info("Response %r:", data)
-                                return web.json_response(data={"data": data})
+                                if isinstance(data, bytes):
+                                    data = data.decode()
+                                try:
+                                    response_data = json.loads(data)
+                                except json.JSONDecodeError as e:
+                                    log.warning("Error decoding response data: %s, data=%r", str(e), data)
+                                    log.warning("Original Request: %r", self._request_data(request))
+                                    response_data = {}
+                                log.info("Response %r from agent:", data)
+                                return web.json_response(data=response_data)
                         else:
                             data = await resp.json()
-                            log.info("Response %r:", data)
+                            log.info("Response %r from agent:", data)
                             return web.json_response(data=data)
 
             try:
-                await proxy_trace_request(agent_url=agent_url, data=data, headers=headers)
+                await proxy_trace_request(agent_url=agent_url, data=self._request_data(request), headers=proxy_headers)
             except Exception as e:
-                log.info(f"Error forwarding to agent at {agent_url}, trying again in a few seconds.")
+                log.info(f"Error forwarding to agent at: '{agent_url}', trying again in a few seconds.")
                 log.info(e)
                 for i in range(10):
                     try:
-                        await proxy_trace_request(agent_url=agent_url, data=data, headers=headers)
+                        await proxy_trace_request(
+                            agent_url=agent_url, data=self._request_data(request), headers=proxy_headers
+                        )
                         break
                     except:
-                        log.info(f"Error forwarding to agent at {agent_url}, trying again, maybe.")
+                        log.info(f"Error forwarding to agent at: '{agent_url}', trying again, maybe.")
                         log.info(e)
 
         # TODO: implement sampling logic

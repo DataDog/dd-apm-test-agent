@@ -1,6 +1,5 @@
 """Tracing specific functions and types"""
 import json
-import logging
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -16,9 +15,6 @@ from typing import cast
 import msgpack
 from typing_extensions import NotRequired
 from typing_extensions import TypedDict
-
-
-log = logging.getLogger(__name__)
 
 
 SpanId = int
@@ -49,19 +45,6 @@ SPAN_REQUIRED_ATTRS = [
 ]
 
 MetricType = Union[int, float]
-
-
-def convert_numbers(data):
-    if isinstance(data, list):
-        return [convert_numbers(item) for item in data]
-    elif isinstance(data, dict):
-        return {key: convert_numbers(value) for key, value in data.items() if key != "meta"}
-    elif isinstance(data, str) and data.isnumeric():
-        return int(data)
-    elif isinstance(data, str) and "." in data and all(part.isnumeric() for part in data.split(".", 1)):
-        return float(data)
-    else:
-        return data
 
 
 class Span(TypedDict):
@@ -100,40 +83,42 @@ TraceMap = OrderedDict[int, Trace]
 
 
 def verify_span(d: Any) -> Span:
-    assert isinstance(d, dict)
     try:
+        assert isinstance(d, dict), f"Expected 'span' to be of type: '{dict}', got: '{type(d)}'"
         # TODO: check these
         required_attrs = ["span_id", "trace_id", "name"]
         for attr in required_attrs:
             assert attr in d, f"'{attr}' required in span"
         NoneType = type(None)
-        assert isinstance(d["span_id"], (float, int))
-        assert isinstance(d["trace_id"], (float, int))
-        assert isinstance(d["name"], str)
+        assert isinstance(d["span_id"], int), "Expected 'span_id' to be of type: 'int', got: " + str(type(d["span_id"]))
+        assert isinstance(d["trace_id"], int), "Expected 'trace_id' to be of type: 'int', got: " + str(
+            type(d["trace_id"])
+        )
+        assert isinstance(d["name"], str), "Expected 'name' to be of type: 'str', got: " + str(type(d["name"]))
         if "resource" in d:
-            assert isinstance(d["resource"], (str, NoneType))  # type: ignore
+            assert isinstance(d["resource"], (str, NoneType)), "Expected 'resource' to be of type: 'str', got: " + str(type(d["resource"]))  # type: ignore
         if "service" in d:
-            assert isinstance(d["service"], (str, NoneType))  # type: ignore
+            assert isinstance(d["service"], (str, NoneType)), "Expected 'service' to be of type: 'str', got: " + str(type(d["service"]))  # type: ignore
         if "type" in d:
-            assert isinstance(d["type"], (str, NoneType))  # type: ignore
+            assert isinstance(d["type"], (str, NoneType)), "Expected 'type' to be of type: 'str', got: " + str(type(d["type"]))  # type: ignore
         if "parent_id" in d:
-            assert isinstance(d["parent_id"], (int, NoneType))  # type: ignore
+            assert isinstance(d["parent_id"], (int, NoneType)), "Expected 'parent_id' to be of type: 'int', got: " + str(type(d["parent_id"]))  # type: ignore
         if "error" in d:
-            assert isinstance(d["error"], (float, int))
+            assert isinstance(d["error"], int), "Expected error to be of type: 'int', got: " + str(type(d["error"]))
         if "meta" in d:
             assert isinstance(d["meta"], dict)
             for k, v in d["meta"].items():
-                assert isinstance(k, str)
-                assert isinstance(v, str)
+                assert isinstance(k, str), f"Expected key 'meta.{k}' to be of type: 'str', got: {type(k)}"
+                assert isinstance(v, str), f"Expected value of key 'meta.{k}' to be of type: 'str', got: {type(v)}"
         if "metrics" in d:
             assert isinstance(d["metrics"], dict)
             for k, v in d["metrics"].items():
-                assert isinstance(k, str)
-                assert isinstance(v, (int, float))
+                assert isinstance(k, str), f"Expected key 'metrics.{k}' to be of type: 'str', got: {type(k)}"
+                assert isinstance(
+                    v, (int, float)
+                ), f"Expected value of key 'metrics.{k}' to be of type: 'float/int', got: {type(v)}"
         return cast(Span, d)
     except AssertionError as e:
-        log.info(d)
-        log.info(e)
         raise TypeError(*e.args) from e
 
 
@@ -141,7 +126,6 @@ def v04_verify_trace(maybe_trace: Any) -> Trace:
     if not isinstance(maybe_trace, list):
         raise TypeError("Trace must be a list.")
     for maybe_span in maybe_trace:
-        maybe_span = convert_numbers(maybe_span)
         verify_span(maybe_span)
     return cast(Trace, maybe_trace)
 
@@ -291,28 +275,52 @@ def set_metric_tag(s: Span, k: str, v: MetricType) -> Span:
     return s
 
 
+def parse_json(json_string):
+    def is_number_as_str(num, number_type=int):
+        try:
+            number_type(num)
+            return isinstance(num, str)
+        except ValueError:
+            return False
+
+    # Define a custom JSON decoder for decoding spans
+    def json_decoder(maybe_span):
+        # loop through the span object
+        if isinstance(maybe_span, dict):
+            for key, value in maybe_span.items():
+                if key == "meta":
+                    # Check if the value is an int or float and convert back to string if true
+                    for k, v in value.items():
+                        if isinstance(v, int) or isinstance(v, float):
+                            value[k] = str(v)
+                elif key == "metrics":
+                    for k, v in value.items():
+                        # Check if value is a a float or int
+                        if is_number_as_str(v, int):
+                            value[k] = int(v)
+                        elif is_number_as_str(v, float):
+                            value[k] = float(v)
+                # For other attributes, check if the value is a string that can be converted to an int
+                elif is_number_as_str(value, int):
+                    maybe_span[key] = int(value)
+        return maybe_span
+
+    parsed_data = json.loads(json_string, object_hook=json_decoder)
+    return parsed_data
+
+
 def decode_v04(content_type: str, data: bytes) -> v04TracePayload:
     if content_type == "application/msgpack":
-        try:
-            payload = msgpack.unpackb(data)
-        except Exception as e:
-            log.error(e)
-            log.error(data)
-            raise e
+        payload = msgpack.unpackb(data)
     elif content_type == "application/json":
-        payload = json.loads(data)
+        payload = parse_json(data)
     else:
         raise TypeError("Content type %r not supported" % content_type)
     return _verify_v04_payload(payload)
 
 
 def decode_v05(data: bytes) -> v04TracePayload:
-    try:
-        payload = msgpack.unpackb(data, strict_map_key=False)
-    except Exception as e:
-        log.error(e)
-        log.error(data)
-        raise e
+    payload = msgpack.unpackb(data, strict_map_key=False)
     if not isinstance(payload, list):
         raise TypeError("Trace payload must be an array containing two elements, got type %r." % type(payload))
     if len(payload) != 2:

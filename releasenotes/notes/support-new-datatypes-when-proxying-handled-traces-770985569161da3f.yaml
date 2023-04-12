@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Adds support for additional content-types when handling responses from proxied traces. Content-types now supported are 
+    `application/json` and `text/html`. Also adds error handling when decoding responses from the proxy.
