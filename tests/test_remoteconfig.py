@@ -15,6 +15,18 @@ async def rc_agent(agent):
     assert resp.status == 202, await resp.text()
 
 
+async def _request_update_and_get_data_with_session(rc_agent, token, data, expected):
+    resp = await rc_agent.put(
+        "/test/session/responses/config", data=json.dumps(data), headers={"X-Datadog-Test-Session-Token": token}
+    )
+    assert resp.status == 202, await resp.text()
+
+    resp = await rc_agent.post("/v0.7/config", headers={"X-Datadog-Test-Session-Token": token})
+    content = await resp.text()
+    assert resp.status == 200
+    assert json.loads(content) == expected
+
+
 async def test_remoteconfig(
     rc_agent,
 ):
@@ -128,3 +140,18 @@ async def test_remoteconfig_create_path_payload(
     content = await resp.text()
     assert resp.status == 200
     assert json.loads(content) == RemoteConfigServer._build_config_path_response(data["path"], data["msg"])
+
+
+async def test_remoteconfig_session(
+    rc_agent,
+):
+    resp = await rc_agent.post("/v0.7/config")
+    content = await resp.text()
+    assert resp.status == 200
+    assert content == "{}"
+    data = {"a": "b"}
+    await _request_update_and_get_data_with_session(rc_agent, "token_1", data, data)
+    data = {"c": "d"}
+    await _request_update_and_get_data_with_session(rc_agent, "token_1", data, {"a": "b", "c": "d"})
+    data = {"e": "f"}
+    await _request_update_and_get_data_with_session(rc_agent, "token_2", data, data)

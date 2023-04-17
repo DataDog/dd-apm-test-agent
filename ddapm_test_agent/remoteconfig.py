@@ -9,20 +9,20 @@ from typing import Dict
 class RemoteConfigServer:
     _responses: Dict[str, Any] = {}
 
-    def _update_response(self, endpoint_key: str, data: Dict[str, Any]) -> None:
-        if self._responses.get(endpoint_key):
-            self._responses[endpoint_key].update(data)
+    def _update_response(self, token: str, data: Dict[str, Any]) -> None:
+        if self._responses.get(token):
+            self._responses[token].update(data)
         else:
-            self._create_response(endpoint_key, data)
+            self._create_response(token, data)
 
-    def _create_response(self, endpoint_key: str, data: Dict[str, Any]) -> None:
-        self._responses[endpoint_key] = data
+    def _create_response(self, token: str, data: Dict[str, Any]) -> None:
+        self._responses[token] = data
 
-    async def _get_response(self, endpoint_key: str) -> Dict[str, Any]:
-        return self._responses.get(endpoint_key, {})
+    async def _get_response(self, token: str) -> Dict[str, Any]:
+        return self._responses.get(token, {})
 
-    def update_config_response(self, data: Dict[str, Any]) -> None:
-        self._update_response("config", data)
+    def update_config_response(self, token: str, data: Dict[str, Any]) -> None:
+        self._update_response(token, data)
 
     @staticmethod
     def _build_config_path_response(path: str, msg: str) -> Dict[str, Any]:
@@ -83,12 +83,12 @@ class RemoteConfigServer:
         }
         return remote_config_payload
 
-    def create_config_path_response(self, path: str, msg: str) -> None:
+    def create_config_path_response(self, token: str, path: str, msg: str) -> None:
         remote_config_payload = self._build_config_path_response(path, msg)
-        self.create_config_response(remote_config_payload)
+        self.create_config_response(token, remote_config_payload)
 
-    def create_config_response(self, data: Dict[str, Any]) -> None:
-        self._create_response("config", data)
+    def create_config_response(self, token: str, data: Dict[str, Any]) -> None:
+        self._create_response(token, data)
 
-    async def get_config_response(self) -> Dict[str, Any]:
-        return await self._get_response("config")
+    async def get_config_response(self, token: str) -> Dict[str, Any]:
+        return await self._get_response(token)
