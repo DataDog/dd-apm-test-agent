@@ -274,13 +274,15 @@ class Agent:
     async def handle_v07_remoteconfig(self, request: Request) -> web.Response:
         """Emulates Remote Config endpoint: /v0.7/config"""
         await self._store_request(request)
-        data = await self._rc_server.get_config_response()
+        token = _session_token(request)
+        data = await self._rc_server.get_config_response(token)
         return web.json_response(data)
 
     async def handle_v07_remoteconfig_create(self, request: Request) -> web.Response:
         """Configure the response payload of /v0.7/config."""
         raw_data = await request.read()
-        self._rc_server.create_config_response(json.loads(raw_data))
+        token = _session_token(request)
+        self._rc_server.create_config_response(token, json.loads(raw_data))
         return web.HTTPAccepted()
 
     async def handle_v07_remoteconfig_path_create(self, request: Request) -> web.Response:
@@ -292,13 +294,15 @@ class Agent:
         content = json.loads(raw_data)
         path = content["path"]
         msg = content["msg"]
-        self._rc_server.create_config_path_response(path, msg)
+        token = _session_token(request)
+        self._rc_server.create_config_path_response(token, path, msg)
         return web.HTTPAccepted()
 
     async def handle_v07_remoteconfig_put(self, request: Request) -> web.Response:
         """Configure the response payload of /v0.7/config"""
         raw_data = await request.read()
-        self._rc_server.update_config_response(json.loads(raw_data))
+        token = _session_token(request)
+        self._rc_server.update_config_response(token, json.loads(raw_data))
         return web.HTTPAccepted()
 
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
