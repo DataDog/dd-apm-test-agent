@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    Add support for artificially throttling requests to simulate an agent under
+    duress.  Enabled dynamically via request header
+    ``X-Datadog-Test-Trace-Stall-Seconds`` with /v0.4/trace requests or
+    statically via the ``--trace-request-delay`` flag.

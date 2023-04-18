@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Add ``ddapm-test-agent-session-start`` and ``ddapm-test-agent-snapshot`` commands
+    to provide a more convenient way to perform snapshots manually or in CI.

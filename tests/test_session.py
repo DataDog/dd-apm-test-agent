@@ -45,13 +45,9 @@ async def test_concurrent_session(
     v04_reference_http_trace_payload_data_raw,
     do_reference_v04_http_trace,
 ):
-    resp = await agent.get(
-        "/test/session/start", params={"test_session_token": "test_case"}
-    )
+    resp = await agent.get("/test/session/start", params={"test_session_token": "test_case"})
     assert resp.status == 200, await resp.text()
-    resp = await agent.get(
-        "/test/session/start", params={"test_session_token": "test_case2"}
-    )
+    resp = await agent.get("/test/session/start", params={"test_session_token": "test_case2"})
     assert resp.status == 200, await resp.text()
 
     resp = await do_reference_v04_http_trace(token="test_case")
@@ -61,9 +57,7 @@ async def test_concurrent_session(
     assert resp.status == 200, await resp.text()
 
     for token in ["test_case", "test_case2"]:
-        resp = await agent.get(
-            "/test/session/traces", params={"test_session_token": token}
-        )
+        resp = await agent.get("/test/session/traces", params={"test_session_token": token})
         assert resp.status == 200
         assert await resp.json() == v04_reference_http_trace_payload_data_raw
 
@@ -74,9 +68,7 @@ async def test_concurrent_session(
     resp = await agent.get("/test/session/clear")
     assert resp.status == 200
     for token in ["test_case", "test_case2"]:
-        resp = await agent.get(
-            "/test/session/traces", params={"test_session_token": token}
-        )
+        resp = await agent.get("/test/session/traces", params={"test_session_token": token})
         assert resp.status == 200
         assert await resp.json() == []
 
@@ -90,35 +82,30 @@ async def test_two_sessions(
     When sessions are run again
         Only the traces for the latest session should be returned.
     """
-    resp = await agent.get(
-        "/test/session/start", params={"test_session_token": "test_case"}
-    )
+    resp = await agent.get("/test/session/start", params={"test_session_token": "test_case"})
     assert resp.status == 200, await resp.text()
 
     resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200, await resp.text()
 
-    resp = await agent.get(
-        "/test/session/start", params={"test_session_token": "test_case"}
-    )
+    resp = await agent.get("/test/session/start", params={"test_session_token": "test_case"})
     assert resp.status == 200, await resp.text()
 
     resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200, await resp.text()
 
-    resp = await agent.get(
-        "/test/session/traces", params={"test_session_token": "test_case"}
-    )
+    resp = await agent.get("/test/session/traces", params={"test_session_token": "test_case"})
     assert resp.status == 200
     assert await resp.json() == v04_reference_http_trace_payload_data_raw
 
 
 async def test_session_requests(
-    agent, do_reference_v04_http_trace, do_reference_v06_http_stats
+    agent,
+    do_reference_v04_http_trace,
+    do_reference_v06_http_stats,
+    do_reference_v2_http_apmtelemetry,
 ):
-    resp = await agent.get(
-        "/test/session/start", params={"test_session_token": "test_case"}
-    )
+    resp = await agent.get("/test/session/start", params={"test_session_token": "test_case"})
     assert resp.status == 200, await resp.text()
     resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200, await resp.text()
@@ -126,13 +113,13 @@ async def test_session_requests(
     assert resp.status == 200, await resp.text()
     resp = await do_reference_v06_http_stats(token="test_case")
     assert resp.status == 200, await resp.text()
+    resp = await do_reference_v2_http_apmtelemetry(token="test_case")
+    assert resp.status == 200, await resp.text()
 
-    resp = await agent.get(
-        "/test/session/requests", params={"test_session_token": "test_case"}
-    )
+    resp = await agent.get("/test/session/requests", params={"test_session_token": "test_case"})
     requests = await resp.json()
     assert resp.status == 200
-    assert len(requests) == 3
+    assert len(requests) == 4
     assert "X-Datadog-Trace-Count" in requests[0]["headers"]
     body = requests[0]["body"]
     traces = msgpack.unpackb(base64.b64decode(body))
@@ -142,3 +129,5 @@ async def test_session_requests(
     assert requests[0]["url"].endswith("/v0.4/traces?test_session_token=test_case")
     assert requests[1]["url"].endswith("/v0.4/traces?test_session_token=test_case")
     assert requests[2]["url"].endswith("/v0.6/stats?test_session_token=test_case")
+    assert requests[3]["method"] == "POST"
+    assert requests[3]["url"].endswith("/telemetry/proxy/api/v2/apmtelemetry?test_session_token=test_case")

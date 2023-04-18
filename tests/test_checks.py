@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from .conftest import v04_trace
@@ -12,6 +14,22 @@ async def test_reference(
     resp = await agent.put(
         "/v0.4/traces",
         headers=v04_reference_http_trace_payload_headers,
+        data=v04_reference_http_trace_payload_data,
+    )
+    assert resp.status == 200, await resp.text()
+
+
+async def test_reference_case_insensitive(
+    agent,
+    v04_reference_http_trace_payload_data,
+):
+    resp = await agent.put(
+        "/v0.4/traces",
+        headers={
+            "content-type": "application/msgpack",
+            "x-datadog-trace-count": "1",
+            "datadog-meta-tracer-version": "v0.1",
+        },
         data=v04_reference_http_trace_payload_data,
     )
     assert resp.status == 200, await resp.text()
@@ -79,3 +97,21 @@ async def test_trace_content_length(agent):
     resp = await v04_trace(agent, [trace], "msgpack")
     assert resp.status == 400, await resp.text()
     assert "Check 'trace_content_length' failed: content length" in await resp.text()
+
+
+async def test_trace_stall(
+    agent,
+    v04_reference_http_trace_payload_headers,
+    v04_reference_http_trace_payload_data,
+    agent_disabled_checks,
+):
+    v04_reference_http_trace_payload_headers["X-Datadog-Test-Stall-Seconds"] = "0.8"
+    start = time.monotonic_ns()
+    resp = await agent.put(
+        "/v0.4/traces",
+        headers=v04_reference_http_trace_payload_headers,
+        data=v04_reference_http_trace_payload_data,
+    )
+    assert resp.status == 200, await resp.text()
+    end = time.monotonic_ns()
+    assert (end - start) / 1e9 >= 0.8

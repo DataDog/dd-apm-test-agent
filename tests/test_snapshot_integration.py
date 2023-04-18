@@ -5,40 +5,49 @@ and run the tests as usual.
 import asyncio
 import os
 import subprocess
+from typing import AsyncGenerator
 from typing import Callable
+from typing import Dict
 from typing import Generator
 
 import aiohttp
 from aiohttp.client_exceptions import ClientConnectorError
 from aiohttp.client_exceptions import ClientOSError
 from ddtrace import Tracer
+from ddtrace.profiling import Profiler
+from ddtrace.propagation.http import HTTPPropagator
 from ddtrace.sampler import DatadogSampler
 import pytest
 
 
 @pytest.fixture
-def testagent_port():
-    yield 8126
-
-
-@pytest.fixture(scope="module")
-def testagent_snapshot_ci_mode():
-    # Default all tests in this module to be run in CI mode
-    # unless a special env var is passed to make generating
-    # the snapshots easier.
-    yield os.getenv("GENERATE_SNAPSHOTS") != "1"
+def testagent_port() -> str:
+    return "8126"
 
 
 @pytest.fixture
-async def testagent(loop, testagent_port, testagent_snapshot_ci_mode):
+def testagent_url(testagent_port: str) -> str:
+    return "http://localhost:%s" % testagent_port
+
+
+@pytest.fixture(scope="module")
+def testagent_snapshot_ci_mode() -> bool:
+    # Default all tests in this module to be run in CI mode
+    # unless a special env var is passed to make generating
+    # the snapshots easier.
+    return os.getenv("GENERATE_SNAPSHOTS") != "1"
+
+
+@pytest.fixture
+async def testagent(
+    loop: asyncio.BaseEventLoop, testagent_port: str, testagent_snapshot_ci_mode: bool
+) -> AsyncGenerator[aiohttp.ClientSession, None]:
     env = os.environ.copy()
     env.update(
         {
-            "PORT": str(testagent_port),
+            "PORT": testagent_port,
             "SNAPSHOT_CI": "1" if testagent_snapshot_ci_mode else "0",
-            "SNAPSHOT_DIR": os.path.join(
-                os.path.dirname(__file__), "integration_snapshots"
-            ),
+            "SNAPSHOT_DIR": os.path.join(os.path.dirname(__file__), "integration_snapshots"),
         }
     )
     p = subprocess.Popen(["ddapm-test-agent"], env=env)
@@ -63,20 +72,18 @@ async def testagent(loop, testagent_port, testagent_snapshot_ci_mode):
 
 
 @pytest.fixture
-def tracer(testagent_port, testagent):
+def tracer(testagent_port: str, testagent: aiohttp.ClientSession) -> Tracer:
     tracer = Tracer(url=f"http://localhost:{testagent_port}")
-    yield tracer
+    return tracer
 
 
 @pytest.fixture
-def trace_sample_rate():
-    yield 1.0
+def trace_sample_rate() -> float:
+    return 1.0
 
 
 @pytest.fixture
-def stats_tracer(
-    tracer: Tracer, trace_sample_rate: float
-) -> Generator[Tracer, None, None]:
+def stats_tracer(tracer: Tracer, trace_sample_rate: float) -> Generator[Tracer, None, None]:
     tracer.configure(
         compute_stats_enabled=True,
         sampler=DatadogSampler(
@@ -131,13 +138,9 @@ async def test_single_trace(
     metrics,
     response_code,
 ):
-    await testagent.get(
-        "http://localhost:8126/test/session/start?test_session_token=test_single_trace"
-    )
+    await testagent.get("http://localhost:8126/test/session/start?test_session_token=test_single_trace")
     tracer = Tracer(url="http://localhost:8126")
-    with tracer.trace(
-        operation_name, service=service, resource=resource, span_type=span_type
-    ) as span:
+    with tracer.trace(operation_name, service=service, resource=resource, span_type=span_type) as span:
         if error is not None:
             span.error = error
         for k, v in meta.items():
@@ -145,16 +148,12 @@ async def test_single_trace(
         for k, v in metrics.items():
             span.set_metric(k, v)
     tracer.shutdown()
-    resp = await testagent.get(
-        "http://localhost:8126/test/session/snapshot?test_session_token=test_single_trace"
-    )
+    resp = await testagent.get("http://localhost:8126/test/session/snapshot?test_session_token=test_single_trace")
     assert resp.status == response_code
 
 
 async def test_multi_trace(testagent, tracer):
-    await testagent.get(
-        "http://localhost:8126/test/session/start?test_session_token=test_multi_trace"
-    )
+    await testagent.get("http://localhost:8126/test/session/start?test_session_token=test_multi_trace")
     with tracer.trace("root0"):
         with tracer.trace("child0"):
             pass
@@ -162,15 +161,11 @@ async def test_multi_trace(testagent, tracer):
         with tracer.trace("child1"):
             pass
     tracer.flush()
-    resp = await testagent.get(
-        "http://localhost:8126/test/session/snapshot?test_session_token=test_multi_trace"
-    )
+    resp = await testagent.get("http://localhost:8126/test/session/snapshot?test_session_token=test_multi_trace")
     assert resp.status == 200
 
     # Run the snapshot test again.
-    await testagent.get(
-        "http://localhost:8126/test/session/start?test_session_token=test_multi_trace"
-    )
+    await testagent.get("http://localhost:8126/test/session/start?test_session_token=test_multi_trace")
     with tracer.trace("root0"):
         with tracer.trace("child0"):
             pass
@@ -178,22 +173,16 @@ async def test_multi_trace(testagent, tracer):
         with tracer.trace("child1"):
             pass
     tracer.flush()
-    resp = await testagent.get(
-        "http://localhost:8126/test/session/snapshot?test_session_token=test_multi_trace"
-    )
+    resp = await testagent.get("http://localhost:8126/test/session/snapshot?test_session_token=test_multi_trace")
     assert resp.status == 200
 
     # Simulate a failed snapshot with a missing trace.
-    await testagent.get(
-        "http://localhost:8126/test/session/start?test_session_token=test_multi_trace"
-    )
+    await testagent.get("http://localhost:8126/test/session/start?test_session_token=test_multi_trace")
     with tracer.trace("root0"):
         with tracer.trace("child0"):
             pass
     tracer.flush()
-    resp = await testagent.get(
-        "http://localhost:8126/test/session/snapshot?test_session_token=test_multi_trace"
-    )
+    resp = await testagent.get("http://localhost:8126/test/session/snapshot?test_session_token=test_multi_trace")
     assert resp.status == 400
     tracer.shutdown()
 
@@ -213,6 +202,25 @@ async def test_trace_distributed_same_payload(testagent, tracer):
     tracer.flush()
     resp = await testagent.get(
         "http://localhost:8126/test/session/snapshot?test_session_token=test_trace_distributed_same_payload"
+    )
+    assert resp.status == 200
+
+
+async def test_trace_distributed_propagated(testagent, tracer):
+    await testagent.get("http://localhost:8126/test/session/start?test_session_token=test_trace_distributed_propagated")
+    headers = {
+        "x-datadog-trace-id": "1234",
+        "x-datadog-parent-id": "5678",
+    }
+    context = HTTPPropagator.extract(headers)
+    tracer.context_provider.activate(context)
+
+    with tracer.trace("root"):
+        with tracer.trace("child"):
+            pass
+    tracer.flush()
+    resp = await testagent.get(
+        "http://localhost:8126/test/session/snapshot?test_session_token=test_trace_distributed_propagated"
     )
     assert resp.status == 200
 
@@ -292,10 +300,76 @@ async def test_tracestats(
 ) -> None:
     do_traces(stats_tracer)
     stats_tracer.shutdown()  # force out the stats
-    resp = await testagent.get(
-        "http://localhost:8126/test/session/snapshot?test_session_token=test_trace_stats"
-    )
+    resp = await testagent.get("http://localhost:8126/test/session/snapshot?test_session_token=test_trace_stats")
     if fail:
         assert resp.status == 400
     else:
         assert resp.status == 200
+
+
+async def test_cmd(testagent: aiohttp.ClientSession, tracer: Tracer) -> None:
+    """Test the commands provided with the library.
+
+    Note that this test reuses the trace/snapshot from test_single_trace above.
+    """
+    env = os.environ.copy()
+    p = subprocess.run(
+        ["ddapm-test-agent-session-start", "--test-session-token=test_single_trace"],
+        env=env,
+    )
+    assert p.returncode == 0
+    with tracer.trace("root", service="custom_service", resource="/url/endpoint", span_type="web"):
+        pass
+    tracer.flush()
+    p = subprocess.run(["ddapm-test-agent-snapshot", "--test-session-token=test_single_trace"], env=env)
+    assert p.returncode == 0
+
+    # Ensure failing snapshots work.
+    p = subprocess.run(
+        ["ddapm-test-agent-session-start", "--test-session-token=test_single_trace"],
+        env=env,
+    )
+    assert p.returncode == 0
+    with tracer.trace("root1234", service="custom_service", resource="/url/endpoint", span_type="web"):
+        pass
+    tracer.shutdown()
+    p = subprocess.run(["ddapm-test-agent-snapshot", "--test-session-token=test_single_trace"], env=env)
+    assert p.returncode == 1
+
+
+async def test_profiling_endpoint(testagent: aiohttp.ClientSession, testagent_port: int) -> None:
+    p = Profiler(url="http://localhost:%s" % testagent_port)
+    p.start()
+    p.stop(flush=True)
+    resp = await testagent.get("http://localhost:8126/test/session/requests")
+    assert resp.status == 200
+    data = await resp.json()
+    assert len(data) == 1
+    assert data[0]["url"].endswith("/profiling/v1/input")
+
+
+async def test_race_condition(
+    testagent: aiohttp.ClientSession,
+    testagent_port: int,
+    v04_reference_http_trace_payload_headers: Dict[str, str],
+    v04_reference_http_trace_payload_data: bytes,
+    testagent_url: str,
+) -> None:
+    """
+    Reproduction of: "RuntimeError: readany() called while another coroutine is already waiting for incoming data"
+    when trace requests are made and being read simultaneously
+    """
+    reqs = []
+    for i in range(50):
+        reqs.append(
+            testagent.put(
+                testagent_url + "/v0.4/traces",
+                headers=v04_reference_http_trace_payload_headers,
+                data=v04_reference_http_trace_payload_data,
+            )
+        )
+        reqs.append(testagent.get(testagent_url + "/test/session/traces"))
+
+    resps = await asyncio.gather(*reqs)
+    for r in resps:
+        assert r.status == 200

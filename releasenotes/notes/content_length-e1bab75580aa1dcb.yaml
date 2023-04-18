@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    Fix content length check assuming that the Content-Length header is always
+    included in trace http requests. Some clients (like go) don't submit this
+    header.

@@ -1,14 +1,12 @@
 # Datadog APM test agent
 
-[![GitHub Workflow Status (branch)](https://img.shields.io/github/workflow/status/DataDog/dd-apm-test-agent/CI/master?style=flat-square)](https://github.com/DataDog/dd-apm-test-agent/actions?query=workflow%3ACI+branch%3Amaster)
+[![GitHub Workflow Status (with branch)](https://img.shields.io/github/actions/workflow/status/DataDog/dd-apm-test-agent/main.yml?style=flat-square)](https://github.com/DataDog/dd-apm-test-agent/actions?query=workflow%3ACI+branch%3Amaster)
 [![PyPI](https://img.shields.io/pypi/v/ddapm-test-agent?style=flat-square)](https://pypi.org/project/ddapm-test-agent/)
 
 
 <img align="right" src="https://user-images.githubusercontent.com/6321485/136316621-b4af42b6-4d1f-4482-a45b-bdee47e94bb8.jpeg" alt="bits agent" width="200px"/>
 
-The APM test agent is an application which emulates the APM endpoints of
-the [Datadog agent](https://github.com/DataDog/datadog-agent/) which can be used for testing Datadog APM client
-libraries.
+The APM test agent is an application which emulates the APM endpoints of the [Datadog agent](https://github.com/DataDog/datadog-agent/) which can be used for testing Datadog APM client libraries.
 
 See the [features](#Features) section for the complete list of functionalities provided.
 
@@ -25,7 +23,7 @@ The test agent can be installed from PyPI:
 
     ddapm-test-agent --port=8126
 
-from Docker:
+or from Docker:
 
     # Run the test agent and mount the snapshot directory
     docker run --rm\
@@ -38,13 +36,17 @@ or from source:
 
     pip install git+https://github.com/Datadog/dd-apm-test-agent
 
+or a specific branch:
+
+    pip install git+https://github.com/Datadog/dd-apm-test-agent@{branch}
+
 
 ## Features
 
 ### Trace invariant checks
 
-Many checks are provided by the test agent which will verify trace data. All checks are enabled by default and can be
-manually disabled.
+Many checks are provided by the test agent which will verify trace data. 
+All checks are enabled by default and can be manually disabled.
 
 See the [configuration](#Configuration) section for the options.
 
@@ -64,8 +66,7 @@ All data that is submitted to the test agent can be retrieved.
 
 ### Helpful logging
 
-The `INFO` log level of the test agent outputs useful information about the requests the test agent receives. For traces
-this includes a visual representation of the traces.
+The `INFO` log level of the test agent outputs useful information about the requests the test agent receives. For traces this includes a visual representation of the traces.
 
 ```
 INFO:ddapm_test_agent.agent:received trace payload with 1 trace chunk
@@ -80,27 +81,25 @@ INFO:ddapm_test_agent.agent:end of payload -------------------------------------
 
 ### Proxy
 
-The test agent provides proxying to the Datadog agent. This is enabled by passing the agent url to the test agent
-either via the `--agent-url` commandline argument or by the `DD_TRACE_AGENT_URL` or `DD_AGENT_URL` environment
-variables.
+The test agent provides proxying to the Datadog agent. 
+This is enabled by passing the agent url to the test agent either via the `--agent-url` command-line argument or by the `DD_TRACE_AGENT_URL` or `DD_AGENT_URL` environment variables.
 
-When proxying is enabled the response from the Datadog agent will be returned instead of one from the test agent.
+When proxying is enabled, the response from the Datadog agent will be returned instead of one from the test agent.
 
 
 ### Snapshot testing
 
 The test agent provides a form of [characterization testing](https://en.wikipedia.org/wiki/Characterization_test) which
-we refer to as snapshotting. This allows library maintainers to ensure that traces don't change unexpectedly when making
-unrelated changes.
+we refer to as snapshotting. 
+This allows library maintainers to ensure that traces don't change unexpectedly when making unrelated changes.
 
-This can be used to write integration tests by having test cases use the tracer to emit traces which are collected by
-the test agent and compared against reference traces stored previously.
+This can be used to write integration tests by having test cases use the tracer to emit traces which are collected by the test agent and compared against reference traces stored previously.
 
 To do snapshot testing with the test agent:
 
 1. Ensure traces are associated with a session token (typically the name of the test case) by either:
    - Calling the `/test/session/start` with the token endpoint before emitting the traces; or
-   - Attaching an additional query param or header specifying the session token on `/vX.Y/trace` requests (see below for
+   - Attaching an additional query string parameter or header specifying the session token on `/vX.Y/trace` requests (see below for
      the API specifics). (Required for concurrent test running)
 2. Emit traces (run the integration test).
 3. Signal the end of the session and perform the snapshot comparison by calling the `/tests/session/snapshot` endpoint
@@ -114,6 +113,7 @@ The traces are normalized and output in JSON to a file. The following transforma
 
 - Trace ids are overwritten to match the order in which the traces were received.
 - Span ids are overwritten to be the DFS order of the spans in the trace tree.
+- Parent ids are overwritten using the normalized span ids. However, if the parent is not a span in the trace, the parent id is not overwritten. This is necessary for handling distributed traces where all spans are not sent to the same agent.
 - Span attributes are ordered to be more human-readable, with the important attributes being listed first.
 - Span attributes are otherwise ordered alphanumerically.
 - The span meta and metrics maps if empty are excluded.
@@ -156,17 +156,19 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
 - `LOG_SPAN_FMT` [`"[{name}]"`]: Format string to use when outputting spans in logs.
 
 - `SNAPSHOT_DIR` [`"./snapshots"`]: Directory in which snapshots will be stored.
-  Can be overridden by providing the `dir` query param on `/snapshot`.
+  Can be overridden by providing the `dir` query parameter on `/snapshot`.
 
 - `SNAPSHOT_CI` [`0`]: Toggles CI mode for the snapshot tests. Set to `1` to
   enable. CI mode does the following:
     - When snapshots are unexpectedly _generated_ from a test case a failure will
       be raised.
 
-- `SNAPSHOT_IGNORED_ATTRS` [`"span_id,trace_id,parent_id,duration,start,metrics.system.pid,meta.runtime-id"`]: The
+- `SNAPSHOT_IGNORED_ATTRS` [`"span_id,trace_id,parent_id,duration,start,metrics.system.pid,metrics.process_id,metrics.system.process_id,meta.runtime-id"`]: The
   attributes to ignore when comparing spans in snapshots.
 
 - `DD_AGENT_URL` [`""`]: URL to a Datadog agent. When provided requests will be proxied to the agent.
+
+- `DD_APM_RECEIVER_SOCKET` [`""`]: When provided, the test agent will listen for traces on a socket at the path provided (e.g., `/var/run/datadog/apm.socket`)
 
 
 
@@ -214,7 +216,8 @@ cases sharing a test token will be grouped.
 Comma-separated list of keys of which to ignore values for.
 
 The default built-in ignore list is: `span_id`, `trace_id`, `parent_id`,
-`duration`, `start`, `metrics.system.pid`, `meta.runtime-id`.
+`duration`, `start`, `metrics.system.pid`, `metrics.process_id`,
+`metrics.system.process_id`, `meta.runtime-id`.
 
 
 #### [optional] `?dir=`
@@ -280,6 +283,22 @@ Return stats that have been received by the agent for the given session token.
 
 Stats are returned as a JSON list of the stats payloads received.
 
+## /test/session/responses/config (POST)
+Create a Remote Config payload to retrieve in endpoint `/v0.7/config`
+
+```
+curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"roots": ["eyJ....fX0="], "targets": "ey...19", "target_files": [{"path": "datadog/2/ASM_DATA/blocked_users/config", "raw": "eyJydWxlc19kYXRhIjogW119"}], "client_configs": ["datadog/2/ASM_DATA/blocked_users/config"]}'
+```
+
+## /test/session/responses/config/path (POST)
+Due to Remote Config payload being quite complicated, this endpoint works like `/test/session/responses/config (POST)` 
+but you should send a path and a message and this endpoint builds the Remote Config payload.
+
+The keys of the JSON body are `path` and `msg`
+
+```
+curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"path": "datadog/2/ASM_DATA/blocked_users/config", "msg": {"rules_data": []}}'
+```
 
 ## Development
 

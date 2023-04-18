@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Use 722 permissions for UDS socket to match the agent.

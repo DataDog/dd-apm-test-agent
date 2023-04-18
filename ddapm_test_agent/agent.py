@@ -1,10 +1,12 @@
 import argparse
+import atexit
 import base64
 from collections import OrderedDict
 import json
 import logging
 import os
 import pprint
+import socket
 import sys
 from typing import Awaitable
 from typing import Callable
@@ -12,6 +14,7 @@ from typing import List
 from typing import Literal
 from typing import Optional
 from typing import Set
+from typing import cast
 
 from aiohttp import ClientSession
 from aiohttp import web
@@ -21,9 +24,13 @@ from aiohttp.web import middleware
 from . import _get_version
 from . import trace_snapshot
 from . import tracestats_snapshot
+from .apmtelemetry import TelemetryEvent
+from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
+from .remoteconfig import RemoteConfigServer
+from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
 from .trace import decode_v04 as trace_decode_v04
@@ -33,6 +40,7 @@ from .trace import v04TracePayload
 from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
+from .trace_checks import CheckTraceStallAsync
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 
@@ -110,6 +118,7 @@ class Agent:
         """
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
+        self._rc_server = RemoteConfigServer()
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -120,7 +129,7 @@ class Agent:
         """
         _traces: TraceMap = OrderedDict()
         for req in reversed(self._requests):
-            traces = await self._decode_v04_traces(req)
+            traces = await self._traces_from_request(req)
             for t in traces:
                 for s in t:
                     trace_id = s["trace_id"]
@@ -129,8 +138,34 @@ class Agent:
                     _traces[trace_id].append(s)
         return _traces
 
+    async def apmtelemetry(self) -> List[TelemetryEvent]:
+        """Return the telemetry events stored by the agent"""
+        _events: List[TelemetryEvent] = []
+        for req in reversed(self._requests):
+            if req.match_info.handler == self.handle_v2_apmtelemetry:
+                _events.append(v2_apmtelemetry_decode(await req.read()))
+        return _events
+
     async def _trace_by_trace_id(self, trace_id: int) -> Trace:
         return (await self.traces())[trace_id]
+
+    async def _apmtelemetry_by_runtime_id(self, runtime_id: str) -> List[TelemetryEvent]:
+        return [event for event in await self.apmtelemetry() if event["runtime_id"] == runtime_id]
+
+    async def _store_request(self, request: Request) -> None:
+        """Store the request object so that it can be queried later."""
+        # Store the request data on the request object to avoid concurrent read()s of the data which can
+        # result in: RuntimeError: readany() called while another coroutine is already waiting for incoming data
+        # See: https://github.com/DataDog/dd-apm-test-agent/pull/101 for more info
+        request["_testagent_data"] = await request.read()
+        self._requests.append(request)
+
+    def _request_data(self, request: Request) -> bytes:
+        """Return the data from the request.
+
+        Note *only* use this method for requests stored with `_store_request()`.
+        """
+        return cast(bytes, request["_testagent_data"])
 
     def _requests_by_session(self, token: Optional[str]) -> List[Request]:
         """Return the latest requests sent with the given token.
@@ -155,6 +190,14 @@ class Agent:
                 reqs.append(req)
         return reqs
 
+    async def _traces_from_request(self, req: Request) -> List[List[Span]]:
+        """Return the trace from a trace request."""
+        if req.match_info.handler == self.handle_v04_traces:
+            return self._decode_v04_traces(req)
+        elif req.match_info.handler == self.handle_v05_traces:
+            return self._decode_v05_traces(req)
+        return []
+
     async def _traces_by_session(self, token: Optional[str]) -> List[Trace]:
         """Return the traces that belong to the given session token.
 
@@ -166,36 +209,49 @@ class Agent:
         """
         tracemap: TraceMap = OrderedDict()
         for req in self._requests_by_session(token):
-            if req.match_info.handler == self.handle_v04_traces:
-                for trace in await self._decode_v04_traces(req):
-                    for span in trace:
-                        trace_id = span["trace_id"]
-                        if trace_id not in tracemap:
-                            tracemap[trace_id] = []
-                        tracemap[trace_id].append(span)
+            traces = await self._traces_from_request(req)
+            for trace in traces:
+                for span in trace:
+                    trace_id = span["trace_id"]
+                    if trace_id not in tracemap:
+                        tracemap[trace_id] = []
+                    tracemap[trace_id].append(span)
         return list(tracemap.values())
 
-    async def _tracestats_by_session(
-        self, token: Optional[str]
-    ) -> List[v06StatsPayload]:
+    async def _apmtelemetry_by_session(self, token: Optional[str]) -> List[TelemetryEvent]:
+        """Return the telemetry events that belong to the given session token.
+
+        If token is None or if the token was used to manually start a session
+        with /session-start then return all telemetry events that were sent since
+        the last /session-start request was made.
+        """
+        events: List[TelemetryEvent] = []
+        for req in self._requests_by_session(token):
+            if req.match_info.handler == self.handle_v2_apmtelemetry:
+                events.append(v2_apmtelemetry_decode(await req.read()))
+
+        # TODO: Sort the events?
+        return events
+
+    async def _tracestats_by_session(self, token: Optional[str]) -> List[v06StatsPayload]:
         stats: List[v06StatsPayload] = []
         for req in self._requests_by_session(token):
             if req.match_info.handler == self.handle_v06_tracestats:
-                s = await self._decode_v06_tracestats(req)
+                s = self._decode_v06_tracestats(req)
                 stats.append(s)
         return stats
 
-    async def _decode_v04_traces(self, request: Request) -> v04TracePayload:
+    def _decode_v04_traces(self, request: Request) -> v04TracePayload:
         content_type = request.content_type
-        raw_data = await request.read()
+        raw_data = self._request_data(request)
         return trace_decode_v04(content_type, raw_data)
 
-    async def _decode_v05_traces(self, request: Request) -> v04TracePayload:
-        raw_data = await request.read()
+    def _decode_v05_traces(self, request: Request) -> v04TracePayload:
+        raw_data = self._request_data(request)
         return trace_decode_v05(raw_data)
 
-    async def _decode_v06_tracestats(self, request: Request) -> v06StatsPayload:
-        raw_data = await request.read()
+    def _decode_v06_tracestats(self, request: Request) -> v06StatsPayload:
+        raw_data = self._request_data(request)
         return tracestats_decode_v06(raw_data)
 
     async def handle_v04_traces(self, request: Request) -> web.Response:
@@ -205,8 +261,8 @@ class Agent:
         return await self._handle_traces(request, version="v0.5")
 
     async def handle_v06_tracestats(self, request: Request) -> web.Response:
-        self._requests.append(request)
-        stats = await self._decode_v06_tracestats(request)
+        await self._store_request(request)
+        stats = self._decode_v06_tracestats(request)
         nstats = len(stats["Stats"])
         log.info(
             "received /v0.6/stats payload with %r stats bucket%s",
@@ -215,24 +271,76 @@ class Agent:
         )
         return web.HTTPOk()
 
-    async def _handle_traces(
-        self, request: Request, version: Literal["v0.4", "v0.5"]
-    ) -> web.Response:
-        self._requests.append(request)
+    async def handle_v07_remoteconfig(self, request: Request) -> web.Response:
+        """Emulates Remote Config endpoint: /v0.7/config"""
+        await self._store_request(request)
+        data = await self._rc_server.get_config_response()
+        return web.json_response(data)
+
+    async def handle_v07_remoteconfig_create(self, request: Request) -> web.Response:
+        """Configure the response payload of /v0.7/config."""
+        raw_data = await request.read()
+        self._rc_server.create_config_response(json.loads(raw_data))
+        return web.HTTPAccepted()
+
+    async def handle_v07_remoteconfig_path_create(self, request: Request) -> web.Response:
+        """
+        Remote Config payloads are quite complex. This endpoints builds a remote config payload with a target
+        file path and the content of it (msg)
+        """
+        raw_data = await request.read()
+        content = json.loads(raw_data)
+        path = content["path"]
+        msg = content["msg"]
+        self._rc_server.create_config_path_response(path, msg)
+        return web.HTTPAccepted()
+
+    async def handle_v07_remoteconfig_put(self, request: Request) -> web.Response:
+        """Configure the response payload of /v0.7/config"""
+        raw_data = await request.read()
+        self._rc_server.update_config_response(json.loads(raw_data))
+        return web.HTTPAccepted()
+
+    async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
+        await self._store_request(request)
+        v2_apmtelemetry_decode(self._request_data(request))
+        # TODO: Validation
+        # TODO: Snapshots
+        return web.HTTPOk()
+
+    async def handle_info(self, request: Request) -> web.Response:
+        return web.json_response(
+            {
+                "version": "test",
+                "endpoints": [
+                    "/v0.4/traces",
+                    "/v0.5/traces",
+                    "/v0.6/stats",
+                    "/telemetry/proxy/",
+                    "/v0.7/config",
+                ],
+                "feature_flags": [],
+                "config": {},
+                "client_drop_p0s": True,
+            }
+        )
+
+    async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5"]) -> web.Response:
+        await self._store_request(request)
         token = request["session_token"]
         checks: Checks = request.app["checks"]
 
+        await checks.check("trace_stall", headers=request.headers, request=request)
+
         with CheckTrace.add_frame("headers") as f:
             f.add_item(pprint.pformat(dict(request.headers)))
-            checks.check("meta_tracer_version_header", headers=dict(request.headers))
-            checks.check(
-                "trace_content_length",
-                content_length=int(request.headers["Content-Length"]),
-            )
+            await checks.check("meta_tracer_version_header", headers=request.headers)
+            await checks.check("trace_content_length", headers=request.headers)
+
             if version == "v0.4":
-                traces = await self._decode_v04_traces(request)
+                traces = self._decode_v04_traces(request)
             elif version == "v0.5":
-                traces = await self._decode_v05_traces(request)
+                traces = self._decode_v05_traces(request)
             log.info(
                 "received trace for token %r payload with %r trace chunks",
                 token,
@@ -246,15 +354,13 @@ class Agent:
                         pprint_trace(trace, request.app["log_span_fmt"]),
                     )
                 except ValueError:
-                    log.info(
-                        "Chunk %d could not be displayed (might be incomplete).", i
-                    )
+                    log.info("Chunk %d could not be displayed (might be incomplete).", i)
             log.info("end of payload %s", "-" * 40)
 
             with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
-                checks.check(
+                await checks.check(
                     "trace_count_header",
-                    headers=dict(request.headers),
+                    headers=request.headers,
                     num_traces=len(traces),
                 )
 
@@ -265,7 +371,7 @@ class Agent:
                 async with session.post(
                     f"{agent_url}/v0.4/traces",
                     headers=request.headers,
-                    data=await request.read(),
+                    data=self._request_data(request),
                 ) as resp:
                     assert resp.status == 200
                     data = await resp.json()
@@ -304,7 +410,7 @@ class Agent:
             if "X-Datadog-Test-Snapshot-Filename" in request.headers:
                 snap_file = request.headers["X-Datadog-Test-Snapshot-Filename"]
             elif "file" in request.url.query:
-                snap_file = request.url.query.get("file")
+                snap_file = request.url.query["file"]
             else:
                 snap_file = os.path.join(snap_dir, token)
 
@@ -318,9 +424,7 @@ class Agent:
 
             frame.add_item(f"Trace File: {trace_snap_file}")
             frame.add_item(f"Stats File: {tracestats_snap_file}")
-            log.info(
-                "using snapshot files %r and %r", trace_snap_file, tracestats_snap_file
-            )
+            log.info("using snapshot files %r and %r", trace_snap_file, tracestats_snap_file)
 
             trace_snap_path_exists = os.path.exists(trace_snap_file)
 
@@ -344,17 +448,11 @@ class Agent:
                 # Create a new snapshot for the data received
                 with open(trace_snap_file, mode="w") as f:
                     f.write(trace_snapshot.generate_snapshot(received_traces))
-                log.info(
-                    "wrote new trace snapshot to %r", os.path.abspath(trace_snap_file)
-                )
+                log.info("wrote new trace snapshot to %r", os.path.abspath(trace_snap_file))
 
             # Get all stats buckets from the payloads since we don't care about the other fields (hostname, env, etc)
             # in the payload.
-            received_stats = [
-                bucket
-                for p in (await self._tracestats_by_session(token))
-                for bucket in p["Stats"]
-            ]
+            received_stats = [bucket for p in (await self._tracestats_by_session(token)) for bucket in p["Stats"]]
             tracestats_snap_path_exists = os.path.exists(tracestats_snap_file)
             if snap_ci_mode and received_stats and not tracestats_snap_path_exists:
                 raise AssertionError(
@@ -385,6 +483,11 @@ class Agent:
         traces = await self._traces_by_session(token)
         return web.json_response(traces)
 
+    async def handle_session_apmtelemetry(self, request: Request) -> web.Response:
+        token = request["session_token"]
+        events = await self._apmtelemetry_by_session(token)
+        return web.json_response(events)
+
     async def handle_session_tracestats(self, request: Request) -> web.Response:
         token = request["session_token"]
         stats = await self._tracestats_by_session(token)
@@ -398,6 +501,8 @@ class Agent:
                 self.handle_v04_traces,
                 self.handle_v05_traces,
                 self.handle_v06_tracestats,
+                self.handle_v2_apmtelemetry,
+                self.handle_v1_profiling,
             ):
                 continue
             resp.append(
@@ -416,9 +521,7 @@ class Agent:
         Traces can be requested by providing a header X-Datadog-Trace-Ids or
         a query param trace_ids.
         """
-        raw_trace_ids = request.url.query.get(
-            "trace_ids", request.headers.get("X-Datadog-Trace-Ids", "")
-        )
+        raw_trace_ids = request.url.query.get("trace_ids", request.headers.get("X-Datadog-Trace-Ids", ""))
         if raw_trace_ids:
             trace_ids = map(int, raw_trace_ids.split(","))
             traces = []
@@ -430,6 +533,28 @@ class Agent:
         else:
             traces = list((await self.traces()).values())
         return web.json_response(data=traces)
+
+    async def handle_test_apmtelemetry(self, request: Request) -> web.Response:
+        """Return requested telemetry events as JSON.
+
+        Telemetry events can be requested by providing a header X-Datadog-Runtime-Ids or
+        a query param runtime_ids.
+        """
+        raw_runtime_ids = request.url.query.get("runtime_ids", request.headers.get("X-Datadog-Runtime-Ids", ""))
+        if raw_runtime_ids:
+            runtime_ids = raw_runtime_ids.split(",")
+            events: List[TelemetryEvent] = []
+            for rid in runtime_ids:
+                events.extend(await self._apmtelemetry_by_runtime_id(rid))
+        else:
+            events = await self.apmtelemetry()
+        return web.json_response(data=events)
+
+    async def handle_v1_profiling(self, request: Request) -> web.Response:
+        await request.read()
+        self._requests.append(request)
+        # TODO: valid response?
+        return web.HTTPOk()
 
     async def handle_session_clear(self, request: Request) -> web.Response:
         """Clear traces by session token or all traces if none is provided."""
@@ -448,9 +573,7 @@ class Agent:
 
             # Filter out all the requests.
             self._requests = [
-                r
-                for r in self._requests
-                if _session_token(r) != session_token and not hasattr(r, "__delete")
+                r for r in self._requests if _session_token(r) != session_token and not hasattr(r, "__delete")
             ]
         else:
             self._requests = []
@@ -471,6 +594,7 @@ def make_app(
     snapshot_ci_mode: bool,
     snapshot_ignored_attrs: List[str],
     agent_url: str,
+    trace_request_delay: float,
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
@@ -486,14 +610,24 @@ def make_app(
             web.put("/v0.4/traces", agent.handle_v04_traces),
             web.post("/v0.5/traces", agent.handle_v05_traces),
             web.put("/v0.5/traces", agent.handle_v05_traces),
+            web.post("/v0.6/stats", agent.handle_v06_tracestats),
             web.put("/v0.6/stats", agent.handle_v06_tracestats),
+            web.post("/v0.7/config", agent.handle_v07_remoteconfig),
+            web.post("/telemetry/proxy/api/v2/apmtelemetry", agent.handle_v2_apmtelemetry),
+            web.post("/profiling/v1/input", agent.handle_v1_profiling),
+            web.get("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/snapshot", agent.handle_snapshot),
             web.get("/test/session/traces", agent.handle_session_traces),
+            web.get("/test/session/apmtelemetry", agent.handle_session_apmtelemetry),
             web.get("/test/session/stats", agent.handle_session_tracestats),
             web.get("/test/session/requests", agent.handle_session_requests),
+            web.post("/test/session/responses/config", agent.handle_v07_remoteconfig_create),
+            web.post("/test/session/responses/config/path", agent.handle_v07_remoteconfig_path_create),
+            web.put("/test/session/responses/config", agent.handle_v07_remoteconfig_put),
             web.get("/test/traces", agent.handle_test_traces),
+            web.get("/test/apmtelemetry", agent.handle_test_apmtelemetry),
             # web.get("/test/benchmark", agent.handle_test_traces),
             web.get("/test/trace/analyze", agent.handle_trace_analyze),
         ]
@@ -503,6 +637,7 @@ def make_app(
             CheckMetaTracerVersionHeader,
             CheckTraceCountHeader,
             CheckTraceContentLength,
+            CheckTraceStallAsync,
         ],
         disabled=disabled_checks,
     )
@@ -512,6 +647,7 @@ def make_app(
     app["log_span_fmt"] = log_span_fmt
     app["snapshot_ignored_attrs"] = snapshot_ignored_attrs
     app["agent_url"] = agent_url
+    app["trace_request_delay"] = trace_request_delay
     return app
 
 
@@ -529,9 +665,7 @@ def main(args: Optional[List[str]] = None) -> None:
         dest="version",
         help="Print version info and exit.",
     )
-    parser.add_argument(
-        "-p", "--port", type=int, default=int(os.environ.get("PORT", 8126))
-    )
+    parser.add_argument("-p", "--port", type=int, default=int(os.environ.get("PORT", 8126)))
     parser.add_argument(
         "--snapshot-dir",
         type=str,
@@ -547,13 +681,7 @@ def main(args: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--snapshot-ignored-attrs",
         type=Set[str],
-        default=set(
-            _parse_csv(
-                os.environ.get(
-                    "SNAPSHOT_IGNORED_ATTRS", trace_snapshot.DEFAULT_SNAPSHOT_IGNORES
-                )
-            )
-        ),
+        default=set(_parse_csv(os.environ.get("SNAPSHOT_IGNORED_ATTRS", trace_snapshot.DEFAULT_SNAPSHOT_IGNORES))),
         help=(
             "Comma-separated values of span attributes to ignore. "
             "meta/metrics attributes can be ignored by prefixing the key "
@@ -580,21 +708,25 @@ def main(args: Optional[List[str]] = None) -> None:
         "--log-span-fmt",
         type=str,
         default=os.environ.get("LOG_SPAN_FMT", "[{name}]"),
-        help=(
-            "Format to use when logging spans. Default is '[{name}]'. "
-            "All span attributes are available."
-        ),
+        help=("Format to use when logging spans. Default is '[{name}]'. " "All span attributes are available."),
     )
     parser.add_argument(
         "--agent-url",
         type=str,
-        default=os.environ.get(
-            "DD_TRACE_AGENT_URL", os.environ.get("DD_AGENT_URL", "")
-        ),
-        help=(
-            "Datadog agent URL. If provided, any received data will be forwarded "
-            "to the agent."
-        ),
+        default=os.environ.get("DD_TRACE_AGENT_URL", os.environ.get("DD_AGENT_URL", "")),
+        help=("Datadog agent URL. If provided, any received data will be forwarded " "to the agent."),
+    )
+    parser.add_argument(
+        "--trace-uds-socket",
+        type=str,
+        default=os.environ.get("DD_APM_RECEIVER_SOCKET", None),
+        help=("Will listen for traces on the specified socket path"),
+    )
+    parser.add_argument(
+        "--trace-request-delay",
+        type=float,
+        default=os.environ.get("DD_TEST_STALL_REQUEST_SECONDS", 0.0),
+        help=("Will stall trace requests for specified amount of time"),
     )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
@@ -603,9 +735,19 @@ def main(args: Optional[List[str]] = None) -> None:
         print(_get_version())
         sys.exit(0)
 
-    if not os.path.exists(parsed_args.snapshot_dir) or not os.access(
-        parsed_args.snapshot_dir, os.W_OK | os.X_OK
-    ):
+    apm_sock: Optional[socket.socket] = None
+    if parsed_args.trace_uds_socket is not None:
+        apm_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        apm_sock.bind(parsed_args.trace_uds_socket)
+        os.chmod(parsed_args.trace_uds_socket, 0o722)
+        atexit.register(lambda: os.unlink(parsed_args.trace_uds_socket))
+
+    if parsed_args.trace_request_delay is not None:
+        log.info(
+            "Trace request stall seconds setting set to %r.",
+            parsed_args.trace_request_delay,
+        )
+    if not os.path.exists(parsed_args.snapshot_dir) or not os.access(parsed_args.snapshot_dir, os.W_OK | os.X_OK):
         log.warning(
             "default snapshot directory %r does not exist or is not readable. Snapshotting will not work.",
             os.path.abspath(parsed_args.snapshot_dir),
@@ -617,8 +759,10 @@ def main(args: Optional[List[str]] = None) -> None:
         snapshot_ci_mode=parsed_args.snapshot_ci_mode,
         snapshot_ignored_attrs=parsed_args.snapshot_ignored_attrs,
         agent_url=parsed_args.agent_url,
+        trace_request_delay=parsed_args.trace_request_delay,
     )
-    web.run_app(app, port=parsed_args.port)
+
+    web.run_app(app, sock=apm_sock, port=parsed_args.port)
 
 
 if __name__ == "__main__":

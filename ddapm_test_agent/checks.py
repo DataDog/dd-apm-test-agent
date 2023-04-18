@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import contextvars
 import dataclasses
@@ -9,9 +10,7 @@ from typing import Tuple
 from typing import Type
 
 
-CHECK_TRACE: contextvars.ContextVar["CheckTrace"] = contextvars.ContextVar(
-    "check_trace"
-)
+CHECK_TRACE: contextvars.ContextVar["CheckTrace"] = contextvars.ContextVar("check_trace")
 
 
 class CheckNotFound(IndexError):
@@ -152,7 +151,7 @@ class Checks:
             return False
         return check.default_enabled
 
-    def check(self, name: str, *args: Any, **kwargs: Any) -> None:
+    async def check(self, name: str, *args: Any, **kwargs: Any) -> None:
         """Find and run the check with the given ``name`` if it is enabled."""
         check = self._get_check(name)()
 
@@ -161,7 +160,10 @@ class Checks:
             CheckTrace.add_check(check)
 
             # Run the check
-            check.check(*args, **kwargs)
+            if asyncio.iscoroutinefunction(check.check):
+                await check.check(*args, **kwargs)
+            else:
+                check.check(*args, **kwargs)
 
 
 def start_trace(msg: str) -> CheckTrace:

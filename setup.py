@@ -30,7 +30,9 @@ setup(
         "aiohttp",
         "ddsketch",
         "msgpack",
+        "requests",
         "typing_extensions",
+        "yarl",
     ],
     tests_require=testing_deps,
     setup_requires=["setuptools_scm"],
@@ -39,6 +41,8 @@ setup(
         "console_scripts": [
             "ddapm-test-agent=ddapm_test_agent.agent:main",
             "ddapm-test-agent-fmt=ddapm_test_agent.fmt:main",
+            "ddapm-test-agent-session-start=ddapm_test_agent.cmd:main_session_start",
+            "ddapm-test-agent-snapshot=ddapm_test_agent.cmd:main_snapshot",
         ]
     },
     extras_require={

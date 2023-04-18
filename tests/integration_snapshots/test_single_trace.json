@@ -8,6 +8,7 @@
     "parent_id": 0,
     "type": "web",
     "meta": {
+      "_dd.p.dm": "-0",
       "runtime-id": "2d377516ca12429aaf072f037ed2e4cc"
     },
     "metrics": {
@@ -18,5 +19,6 @@
       "system.pid": 28509
     },
     "duration": 76000,
+    "error": 0,
     "start": 1633558540524060000
   }]]

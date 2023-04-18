@@ -12,7 +12,7 @@ venv = Venv(
         Venv(
             name="test",
             command="pytest {cmdargs}",
-            pys=["3.8", "3.9", "3.10"],
+            pys=["3.8", "3.9", "3.10", "3.11"],
             pkgs={pkg: latest for pkg in testing_deps},
         ),
         Venv(
@@ -44,7 +44,7 @@ venv = Venv(
                 "flake8-blind-except": latest,
                 "flake8-builtins": latest,
                 "flake8-docstrings": latest,
-                "flake8-logging-format": latest,
+                # "flake8-logging-format": latest,
                 "flake8-rst-docstrings": latest,
                 "pygments": latest,
                 "toml": latest,
@@ -57,8 +57,9 @@ venv = Venv(
             pkgs={
                 "mypy": latest,
                 "pytest": latest,
-                "types-setuptools": latest,
                 "types-protobuf": latest,
+                "types-requests": latest,
+                "types-setuptools": latest,
             },
         ),
         Venv(
