@@ -20,6 +20,7 @@ from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
+from multidict import CIMultiDict
 
 from . import _get_version
 from . import trace_snapshot
@@ -363,23 +364,32 @@ class Agent:
         await self._store_request(request)
         token = request["session_token"]
         checks: Checks = request.app["checks"]
+        headers = CIMultiDict(request.headers)
 
-        log.debug(f"New request: {request} with headers: {request.headers}")
+        log.debug(f"New request: {request} with headers: {headers}")
         log.debug(f"Request Data: {self._request_data(request)!r}")
 
         agent_url = request.app["agent_url"]
         response = None
+        proxy_to_agent = agent_url != ""
 
-        if agent_url:
+        if "Datadog-Agent-Proxy-Enabled" in headers:
+            proxy_to_agent = headers.pop("Datadog-Agent-Proxy-Enabled")
+
+        if agent_url and proxy_to_agent:
+            headers = {
+                "Content-Type": headers.get("Content-Type", "application/msgpack"),
+                **{k: v for k, v in headers.items() if k != "Content-Type"},
+            }
             log.info("Forwarding request to agent at %r", agent_url)
-            response = await self._proxy_request(request, request.headers, agent_url)
+            response = await self._proxy_request(request, headers, agent_url)
 
-        await checks.check("trace_stall", headers=request.headers, request=request)
+        await checks.check("trace_stall", headers=headers, request=request)
 
         with CheckTrace.add_frame("headers") as f:
-            f.add_item(pprint.pformat(dict(request.headers)))
-            await checks.check("meta_tracer_version_header", headers=request.headers)
-            await checks.check("trace_content_length", headers=request.headers)
+            f.add_item(pprint.pformat(dict(headers)))
+            await checks.check("meta_tracer_version_header", headers=headers)
+            await checks.check("trace_content_length", headers=headers)
 
             if version == "v0.4":
                 traces = self._decode_v04_traces(request)
@@ -404,7 +414,7 @@ class Agent:
             with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
                 await checks.check(
                     "trace_count_header",
-                    headers=request.headers,
+                    headers=headers,
                     num_traces=len(traces),
                 )
 
