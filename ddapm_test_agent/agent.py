@@ -329,6 +329,36 @@ class Agent:
             }
         )
 
+    async def _proxy_request(self, request, headers, agent_url):
+        async with ClientSession() as session:
+            async with session.post(
+                f"{agent_url}/v0.4/traces",
+                headers=headers,
+                data=self._request_data(request),
+            ) as resp:
+                assert resp.status == 200, f"Request to agent unsuccessful, received [{resp.status}] response."
+
+                if "text/html" in resp.content_type:
+                    data = await resp.read()
+                    if len(data) == 0:
+                        log.info("Received empty response: %r from agent.", data)
+                        return web.HTTPOk()
+                    else:
+                        if isinstance(data, bytes):
+                            data = data.decode()
+                        try:
+                            response_data = json.loads(data)
+                        except json.JSONDecodeError as e:
+                            log.warning("Error decoding response data: %s, data=%r", str(e), data)
+                            log.warning("Original Request: %r", self._request_data(request))
+                            response_data = {}
+                        log.info("Response %r from agent:", data)
+                        return web.json_response(data=response_data)
+                else:
+                    data = await resp.json()
+                    log.info("Response %r from agent:", data)
+                    return web.json_response(data=data)
+
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5"]) -> web.Response:
         await self._store_request(request)
         token = request["session_token"]
@@ -336,6 +366,13 @@ class Agent:
 
         log.debug(f"New request: {request} with headers: {request.headers}")
         log.debug(f"Request Data: {self._request_data(request)!r}")
+
+        agent_url = request.app["agent_url"]
+        response = None
+
+        if agent_url:
+            log.info("Forwarding request to agent at %r", agent_url)
+            response = await self._proxy_request(request, request.headers, agent_url)
 
         await checks.check("trace_stall", headers=request.headers, request=request)
 
@@ -371,19 +408,8 @@ class Agent:
                     num_traces=len(traces),
                 )
 
-        agent_url = request.app["agent_url"]
         if agent_url:
-            log.info("Forwarding request to agent at %r", agent_url)
-            async with ClientSession() as session:
-                async with session.post(
-                    f"{agent_url}/v0.4/traces",
-                    headers=request.headers,
-                    data=self._request_data(request),
-                ) as resp:
-                    assert resp.status == 200
-                    data = await resp.json()
-                    log.info("Got response %r from agent", data)
-                    return web.json_response(data=data)
+            return response
 
         # TODO: implement sampling logic
         return web.json_response(data={"rate_by_service": {}})
