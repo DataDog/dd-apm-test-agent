@@ -83,36 +83,40 @@ TraceMap = OrderedDict[int, Trace]
 
 
 def verify_span(d: Any) -> Span:
-    assert isinstance(d, dict)
     try:
+        assert isinstance(d, dict), f"Expected 'span' to be of type: '{dict}', got: '{type(d)}'"
         # TODO: check these
         required_attrs = ["span_id", "trace_id", "name"]
         for attr in required_attrs:
             assert attr in d, f"'{attr}' required in span"
         NoneType = type(None)
-        assert isinstance(d["span_id"], int)
-        assert isinstance(d["trace_id"], int)
-        assert isinstance(d["name"], str)
+        assert isinstance(d["span_id"], int), "Expected 'span_id' to be of type: 'int', got: " + str(type(d["span_id"]))
+        assert isinstance(d["trace_id"], int), "Expected 'trace_id' to be of type: 'int', got: " + str(
+            type(d["trace_id"])
+        )
+        assert isinstance(d["name"], str), "Expected 'name' to be of type: 'str', got: " + str(type(d["name"]))
         if "resource" in d:
-            assert isinstance(d["resource"], (str, NoneType))  # type: ignore
+            assert isinstance(d["resource"], (str, NoneType)), "Expected 'resource' to be of type: 'str', got: " + str(type(d["resource"]))  # type: ignore
         if "service" in d:
-            assert isinstance(d["service"], (str, NoneType))  # type: ignore
+            assert isinstance(d["service"], (str, NoneType)), "Expected 'service' to be of type: 'str', got: " + str(type(d["service"]))  # type: ignore
         if "type" in d:
-            assert isinstance(d["type"], (str, NoneType))  # type: ignore
+            assert isinstance(d["type"], (str, NoneType)), "Expected 'type' to be of type: 'str', got: " + str(type(d["type"]))  # type: ignore
         if "parent_id" in d:
-            assert isinstance(d["parent_id"], (int, NoneType))  # type: ignore
+            assert isinstance(d["parent_id"], (int, NoneType)), "Expected 'parent_id' to be of type: 'int', got: " + str(type(d["parent_id"]))  # type: ignore
         if "error" in d:
-            assert isinstance(d["error"], int)
+            assert isinstance(d["error"], int), "Expected error to be of type: 'int', got: " + str(type(d["error"]))
         if "meta" in d:
             assert isinstance(d["meta"], dict)
             for k, v in d["meta"].items():
-                assert isinstance(k, str)
-                assert isinstance(v, str)
+                assert isinstance(k, str), f"Expected key 'meta.{k}' to be of type: 'str', got: {type(k)}"
+                assert isinstance(v, str), f"Expected value of key 'meta.{k}' to be of type: 'str', got: {type(v)}"
         if "metrics" in d:
             assert isinstance(d["metrics"], dict)
             for k, v in d["metrics"].items():
-                assert isinstance(k, str)
-                assert isinstance(v, (int, float))
+                assert isinstance(k, str), f"Expected key 'metrics.{k}' to be of type: 'str', got: {type(k)}"
+                assert isinstance(
+                    v, (int, float)
+                ), f"Expected value of key 'metrics.{k}' to be of type: 'float/int', got: {type(v)}"
         return cast(Span, d)
     except AssertionError as e:
         raise TypeError(*e.args) from e
