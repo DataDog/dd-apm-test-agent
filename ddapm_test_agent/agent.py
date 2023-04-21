@@ -20,6 +20,7 @@ from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
+from msgpack.exceptions import ExtraData as MsgPackExtraDataException
 from multidict import CIMultiDict
 
 from . import _get_version
@@ -391,32 +392,35 @@ class Agent:
             await checks.check("meta_tracer_version_header", headers=headers)
             await checks.check("trace_content_length", headers=headers)
 
-            if version == "v0.4":
-                traces = self._decode_v04_traces(request)
-            elif version == "v0.5":
-                traces = self._decode_v05_traces(request)
-            log.info(
-                "received trace for token %r payload with %r trace chunks",
-                token,
-                len(traces),
-            )
-            for i, trace in enumerate(traces):
-                try:
-                    log.info(
-                        "Chunk %d\n%s",
-                        i,
-                        pprint_trace(trace, request.app["log_span_fmt"]),
-                    )
-                except ValueError:
-                    log.info("Chunk %d could not be displayed (might be incomplete).", i)
-            log.info("end of payload %s", "-" * 40)
-
-            with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
-                await checks.check(
-                    "trace_count_header",
-                    headers=headers,
-                    num_traces=len(traces),
+            try:
+                if version == "v0.4":
+                    traces = self._decode_v04_traces(request)
+                elif version == "v0.5":
+                    traces = self._decode_v05_traces(request)
+                log.info(
+                    "received trace for token %r payload with %r trace chunks",
+                    token,
+                    len(traces),
                 )
+                for i, trace in enumerate(traces):
+                    try:
+                        log.info(
+                            "Chunk %d\n%s",
+                            i,
+                            pprint_trace(trace, request.app["log_span_fmt"]),
+                        )
+                    except ValueError:
+                        log.info("Chunk %d could not be displayed (might be incomplete).", i)
+                log.info("end of payload %s", "-" * 40)
+
+                with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
+                    await checks.check(
+                        "trace_count_header",
+                        headers=headers,
+                        num_traces=len(traces),
+                    )
+            except MsgPackExtraDataException as e:
+                log.error(f"Error unpacking trace bytes with Msgpack: {str(e)}, error {e}")
 
         if agent_url:
             return response
@@ -771,6 +775,14 @@ def main(args: Optional[List[str]] = None) -> None:
         default=os.environ.get("DD_TEST_STALL_REQUEST_SECONDS", 0.0),
         help=("Will stall trace requests for specified amount of time"),
     )
+    parser.add_argument(
+        "--disable-trace-parse-errors",
+        type=bool,
+        default=os.environ.get("DD_DISABLE_TRACE_PARSE_ERRORS", "False"),
+        help=(
+            "Will change the Test-Agent trace decoder to use a more resilient parser to prevent decode and span verification errors"
+        ),
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -795,6 +807,8 @@ def main(args: Optional[List[str]] = None) -> None:
             "default snapshot directory %r does not exist or is not readable. Snapshotting will not work.",
             os.path.abspath(parsed_args.snapshot_dir),
         )
+    if parsed_args.disable_trace_parse_errors:
+        os.environ["DD_DISABLE_TRACE_PARSE_ERRORS"] = "True"
     app = make_app(
         disabled_checks=parsed_args.disabled_checks,
         log_span_fmt=parsed_args.log_span_fmt,

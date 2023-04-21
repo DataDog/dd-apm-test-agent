@@ -1,0 +1,8 @@
+---
+features:
+  - |
+    This change adds support for an optional trace JSON decoder that will correctly parse a
+    trace, even if the trace is partially misconformed, such as one having port numbers within
+    the meta field, which would previously throw an error. Additionally, the change also adds 
+    a default parser of json.loads, which was originally used. The new parser can be used by
+    specifying the `DD_DISABLE_TRACE_PARSE_ERRORS` env variable or by setting the flag `--disable-trace-parse-errors`.
