@@ -276,7 +276,7 @@ def set_metric_tag(s: Span, k: str, v: MetricType) -> Span:
     return s
 
 
-def parse_json(json_string):
+def parse_json(json_string: bytes) -> Dict[str, Any]:
     def is_number_as_str(num, number_type=int):
         try:
             number_type(num)
@@ -306,18 +306,20 @@ def parse_json(json_string):
                     maybe_span[key] = int(value)
         return maybe_span
 
-    parsed_data = json.loads(json_string, object_hook=json_decoder)
+    parsed_data: Dict[str, Any] = json.loads(json_string, object_hook=json_decoder)
     return parsed_data
 
 
-_default_parse_function = parse_json if os.getenv("DD_DISABLE_TRACE_PARSE_ERRORS", "False") == "True" else json.loads
+_default_parse_function: function = (
+    parse_json if os.getenv("DD_DISABLE_TRACE_PARSE_ERRORS", "False") == "True" else json.loads
+)
 
 
 def decode_v04(content_type: str, data: bytes) -> v04TracePayload:
     if content_type == "application/msgpack":
         payload = msgpack.unpackb(data)
     elif content_type == "application/json":
-        payload = _default_parse_function(data)
+        payload = _default_parse_function(data)  # type: ignore
     else:
         raise TypeError("Content type %r not supported" % content_type)
     return _verify_v04_payload(payload)
