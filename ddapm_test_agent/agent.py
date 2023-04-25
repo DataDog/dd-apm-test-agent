@@ -386,11 +386,11 @@ class Agent:
         response = None
         proxy_to_agent = agent_url != ""
 
-        if "Datadog-Agent-Proxy-Enabled" in headers:
-            proxy_to_agent = headers.pop("Datadog-Agent-Proxy-Enabled")
+        if "X-Datadog-Agent-Proxy-Enabled" in headers:
+            proxy_to_agent = headers.pop("X-Datadog-Agent-Proxy-Enabled")
 
-        if "Datadog-Proxy-Port" in headers:
-            port = headers.pop("Datadog-Proxy-Port")
+        if "X-Datadog-Proxy-Port" in headers:
+            port = headers.pop("X-Datadog-Proxy-Port")
             request.app["agent_url"] = update_trace_agent_port(request.app["agent_url"], new_port=port)
             log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
 
