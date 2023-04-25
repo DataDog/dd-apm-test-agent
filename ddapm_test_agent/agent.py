@@ -15,6 +15,8 @@ from typing import Literal
 from typing import Optional
 from typing import Set
 from typing import cast
+from urllib.parse import urlparse
+from urllib.parse import urlunparse
 
 from aiohttp import ClientSession
 from aiohttp import web
@@ -107,6 +109,17 @@ async def session_token_middleware(request: Request, handler: _Handler) -> web.R
     token = _session_token(request)
     request["session_token"] = token
     return await handler(request)
+
+
+def update_trace_agent_port(url, new_port):
+    # Updates the Agent URL with a new port number, returning the updated URL and old port
+    parsed_url = urlparse(url)
+    old_port = parsed_url.port
+    new_netloc = parsed_url.netloc.replace(f":{old_port}", f":{new_port}")
+    new_url = urlunparse(
+        (parsed_url.scheme, new_netloc, parsed_url.path, parsed_url.params, parsed_url.query, parsed_url.fragment)
+    )
+    return new_url
 
 
 class Agent:
@@ -375,6 +388,11 @@ class Agent:
 
         if "Datadog-Agent-Proxy-Enabled" in headers:
             proxy_to_agent = headers.pop("Datadog-Agent-Proxy-Enabled")
+
+        if "Datadog-Proxy-Port" in headers:
+            port = headers.pop("Datadog-Proxy-Port")
+            request.app["agent_url"] = update_trace_agent_port(request.app["agent_url"], new_port=port)
+            log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
 
         if agent_url and proxy_to_agent:
             headers = {
