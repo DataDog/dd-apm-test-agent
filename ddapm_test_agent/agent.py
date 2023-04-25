@@ -334,6 +334,9 @@ class Agent:
         token = request["session_token"]
         checks: Checks = request.app["checks"]
 
+        log.debug(f"New request: {request} with headers: {request.headers}")
+        log.debug(f"Request Data: {self._request_data(request)!r}")
+
         await checks.check("trace_stall", headers=request.headers, request=request)
 
         with CheckTrace.add_frame("headers") as f:

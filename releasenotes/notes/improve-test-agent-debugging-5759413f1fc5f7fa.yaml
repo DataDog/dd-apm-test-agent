@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Improves APM Test-Agent debugging by improving Assertion error messages when verifying
+    decoded traces. Also adds debug logging for the received request and request headers.
