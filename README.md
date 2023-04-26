@@ -173,6 +173,9 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
 
 - `DD_APM_RECEIVER_SOCKET` [`""`]: When provided, the test agent will listen for traces on a socket at the path provided (e.g., `/var/run/datadog/apm.socket`)
 
+- `DD_DISABLE_TRACE_PARSE_ERRORS` [`"False"`]: Set to `"True"` to disable span parse errors when decoding handled traces. When disabled, errors will not be thrown for
+metrics incorrectly placed within the meta field, or other type errors related to span tag formatting/types.
+
 
 
 ## API
