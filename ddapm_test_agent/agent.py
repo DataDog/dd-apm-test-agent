@@ -386,8 +386,8 @@ class Agent:
         response = None
         proxy_to_agent = agent_url != ""
 
-        if "X-Datadog-Agent-Proxy-Enabled" in headers:
-            proxy_to_agent = headers.pop("X-Datadog-Agent-Proxy-Enabled")
+        if "X-Datadog-Agent-Proxy-Disabled" in headers:
+            proxy_to_agent = headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true"
 
         if "X-Datadog-Proxy-Port" in headers:
             port = headers.pop("X-Datadog-Proxy-Port")
