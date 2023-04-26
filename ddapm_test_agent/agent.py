@@ -393,14 +393,16 @@ class Agent:
         if "X-Datadog-Proxy-Port" in headers:
             port = headers.pop("X-Datadog-Proxy-Port")
             request.app["agent_url"] = update_trace_agent_port(request.app["agent_url"], new_port=port)
+            agent_url = request.app["agent_url"]
             log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
 
         if agent_url and proxy_to_agent:
             headers = {
                 "Content-Type": headers.get("Content-Type", "application/msgpack"),
-                **{k: v for k, v in headers.items() if k != "Content-Type"},
+                **{k: v for k, v in headers.items() if k.lower() not in ["content-type", "host", "transfer-encoding"] },
             }
             log.info("Forwarding request to agent at %r", agent_url)
+            log.debug(f"Using headers: {headers}")
             response = await self._proxy_request(request, headers, agent_url)
 
         await checks.check("trace_stall", headers=headers, request=request)
