@@ -15,11 +15,14 @@ from typing import Literal
 from typing import Optional
 from typing import Set
 from typing import cast
+from urllib.parse import urlparse
+from urllib.parse import urlunparse
 
 from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
+from multidict import CIMultiDict
 
 from . import _get_version
 from . import trace_snapshot
@@ -106,6 +109,17 @@ async def session_token_middleware(request: Request, handler: _Handler) -> web.R
     token = _session_token(request)
     request["session_token"] = token
     return await handler(request)
+
+
+def update_trace_agent_port(url, new_port):
+    # Updates the Agent URL with a new port number, returning the updated URL and old port
+    parsed_url = urlparse(url)
+    old_port = parsed_url.port
+    new_netloc = parsed_url.netloc.replace(f":{old_port}", f":{new_port}")
+    new_url = urlunparse(
+        (parsed_url.scheme, new_netloc, parsed_url.path, parsed_url.params, parsed_url.query, parsed_url.fragment)
+    )
+    return new_url
 
 
 class Agent:
@@ -363,23 +377,37 @@ class Agent:
         await self._store_request(request)
         token = request["session_token"]
         checks: Checks = request.app["checks"]
+        headers = CIMultiDict(request.headers)
 
-        log.debug(f"New request: {request} with headers: {request.headers}")
+        log.debug(f"New request: {request} with headers: {headers}")
         log.debug(f"Request Data: {self._request_data(request)!r}")
 
         agent_url = request.app["agent_url"]
         response = None
+        proxy_to_agent = agent_url != ""
 
-        if agent_url:
+        if "X-Datadog-Agent-Proxy-Disabled" in headers:
+            proxy_to_agent = headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true"
+
+        if "X-Datadog-Proxy-Port" in headers:
+            port = headers.pop("X-Datadog-Proxy-Port")
+            request.app["agent_url"] = update_trace_agent_port(request.app["agent_url"], new_port=port)
+            log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
+
+        if agent_url and proxy_to_agent:
+            headers = {
+                "Content-Type": headers.get("Content-Type", "application/msgpack"),
+                **{k: v for k, v in headers.items() if k != "Content-Type"},
+            }
             log.info("Forwarding request to agent at %r", agent_url)
-            response = await self._proxy_request(request, request.headers, agent_url)
+            response = await self._proxy_request(request, headers, agent_url)
 
-        await checks.check("trace_stall", headers=request.headers, request=request)
+        await checks.check("trace_stall", headers=headers, request=request)
 
         with CheckTrace.add_frame("headers") as f:
-            f.add_item(pprint.pformat(dict(request.headers)))
-            await checks.check("meta_tracer_version_header", headers=request.headers)
-            await checks.check("trace_content_length", headers=request.headers)
+            f.add_item(pprint.pformat(dict(headers)))
+            await checks.check("meta_tracer_version_header", headers=headers)
+            await checks.check("trace_content_length", headers=headers)
 
             if version == "v0.4":
                 traces = self._decode_v04_traces(request)
@@ -404,7 +432,7 @@ class Agent:
             with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
                 await checks.check(
                     "trace_count_header",
-                    headers=request.headers,
+                    headers=headers,
                     num_traces=len(traces),
                 )
 

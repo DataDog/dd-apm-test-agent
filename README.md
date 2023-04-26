@@ -86,6 +86,9 @@ This is enabled by passing the agent url to the test agent either via the `--age
 
 When proxying is enabled, the response from the Datadog agent will be returned instead of one from the test agent.
 
+At the trace-level, proxying can also be disabled by including the `X-Datadog-Agent-Proxy-Disabled` header with a value of `true`. This will disable proxying after a trace 
+is handled, regardless of whether an agent URL is set.
+
 
 ### Snapshot testing
 
