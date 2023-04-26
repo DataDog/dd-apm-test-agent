@@ -310,7 +310,9 @@ def parse_json(json_string: bytes) -> Dict[str, Any]:
     return parsed_data
 
 
-_default_parse_function = parse_json if os.getenv("DD_DISABLE_TRACE_PARSE_ERRORS", "false").lower() == "true" else json.loads
+_default_parse_function = (
+    parse_json if os.getenv("DD_DISABLE_TRACE_PARSE_ERRORS", "false").lower() == "true" else json.loads
+)
 
 
 def decode_v04(content_type: str, data: bytes) -> v04TracePayload:

@@ -399,7 +399,7 @@ class Agent:
         if agent_url and proxy_to_agent:
             headers = {
                 "Content-Type": headers.get("Content-Type", "application/msgpack"),
-                **{k: v for k, v in headers.items() if k.lower() not in ["content-type", "host", "transfer-encoding"] },
+                **{k: v for k, v in headers.items() if k.lower() not in ["content-type", "host", "transfer-encoding"]},
             }
             log.info("Forwarding request to agent at %r", agent_url)
             log.debug(f"Using headers: {headers}")
