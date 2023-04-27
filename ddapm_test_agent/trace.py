@@ -276,7 +276,10 @@ def set_metric_tag(s: Span, k: str, v: MetricType) -> Span:
     return s
 
 
-def parse_json(json_string: bytes) -> Dict[str, Any]:
+def _trace_decoder_flexible(json_string: bytes) -> Dict[str, Any]:
+    """Parses Trace JSON and accounts for meta that may contain numbers such as ports. Converts these meta correctly to strings.
+    Also ensures that any valid integers/floats are correctly parsed, to prevent id's from being decoded as strings incorrectly."""
+
     def is_number_as_str(num, number_type=int):
         try:
             number_type(num)
@@ -310,16 +313,11 @@ def parse_json(json_string: bytes) -> Dict[str, Any]:
     return parsed_data
 
 
-_default_parse_function = (
-    parse_json if os.getenv("DD_DISABLE_TRACE_PARSE_ERRORS", "false").lower() == "true" else json.loads
-)
-
-
-def decode_v04(content_type: str, data: bytes) -> v04TracePayload:
+def decode_v04(content_type: str, data: bytes, disable_trace_parse_errors=False) -> v04TracePayload:
     if content_type == "application/msgpack":
         payload = msgpack.unpackb(data)
     elif content_type == "application/json":
-        payload = _default_parse_function(data)  # type: ignore
+        payload = _trace_decoder_flexible(data) if disable_trace_parse_errors else json.loads(data)
     else:
         raise TypeError("Content type %r not supported" % content_type)
     return _verify_v04_payload(payload)

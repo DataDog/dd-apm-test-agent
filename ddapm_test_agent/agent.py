@@ -259,7 +259,7 @@ class Agent:
     def _decode_v04_traces(self, request: Request) -> v04TracePayload:
         content_type = request.content_type
         raw_data = self._request_data(request)
-        return trace_decode_v04(content_type, raw_data)
+        return trace_decode_v04(content_type, raw_data, request.app["disable_trace_parse_errors"])
 
     def _decode_v05_traces(self, request: Request) -> v04TracePayload:
         raw_data = self._request_data(request)
@@ -661,6 +661,7 @@ def make_app(
     snapshot_ignored_attrs: List[str],
     agent_url: str,
     trace_request_delay: float,
+    disable_trace_parse_errors: bool,
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
@@ -714,6 +715,7 @@ def make_app(
     app["snapshot_ignored_attrs"] = snapshot_ignored_attrs
     app["agent_url"] = agent_url
     app["trace_request_delay"] = trace_request_delay
+    app["disable_trace_parse_errors"] = disable_trace_parse_errors
     return app
 
 
@@ -826,8 +828,6 @@ def main(args: Optional[List[str]] = None) -> None:
             "default snapshot directory %r does not exist or is not readable. Snapshotting will not work.",
             os.path.abspath(parsed_args.snapshot_dir),
         )
-    if parsed_args.disable_trace_parse_errors:
-        os.environ["DD_DISABLE_TRACE_PARSE_ERRORS"] = "True"
     app = make_app(
         disabled_checks=parsed_args.disabled_checks,
         log_span_fmt=parsed_args.log_span_fmt,
@@ -836,6 +836,7 @@ def main(args: Optional[List[str]] = None) -> None:
         snapshot_ignored_attrs=parsed_args.snapshot_ignored_attrs,
         agent_url=parsed_args.agent_url,
         trace_request_delay=parsed_args.trace_request_delay,
+        disable_trace_parse_errors=parsed_args.disable_trace_parse_errors,
     )
 
     web.run_app(app, sock=apm_sock, port=parsed_args.port)
