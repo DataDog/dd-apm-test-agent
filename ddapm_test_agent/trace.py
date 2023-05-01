@@ -313,7 +313,7 @@ def _trace_decoder_flexible(json_string: bytes) -> Dict[str, Any]:
     return parsed_data
 
 
-def decode_v04(content_type: str, data: bytes, disable_trace_parse_errors=False) -> v04TracePayload:
+def decode_v04(content_type: str, data: bytes, disable_trace_parse_errors: bool=False) -> v04TracePayload:
     if content_type == "application/msgpack":
         payload = msgpack.unpackb(data)
     elif content_type == "application/json":
