@@ -278,7 +278,8 @@ def set_metric_tag(s: Span, k: str, v: MetricType) -> Span:
 
 def _trace_decoder_flexible(json_string: bytes) -> Dict[str, Any]:
     """Parses Trace JSON and accounts for meta that may contain numbers such as ports. Converts these meta correctly to strings.
-    Also ensures that any valid integers/floats are correctly parsed, to prevent id's from being decoded as strings incorrectly."""
+    Also ensures that any valid integers/floats are correctly parsed, to prevent id's from being decoded as strings incorrectly.
+    """
 
     def is_number_as_str(num, number_type=int):
         try:
