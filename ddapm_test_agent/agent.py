@@ -801,7 +801,7 @@ def main(args: Optional[List[str]] = None) -> None:
         type=bool,
         default=os.environ.get("DD_SUPPRESS_TRACE_PARSE_ERRORS", False),
         help=(
-            "Will change the Test-Agent trace decoder to use a more resilient parser to prevent decode and span verification errors"
+            "Will change the test agent trace decoder to use a more resilient parser to prevent decode and span verification errors"
         ),
     )
     parsed_args = parser.parse_args(args=args)
