@@ -799,7 +799,7 @@ def main(args: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--disable-trace-parse-errors",
         type=bool,
-        default=os.environ.get("DD_DISABLE_TRACE_PARSE_ERRORS", "False"),
+        default=os.environ.get("DD_SUPPRESS_TRACE_PARSE_ERRORS", False),
         help=(
             "Will change the Test-Agent trace decoder to use a more resilient parser to prevent decode and span verification errors"
         ),
