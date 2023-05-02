@@ -715,7 +715,7 @@ def make_app(
     app["snapshot_ignored_attrs"] = snapshot_ignored_attrs
     app["agent_url"] = agent_url
     app["trace_request_delay"] = trace_request_delay
-    app["disable_trace_parse_errors"] = disable_trace_parse_errors
+    app["suppress_trace_parse_errors"] = suppress_trace_parse_errors
     return app
 
 
