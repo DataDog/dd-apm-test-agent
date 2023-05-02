@@ -661,7 +661,7 @@ def make_app(
     snapshot_ignored_attrs: List[str],
     agent_url: str,
     trace_request_delay: float,
-    disable_trace_parse_errors: bool = False,
+    suppress_trace_parse_errors: bool,
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
