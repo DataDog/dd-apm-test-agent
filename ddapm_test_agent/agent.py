@@ -259,7 +259,7 @@ class Agent:
     def _decode_v04_traces(self, request: Request) -> v04TracePayload:
         content_type = request.content_type
         raw_data = self._request_data(request)
-        return trace_decode_v04(content_type, raw_data, request.app["disable_trace_parse_errors"])
+        return trace_decode_v04(content_type, raw_data, request.app["suppress_trace_parse_errors"])
 
     def _decode_v05_traces(self, request: Request) -> v04TracePayload:
         raw_data = self._request_data(request)
