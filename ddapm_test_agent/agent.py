@@ -797,7 +797,7 @@ def main(args: Optional[List[str]] = None) -> None:
         help=("Will stall trace requests for specified amount of time"),
     )
     parser.add_argument(
-        "--disable-trace-parse-errors",
+        "--suppress-trace-parse-errors",
         type=bool,
         default=os.environ.get("DD_SUPPRESS_TRACE_PARSE_ERRORS", False),
         help=(
@@ -836,7 +836,7 @@ def main(args: Optional[List[str]] = None) -> None:
         snapshot_ignored_attrs=parsed_args.snapshot_ignored_attrs,
         agent_url=parsed_args.agent_url,
         trace_request_delay=parsed_args.trace_request_delay,
-        disable_trace_parse_errors=parsed_args.disable_trace_parse_errors,
+        suppress_trace_parse_errors=parsed_args.suppress_trace_parse_errors,
     )
 
     web.run_app(app, sock=apm_sock, port=parsed_args.port)
