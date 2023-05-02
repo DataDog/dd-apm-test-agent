@@ -317,7 +317,7 @@ def decode_v04(content_type: str, data: bytes, disable_trace_parse_errors: bool 
     if content_type == "application/msgpack":
         payload = msgpack.unpackb(data)
     elif content_type == "application/json":
-        payload = _trace_decoder_flexible(data) if disable_trace_parse_errors else json.loads(data)
+        payload = _trace_decoder_flexible(data) if suppress_errors else json.loads(data)
     else:
         raise TypeError("Content type %r not supported" % content_type)
     return _verify_v04_payload(payload)
