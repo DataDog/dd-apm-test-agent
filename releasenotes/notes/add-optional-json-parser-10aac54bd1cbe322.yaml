@@ -1,7 +1,7 @@
 ---
 features:
   - |
-    This change adds support for an optional trace JSON decoder that will correctly parse a
+    This change adds support for an optional trace JSON decoder that will attempt to parse a
     trace, even if the trace is partially misconformed, such as one having port numbers within
     the meta field, which would previously throw an error. Additionally, the change also adds 
     a default parser of json.loads, which was originally used. The new parser can be used by
