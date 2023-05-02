@@ -63,6 +63,11 @@ def trace_request_delay() -> Generator[float, None, None]:
 
 
 @pytest.fixture
+def suppress_trace_parse_errors() -> Generator[bool, None, None]:
+    yield False
+
+
+@pytest.fixture
 async def agent_app(
     aiohttp_server,
     agent_disabled_checks,
@@ -72,6 +77,7 @@ async def agent_app(
     snapshot_ignored_attrs,
     agent_url,
     trace_request_delay,
+    suppress_trace_parse_errors,
 ):
     app = await aiohttp_server(
         make_app(
@@ -82,6 +88,7 @@ async def agent_app(
             snapshot_ignored_attrs,
             agent_url,
             trace_request_delay,
+            suppress_trace_parse_errors,
         )
     )
     yield app
@@ -108,13 +115,18 @@ def v04_reference_http_trace_payload_data_raw() -> List[Trace]:
                     "type": "http",
                     "start": 1342343123,
                     "duration": 123214,
+                    "error": 0,
                     "meta": {
+                        "component": "",
                         "http.url": "http://localhost:8080/users",
                         "http.method": "GET",
                         "http.status_code": "200",
                         "http.status_msg": "OK",
+                        "language": "python",
+                        "runtime-id": "2d377516ca12429aaf072f037ed2e4cc",
                     },
                     "metrics": {
+                        "process_id": 111,
                         "sampling_priority_v1": 1.0,
                     },
                 }

@@ -275,11 +275,49 @@ def set_metric_tag(s: Span, k: str, v: MetricType) -> Span:
     return s
 
 
-def decode_v04(content_type: str, data: bytes) -> v04TracePayload:
+def _trace_decoder_flexible(json_string: bytes) -> Dict[str, Any]:
+    """Parse Trace JSON and accounts for meta that may contain numbers such as ports. Converts these meta correctly to strings.
+    Also ensures that any valid integers/floats are correctly parsed, to prevent ids from being decoded as strings incorrectly.
+    """
+
+    def is_number_as_str(num, number_type=int):
+        try:
+            number_type(num)
+            return isinstance(num, str)
+        except ValueError:
+            return False
+
+    # Define a custom JSON decoder for decoding spans
+    def json_decoder(maybe_span):
+        # loop through the span object
+        if isinstance(maybe_span, dict):
+            for key, value in maybe_span.items():
+                if key == "meta":
+                    # Check if the value is an int or float and convert back to string if true
+                    for k, v in value.items():
+                        if isinstance(v, int) or isinstance(v, float):
+                            value[k] = str(v)
+                elif key == "metrics":
+                    for k, v in value.items():
+                        # Check if value is a a float or int
+                        if is_number_as_str(v, int):
+                            value[k] = int(v)
+                        elif is_number_as_str(v, float):
+                            value[k] = float(v)
+                # For other attributes, check if the value is a string that can be converted to an int
+                elif is_number_as_str(value, int):
+                    maybe_span[key] = int(value)
+        return maybe_span
+
+    parsed_data: Dict[str, Any] = json.loads(json_string, object_hook=json_decoder)
+    return parsed_data
+
+
+def decode_v04(content_type: str, data: bytes, suppress_errors: bool) -> v04TracePayload:
     if content_type == "application/msgpack":
         payload = msgpack.unpackb(data)
     elif content_type == "application/json":
-        payload = json.loads(data)
+        payload = _trace_decoder_flexible(data) if suppress_errors else json.loads(data)
     else:
         raise TypeError("Content type %r not supported" % content_type)
     return _verify_v04_payload(payload)

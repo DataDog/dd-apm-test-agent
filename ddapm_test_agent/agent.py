@@ -22,6 +22,7 @@ from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
+from msgpack.exceptions import ExtraData as MsgPackExtraDataException
 from multidict import CIMultiDict
 
 from . import _get_version
@@ -258,7 +259,7 @@ class Agent:
     def _decode_v04_traces(self, request: Request) -> v04TracePayload:
         content_type = request.content_type
         raw_data = self._request_data(request)
-        return trace_decode_v04(content_type, raw_data)
+        return trace_decode_v04(content_type, raw_data, request.app["suppress_trace_parse_errors"])
 
     def _decode_v05_traces(self, request: Request) -> v04TracePayload:
         raw_data = self._request_data(request)
@@ -392,14 +393,16 @@ class Agent:
         if "X-Datadog-Proxy-Port" in headers:
             port = headers.pop("X-Datadog-Proxy-Port")
             request.app["agent_url"] = update_trace_agent_port(request.app["agent_url"], new_port=port)
+            agent_url = request.app["agent_url"]
             log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
 
         if agent_url and proxy_to_agent:
             headers = {
                 "Content-Type": headers.get("Content-Type", "application/msgpack"),
-                **{k: v for k, v in headers.items() if k != "Content-Type"},
+                **{k: v for k, v in headers.items() if k.lower() not in ["content-type", "host", "transfer-encoding"]},
             }
             log.info("Forwarding request to agent at %r", agent_url)
+            log.debug(f"Using headers: {headers}")
             response = await self._proxy_request(request, headers, agent_url)
 
         await checks.check("trace_stall", headers=headers, request=request)
@@ -409,33 +412,35 @@ class Agent:
             await checks.check("meta_tracer_version_header", headers=headers)
             await checks.check("trace_content_length", headers=headers)
 
-            if version == "v0.4":
-                traces = self._decode_v04_traces(request)
-            elif version == "v0.5":
-                traces = self._decode_v05_traces(request)
-            log.info(
-                "received trace for token %r payload with %r trace chunks",
-                token,
-                len(traces),
-            )
-            for i, trace in enumerate(traces):
-                try:
-                    log.info(
-                        "Chunk %d\n%s",
-                        i,
-                        pprint_trace(trace, request.app["log_span_fmt"]),
-                    )
-                except ValueError:
-                    log.info("Chunk %d could not be displayed (might be incomplete).", i)
-            log.info("end of payload %s", "-" * 40)
-
-            with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
-                await checks.check(
-                    "trace_count_header",
-                    headers=headers,
-                    num_traces=len(traces),
+            try:
+                if version == "v0.4":
+                    traces = self._decode_v04_traces(request)
+                elif version == "v0.5":
+                    traces = self._decode_v05_traces(request)
+                log.info(
+                    "received trace for token %r payload with %r trace chunks",
+                    token,
+                    len(traces),
                 )
+                for i, trace in enumerate(traces):
+                    try:
+                        log.info(
+                            "Chunk %d\n%s",
+                            i,
+                            pprint_trace(trace, request.app["log_span_fmt"]),
+                        )
+                    except ValueError:
+                        log.info("Chunk %d could not be displayed (might be incomplete).", i)
+                log.info("end of payload %s", "-" * 40)
 
+                with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
+                    await checks.check(
+                        "trace_count_header",
+                        headers=headers,
+                        num_traces=len(traces),
+                    )
+            except MsgPackExtraDataException as e:
+                log.error(f"Error unpacking trace bytes with Msgpack: {str(e)}, error {e}")
         if agent_url:
             return response
 
@@ -656,6 +661,7 @@ def make_app(
     snapshot_ignored_attrs: List[str],
     agent_url: str,
     trace_request_delay: float,
+    suppress_trace_parse_errors: bool,
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
@@ -709,6 +715,7 @@ def make_app(
     app["snapshot_ignored_attrs"] = snapshot_ignored_attrs
     app["agent_url"] = agent_url
     app["trace_request_delay"] = trace_request_delay
+    app["suppress_trace_parse_errors"] = suppress_trace_parse_errors
     return app
 
 
@@ -789,6 +796,14 @@ def main(args: Optional[List[str]] = None) -> None:
         default=os.environ.get("DD_TEST_STALL_REQUEST_SECONDS", 0.0),
         help=("Will stall trace requests for specified amount of time"),
     )
+    parser.add_argument(
+        "--suppress-trace-parse-errors",
+        type=bool,
+        default=os.environ.get("DD_SUPPRESS_TRACE_PARSE_ERRORS", False),
+        help=(
+            "Will change the test agent trace decoder to use a more resilient parser to prevent decode and span verification errors"
+        ),
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -821,6 +836,7 @@ def main(args: Optional[List[str]] = None) -> None:
         snapshot_ignored_attrs=parsed_args.snapshot_ignored_attrs,
         agent_url=parsed_args.agent_url,
         trace_request_delay=parsed_args.trace_request_delay,
+        suppress_trace_parse_errors=parsed_args.suppress_trace_parse_errors,
     )
 
     web.run_app(app, sock=apm_sock, port=parsed_args.port)
