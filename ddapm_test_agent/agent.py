@@ -321,6 +321,10 @@ class Agent:
 
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
         await self._store_request(request)
+        agent_url = request.app["agent_url"]
+        if agent_url:
+            log.info("Forwarding telemetry to agent at %r", agent_url)
+            response = await self._prepare_and_send_request(request, CIMultiDict(request.headers), agent_url)
         v2_apmtelemetry_decode(self._request_data(request))
         # TODO: Validation
         # TODO: Snapshots
@@ -373,6 +377,16 @@ class Agent:
                     log.info("Response %r from agent:", data)
                     return web.json_response(data=data)
 
+    async def _prepare_and_send_request(self, request, headers):
+        headers = {
+            "Content-Type": headers.get("Content-Type", "application/msgpack"),
+            **{k: v for k, v in headers.items() if k.lower() not in ["content-type", "host", "transfer-encoding"]},
+        }
+        agent_url = request.app["agent_url"]
+        log.info("Forwarding request to agent at %r", agent_url)
+        log.debug(f"Using headers: {headers}")
+        return await self._proxy_request(request, headers, agent_url)
+
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5"]) -> web.Response:
         await self._store_request(request)
         token = request["session_token"]
@@ -395,12 +409,7 @@ class Agent:
             log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
 
         if agent_url and proxy_to_agent:
-            headers = {
-                "Content-Type": headers.get("Content-Type", "application/msgpack"),
-                **{k: v for k, v in headers.items() if k != "Content-Type"},
-            }
-            log.info("Forwarding request to agent at %r", agent_url)
-            response = await self._proxy_request(request, headers, agent_url)
+            response = await self._prepare_and_send_request(request, headers)
 
         await checks.check("trace_stall", headers=headers, request=request)
 
