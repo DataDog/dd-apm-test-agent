@@ -111,7 +111,7 @@ async def session_token_middleware(request: Request, handler: _Handler) -> web.R
     return await handler(request)
 
 
-async def _proxy_request(request_data, request, headers, agent_url):
+async def _forward_request(request_data, headers, agent_url):
     async with ClientSession() as session:
         async with session.post(
             f"{agent_url}/v0.4/traces",
@@ -150,39 +150,7 @@ async def _prepare_and_send_request(data, request, headers):
     agent_url = request.app["agent_url"]
     log.info("Forwarding request to agent at %r", agent_url)
     log.debug(f"Using headers: {headers}")
-    return await _proxy_request(data, request, headers, agent_url)
-
-
-@middleware  # type: ignore
-async def forward_request_middleware(request: Request, handler: _Handler) -> web.Response:
-    """Forward all requests to the agent_url if set."""
-    data = cast(bytes, await request.read())
-    headers = headers = CIMultiDict(request.headers)
-    agent_url = request.app["agent_url"]
-    proxy_to_agent = agent_url != ""
-
-    log.debug(f"New request: {request} with headers: {headers}")
-    log.debug(f"Request Data: {data!r}")
-
-    if "X-Datadog-Agent-Proxy-Disabled" in headers:
-        proxy_to_agent = headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true"
-
-    if "X-Datadog-Proxy-Port" in headers:
-        port = headers.pop("X-Datadog-Proxy-Port")
-        request.app["agent_url"] = update_trace_agent_port(request.app["agent_url"], new_port=port)
-        log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
-
-    if agent_url and proxy_to_agent:
-        agent_response = await _prepare_and_send_request(data, request, headers)
-
-    endpoint_response = await handler(request)
-
-    # return the agent response if this was sent to a trace endpoint
-    endpoint_path = request.path
-    if (endpoint_path == "/v0.4/traces" or endpoint_path == "/v0.5/traces") and agent_url and proxy_to_agent:
-        return agent_response
-    else:
-        return endpoint_response
+    return await _forward_request(data, headers, agent_url)
 
 
 def update_trace_agent_port(url, new_port):
@@ -349,7 +317,6 @@ class Agent:
         return await self._handle_traces(request, version="v0.5")
 
     async def handle_v06_tracestats(self, request: Request) -> web.Response:
-        await self._store_request(request)
         stats = self._decode_v06_tracestats(request)
         nstats = len(stats["Stats"])
         log.info(
@@ -361,7 +328,6 @@ class Agent:
 
     async def handle_v07_remoteconfig(self, request: Request) -> web.Response:
         """Emulates Remote Config endpoint: /v0.7/config"""
-        await self._store_request(request)
         token = _session_token(request)
         data = await self._rc_server.get_config_response(token)
         return web.json_response(data)
@@ -394,7 +360,6 @@ class Agent:
         return web.HTTPAccepted()
 
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
-        await self._store_request(request)
         v2_apmtelemetry_decode(self._request_data(request))
         # TODO: Validation
         # TODO: Snapshots
@@ -418,7 +383,6 @@ class Agent:
         )
 
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5"]) -> web.Response:
-        await self._store_request(request)
         token = request["session_token"]
         checks: Checks = request.app["checks"]
         headers = request.headers
@@ -665,6 +629,55 @@ class Agent:
         # wait 1s, gather traces and assert tags
         raise NotImplementedError
 
+    @middleware  # type: ignore
+    async def request_forwarder_middleware(self, request: Request, handler: _Handler) -> web.Response:
+        forward_endpoints = [
+            "/v0.4/traces",
+            "/v0.5/traces",
+            "/v0.6/stats",
+            "/v0.7/config",
+            "/telemetry/proxy/api/v2/apmtelemetry",
+        ]
+
+        if request.path in forward_endpoints:
+            # forward the request then call the handler
+            return await self._forward_request_to_agent(request, handler)
+        else:
+            # Call the original handler and do nothing
+            return await handler(request)
+
+    async def _forward_request_to_agent(self, request: Request, handler: _Handler) -> web.Response:
+        await self._store_request(request)
+
+        """Forward all requests to the agent_url if set."""
+        data = self._request_data(request)
+        headers = headers = CIMultiDict(request.headers)
+        agent_url = request.app["agent_url"]
+        proxy_to_agent = agent_url != ""
+
+        log.debug(f"New request: {request} with headers: {headers}")
+        log.debug(f"Request Data: {data!r}")
+
+        if "X-Datadog-Agent-Proxy-Disabled" in headers:
+            proxy_to_agent = headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true"
+
+        if "X-Datadog-Proxy-Port" in headers:
+            port = headers.pop("X-Datadog-Proxy-Port")
+            request.app["agent_url"] = update_trace_agent_port(request.app["agent_url"], new_port=port)
+            log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
+
+        if agent_url and proxy_to_agent:
+            agent_response = await _prepare_and_send_request(data, request, headers)
+
+        endpoint_response = await handler(request)
+
+        # return the agent response if this was sent to a trace endpoint
+        endpoint_path = request.path
+        if (endpoint_path == "/v0.4/traces" or endpoint_path == "/v0.5/traces") and agent_url and proxy_to_agent:
+            return agent_response
+        else:
+            return endpoint_response
+
 
 def make_app(
     disabled_checks: List[str],
@@ -680,7 +693,7 @@ def make_app(
         client_max_size=int(100e6),  # 100MB - arbitrary
         middlewares=[
             check_failure_middleware,
-            forward_request_middleware,
+            agent.request_forwarder_middleware,
             session_token_middleware,
         ],
     )
