@@ -111,6 +111,80 @@ async def session_token_middleware(request: Request, handler: _Handler) -> web.R
     return await handler(request)
 
 
+async def _proxy_request(request_data, request, headers, agent_url):
+    async with ClientSession() as session:
+        async with session.post(
+            f"{agent_url}/v0.4/traces",
+            headers=headers,
+            data=request_data,
+        ) as resp:
+            assert resp.status == 200, f"Request to agent unsuccessful, received [{resp.status}] response."
+
+            if "text/html" in resp.content_type:
+                response_data = await resp.read()
+                if len(response_data) == 0:
+                    log.info("Received empty response: %r from agent.", response_data)
+                    return web.HTTPOk()
+                else:
+                    if isinstance(response_data, bytes):
+                        response_data = response_data.decode()
+                    try:
+                        response_data = json.loads(response_data)
+                    except json.JSONDecodeError as e:
+                        log.warning("Error decoding response data: %s, data=%r", str(e), response_data)
+                        log.warning("Original Request: %r", request_data)
+                        response_data = {}
+                    log.info("Response %r from agent:", response_data)
+                    return web.json_response(data=response_data)
+            else:
+                response_data = await resp.json()
+                log.info("Response %r from agent:", response_data)
+                return web.json_response(data=response_data)
+
+
+async def _prepare_and_send_request(data, request, headers):
+    headers = {
+        "Content-Type": headers.get("Content-Type", "application/msgpack"),
+        **{k: v for k, v in headers.items() if k.lower() not in ["content-type", "host", "transfer-encoding"]},
+    }
+    agent_url = request.app["agent_url"]
+    log.info("Forwarding request to agent at %r", agent_url)
+    log.debug(f"Using headers: {headers}")
+    return await _proxy_request(data, request, headers, agent_url)
+
+
+@middleware  # type: ignore
+async def forward_request_middleware(request: Request, handler: _Handler) -> web.Response:
+    """Forward all requests to the agent_url if set."""
+    data = cast(bytes, await request.read())
+    headers = headers = CIMultiDict(request.headers)
+    agent_url = request.app["agent_url"]
+    proxy_to_agent = agent_url != ""
+
+    log.debug(f"New request: {request} with headers: {headers}")
+    log.debug(f"Request Data: {data!r}")
+
+    if "X-Datadog-Agent-Proxy-Disabled" in headers:
+        proxy_to_agent = headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true"
+
+    if "X-Datadog-Proxy-Port" in headers:
+        port = headers.pop("X-Datadog-Proxy-Port")
+        request.app["agent_url"] = update_trace_agent_port(request.app["agent_url"], new_port=port)
+        log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
+
+    if agent_url and proxy_to_agent:
+        agent_response = await _prepare_and_send_request(data, request, headers)
+
+    endpoint_response = await handler(request)
+
+    # return the agent response if this was sent to a trace endpoint
+    endpoint_path = request.path
+    if (endpoint_path == "/v0.4/traces" or endpoint_path == "/v0.5/traces") and agent_url and proxy_to_agent:
+        return agent_response
+    else:
+        return endpoint_response
+
+
 def update_trace_agent_port(url, new_port):
     # Updates the Agent URL with a new port number, returning the updated URL and old port
     parsed_url = urlparse(url)
@@ -321,10 +395,6 @@ class Agent:
 
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
         await self._store_request(request)
-        agent_url = request.app["agent_url"]
-        if agent_url:
-            log.info("Forwarding telemetry to agent at %r", agent_url)
-            response = await self._prepare_and_send_request(request, CIMultiDict(request.headers), agent_url)
         v2_apmtelemetry_decode(self._request_data(request))
         # TODO: Validation
         # TODO: Snapshots
@@ -347,69 +417,11 @@ class Agent:
             }
         )
 
-    async def _proxy_request(self, request, headers, agent_url):
-        async with ClientSession() as session:
-            async with session.post(
-                f"{agent_url}/v0.4/traces",
-                headers=headers,
-                data=self._request_data(request),
-            ) as resp:
-                assert resp.status == 200, f"Request to agent unsuccessful, received [{resp.status}] response."
-
-                if "text/html" in resp.content_type:
-                    data = await resp.read()
-                    if len(data) == 0:
-                        log.info("Received empty response: %r from agent.", data)
-                        return web.HTTPOk()
-                    else:
-                        if isinstance(data, bytes):
-                            data = data.decode()
-                        try:
-                            response_data = json.loads(data)
-                        except json.JSONDecodeError as e:
-                            log.warning("Error decoding response data: %s, data=%r", str(e), data)
-                            log.warning("Original Request: %r", self._request_data(request))
-                            response_data = {}
-                        log.info("Response %r from agent:", data)
-                        return web.json_response(data=response_data)
-                else:
-                    data = await resp.json()
-                    log.info("Response %r from agent:", data)
-                    return web.json_response(data=data)
-
-    async def _prepare_and_send_request(self, request, headers):
-        headers = {
-            "Content-Type": headers.get("Content-Type", "application/msgpack"),
-            **{k: v for k, v in headers.items() if k.lower() not in ["content-type", "host", "transfer-encoding"]},
-        }
-        agent_url = request.app["agent_url"]
-        log.info("Forwarding request to agent at %r", agent_url)
-        log.debug(f"Using headers: {headers}")
-        return await self._proxy_request(request, headers, agent_url)
-
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5"]) -> web.Response:
         await self._store_request(request)
         token = request["session_token"]
         checks: Checks = request.app["checks"]
-        headers = CIMultiDict(request.headers)
-
-        log.debug(f"New request: {request} with headers: {headers}")
-        log.debug(f"Request Data: {self._request_data(request)!r}")
-
-        agent_url = request.app["agent_url"]
-        response = None
-        proxy_to_agent = agent_url != ""
-
-        if "X-Datadog-Agent-Proxy-Disabled" in headers:
-            proxy_to_agent = headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true"
-
-        if "X-Datadog-Proxy-Port" in headers:
-            port = headers.pop("X-Datadog-Proxy-Port")
-            request.app["agent_url"] = update_trace_agent_port(request.app["agent_url"], new_port=port)
-            log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
-
-        if agent_url and proxy_to_agent:
-            response = await self._prepare_and_send_request(request, headers)
+        headers = request.headers
 
         await checks.check("trace_stall", headers=headers, request=request)
 
@@ -444,9 +456,6 @@ class Agent:
                     headers=headers,
                     num_traces=len(traces),
                 )
-
-        if agent_url:
-            return response
 
         # TODO: implement sampling logic
         return web.json_response(data={"rate_by_service": {}})
@@ -671,6 +680,7 @@ def make_app(
         client_max_size=int(100e6),  # 100MB - arbitrary
         middlewares=[
             check_failure_middleware,
+            forward_request_middleware,
             session_token_middleware,
         ],
     )
