@@ -30,6 +30,7 @@ setup(
         "aiohttp",
         "ddsketch",
         "msgpack",
+        "pytest",
         "requests",
         "typing_extensions",
         "yarl",

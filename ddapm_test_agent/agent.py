@@ -72,24 +72,6 @@ def _parse_csv(s: str) -> List[str]:
     return [s.strip() for s in s.split(",") if s.strip() != ""]
 
 
-@middleware  # type: ignore
-async def check_failure_middleware(request: Request, handler: _Handler) -> web.Response:
-    """Convert any failed checks into an HttpException."""
-    trace = start_trace("request %r" % request)
-    try:
-        response = await handler(request)
-    except AssertionError as e:
-        msg = str(trace) + str(e)
-        log.error(msg)
-        return web.HTTPBadRequest(body=msg)
-    else:
-        if trace.has_fails():
-            msg = str(trace)
-            log.error(msg)
-            return web.HTTPBadRequest(body=msg)
-    return response
-
-
 def _session_token(request: Request) -> Optional[str]:
     token: Optional[str]
     if "X-Datadog-Test-Session-Token" in request.headers:
@@ -166,7 +148,22 @@ def update_trace_agent_port(url, new_port):
     return new_url
 
 
-class Agent:
+class Singleton:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+
+class Agent(Singleton):
     def __init__(self):
         """Only store the requests sent to the agent. There are many representations
         of data but typically information is lost while transforming the data.
@@ -177,6 +174,7 @@ class Agent:
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
         self._rc_server = RemoteConfigServer()
+        self._trace_failures: List[str] = []
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -195,6 +193,22 @@ class Agent:
                         _traces[trace_id] = []
                     _traces[trace_id].append(s)
         return _traces
+
+    # def get_check_trace_failures(self) -> List[Tuple[CheckTrace, str]]:
+    #     """Return the check trace failures that occurred, if pooling is enabled. """
+    #     return self._trace_failures
+
+    def get_check_trace_failures(self, request: Request) -> web.Response:
+        """Return the check trace failures that occurred, if pooling is enabled as a request."""
+        trace_failures = self._trace_failures
+
+        if len(trace_failures) > 0:
+            failure_message = f"APM Test Agent Validation failed with {len(trace_failures)} failures.\n"
+            for check_trace_message in trace_failures:
+                failure_message += check_trace_message
+            return web.HTTPBadRequest(text=failure_message)
+        else:
+            return web.HTTPOk()
 
     async def apmtelemetry(self) -> List[TelemetryEvent]:
         """Return the telemetry events stored by the agent"""
@@ -687,6 +701,35 @@ class Agent:
         else:
             return endpoint_response
 
+    @middleware  # type: ignore
+    async def check_failure_middleware(self, request: Request, handler: _Handler) -> web.Response:
+        """Convert any failed checks into an HttpException."""
+        trace = start_trace("request %r" % request)
+        try:
+            response = await handler(request)
+        except AssertionError as e:
+            # only save trace failures to memory if necessary
+            msg = str(trace) + str(e)
+            log.error(msg)
+            if request.app["pool_trace_check_failures"]:
+                log.info(f"storing failure with message {msg}")
+                self._trace_failures.append(msg)
+                log.info(self._trace_failures)
+            return web.HTTPBadRequest(body=msg)
+        else:
+            if trace.has_fails():
+                # only save trace failures to memory if necessary
+                msg = str(trace)
+                log.error(msg)
+                if request.app["pool_trace_check_failures"]:
+                    log.info(f"storing failure with message {msg}")
+                    self._trace_failures.append(msg)
+                return web.HTTPBadRequest(body=msg)
+        return response
+
+
+agent_instance: Agent = Agent()
+
 
 def make_app(
     disabled_checks: List[str],
@@ -697,12 +740,13 @@ def make_app(
     agent_url: str,
     trace_request_delay: float,
     suppress_trace_parse_errors: bool,
+    pool_trace_check_failures: bool,
 ) -> web.Application:
-    agent = Agent()
+    agent = agent_instance
     app = web.Application(
         client_max_size=int(100e6),  # 100MB - arbitrary
         middlewares=[
-            check_failure_middleware,
+            agent.check_failure_middleware,
             agent.store_request_middleware,
             agent.request_forwarder_middleware,
             session_token_middleware,
@@ -734,6 +778,7 @@ def make_app(
             web.get("/test/apmtelemetry", agent.handle_test_apmtelemetry),
             # web.get("/test/benchmark", agent.handle_test_traces),
             web.get("/test/trace/analyze", agent.handle_trace_analyze),
+            web.get("/test/check_trace/failures", agent.get_check_trace_failures),
         ]
     )
     checks = Checks(
@@ -753,6 +798,7 @@ def make_app(
     app["agent_url"] = agent_url
     app["trace_request_delay"] = trace_request_delay
     app["suppress_trace_parse_errors"] = suppress_trace_parse_errors
+    app["pool_trace_check_failures"] = pool_trace_check_failures
     return app
 
 
@@ -841,6 +887,12 @@ def main(args: Optional[List[str]] = None) -> None:
             "Will change the test agent trace decoder to use a more resilient parser to prevent decode and span verification errors"
         ),
     )
+    parser.add_argument(
+        "--pool-trace-check-failures",
+        type=bool,
+        default=os.environ.get("DD_POOL_TRACE_CHECK_FAILURES", False),
+        help=("Will change the test agent to pool trace check failures in memory that can later be asserted on"),
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -874,6 +926,7 @@ def main(args: Optional[List[str]] = None) -> None:
         agent_url=parsed_args.agent_url,
         trace_request_delay=parsed_args.trace_request_delay,
         suppress_trace_parse_errors=parsed_args.suppress_trace_parse_errors,
+        pool_trace_check_failures=parsed_args.pool_trace_check_failures,
     )
 
     web.run_app(app, sock=apm_sock, port=parsed_args.port)
