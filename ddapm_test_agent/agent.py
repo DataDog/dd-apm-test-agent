@@ -112,10 +112,10 @@ async def session_token_middleware(request: Request, handler: _Handler) -> web.R
     return await handler(request)
 
 
-async def _forward_request(request_data, headers, agent_url):
+async def _forward_request(request_data, headers, full_agent_url):
     async with ClientSession() as session:
         async with session.post(
-            f"{agent_url}/v0.4/traces",
+            full_agent_url,
             headers=headers,
             data=request_data,
         ) as resp:
@@ -149,9 +149,10 @@ async def _prepare_and_send_request(data, request, headers):
         **{k: v for k, v in headers.items() if k.lower() not in ["content-type", "host", "transfer-encoding"]},
     }
     agent_url = request.app["agent_url"]
-    log.info("Forwarding request to agent at %r", agent_url)
+    full_agent_url = agent_url + request.path
+    log.info("Forwarding request to agent at %r", full_agent_url)
     log.debug(f"Using headers: {headers}")
-    return await _forward_request(data, headers, agent_url)
+    return await _forward_request(data, headers, full_agent_url)
 
 
 def update_trace_agent_port(url, new_port):
@@ -634,6 +635,12 @@ class Agent:
         raise NotImplementedError
 
     @middleware  # type: ignore
+    async def store_request_middleware(self, request: Request, handler: _Handler) -> web.Response:
+        await self._store_request(request)
+        # Call the original handler
+        return await handler(request)
+
+    @middleware  # type: ignore
     async def request_forwarder_middleware(self, request: Request, handler: _Handler) -> web.Response:
         forward_endpoints = [
             "/v0.4/traces",
@@ -651,8 +658,6 @@ class Agent:
             return await handler(request)
 
     async def _forward_request_to_agent(self, request: Request, handler: _Handler) -> web.Response:
-        await self._store_request(request)
-
         """Forward all requests to the agent_url if set."""
         data = self._request_data(request)
         headers = headers = CIMultiDict(request.headers)
@@ -698,6 +703,7 @@ def make_app(
         client_max_size=int(100e6),  # 100MB - arbitrary
         middlewares=[
             check_failure_middleware,
+            agent.store_request_middleware,
             agent.request_forwarder_middleware,
             session_token_middleware,
         ],
