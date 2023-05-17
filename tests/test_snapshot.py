@@ -449,7 +449,7 @@ async def test_removed_attributes(agent, tmp_path, snapshot_removed_attrs, do_re
         assert file_content != ""
         span = json.loads(file_content)
         for removed_attr in snapshot_removed_attrs:
-            assert removed_attr not in span
+            assert removed_attr not in span[0]
 
 
 @pytest.mark.parametrize("snapshot_removed_attrs", [{"metrics.process_id"}])
@@ -472,4 +472,4 @@ async def test_removed_attributes_metrics(agent, tmp_path, snapshot_removed_attr
         file_content = "".join(f.readlines())
         assert file_content != ""
         span = json.loads(file_content)
-        assert "process_id" not in span["metrics"]
+        assert "process_id" not in span[0]
