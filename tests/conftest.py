@@ -68,6 +68,11 @@ def suppress_trace_parse_errors() -> Generator[bool, None, None]:
 
 
 @pytest.fixture
+def snapshot_removed_attrs() -> Generator[Set[str], None, None]:
+    yield set()
+
+
+@pytest.fixture
 async def agent_app(
     aiohttp_server,
     agent_disabled_checks,
@@ -78,6 +83,7 @@ async def agent_app(
     agent_url,
     trace_request_delay,
     suppress_trace_parse_errors,
+    snapshot_removed_attrs,
 ):
     app = await aiohttp_server(
         make_app(
@@ -89,6 +95,7 @@ async def agent_app(
             agent_url,
             trace_request_delay,
             suppress_trace_parse_errors,
+            snapshot_removed_attrs,
         )
     )
     yield app

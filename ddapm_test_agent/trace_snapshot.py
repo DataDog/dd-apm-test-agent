@@ -304,12 +304,18 @@ def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
     return d  # type: ignore
 
 
-def _snapshot_trace_str(trace: Trace) -> str:
+def _snapshot_trace_str(trace: Trace, removed: List[str] = None) -> str:
     cmap = child_map(trace)
     stack: List[Tuple[int, Span]] = [(0, root_span(trace))]
     s = "[\n"
     while stack:
         prefix, span = stack.pop(0)
+
+        # Remove any keys that are not needed for comparison
+        if removed:
+            for key in removed:
+                span.pop(key, None)
+
         for i, child in enumerate(reversed(cmap[span["span_id"]])):
             if i == 0:
                 stack.insert(0, (prefix + 3, child))
@@ -323,15 +329,15 @@ def _snapshot_trace_str(trace: Trace) -> str:
     return s
 
 
-def _snapshot_json(traces: List[Trace]) -> str:
+def _snapshot_json(traces: List[Trace], removed: List[str] = None) -> str:
     s = "["
     for t in traces:
-        s += _snapshot_trace_str(t)
+        s += _snapshot_trace_str(t, removed)
         if t != traces[-1]:
             s += ",\n"
     s += "]\n"
     return s
 
 
-def generate_snapshot(received_traces: List[Trace]) -> str:
-    return _snapshot_json(_normalize_traces(received_traces))
+def generate_snapshot(received_traces: List[Trace], removed: List[str] = None) -> str:
+    return _snapshot_json(_normalize_traces(received_traces), removed)

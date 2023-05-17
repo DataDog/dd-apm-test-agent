@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -425,3 +426,28 @@ async def test_snapshot_tracestats(agent, tmp_path, snapshot_ci_mode, do_referen
 
         resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test_case"})
         assert resp.status == 200, await resp.text()
+
+
+@pytest.mark.parametrize("snapshot_removed_attrs", [{"start", "duration"}])
+async def test_removed_attributes(agent, tmp_path, snapshot_removed_attrs, do_reference_v04_http_trace):
+    resp = await do_reference_v04_http_trace(token="test_case")
+    assert resp.status == 200
+
+    custom_dir = tmp_path / "custom"
+    custom_dir.mkdir()
+    custom_file_name = custom_dir / "custom_snapshot"
+    custom_file = custom_dir / "custom_snapshot.json"
+
+    resp = await agent.get(
+        "/test/session/snapshot", params={"test_session_token": "test_case", "file": str(custom_file_name)}
+    )
+    assert resp.status == 200, await resp.text()
+    resp_text = await resp.text()
+
+    assert os.path.exists(custom_file), custom_file
+    with open(custom_file, mode="r") as f:  # Check that the removed attributes are not present in all the spans
+        file_content = "".join(f.readlines())
+        assert file_content != ""
+        span = json.loads(file_content)
+        for removed_attr in snapshot_removed_attrs:
+            assert removed_attr not in span
