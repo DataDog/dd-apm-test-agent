@@ -444,12 +444,13 @@ async def test_removed_attributes(agent, tmp_path, snapshot_removed_attrs, do_re
     assert resp.status == 200, await resp.text()
 
     assert os.path.exists(custom_file), custom_file
-    with open(custom_file, mode="r") as f:  # Check that the removed attributes are not present in all the spans
+    with open(custom_file, mode="r") as f:  # Check that the removed attributes are not present in the span
         file_content = "".join(f.readlines())
         assert file_content != ""
         span = json.loads(file_content)
         for removed_attr in snapshot_removed_attrs:
             assert removed_attr not in span
+
 
 @pytest.mark.parametrize("snapshot_removed_attrs", [{"metrics.process_id"}])
 async def test_removed_attributes_metrics(agent, tmp_path, snapshot_removed_attrs, do_reference_v04_http_trace):
@@ -467,9 +468,8 @@ async def test_removed_attributes_metrics(agent, tmp_path, snapshot_removed_attr
     assert resp.status == 200, await resp.text()
 
     assert os.path.exists(custom_file), custom_file
-    with open(custom_file, mode="r") as f:  # Check that the removed attributes are not present in all the spans
+    with open(custom_file, mode="r") as f:
         file_content = "".join(f.readlines())
         assert file_content != ""
         span = json.loads(file_content)
-        assert "metrics" in span
         assert "process_id" not in span["metrics"]
