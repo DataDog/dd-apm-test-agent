@@ -313,7 +313,7 @@ def _snapshot_trace_str(trace: Trace, removed: List[str] = []) -> str:
 
         # Remove any keys that are not needed for comparison
         for key in removed:
-            span.pop(key, None) # type: ignore
+            span.pop(key, None)  # type: ignore
 
         for i, child in enumerate(reversed(cmap[span["span_id"]])):
             if i == 0:
