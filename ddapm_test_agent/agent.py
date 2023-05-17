@@ -148,22 +148,7 @@ def update_trace_agent_port(url, new_port):
     return new_url
 
 
-class Singleton:
-    _instance = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    @classmethod
-    def get_instance(cls):
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
-
-
-class Agent(Singleton):
+class Agent():
     def __init__(self):
         """Only store the requests sent to the agent. There are many representations
         of data but typically information is lost while transforming the data.
@@ -193,10 +178,6 @@ class Agent(Singleton):
                         _traces[trace_id] = []
                     _traces[trace_id].append(s)
         return _traces
-
-    # def get_check_trace_failures(self) -> List[Tuple[CheckTrace, str]]:
-    #     """Return the check trace failures that occurred, if pooling is enabled. """
-    #     return self._trace_failures
 
     def get_check_trace_failures(self, request: Request) -> web.Response:
         """Return the check trace failures that occurred, if pooling is enabled as a request."""
@@ -724,6 +705,8 @@ class Agent(Singleton):
                 if request.app["pool_trace_check_failures"]:
                     log.info(f"storing failure with message {msg}")
                     self._trace_failures.append(msg)
+                if request.app["disable_error_responses"]:
+                    return response
                 return web.HTTPBadRequest(body=msg)
         return response
 
@@ -741,6 +724,7 @@ def make_app(
     trace_request_delay: float,
     suppress_trace_parse_errors: bool,
     pool_trace_check_failures: bool,
+    disable_error_responses: bool,
 ) -> web.Application:
     agent = agent_instance
     app = web.Application(
@@ -799,6 +783,7 @@ def make_app(
     app["trace_request_delay"] = trace_request_delay
     app["suppress_trace_parse_errors"] = suppress_trace_parse_errors
     app["pool_trace_check_failures"] = pool_trace_check_failures
+    app["disable_error_responses"] = disable_error_responses
     return app
 
 
@@ -893,6 +878,12 @@ def main(args: Optional[List[str]] = None) -> None:
         default=os.environ.get("DD_POOL_TRACE_CHECK_FAILURES", False),
         help=("Will change the test agent to pool trace check failures in memory that can later be asserted on"),
     )
+    parser.add_argument(
+        "--disable-error-responses",
+        type=bool,
+        default=os.environ.get("DD_DISABLE_ERROR_RESPONSES", False),
+        help=("Will change the test agent to send [200: Ok] responses instead of error responses back to the tracer."),
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -927,6 +918,7 @@ def main(args: Optional[List[str]] = None) -> None:
         trace_request_delay=parsed_args.trace_request_delay,
         suppress_trace_parse_errors=parsed_args.suppress_trace_parse_errors,
         pool_trace_check_failures=parsed_args.pool_trace_check_failures,
+        disable_error_responses=parsed_args.disable_error_responses,
     )
 
     web.run_app(app, sock=apm_sock, port=parsed_args.port)
