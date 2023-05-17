@@ -177,6 +177,14 @@ class Agent:
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
         self._rc_server = RemoteConfigServer()
+        self._trace_failures: List[str] = []
+        self._forward_endpoints: List[str] = [
+            "/v0.4/traces",
+            "/v0.5/traces",
+            "/v0.6/stats",
+            "/v0.7/config",
+            "/telemetry/proxy/api/v2/apmtelemetry",
+        ]
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -636,7 +644,9 @@ class Agent:
 
     @middleware  # type: ignore
     async def store_request_middleware(self, request: Request, handler: _Handler) -> web.Response:
-        await self._store_request(request)
+        # only store requests for specific endpoints
+        if request.path in self._forward_endpoints:
+            await self._store_request(request)
 
         headers = CIMultiDict(request.headers)
 
@@ -661,15 +671,7 @@ class Agent:
 
     @middleware  # type: ignore
     async def request_forwarder_middleware(self, request: Request, handler: _Handler) -> web.Response:
-        forward_endpoints = [
-            "/v0.4/traces",
-            "/v0.5/traces",
-            "/v0.6/stats",
-            "/v0.7/config",
-            "/telemetry/proxy/api/v2/apmtelemetry",
-        ]
-
-        if request.path in forward_endpoints:
+        if request.path in self._forward_endpoints:
             # forward the request then call the handler
             return await self._forward_request_to_agent(request, handler)
         else:
