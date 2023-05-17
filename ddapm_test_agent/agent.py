@@ -148,7 +148,7 @@ def update_trace_agent_port(url, new_port):
     return new_url
 
 
-class Agent():
+class Agent:
     def __init__(self):
         """Only store the requests sent to the agent. There are many representations
         of data but typically information is lost while transforming the data.

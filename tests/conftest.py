@@ -68,6 +68,16 @@ def suppress_trace_parse_errors() -> Generator[bool, None, None]:
 
 
 @pytest.fixture
+def pool_trace_check_failures() -> Generator[bool, None, None]:
+    yield False
+
+
+@pytest.fixture
+def disable_error_responses() -> Generator[bool, None, None]:
+    yield False
+
+
+@pytest.fixture
 async def agent_app(
     aiohttp_server,
     agent_disabled_checks,
@@ -78,6 +88,8 @@ async def agent_app(
     agent_url,
     trace_request_delay,
     suppress_trace_parse_errors,
+    pool_trace_check_failures,
+    disable_error_responses,
 ):
     app = await aiohttp_server(
         make_app(
@@ -89,6 +101,8 @@ async def agent_app(
             agent_url,
             trace_request_delay,
             suppress_trace_parse_errors,
+            pool_trace_check_failures,
+            disable_error_responses,
         )
     )
     yield app
