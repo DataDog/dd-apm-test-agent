@@ -637,7 +637,26 @@ class Agent:
     @middleware  # type: ignore
     async def store_request_middleware(self, request: Request, handler: _Handler) -> web.Response:
         await self._store_request(request)
-        # Call the original handler
+
+        headers = CIMultiDict(request.headers)
+
+        if "X-Datadog-Trace-Env-Variables" in headers:
+            var_string = headers.pop("X-Datadog-Trace-Env-Variables")
+            env_vars = {
+                key.strip(): value.strip() for key, value in (pair.split("=") for pair in var_string.split(","))
+            }
+            request["_dd_trace_env_variables"] = env_vars
+
+        if "X-Datadog-Agent-Proxy-Disabled" in headers:
+            request["_proxy_to_agent"] = headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true"
+
+        if "X-Datadog-Proxy-Port" in headers:
+            port = headers.pop("X-Datadog-Proxy-Port")
+            request.app["agent_url"] = update_trace_agent_port(request.app["agent_url"], new_port=port)
+            log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
+
+        request["_headers"] = headers
+        # Call the original handlerx
         return await handler(request)
 
     @middleware  # type: ignore
@@ -660,20 +679,12 @@ class Agent:
     async def _forward_request_to_agent(self, request: Request, handler: _Handler) -> web.Response:
         """Forward all requests to the agent_url if set."""
         data = self._request_data(request)
-        headers = headers = CIMultiDict(request.headers)
+        headers = request["_headers"]
         agent_url = request.app["agent_url"]
-        proxy_to_agent = agent_url != ""
+        proxy_to_agent = request.get("_proxy_to_agent", True)
 
         log.debug(f"New request: {request} with headers: {headers}")
         log.debug(f"Request Data: {data!r}")
-
-        if "X-Datadog-Agent-Proxy-Disabled" in headers:
-            proxy_to_agent = headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true"
-
-        if "X-Datadog-Proxy-Port" in headers:
-            port = headers.pop("X-Datadog-Proxy-Port")
-            request.app["agent_url"] = update_trace_agent_port(request.app["agent_url"], new_port=port)
-            log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
 
         if agent_url and proxy_to_agent:
             agent_response = await _prepare_and_send_request(data, request, headers)
@@ -682,7 +693,7 @@ class Agent:
 
         # return the agent response if this was sent to a trace endpoint
         endpoint_path = request.path
-        if (endpoint_path == "/v0.4/traces" or endpoint_path == "/v0.5/traces") and agent_url and proxy_to_agent:
+        if "traces" in endpoint_path and agent_url and proxy_to_agent:
             return agent_response
         else:
             return endpoint_response
