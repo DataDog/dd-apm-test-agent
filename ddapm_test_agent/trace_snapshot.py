@@ -318,7 +318,7 @@ def _snapshot_trace_str(trace: Trace, removed: List[str] = []) -> str:
             elif key.startswith("metrics."):
                 span["metrics"].pop(key[8:], None)
             else:
-                span.pop(key, None)
+                span.pop(key, None)  # type: ignore
 
         for i, child in enumerate(reversed(cmap[span["span_id"]])):
             if i == 0:
