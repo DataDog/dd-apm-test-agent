@@ -442,7 +442,6 @@ async def test_removed_attributes(agent, tmp_path, snapshot_removed_attrs, do_re
         "/test/session/snapshot", params={"test_session_token": "test_case", "file": str(custom_file_name)}
     )
     assert resp.status == 200, await resp.text()
-    resp_text = await resp.text()
 
     assert os.path.exists(custom_file), custom_file
     with open(custom_file, mode="r") as f:  # Check that the removed attributes are not present in all the spans
