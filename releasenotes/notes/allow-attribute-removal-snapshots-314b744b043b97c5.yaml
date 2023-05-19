@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    This change adds a new feature that allows desired attributes to be removed from spans in snapshots. By default, no
+    attributes will be removed. The attributes to be removed can be set through the optional environment variable
+    `SNAPSHOT_REMOVED_ATTRS`, or with the optional query parameter `?removes`. Both `start` and `span_id` shouldn't be
+    removed together.
