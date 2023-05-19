@@ -475,6 +475,10 @@ class Agent:
         span_removes = list(default_span_removes | overrides)
         log.info("using removes %r", span_removes)
 
+        # if both "start" and "span_id" are in span_removes, raise an error
+        if "start" in span_removes and "span_id" in span_removes:
+            raise ValueError("Cannot remove both 'start' and 'span_id' from spans")
+
         with CheckTrace.add_frame(f"snapshot (token='{token}')") as frame:
             frame.add_item(f"Directory: {snap_dir}")
             frame.add_item(f"CI mode: {snap_ci_mode}")
