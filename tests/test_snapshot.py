@@ -616,3 +616,13 @@ async def test_snapshot_trace_differences_removed_start(agent, expected_traces, 
         assert error in resp_text, resp_text
     else:
         assert resp.status == 200, resp_text
+
+
+@pytest.mark.parametrize("snapshot_removed_attrs", [{"span_id"}])
+async def test_removed_attributes_fails_span_id(agent, tmp_path, snapshot_removed_attrs, do_reference_v04_http_trace):
+    resp = await do_reference_v04_http_trace(token="test_case")
+    assert resp.status == 200, await resp.text()
+
+    resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test_case"})
+    assert resp.status == 400
+    assert "Cannot remove 'span_id' from spans" in await resp.text()
