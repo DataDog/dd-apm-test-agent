@@ -473,3 +473,146 @@ async def test_removed_attributes_metrics(agent, tmp_path, snapshot_removed_attr
         assert file_content != ""
         span = json.loads(file_content)
         assert "process_id" not in span[0]
+
+
+ONE_SPAN_TRACE_NO_START = random_trace(1, remove_keys=["start"])
+TWO_SPAN_TRACE_NO_START = random_trace(2, remove_keys=["start"])
+FIVE_SPAN_TRACE_NO_START = random_trace(5, remove_keys=["start"])
+
+
+@pytest.mark.parametrize(
+    "expected_traces,actual_traces,error,snapshot_removed_attrs",
+    [
+        ([ONE_SPAN_TRACE_NO_START], [ONE_SPAN_TRACE_NO_START], "", {"start"}),
+        ([FIVE_SPAN_TRACE_NO_START], [FIVE_SPAN_TRACE_NO_START], "", {"start"}),
+        # Mismatching trace sizes
+        (
+            [TWO_SPAN_TRACE_NO_START],
+            [TWO_SPAN_TRACE_NO_START[:-1]],
+            "Received fewer spans (1) than expected (2). Expected unmatched spans: 'flask.request'",
+            {"start"},
+        ),
+        (
+            [TWO_SPAN_TRACE_NO_START[:-1]],
+            [TWO_SPAN_TRACE_NO_START],
+            "Received more spans (2) than expected (1). Received unmatched spans: 'flask.request'",
+            {"start"},
+        ),
+        (
+            [[set_attr(copy_span(ONE_SPAN_TRACE_NO_START[0]), "name", "name_expected")]],
+            [[set_attr(copy_span(ONE_SPAN_TRACE_NO_START[0]), "name", "name_received")]],
+            "span mismatch on 'name': got 'name_received' which does not match expected 'name_expected'",
+            {"start"},
+        ),
+        (
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    set_attr(copy_span(TWO_SPAN_TRACE_NO_START[1]), "name", "name_expected"),
+                ]
+            ],
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    set_attr(copy_span(TWO_SPAN_TRACE_NO_START[1]), "name", "name_received"),
+                ]
+            ],
+            "span mismatch on 'name': got 'name_received' which does not match expected 'name_expected'",
+            {"start"},
+        ),
+        (
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    set_meta_tag(copy_span(TWO_SPAN_TRACE_NO_START[1]), "expected", "value"),
+                ]
+            ],
+            [[TWO_SPAN_TRACE_NO_START[0], TWO_SPAN_TRACE_NO_START[1]]],
+            "Span meta value 'expected' in expected span but is not in the received span.",
+            {"start"},
+        ),
+        (
+            [[TWO_SPAN_TRACE_NO_START[0], TWO_SPAN_TRACE_NO_START[1]]],
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    set_metric_tag(copy_span(TWO_SPAN_TRACE_NO_START[1]), "received", 123.32),
+                ]
+            ],
+            "Span metrics value 'received' in received span but is not in the expected span.",
+            {"start"},
+        ),
+        # Mismatching metrics tag
+        (
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    set_metric_tag(copy_span(TWO_SPAN_TRACE_NO_START[1]), "received", 123.32),
+                ]
+            ],
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    set_metric_tag(copy_span(TWO_SPAN_TRACE_NO_START[1]), "received", 123.32),
+                ]
+            ],
+            "",
+            {"start"},
+        ),
+        # Default ignored fields
+        (
+            [
+                [
+                    {
+                        "name": "s",
+                        "span_id": 1234,
+                        "trace_id": 1,
+                        "parent_id": 0,
+                        "resource": "/",
+                        "duration": 1,
+                        "type": "web",
+                        "error": 0,
+                        "meta": {},
+                        "metrics": {},
+                    }
+                ]
+            ],
+            [
+                [
+                    {
+                        "name": "s",
+                        "span_id": 4321,
+                        "trace_id": 2,
+                        "parent_id": 0,
+                        "resource": "/",
+                        "duration": 1,
+                        "type": "web",
+                        "error": 0,
+                        "meta": {},
+                        "metrics": {},
+                    }
+                ]
+            ],
+            "",
+            {"start"},
+        ),
+    ],
+)
+async def test_snapshot_trace_differences_removed_start(agent, expected_traces, actual_traces, error):
+    resp = await v04_trace(agent, expected_traces, token="test")
+    assert resp.status == 200, await resp.text()
+
+    resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test"})
+    assert resp.status == 200, await resp.text()
+    resp = await agent.get("/test/session/clear", params={"test_session_token": "test"})
+    assert resp.status == 200, await resp.text()
+
+    resp = await v04_trace(agent, actual_traces, token="test")
+    assert resp.status == 200, await resp.text()
+    resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test"})
+    resp_text = await resp.text()
+    if error:
+        assert resp.status == 400, resp_text
+        assert error in resp_text, resp_text
+    else:
+        assert resp.status == 200, resp_text

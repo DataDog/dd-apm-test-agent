@@ -150,9 +150,9 @@ def child_map(trace: Trace) -> Dict[int, List[Span]]:
         parent_id = s.get("parent_id") or 0
         cmap[parent_id].append(s)
 
-    # Sort the children ascending by their start time
+    # Sort the children ascending by their start time, else by their span_id
     for span_id in cmap:
-        cmap[span_id] = sorted(cmap[span_id], key=lambda _: _["start"])
+        cmap[span_id] = sorted(cmap[span_id], key=lambda _: (_["start"] if "start" in _ else _["span_id"]))
     return cmap
 
 

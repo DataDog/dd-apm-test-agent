@@ -7,6 +7,7 @@ import textwrap
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Optional
 from typing import OrderedDict as OrderedDictType
 from typing import Set
 from typing import Tuple
@@ -304,7 +305,7 @@ def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
     return d  # type: ignore
 
 
-def _snapshot_trace_str(trace: Trace, removed: List[str] = []) -> str:
+def _snapshot_trace_str(trace: Trace, removed: Optional[List[str]] = None) -> str:
     cmap = child_map(trace)
     stack: List[Tuple[int, Span]] = [(0, root_span(trace))]
     s = "[\n"
@@ -312,13 +313,14 @@ def _snapshot_trace_str(trace: Trace, removed: List[str] = []) -> str:
         prefix, span = stack.pop(0)
 
         # Remove any keys that are not needed for comparison
-        for key in removed:
-            if key.startswith("meta."):
-                span["meta"].pop(key[5:], None)
-            elif key.startswith("metrics."):
-                span["metrics"].pop(key[8:], None)
-            else:
-                span.pop(key, None)  # type: ignore
+        if removed:
+            for key in removed:
+                if key.startswith("meta."):
+                    span["meta"].pop(key[5:], None)
+                elif key.startswith("metrics."):
+                    span["metrics"].pop(key[8:], None)
+                else:
+                    span.pop(key, None)  # type: ignore
 
         for i, child in enumerate(reversed(cmap[span["span_id"]])):
             if i == 0:
@@ -333,7 +335,7 @@ def _snapshot_trace_str(trace: Trace, removed: List[str] = []) -> str:
     return s
 
 
-def _snapshot_json(traces: List[Trace], removed: List[str] = []) -> str:
+def _snapshot_json(traces: List[Trace], removed: Optional[List[str]] = None) -> str:
     s = "["
     for t in traces:
         s += _snapshot_trace_str(t, removed)
@@ -343,5 +345,5 @@ def _snapshot_json(traces: List[Trace], removed: List[str] = []) -> str:
     return s
 
 
-def generate_snapshot(received_traces: List[Trace], removed: List[str] = []) -> str:
+def generate_snapshot(received_traces: List[Trace], removed: Optional[List[str]] = None) -> str:
     return _snapshot_json(_normalize_traces(received_traces), removed)
