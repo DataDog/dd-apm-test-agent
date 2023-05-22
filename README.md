@@ -177,8 +177,8 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
 metrics incorrectly placed within the meta field, or other type errors related to span tag formatting/types. Can also be set using the `--suppress-trace-parse-errors=True` option.
 
 - `SNAPSHOT_REMOVED_ATTRS` [`""`]: The attributes to remove from spans in snapshots. This is useful for removing attributes 
-that are not relevant to the test case. **Note that you shouldn't remove both `start` and `span_id` to allow span 
-ordering to be completed.**
+that are not relevant to the test case. **Note that removing `span_id` is not permitted to allow span 
+ordering to be maintained.**
 
 
 
