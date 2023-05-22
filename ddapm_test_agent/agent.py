@@ -656,6 +656,11 @@ class Agent:
         if request.path in self._forward_endpoints:
             await self._store_request(request)
 
+        # Call the original handler
+        return await handler(request)
+
+    @middleware  # type: ignore
+    async def request_forwarder_middleware(self, request: Request, handler: _Handler) -> web.Response:
         headers = CIMultiDict(request.headers)
 
         if "X-Datadog-Trace-Env-Variables" in headers:
@@ -676,11 +681,6 @@ class Agent:
             log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
 
         request["_headers"] = headers
-        # Call the original handler
-        return await handler(request)
-
-    @middleware  # type: ignore
-    async def request_forwarder_middleware(self, request: Request, handler: _Handler) -> web.Response:
         if request.path in self._forward_endpoints:
             # forward the request then call the handler
             return await self._forward_request_to_agent(request, handler)
