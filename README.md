@@ -176,6 +176,10 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
 - `DD_SUPPRESS_TRACE_PARSE_ERRORS` [`false`]: Set to `"True"` to disable span parse errors when decoding handled traces. When disabled, errors will not be thrown for
 metrics incorrectly placed within the meta field, or other type errors related to span tag formatting/types. Can also be set using the `--suppress-trace-parse-errors=True` option.
 
+- `SNAPSHOT_REMOVED_ATTRS` [`""`]: The attributes to remove from spans in snapshots. This is useful for removing attributes 
+that are not relevant to the test case. **Note that removing `span_id` is not permitted to allow span 
+ordering to be maintained.**
+
 
 
 ## API
@@ -248,6 +252,12 @@ Warning: it is an error to specify both `file` and `dir`.
 Note: the file extension will be appended to the filename.
 
 `_tracestats` will be appended to the filename for trace stats requests.
+
+#### [optional] `?removes=`
+
+Comma-separated list of keys that will be removed from spans in the snapshot.
+
+The default built-in remove list does not remove any keys.
 
 
 ### /test/session/requests

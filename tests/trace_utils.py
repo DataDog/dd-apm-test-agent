@@ -1,6 +1,7 @@
 from random import Random
 from typing import Any
 from typing import Dict
+from typing import List
 from typing import Optional
 
 from ddapm_test_agent.trace import Span
@@ -118,6 +119,7 @@ def random_trace(
     rng: Random = _random,
     trace_id: Optional[int] = None,
     parent_id: Optional[int] = None,
+    remove_keys: Optional[List[str]] = None,
 ) -> Trace:
     # TODO:
     #   represent arbitrary random services (subtrees in spans)
@@ -137,6 +139,10 @@ def random_trace(
             del s["type"]
             del s["resource"]
         s["trace_id"] = trace_id
+        if remove_keys:
+            for k in remove_keys:
+                del s[k]  # type: ignore
+
     return t
 
 
