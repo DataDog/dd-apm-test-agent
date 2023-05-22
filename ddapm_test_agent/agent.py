@@ -177,7 +177,6 @@ class Agent:
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
         self._rc_server = RemoteConfigServer()
-        self._trace_failures: List[str] = []
         self._forward_endpoints: List[str] = [
             "/v0.4/traces",
             "/v0.5/traces",
