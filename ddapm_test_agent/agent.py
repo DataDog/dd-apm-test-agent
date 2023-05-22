@@ -658,7 +658,9 @@ class Agent:
             request["_dd_trace_env_variables"] = env_vars
 
         if "X-Datadog-Agent-Proxy-Disabled" in headers:
-            request["_proxy_to_agent"] = headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true"
+            request["_proxy_to_agent"] = (
+                headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true" and request.app["agent_url"] != ""
+            )
 
         if "X-Datadog-Proxy-Port" in headers:
             port = headers.pop("X-Datadog-Proxy-Port")
@@ -666,7 +668,7 @@ class Agent:
             log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
 
         request["_headers"] = headers
-        # Call the original handlerx
+        # Call the original handler
         return await handler(request)
 
     @middleware  # type: ignore
