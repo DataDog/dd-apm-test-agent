@@ -458,6 +458,15 @@ class Agent:
         span_ignores = list(default_span_ignores | overrides)
         log.info("using ignores %r", span_ignores)
 
+        # Get the span attributes that are to be removed for this snapshot.
+        default_span_removes: Set[str] = request.app["snapshot_removed_attrs"]
+        overrides = set(_parse_csv(request.url.query.get("removes", "")))
+        span_removes = list(default_span_removes | overrides)
+        log.info("using removes %r", span_removes)
+
+        if "span_id" in span_removes:
+            raise AssertionError("Cannot remove 'span_id' from spans")
+
         with CheckTrace.add_frame(f"snapshot (token='{token}')") as frame:
             frame.add_item(f"Directory: {snap_dir}")
             frame.add_item(f"CI mode: {snap_ci_mode}")
@@ -502,7 +511,7 @@ class Agent:
             elif received_traces:
                 # Create a new snapshot for the data received
                 with open(trace_snap_file, mode="w") as f:
-                    f.write(trace_snapshot.generate_snapshot(received_traces))
+                    f.write(trace_snapshot.generate_snapshot(received_traces=received_traces, removed=span_removes))
                 log.info("wrote new trace snapshot to %r", os.path.abspath(trace_snap_file))
 
             # Get all stats buckets from the payloads since we don't care about the other fields (hostname, env, etc)
@@ -711,6 +720,7 @@ def make_app(
     agent_url: str,
     trace_request_delay: float,
     suppress_trace_parse_errors: bool,
+    snapshot_removed_attrs: List[str],
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
@@ -767,6 +777,7 @@ def make_app(
     app["agent_url"] = agent_url
     app["trace_request_delay"] = trace_request_delay
     app["suppress_trace_parse_errors"] = suppress_trace_parse_errors
+    app["snapshot_removed_attrs"] = snapshot_removed_attrs
     return app
 
 
@@ -804,6 +815,16 @@ def main(args: Optional[List[str]] = None) -> None:
         help=(
             "Comma-separated values of span attributes to ignore. "
             "meta/metrics attributes can be ignored by prefixing the key "
+            "with meta. or metrics."
+        ),
+    )
+    parser.add_argument(
+        "--snapshot-removed-attrs",
+        type=Set[str],
+        default=set(_parse_csv(os.environ.get("SNAPSHOT_REMOVED_ATTRS", ""))),
+        help=(
+            "Comma-separated values of span attributes to remove. "
+            "meta/metrics attributes can be removed by prefixing the key "
             "with meta. or metrics."
         ),
     )
@@ -888,6 +909,7 @@ def main(args: Optional[List[str]] = None) -> None:
         agent_url=parsed_args.agent_url,
         trace_request_delay=parsed_args.trace_request_delay,
         suppress_trace_parse_errors=parsed_args.suppress_trace_parse_errors,
+        snapshot_removed_attrs=parsed_args.snapshot_removed_attrs,
     )
 
     web.run_app(app, sock=apm_sock, port=parsed_args.port)
