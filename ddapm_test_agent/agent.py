@@ -112,6 +112,49 @@ async def session_token_middleware(request: Request, handler: _Handler) -> web.R
     return await handler(request)
 
 
+async def _forward_request(request_data, headers, full_agent_url):
+    async with ClientSession() as session:
+        async with session.post(
+            full_agent_url,
+            headers=headers,
+            data=request_data,
+        ) as resp:
+            assert resp.status == 200, f"Request to agent unsuccessful, received [{resp.status}] response."
+
+            if "text/html" in resp.content_type:
+                response_data = await resp.read()
+                if len(response_data) == 0:
+                    log.info("Received empty response: %r from agent.", response_data)
+                    return web.HTTPOk()
+                else:
+                    if isinstance(response_data, bytes):
+                        response_data = response_data.decode()
+                    try:
+                        response_data = json.loads(response_data)
+                    except json.JSONDecodeError as e:
+                        log.warning("Error decoding response data: %s, data=%r", str(e), response_data)
+                        log.warning("Original Request: %r", request_data)
+                        response_data = {}
+                    log.info("Response %r from agent:", response_data)
+                    return web.json_response(data=response_data)
+            else:
+                response_data = await resp.json()
+                log.info("Response %r from agent:", response_data)
+                return web.json_response(data=response_data)
+
+
+async def _prepare_and_send_request(data, request, headers):
+    headers = {
+        "Content-Type": headers.get("Content-Type", "application/msgpack"),
+        **{k: v for k, v in headers.items() if k.lower() not in ["content-type", "host", "transfer-encoding"]},
+    }
+    agent_url = request.app["agent_url"]
+    full_agent_url = agent_url + request.path
+    log.info("Forwarding request to agent at %r", full_agent_url)
+    log.debug(f"Using headers: {headers}")
+    return await _forward_request(data, headers, full_agent_url)
+
+
 def update_trace_agent_port(url, new_port):
     # Updates the Agent URL with a new port number, returning the updated URL and old port
     parsed_url = urlparse(url)
@@ -134,6 +177,13 @@ class Agent:
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
         self._rc_server = RemoteConfigServer()
+        self._forward_endpoints: List[str] = [
+            "/v0.4/traces",
+            "/v0.5/traces",
+            "/v0.6/stats",
+            "/v0.7/config",
+            "/telemetry/proxy/api/v2/apmtelemetry",
+        ]
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -276,7 +326,6 @@ class Agent:
         return await self._handle_traces(request, version="v0.5")
 
     async def handle_v06_tracestats(self, request: Request) -> web.Response:
-        await self._store_request(request)
         stats = self._decode_v06_tracestats(request)
         nstats = len(stats["Stats"])
         log.info(
@@ -288,7 +337,6 @@ class Agent:
 
     async def handle_v07_remoteconfig(self, request: Request) -> web.Response:
         """Emulates Remote Config endpoint: /v0.7/config"""
-        await self._store_request(request)
         token = _session_token(request)
         data = await self._rc_server.get_config_response(token)
         return web.json_response(data)
@@ -321,7 +369,6 @@ class Agent:
         return web.HTTPAccepted()
 
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
-        await self._store_request(request)
         v2_apmtelemetry_decode(self._request_data(request))
         # TODO: Validation
         # TODO: Snapshots
@@ -344,66 +391,10 @@ class Agent:
             }
         )
 
-    async def _proxy_request(self, request, headers, agent_url):
-        async with ClientSession() as session:
-            async with session.post(
-                f"{agent_url}/v0.4/traces",
-                headers=headers,
-                data=self._request_data(request),
-            ) as resp:
-                assert resp.status == 200, f"Request to agent unsuccessful, received [{resp.status}] response."
-
-                if "text/html" in resp.content_type:
-                    data = await resp.read()
-                    if len(data) == 0:
-                        log.info("Received empty response: %r from agent.", data)
-                        return web.HTTPOk()
-                    else:
-                        if isinstance(data, bytes):
-                            data = data.decode()
-                        try:
-                            response_data = json.loads(data)
-                        except json.JSONDecodeError as e:
-                            log.warning("Error decoding response data: %s, data=%r", str(e), data)
-                            log.warning("Original Request: %r", self._request_data(request))
-                            response_data = {}
-                        log.info("Response %r from agent:", data)
-                        return web.json_response(data=response_data)
-                else:
-                    data = await resp.json()
-                    log.info("Response %r from agent:", data)
-                    return web.json_response(data=data)
-
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5"]) -> web.Response:
-        await self._store_request(request)
         token = request["session_token"]
         checks: Checks = request.app["checks"]
-        headers = CIMultiDict(request.headers)
-
-        log.debug(f"New request: {request} with headers: {headers}")
-        log.debug(f"Request Data: {self._request_data(request)!r}")
-
-        agent_url = request.app["agent_url"]
-        response = None
-        proxy_to_agent = agent_url != ""
-
-        if "X-Datadog-Agent-Proxy-Disabled" in headers:
-            proxy_to_agent = headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true"
-
-        if "X-Datadog-Proxy-Port" in headers:
-            port = headers.pop("X-Datadog-Proxy-Port")
-            request.app["agent_url"] = update_trace_agent_port(request.app["agent_url"], new_port=port)
-            agent_url = request.app["agent_url"]
-            log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
-
-        if agent_url and proxy_to_agent:
-            headers = {
-                "Content-Type": headers.get("Content-Type", "application/msgpack"),
-                **{k: v for k, v in headers.items() if k.lower() not in ["content-type", "host", "transfer-encoding"]},
-            }
-            log.info("Forwarding request to agent at %r", agent_url)
-            log.debug(f"Using headers: {headers}")
-            response = await self._proxy_request(request, headers, agent_url)
+        headers = request.headers
 
         await checks.check("trace_stall", headers=headers, request=request)
 
@@ -441,8 +432,6 @@ class Agent:
                     )
             except MsgPackExtraDataException as e:
                 log.error(f"Error unpacking trace bytes with Msgpack: {str(e)}, error {e}")
-        if agent_url:
-            return response
 
         # TODO: implement sampling logic
         return web.json_response(data={"rate_by_service": {}})
@@ -661,6 +650,66 @@ class Agent:
         # wait 1s, gather traces and assert tags
         raise NotImplementedError
 
+    @middleware  # type: ignore
+    async def store_request_middleware(self, request: Request, handler: _Handler) -> web.Response:
+        # only store requests for specific endpoints
+        if request.path in self._forward_endpoints:
+            await self._store_request(request)
+
+        # Call the original handler
+        return await handler(request)
+
+    @middleware  # type: ignore
+    async def request_forwarder_middleware(self, request: Request, handler: _Handler) -> web.Response:
+        headers = CIMultiDict(request.headers)
+
+        if "X-Datadog-Trace-Env-Variables" in headers:
+            var_string = headers.pop("X-Datadog-Trace-Env-Variables")
+            env_vars = {
+                key.strip(): value.strip() for key, value in (pair.split("=") for pair in var_string.split(","))
+            }
+            request["_dd_trace_env_variables"] = env_vars
+
+        if "X-Datadog-Agent-Proxy-Disabled" in headers:
+            request["_proxy_to_agent"] = (
+                headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true" and request.app["agent_url"] != ""
+            )
+
+        if "X-Datadog-Proxy-Port" in headers:
+            port = headers.pop("X-Datadog-Proxy-Port")
+            request.app["agent_url"] = update_trace_agent_port(request.app["agent_url"], new_port=port)
+            log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
+
+        request["_headers"] = headers
+        if request.path in self._forward_endpoints:
+            # forward the request then call the handler
+            return await self._forward_request_to_agent(request, handler)
+        else:
+            # Call the original handler and do nothing
+            return await handler(request)
+
+    async def _forward_request_to_agent(self, request: Request, handler: _Handler) -> web.Response:
+        """Forward all requests to the agent_url if set."""
+        data = self._request_data(request)
+        headers = request["_headers"]
+        agent_url = request.app["agent_url"]
+        proxy_to_agent = request.get("_proxy_to_agent", True)
+
+        log.debug(f"New request: {request} with headers: {headers}")
+        log.debug(f"Request Data: {data!r}")
+
+        if agent_url and proxy_to_agent:
+            agent_response = await _prepare_and_send_request(data, request, headers)
+
+        endpoint_response = await handler(request)
+
+        # return the agent response if this was sent to a trace endpoint
+        endpoint_path = request.path
+        if "traces" in endpoint_path and agent_url and proxy_to_agent:
+            return agent_response
+        else:
+            return endpoint_response
+
 
 def make_app(
     disabled_checks: List[str],
@@ -678,6 +727,8 @@ def make_app(
         client_max_size=int(100e6),  # 100MB - arbitrary
         middlewares=[
             check_failure_middleware,
+            agent.store_request_middleware,
+            agent.request_forwarder_middleware,
             session_token_middleware,
         ],
     )
