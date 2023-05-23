@@ -76,6 +76,10 @@ def pool_trace_check_failures() -> Generator[bool, None, None]:
 def disable_error_responses() -> Generator[bool, None, None]:
     yield False
 
+@pytest.fixture
+def snapshot_removed_attrs() -> Generator[Set[str], None, None]:
+    yield set()
+
 
 @pytest.fixture
 async def agent_app(
@@ -90,6 +94,7 @@ async def agent_app(
     suppress_trace_parse_errors,
     pool_trace_check_failures,
     disable_error_responses,
+    snapshot_removed_attrs,
 ):
     app = await aiohttp_server(
         make_app(
@@ -103,6 +108,7 @@ async def agent_app(
             suppress_trace_parse_errors,
             pool_trace_check_failures,
             disable_error_responses,
+            snapshot_removed_attrs,
         )
     )
     yield app

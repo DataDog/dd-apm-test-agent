@@ -453,6 +453,15 @@ class Agent:
         span_ignores = list(default_span_ignores | overrides)
         log.info("using ignores %r", span_ignores)
 
+        # Get the span attributes that are to be removed for this snapshot.
+        default_span_removes: Set[str] = request.app["snapshot_removed_attrs"]
+        overrides = set(_parse_csv(request.url.query.get("removes", "")))
+        span_removes = list(default_span_removes | overrides)
+        log.info("using removes %r", span_removes)
+
+        if "span_id" in span_removes:
+            raise AssertionError("Cannot remove 'span_id' from spans")
+
         with CheckTrace.add_frame(f"snapshot (token='{token}')") as frame:
             frame.add_item(f"Directory: {snap_dir}")
             frame.add_item(f"CI mode: {snap_ci_mode}")
@@ -497,7 +506,7 @@ class Agent:
             elif received_traces:
                 # Create a new snapshot for the data received
                 with open(trace_snap_file, mode="w") as f:
-                    f.write(trace_snapshot.generate_snapshot(received_traces))
+                    f.write(trace_snapshot.generate_snapshot(received_traces=received_traces, removed=span_removes))
                 log.info("wrote new trace snapshot to %r", os.path.abspath(trace_snap_file))
 
             # Get all stats buckets from the payloads since we don't care about the other fields (hostname, env, etc)
@@ -642,6 +651,11 @@ class Agent:
         if request.path in self._forward_endpoints:
             await self._store_request(request)
 
+        # Call the original handler
+        return await handler(request)
+
+    @middleware  # type: ignore
+    async def request_forwarder_middleware(self, request: Request, handler: _Handler) -> web.Response:
         headers = CIMultiDict(request.headers)
 
         if "X-Datadog-Trace-Env-Variables" in headers:
@@ -652,7 +666,9 @@ class Agent:
             request["_dd_trace_env_variables"] = env_vars
 
         if "X-Datadog-Agent-Proxy-Disabled" in headers:
-            request["_proxy_to_agent"] = headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true"
+            request["_proxy_to_agent"] = (
+                headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true" and request.app["agent_url"] != ""
+            )
 
         if "X-Datadog-Proxy-Port" in headers:
             port = headers.pop("X-Datadog-Proxy-Port")
@@ -660,11 +676,6 @@ class Agent:
             log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
 
         request["_headers"] = headers
-        # Call the original handlerx
-        return await handler(request)
-
-    @middleware  # type: ignore
-    async def request_forwarder_middleware(self, request: Request, handler: _Handler) -> web.Response:
         if request.path in self._forward_endpoints:
             # forward the request then call the handler
             return await self._forward_request_to_agent(request, handler)
@@ -737,6 +748,7 @@ def make_app(
     suppress_trace_parse_errors: bool,
     pool_trace_check_failures: bool,
     disable_error_responses: bool,
+    snapshot_removed_attrs: List[str],
 ) -> web.Application:
     agent = agent_instance
     app = web.Application(
@@ -796,6 +808,7 @@ def make_app(
     app["suppress_trace_parse_errors"] = suppress_trace_parse_errors
     app["pool_trace_check_failures"] = pool_trace_check_failures
     app["disable_error_responses"] = disable_error_responses
+    app["snapshot_removed_attrs"] = snapshot_removed_attrs
     return app
 
 
@@ -833,6 +846,16 @@ def main(args: Optional[List[str]] = None) -> None:
         help=(
             "Comma-separated values of span attributes to ignore. "
             "meta/metrics attributes can be ignored by prefixing the key "
+            "with meta. or metrics."
+        ),
+    )
+    parser.add_argument(
+        "--snapshot-removed-attrs",
+        type=Set[str],
+        default=set(_parse_csv(os.environ.get("SNAPSHOT_REMOVED_ATTRS", ""))),
+        help=(
+            "Comma-separated values of span attributes to remove. "
+            "meta/metrics attributes can be removed by prefixing the key "
             "with meta. or metrics."
         ),
     )
@@ -931,6 +954,7 @@ def main(args: Optional[List[str]] = None) -> None:
         suppress_trace_parse_errors=parsed_args.suppress_trace_parse_errors,
         pool_trace_check_failures=parsed_args.pool_trace_check_failures,
         disable_error_responses=parsed_args.disable_error_responses,
+        snapshot_removed_attrs=parsed_args.snapshot_removed_attrs,
     )
 
     web.run_app(app, sock=apm_sock, port=parsed_args.port)
