@@ -186,14 +186,14 @@ class Agent:
                     _traces[trace_id].append(s)
         return _traces
 
-    def get_check_trace_failures(self, request: Request) -> web.Response:
-        """Return the check trace failures that occurred, if pooling is enabled as a request."""
+    def get_trace_check_failures(self, request: Request) -> web.Response:
+        """Return the Trace Check failures that occurred, if pooling is enabled as a request."""
         trace_failures = self._trace_failures
 
         if len(trace_failures) > 0:
-            failure_message = f"APM Test Agent Validation failed with {len(trace_failures)} failures.\n"
-            for check_trace_message in trace_failures:
-                failure_message += check_trace_message
+            failure_message = f"APM Test Agent Validation failed with {len(trace_failures)} Trace Check failures.\n"
+            for trace_check_message in trace_failures:
+                failure_message += trace_check_message
             return web.HTTPBadRequest(text=failure_message)
         else:
             return web.HTTPOk()
@@ -783,7 +783,7 @@ def make_app(
             web.get("/test/apmtelemetry", agent.handle_test_apmtelemetry),
             # web.get("/test/benchmark", agent.handle_test_traces),
             web.get("/test/trace/analyze", agent.handle_trace_analyze),
-            web.get("/test/check_trace/failures", agent.get_check_trace_failures),
+            web.get("/test/trace_check/failures", agent.get_trace_check_failures),
         ]
     )
     checks = Checks(
@@ -908,7 +908,7 @@ def main(args: Optional[List[str]] = None) -> None:
         "--pool-trace-check-failures",
         type=bool,
         default=os.environ.get("DD_POOL_TRACE_CHECK_FAILURES", False),
-        help=("Will change the test agent to pool trace check failures in memory that can later be asserted on"),
+        help=("Will change the test agent to pool Trace Check failures in memory that can later be asserted on"),
     )
     parser.add_argument(
         "--disable-error-responses",

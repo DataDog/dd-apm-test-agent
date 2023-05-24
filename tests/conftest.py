@@ -76,6 +76,7 @@ def pool_trace_check_failures() -> Generator[bool, None, None]:
 def disable_error_responses() -> Generator[bool, None, None]:
     yield False
 
+
 @pytest.fixture
 def snapshot_removed_attrs() -> Generator[Set[str], None, None]:
     yield set()

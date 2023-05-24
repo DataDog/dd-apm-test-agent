@@ -1,0 +1,8 @@
+---
+features:
+  - |
+    Adds a feature to disable Test-Agent Failure <Response 400> using the ``DISABLE_ERROR_RESPONSES`` env variable or 
+    ``--disable-error-responses`` command line option. Adds a feature to pool Test-Agent Trace Check Failures in-memory using the 
+    ``DD_POOL_TRACE_CHECK_FAILURES`` env variable or ``--pool-trace-check-failures`` option. These failures can then be queried by the 
+    ``/test/trace_check/failures`` GET endpoint, which returns a <Response 200> if no failures occurred or <Response 400> with 
+    the Check Trace Failure messages in the response body if they exist. 
