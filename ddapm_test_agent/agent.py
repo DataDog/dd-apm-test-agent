@@ -44,6 +44,7 @@ from .trace import v04TracePayload
 from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
+from .trace_checks import CheckTraceServiceName
 from .trace_checks import CheckTraceStallAsync
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
@@ -409,6 +410,7 @@ class Agent:
                     len(traces),
                 )
                 for i, trace in enumerate(traces):
+                    await checks.check("trace_service_name", trace=trace, headers=request["_dd_trace_env_variables"])
                     try:
                         log.info(
                             "Chunk %d\n%s",
@@ -657,7 +659,7 @@ class Agent:
     @middleware  # type: ignore
     async def request_forwarder_middleware(self, request: Request, handler: _Handler) -> web.Response:
         headers = CIMultiDict(request.headers)
-
+        request["_dd_trace_env_variables"] = None
         if "X-Datadog-Trace-Env-Variables" in headers:
             var_string = headers.pop("X-Datadog-Trace-Env-Variables")
             env_vars = {
@@ -792,6 +794,7 @@ def make_app(
             CheckTraceCountHeader,
             CheckTraceContentLength,
             CheckTraceStallAsync,
+            CheckTraceServiceName,
         ],
         disabled=disabled_checks,
     )

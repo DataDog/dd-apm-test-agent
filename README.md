@@ -55,6 +55,7 @@ See the [configuration](#Configuration) section for the options.
 | Trace count header matches number of traces  | `trace_count_header`  |
 | Client library version header included in request  | `meta_tracer_version_header`  |
 | Trace content length header matches payload size  | `trace_content_length`  |
+| Trace service name should be determined by schema version v0 or v1 | `trace_service_name`  |
 
 
 ### Returning data

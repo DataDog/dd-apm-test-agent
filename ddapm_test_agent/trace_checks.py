@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from trace import Trace
 
 from aiohttp.web import Request
 from multidict import CIMultiDictProxy
@@ -82,3 +83,32 @@ affected.
         if duration > 0:
             log.info("Stalling for %r seconds.", duration)
             await asyncio.sleep(duration)
+
+
+class CheckTraceServiceName(Check):
+    name = "trace_service_name"
+    description = """
+Datadog Traces should abide by the new Service Naming initiative. Tracers should set the 
+``DD_TRACE_SPAN_ATTRIBUTE_SCHEMA`` to either ``v0`` or ``v1``, and all received traces should abide
+by the schema for Service Name. The schema defaults to v0 if not explicitly set.
+""".strip()
+    default_enabled = True
+
+    def check(self, trace: Trace, headers: dict) -> None:
+        schema_version = headers.get("DD_TRACE_SPAN_ATTRIBUTE_SCHEMA", "v0").lower()
+        dd_service = headers.get("DD_SERVICE", None)
+        for span in trace:
+            span_service_name = span.get("service")
+            peer_service = span.get("meta", None).get("peer.service", None)
+            if schema_version == "v1":
+                if not dd_service:
+                    self.fail(f"Could not verify Schema v1 Service Naming, no DD_SERVICE sent within trace headers. \n Failing Span: {span}\n Trace Headers: {headers}\n")
+                elif dd_service != span_service_name:
+                    self.fail(f"Span service name: {span_service_name} does not match DD_SERVICE {dd_service} for Schema v1 Service Naming. \n Failing Span: {span}\n Trace Headers: {headers}\n")
+                # elif not peer_service:
+                #     self.fail(f"Tag `peer.service` should be set for Schema v1 Service Naming. \n Failing Span: {span}\n Trace Headers: {headers}\n")
+            elif schema_version == "v0":
+                if not dd_service:
+                    self.fail(f"Could not verify Schema v0 Service Naming, no DD_SERVICE sent within trace headers. \n Failing Span: {span}\n Trace Headers: {headers}\n")
+                elif dd_service != span_service_name:
+                    self.fail(f"Span service name: {span_service_name} does not match DD_SERVICE {dd_service} for Schema v0 Service Naming. \n Failing Span: {span}\n Trace Headers: {headers}\n")
