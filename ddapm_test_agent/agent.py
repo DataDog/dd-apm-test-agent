@@ -734,9 +734,6 @@ class Agent:
         return response
 
 
-agent_instance: Agent = Agent()
-
-
 def make_app(
     disabled_checks: List[str],
     log_span_fmt: str,
@@ -750,7 +747,7 @@ def make_app(
     disable_error_responses: bool,
     snapshot_removed_attrs: List[str],
 ) -> web.Application:
-    agent = agent_instance
+    agent = Agent()
     app = web.Application(
         client_max_size=int(100e6),  # 100MB - arbitrary
         middlewares=[
