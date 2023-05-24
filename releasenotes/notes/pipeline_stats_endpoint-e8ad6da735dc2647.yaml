@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add new pipeline stats endpoint for data streams monitoring.
