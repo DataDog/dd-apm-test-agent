@@ -322,6 +322,10 @@ The keys of the JSON body are `path` and `msg`
 curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"path": "datadog/2/ASM_DATA/blocked_users/config", "msg": {"rules_data": []}}'
 ```
 
+### /v0.1/pipeline_stats
+
+Mimics the pipeline_stats endpoint of the agent, but always returns OK, and logs a line everytime it's called.
+
 ## Development
 
 ### Prerequisites

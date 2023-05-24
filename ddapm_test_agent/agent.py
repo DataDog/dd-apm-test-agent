@@ -183,6 +183,7 @@ class Agent:
             "/v0.6/stats",
             "/v0.7/config",
             "/telemetry/proxy/api/v2/apmtelemetry",
+            "/v0.1/pipeline_stats",
         ]
 
     async def traces(self) -> TraceMap:
@@ -333,6 +334,10 @@ class Agent:
             nstats,
             "s" if nstats else "",
         )
+        return web.HTTPOk()
+
+    async def handle_v01_pipelinestats(self, request: Request) -> web.Response:
+        log.info("received /v0.1/pipeline_stats payload")
         return web.HTTPOk()
 
     async def handle_v07_remoteconfig(self, request: Request) -> web.Response:
@@ -565,6 +570,7 @@ class Agent:
                 self.handle_v04_traces,
                 self.handle_v05_traces,
                 self.handle_v06_tracestats,
+                self.handle_v01_pipelinestats,
                 self.handle_v2_apmtelemetry,
                 self.handle_v1_profiling,
             ):
@@ -739,6 +745,7 @@ def make_app(
             web.post("/v0.5/traces", agent.handle_v05_traces),
             web.put("/v0.5/traces", agent.handle_v05_traces),
             web.post("/v0.6/stats", agent.handle_v06_tracestats),
+            web.post("/v0.1/pipeline_stats", agent.handle_v01_pipelinestats),
             web.put("/v0.6/stats", agent.handle_v06_tracestats),
             web.post("/v0.7/config", agent.handle_v07_remoteconfig),
             web.post("/telemetry/proxy/api/v2/apmtelemetry", agent.handle_v2_apmtelemetry),
