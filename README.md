@@ -332,6 +332,10 @@ Get any Trace Check failures that occured. Returns a `<Response 200>` if no Trac
 curl -X GET 'http://0.0.0.0:8126/test/trace_check/failures'
 ```
 
+### /v0.1/pipeline_stats
+
+Mimics the pipeline_stats endpoint of the agent, but always returns OK, and logs a line everytime it's called.
+
 ## Development
 
 ### Prerequisites
