@@ -72,24 +72,6 @@ def _parse_csv(s: str) -> List[str]:
     return [s.strip() for s in s.split(",") if s.strip() != ""]
 
 
-@middleware  # type: ignore
-async def check_failure_middleware(request: Request, handler: _Handler) -> web.Response:
-    """Convert any failed checks into an HttpException."""
-    trace = start_trace("request %r" % request)
-    try:
-        response = await handler(request)
-    except AssertionError as e:
-        msg = str(trace) + str(e)
-        log.error(msg)
-        return web.HTTPBadRequest(body=msg)
-    else:
-        if trace.has_fails():
-            msg = str(trace)
-            log.error(msg)
-            return web.HTTPBadRequest(body=msg)
-    return response
-
-
 def _session_token(request: Request) -> Optional[str]:
     token: Optional[str]
     if "X-Datadog-Test-Session-Token" in request.headers:
@@ -177,6 +159,7 @@ class Agent:
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
         self._rc_server = RemoteConfigServer()
+        self._trace_failures: List[str] = []
         self._forward_endpoints: List[str] = [
             "/v0.4/traces",
             "/v0.5/traces",
@@ -203,6 +186,18 @@ class Agent:
                         _traces[trace_id] = []
                     _traces[trace_id].append(s)
         return _traces
+
+    def get_trace_check_failures(self, request: Request) -> web.Response:
+        """Return the Trace Check failures that occurred, if pooling is enabled as a request."""
+        trace_failures = self._trace_failures
+
+        if len(trace_failures) > 0:
+            failure_message = f"APM Test Agent Validation failed with {len(trace_failures)} Trace Check failures.\n"
+            for trace_check_message in trace_failures:
+                failure_message += trace_check_message
+            return web.HTTPBadRequest(text=failure_message)
+        else:
+            return web.HTTPOk()
 
     async def apmtelemetry(self) -> List[TelemetryEvent]:
         """Return the telemetry events stored by the agent"""
@@ -716,6 +711,34 @@ class Agent:
         else:
             return endpoint_response
 
+    @middleware  # type: ignore
+    async def check_failure_middleware(self, request: Request, handler: _Handler) -> web.Response:
+        """Convert any failed checks into an HttpException."""
+        trace = start_trace("request %r" % request)
+        try:
+            response = await handler(request)
+        except AssertionError as e:
+            # only save trace failures to memory if necessary
+            msg = str(trace) + str(e)
+            log.error(msg)
+            if request.app["pool_trace_check_failures"]:
+                log.info(f"storing failure with message {msg}")
+                self._trace_failures.append(msg)
+                log.info(self._trace_failures)
+            return web.HTTPBadRequest(body=msg)
+        else:
+            if trace.has_fails():
+                # only save trace failures to memory if necessary
+                msg = str(trace)
+                log.error(msg)
+                if request.app["pool_trace_check_failures"]:
+                    log.info(f"storing failure with message {msg}")
+                    self._trace_failures.append(msg)
+                if request.app["disable_error_responses"]:
+                    return response
+                return web.HTTPBadRequest(body=msg)
+        return response
+
 
 def make_app(
     disabled_checks: List[str],
@@ -726,13 +749,15 @@ def make_app(
     agent_url: str,
     trace_request_delay: float,
     suppress_trace_parse_errors: bool,
+    pool_trace_check_failures: bool,
+    disable_error_responses: bool,
     snapshot_removed_attrs: List[str],
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
         client_max_size=int(100e6),  # 100MB - arbitrary
         middlewares=[
-            check_failure_middleware,
+            agent.check_failure_middleware,
             agent.store_request_middleware,
             agent.request_forwarder_middleware,
             session_token_middleware,
@@ -765,6 +790,7 @@ def make_app(
             web.get("/test/apmtelemetry", agent.handle_test_apmtelemetry),
             # web.get("/test/benchmark", agent.handle_test_traces),
             web.get("/test/trace/analyze", agent.handle_trace_analyze),
+            web.get("/test/trace_check/failures", agent.get_trace_check_failures),
         ]
     )
     checks = Checks(
@@ -784,6 +810,8 @@ def make_app(
     app["agent_url"] = agent_url
     app["trace_request_delay"] = trace_request_delay
     app["suppress_trace_parse_errors"] = suppress_trace_parse_errors
+    app["pool_trace_check_failures"] = pool_trace_check_failures
+    app["disable_error_responses"] = disable_error_responses
     app["snapshot_removed_attrs"] = snapshot_removed_attrs
     return app
 
@@ -883,6 +911,18 @@ def main(args: Optional[List[str]] = None) -> None:
             "Will change the test agent trace decoder to use a more resilient parser to prevent decode and span verification errors"
         ),
     )
+    parser.add_argument(
+        "--pool-trace-check-failures",
+        type=bool,
+        default=os.environ.get("DD_POOL_TRACE_CHECK_FAILURES", False),
+        help=("Will change the test agent to pool Trace Check failures in memory that can later be asserted on"),
+    )
+    parser.add_argument(
+        "--disable-error-responses",
+        type=bool,
+        default=os.environ.get("DD_DISABLE_ERROR_RESPONSES", False),
+        help=("Will change the test agent to send [200: Ok] responses instead of error responses back to the tracer."),
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -916,6 +956,8 @@ def main(args: Optional[List[str]] = None) -> None:
         agent_url=parsed_args.agent_url,
         trace_request_delay=parsed_args.trace_request_delay,
         suppress_trace_parse_errors=parsed_args.suppress_trace_parse_errors,
+        pool_trace_check_failures=parsed_args.pool_trace_check_failures,
+        disable_error_responses=parsed_args.disable_error_responses,
         snapshot_removed_attrs=parsed_args.snapshot_removed_attrs,
     )
 

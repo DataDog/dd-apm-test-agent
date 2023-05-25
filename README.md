@@ -173,13 +173,16 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
 
 - `DD_APM_RECEIVER_SOCKET` [`""`]: When provided, the test agent will listen for traces on a socket at the path provided (e.g., `/var/run/datadog/apm.socket`)
 
-- `DD_SUPPRESS_TRACE_PARSE_ERRORS` [`false`]: Set to `"True"` to disable span parse errors when decoding handled traces. When disabled, errors will not be thrown for
-metrics incorrectly placed within the meta field, or other type errors related to span tag formatting/types. Can also be set using the `--suppress-trace-parse-errors=True` option.
+- `DD_SUPPRESS_TRACE_PARSE_ERRORS` [`false`]: Set to `"true"` to disable span parse errors when decoding handled traces. When disabled, errors will not be thrown for
+metrics incorrectly placed within the meta field, or other type errors related to span tag formatting/types. Can also be set using the `--suppress-trace-parse-errors=true` option.
 
 - `SNAPSHOT_REMOVED_ATTRS` [`""`]: The attributes to remove from spans in snapshots. This is useful for removing attributes 
 that are not relevant to the test case. **Note that removing `span_id` is not permitted to allow span 
 ordering to be maintained.**
 
+- `DD_POOL_TRACE_CHECK_FAILURES` [`false`]: Set to `"true"` to pool Trace Check failures that occured within Test-Agent memory. These failures can be queried later using the `/test/trace_check/failures` endpoint. Can also be set using the `--pool-trace-check-failures=true` option.
+
+- `DD_DISABLE_ERROR_RESPONSES` [`false`]: Set to `"true"` to disable Test-Agent `<Response 400>` when a Trace Check fails, instead sending a valid `<Response 200>`. Recommended for use with the `DD_POOL_TRACE_CHECK_FAILURES` env variable. Can also be set using the `--disable-error-responses=true` option.
 
 
 ## API
@@ -320,6 +323,13 @@ The keys of the JSON body are `path` and `msg`
 
 ```
 curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"path": "datadog/2/ASM_DATA/blocked_users/config", "msg": {"rules_data": []}}'
+```
+
+## /test/trace_check/failures (GET)
+Get any Trace Check failures that occured. Returns a `<Response 200>` if no Trace Check failures occurred, and a `<Response 400>` with the Trace Check Failure messages included in the response body. To be used in combination with `DD_POOL_TRACE_CHECK_FAILURES`, or else failures will not be saved within Test-Agent memory and a `<Response 200>` will always be returned.
+
+```
+curl -X GET 'http://0.0.0.0:8126/test/trace_check/failures'
 ```
 
 ### /v0.1/pipeline_stats
