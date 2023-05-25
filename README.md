@@ -329,7 +329,7 @@ curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"path
 Get any Trace Check failures that occured. Returns a `<Response 200>` if no Trace Check failures occurred, and a `<Response 400>` with the Trace Check Failure messages included in the response body. To be used in combination with `DD_POOL_TRACE_CHECK_FAILURES`, or else failures will not be saved within Test-Agent memory and a `<Response 200>` will always be returned.
 
 ```
-curl -X GET 'http://0.0.0.0:8126/test/trace_check_failures'
+curl -X GET 'http://0.0.0.0:8126/test/trace_check/failures'
 ```
 
 ## Development
