@@ -15,11 +15,14 @@ from typing import Literal
 from typing import Optional
 from typing import Set
 from typing import cast
+from urllib.parse import urlparse
+from urllib.parse import urlunparse
 
 from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
+from msgpack.exceptions import ExtraData as MsgPackExtraDataException
 from multidict import CIMultiDict
 
 from . import _get_version
@@ -30,7 +33,7 @@ from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
-from .span_validation.trace_tag_validation_check import TraceTagValidationCheck
+from .remoteconfig import RemoteConfigServer
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -72,24 +75,6 @@ def _parse_csv(s: str) -> List[str]:
     return [s.strip() for s in s.split(",") if s.strip() != ""]
 
 
-@middleware  # type: ignore
-async def check_failure_middleware(request: Request, handler: _Handler) -> web.Response:
-    """Convert any failed checks into an HttpException."""
-    trace = start_trace("request %r" % request)
-    try:
-        response = await handler(request)
-    except AssertionError as e:
-        msg = str(trace) + str(e)
-        log.error(msg)
-        return web.HTTPBadRequest(body=msg)
-    else:
-        if trace.has_fails():
-            msg = str(trace)
-            log.error(msg)
-            return web.HTTPBadRequest(body=msg)
-    return response
-
-
 def _session_token(request: Request) -> Optional[str]:
     token: Optional[str]
     if "X-Datadog-Test-Session-Token" in request.headers:
@@ -112,6 +97,60 @@ async def session_token_middleware(request: Request, handler: _Handler) -> web.R
     return await handler(request)
 
 
+async def _forward_request(request_data, headers, full_agent_url):
+    async with ClientSession() as session:
+        async with session.post(
+            full_agent_url,
+            headers=headers,
+            data=request_data,
+        ) as resp:
+            assert resp.status == 200, f"Request to agent unsuccessful, received [{resp.status}] response."
+
+            if "text/html" in resp.content_type:
+                response_data = await resp.read()
+                if len(response_data) == 0:
+                    log.info("Received empty response: %r from agent.", response_data)
+                    return web.HTTPOk()
+                else:
+                    if isinstance(response_data, bytes):
+                        response_data = response_data.decode()
+                    try:
+                        response_data = json.loads(response_data)
+                    except json.JSONDecodeError as e:
+                        log.warning("Error decoding response data: %s, data=%r", str(e), response_data)
+                        log.warning("Original Request: %r", request_data)
+                        response_data = {}
+                    log.info("Response %r from agent:", response_data)
+                    return web.json_response(data=response_data)
+            else:
+                response_data = await resp.json()
+                log.info("Response %r from agent:", response_data)
+                return web.json_response(data=response_data)
+
+
+async def _prepare_and_send_request(data, request, headers):
+    headers = {
+        "Content-Type": headers.get("Content-Type", "application/msgpack"),
+        **{k: v for k, v in headers.items() if k.lower() not in ["content-type", "host", "transfer-encoding"]},
+    }
+    agent_url = request.app["agent_url"]
+    full_agent_url = agent_url + request.path
+    log.info("Forwarding request to agent at %r", full_agent_url)
+    log.debug(f"Using headers: {headers}")
+    return await _forward_request(data, headers, full_agent_url)
+
+
+def update_trace_agent_port(url, new_port):
+    # Updates the Agent URL with a new port number, returning the updated URL and old port
+    parsed_url = urlparse(url)
+    old_port = parsed_url.port
+    new_netloc = parsed_url.netloc.replace(f":{old_port}", f":{new_port}")
+    new_url = urlunparse(
+        (parsed_url.scheme, new_netloc, parsed_url.path, parsed_url.params, parsed_url.query, parsed_url.fragment)
+    )
+    return new_url
+
+
 class Agent:
     def __init__(self):
         """Only store the requests sent to the agent. There are many representations
@@ -122,7 +161,16 @@ class Agent:
         """
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
-        self._proxy_backup_ports = []
+        self._rc_server = RemoteConfigServer()
+        self._trace_failures: List[str] = []
+        self._forward_endpoints: List[str] = [
+            "/v0.4/traces",
+            "/v0.5/traces",
+            "/v0.6/stats",
+            "/v0.7/config",
+            "/telemetry/proxy/api/v2/apmtelemetry",
+            "/v0.1/pipeline_stats",
+        ]
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -141,6 +189,18 @@ class Agent:
                         _traces[trace_id] = []
                     _traces[trace_id].append(s)
         return _traces
+
+    def get_trace_check_failures(self, request: Request) -> web.Response:
+        """Return the Trace Check failures that occurred, if pooling is enabled as a request."""
+        trace_failures = self._trace_failures
+
+        if len(trace_failures) > 0:
+            failure_message = f"APM Test Agent Validation failed with {len(trace_failures)} Trace Check failures.\n"
+            for trace_check_message in trace_failures:
+                failure_message += trace_check_message
+            return web.HTTPBadRequest(text=failure_message)
+        else:
+            return web.HTTPOk()
 
     async def apmtelemetry(self) -> List[TelemetryEvent]:
         """Return the telemetry events stored by the agent"""
@@ -248,7 +308,7 @@ class Agent:
     def _decode_v04_traces(self, request: Request) -> v04TracePayload:
         content_type = request.content_type
         raw_data = self._request_data(request)
-        return trace_decode_v04(content_type, raw_data)
+        return trace_decode_v04(content_type, raw_data, request.app["suppress_trace_parse_errors"])
 
     def _decode_v05_traces(self, request: Request) -> v04TracePayload:
         raw_data = self._request_data(request)
@@ -265,7 +325,6 @@ class Agent:
         return await self._handle_traces(request, version="v0.5")
 
     async def handle_v06_tracestats(self, request: Request) -> web.Response:
-        await self._store_request(request)
         stats = self._decode_v06_tracestats(request)
         nstats = len(stats["Stats"])
         log.info(
@@ -275,8 +334,44 @@ class Agent:
         )
         return web.HTTPOk()
 
+    async def handle_v01_pipelinestats(self, request: Request) -> web.Response:
+        log.info("received /v0.1/pipeline_stats payload")
+        return web.HTTPOk()
+
+    async def handle_v07_remoteconfig(self, request: Request) -> web.Response:
+        """Emulates Remote Config endpoint: /v0.7/config"""
+        token = _session_token(request)
+        data = await self._rc_server.get_config_response(token)
+        return web.json_response(data)
+
+    async def handle_v07_remoteconfig_create(self, request: Request) -> web.Response:
+        """Configure the response payload of /v0.7/config."""
+        raw_data = await request.read()
+        token = _session_token(request)
+        self._rc_server.create_config_response(token, json.loads(raw_data))
+        return web.HTTPAccepted()
+
+    async def handle_v07_remoteconfig_path_create(self, request: Request) -> web.Response:
+        """
+        Remote Config payloads are quite complex. This endpoints builds a remote config payload with a target
+        file path and the content of it (msg)
+        """
+        raw_data = await request.read()
+        content = json.loads(raw_data)
+        path = content["path"]
+        msg = content["msg"]
+        token = _session_token(request)
+        self._rc_server.create_config_path_response(token, path, msg)
+        return web.HTTPAccepted()
+
+    async def handle_v07_remoteconfig_put(self, request: Request) -> web.Response:
+        """Configure the response payload of /v0.7/config"""
+        raw_data = await request.read()
+        token = _session_token(request)
+        self._rc_server.update_config_response(token, json.loads(raw_data))
+        return web.HTTPAccepted()
+
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
-        await self._store_request(request)
         v2_apmtelemetry_decode(self._request_data(request))
         # TODO: Validation
         # TODO: Snapshots
@@ -291,6 +386,7 @@ class Agent:
                     "/v0.5/traces",
                     "/v0.6/stats",
                     "/telemetry/proxy/",
+                    "/v0.7/config",
                 ],
                 "feature_flags": [],
                 "config": {},
@@ -299,22 +395,16 @@ class Agent:
         )
 
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5"]) -> web.Response:
-        await self._store_request(request)
         token = request["session_token"]
         checks: Checks = request.app["checks"]
-        headers = CIMultiDict(request.headers)
+        headers = request.headers
 
-        await checks.check("trace_stall", headers=dict(headers), request=request)
-
-        proxy_to_agent = True
-        if "do_not_proxy_to_agent" in headers:
-            headers.pop("do_not_proxy_to_agent")
-            proxy_to_agent = False
+        await checks.check("trace_stall", headers=headers, request=request)
 
         with CheckTrace.add_frame("headers") as f:
             f.add_item(pprint.pformat(dict(headers)))
-            await checks.check("meta_tracer_version_header", headers=dict(headers))
-            await checks.check("trace_content_length", headers=dict(headers))
+            await checks.check("meta_tracer_version_header", headers=headers)
+            await checks.check("trace_content_length", headers=headers)
 
             try:
                 if version == "v0.4":
@@ -335,95 +425,16 @@ class Agent:
                         )
                     except ValueError:
                         log.info("Chunk %d could not be displayed (might be incomplete).", i)
-
-                    with CheckTrace.add_frame(f"Performing Span Validation for trace with {len(trace)} spans"):
-                        # Register the check with the current trace
-                        await checks.check("trace_tag_validation", trace=trace)
-
                 log.info("end of payload %s", "-" * 40)
 
                 with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
                     await checks.check(
                         "trace_count_header",
-                        headers=dict(headers),
+                        headers=headers,
                         num_traces=len(traces),
                     )
-            except Exception as e:
-                log.error(e)
-
-        agent_url = request.app["agent_url"]
-        if agent_url and proxy_to_agent:
-            log.info("Forwarding request to agent at %r", agent_url)
-            data = self._request_data(request)
-
-            headers = {
-                "Content-Type": "application/msgpack",
-                **{k: v for k, v in headers.items() if "Datadog" in k},
-            }
-
-            async def proxy_trace_request(agent_url, data, headers):
-                async with ClientSession() as session:
-                    async with session.put(f"{agent_url}/v0.4/traces", headers=headers, data=data) as resp:
-                        assert resp.status == 200
-                        if "text/html" in resp.content_type:
-                            data = await resp.read()
-                            if len(data) == 0:
-                                return web.HTTPOk()
-                            else:
-                                log.info("Got response %r from agent:", data)
-                                return web.json_response(data={"data": data})
-                        else:
-                            data = await resp.json()
-                            log.info("Got response %r from agent:", data)
-                            return web.json_response(data=data)
-
-            try:
-                await proxy_trace_request(agent_url=agent_url, data=data, headers=headers)
-            except Exception as e:
-                for backup_port in self._proxy_backup_ports:
-                    try:
-                        await proxy_trace_request(
-                            agent_url=f"http://{AGENT_PROXY_HOST}:{backup_port}", data=data, headers=headers
-                        )
-                    except:
-                        pass
-                log.info(e)
-                if data:
-                    log.info(data)
-                log.info(headers)
-                log.info(request)
-        # agent_url = "http://request-replayer"
-        # agent_port = 80
-        # if agent_url:
-        #     log.info(f"Forwarding request to agent at {agent_url}:{agent_port}")
-
-        #     if agent_url == "http://request-replayer":
-        #         data = self._request_data(request)
-        #         log.info(data)
-        #         resp = requests.post(
-        #             url=f"{agent_url}:{agent_port}/v0.4/traces",
-        #             data=data,
-        #             headers={"Content-Type": "application/msgpack"},
-        #         )
-        #         assert resp.status_code == 200
-        #         data = resp.content
-        #         log.info("Got response %r from agent", data)
-        #         if version == "v0.4":
-        #             data = self._decode_v04_traces(resp)
-        #         elif version == "v0.5":
-        #             data = self._decode_v05_traces(resp)
-        #         return web.json_response(data=json.loads(data))
-
-        # else:
-        #     headers=request.headers
-        #     data=self._request_data(request)
-
-        # # async with ClientSession() as session:
-        # #     async with session.post(
-        # #         f"{agent_url}:{agent_port}/v0.4/traces",
-        # #         headers=headers,
-        # #         data=data,
-        # #     ) as resp:
+            except MsgPackExtraDataException as e:
+                log.error(f"Error unpacking trace bytes with Msgpack: {str(e)}, error {e}")
 
         # TODO: implement sampling logic
         return web.json_response(data={"rate_by_service": {}})
@@ -449,6 +460,15 @@ class Agent:
         overrides = set(_parse_csv(request.url.query.get("ignores", "")))
         span_ignores = list(default_span_ignores | overrides)
         log.info("using ignores %r", span_ignores)
+
+        # Get the span attributes that are to be removed for this snapshot.
+        default_span_removes: Set[str] = request.app["snapshot_removed_attrs"]
+        overrides = set(_parse_csv(request.url.query.get("removes", "")))
+        span_removes = list(default_span_removes | overrides)
+        log.info("using removes %r", span_removes)
+
+        if "span_id" in span_removes:
+            raise AssertionError("Cannot remove 'span_id' from spans")
 
         with CheckTrace.add_frame(f"snapshot (token='{token}')") as frame:
             frame.add_item(f"Directory: {snap_dir}")
@@ -494,7 +514,7 @@ class Agent:
             elif received_traces:
                 # Create a new snapshot for the data received
                 with open(trace_snap_file, mode="w") as f:
-                    f.write(trace_snapshot.generate_snapshot(received_traces))
+                    f.write(trace_snapshot.generate_snapshot(received_traces=received_traces, removed=span_removes))
                 log.info("wrote new trace snapshot to %r", os.path.abspath(trace_snap_file))
 
             # Get all stats buckets from the payloads since we don't care about the other fields (hostname, env, etc)
@@ -548,6 +568,7 @@ class Agent:
                 self.handle_v04_traces,
                 self.handle_v05_traces,
                 self.handle_v06_tracestats,
+                self.handle_v01_pipelinestats,
                 self.handle_v2_apmtelemetry,
                 self.handle_v1_profiling,
             ):
@@ -633,13 +654,93 @@ class Agent:
         # wait 1s, gather traces and assert tags
         raise NotImplementedError
 
-    async def handle_update_agent_port(self, request: Request) -> web.Response:
-        log.info(request)
-        port = request.query.get("agent_port")
-        self._proxy_backup_ports.append(port)
-        print(request.query)
-        request.app["agent_url"] = f"http://{AGENT_PROXY_HOST}:{port}"
-        return web.HTTPOk()
+    @middleware  # type: ignore
+    async def store_request_middleware(self, request: Request, handler: _Handler) -> web.Response:
+        # only store requests for specific endpoints
+        if request.path in self._forward_endpoints:
+            await self._store_request(request)
+
+        # Call the original handler
+        return await handler(request)
+
+    @middleware  # type: ignore
+    async def request_forwarder_middleware(self, request: Request, handler: _Handler) -> web.Response:
+        headers = CIMultiDict(request.headers)
+
+        if "X-Datadog-Trace-Env-Variables" in headers:
+            var_string = headers.pop("X-Datadog-Trace-Env-Variables")
+            env_vars = {
+                key.strip(): value.strip() for key, value in (pair.split("=") for pair in var_string.split(","))
+            }
+            request["_dd_trace_env_variables"] = env_vars
+
+        if "X-Datadog-Agent-Proxy-Disabled" in headers:
+            request["_proxy_to_agent"] = (
+                headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true" and request.app["agent_url"] != ""
+            )
+
+        if "X-Datadog-Proxy-Port" in headers:
+            port = headers.pop("X-Datadog-Proxy-Port")
+            request.app["agent_url"] = update_trace_agent_port(request.app["agent_url"], new_port=port)
+            log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
+
+        request["_headers"] = headers
+        if request.path in self._forward_endpoints:
+            # forward the request then call the handler
+            return await self._forward_request_to_agent(request, handler)
+        else:
+            # Call the original handler and do nothing
+            return await handler(request)
+
+    async def _forward_request_to_agent(self, request: Request, handler: _Handler) -> web.Response:
+        """Forward all requests to the agent_url if set."""
+        data = self._request_data(request)
+        headers = request["_headers"]
+        agent_url = request.app["agent_url"]
+        proxy_to_agent = request.get("_proxy_to_agent", True)
+
+        log.debug(f"New request: {request} with headers: {headers}")
+        log.debug(f"Request Data: {data!r}")
+
+        if agent_url and proxy_to_agent:
+            agent_response = await _prepare_and_send_request(data, request, headers)
+
+        endpoint_response = await handler(request)
+
+        # return the agent response if this was sent to a trace endpoint
+        endpoint_path = request.path
+        if "traces" in endpoint_path and agent_url and proxy_to_agent:
+            return agent_response
+        else:
+            return endpoint_response
+
+    @middleware  # type: ignore
+    async def check_failure_middleware(self, request: Request, handler: _Handler) -> web.Response:
+        """Convert any failed checks into an HttpException."""
+        trace = start_trace("request %r" % request)
+        try:
+            response = await handler(request)
+        except AssertionError as e:
+            # only save trace failures to memory if necessary
+            msg = str(trace) + str(e)
+            log.error(msg)
+            if request.app["pool_trace_check_failures"]:
+                log.info(f"storing failure with message {msg}")
+                self._trace_failures.append(msg)
+                log.info(self._trace_failures)
+            return web.HTTPBadRequest(body=msg)
+        else:
+            if trace.has_fails():
+                # only save trace failures to memory if necessary
+                msg = str(trace)
+                log.error(msg)
+                if request.app["pool_trace_check_failures"]:
+                    log.info(f"storing failure with message {msg}")
+                    self._trace_failures.append(msg)
+                if request.app["disable_error_responses"]:
+                    return response
+                return web.HTTPBadRequest(body=msg)
+        return response
 
 
 def make_app(
@@ -650,12 +751,18 @@ def make_app(
     snapshot_ignored_attrs: List[str],
     agent_url: str,
     trace_request_delay: float,
+    suppress_trace_parse_errors: bool,
+    pool_trace_check_failures: bool,
+    disable_error_responses: bool,
+    snapshot_removed_attrs: List[str],
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
         client_max_size=int(100e6),  # 100MB - arbitrary
         middlewares=[
-            check_failure_middleware,
+            agent.check_failure_middleware,
+            agent.store_request_middleware,
+            agent.request_forwarder_middleware,
             session_token_middleware,
         ],
     )
@@ -666,7 +773,9 @@ def make_app(
             web.post("/v0.5/traces", agent.handle_v05_traces),
             web.put("/v0.5/traces", agent.handle_v05_traces),
             web.post("/v0.6/stats", agent.handle_v06_tracestats),
+            web.post("/v0.1/pipeline_stats", agent.handle_v01_pipelinestats),
             web.put("/v0.6/stats", agent.handle_v06_tracestats),
+            web.post("/v0.7/config", agent.handle_v07_remoteconfig),
             web.post("/telemetry/proxy/api/v2/apmtelemetry", agent.handle_v2_apmtelemetry),
             web.post("/profiling/v1/input", agent.handle_v1_profiling),
             web.get("/info", agent.handle_info),
@@ -678,10 +787,14 @@ def make_app(
             web.get("/test/session/apmtelemetry", agent.handle_session_apmtelemetry),
             web.get("/test/session/stats", agent.handle_session_tracestats),
             web.get("/test/session/requests", agent.handle_session_requests),
+            web.post("/test/session/responses/config", agent.handle_v07_remoteconfig_create),
+            web.post("/test/session/responses/config/path", agent.handle_v07_remoteconfig_path_create),
+            web.put("/test/session/responses/config", agent.handle_v07_remoteconfig_put),
             web.get("/test/traces", agent.handle_test_traces),
             web.get("/test/apmtelemetry", agent.handle_test_apmtelemetry),
             # web.get("/test/benchmark", agent.handle_test_traces),
             web.get("/test/trace/analyze", agent.handle_trace_analyze),
+            web.get("/test/trace_check/failures", agent.get_trace_check_failures),
         ]
     )
     checks = Checks(
@@ -701,6 +814,10 @@ def make_app(
     app["snapshot_ignored_attrs"] = snapshot_ignored_attrs
     app["agent_url"] = agent_url
     app["trace_request_delay"] = trace_request_delay
+    app["suppress_trace_parse_errors"] = suppress_trace_parse_errors
+    app["pool_trace_check_failures"] = pool_trace_check_failures
+    app["disable_error_responses"] = disable_error_responses
+    app["snapshot_removed_attrs"] = snapshot_removed_attrs
     return app
 
 
@@ -738,6 +855,16 @@ def main(args: Optional[List[str]] = None) -> None:
         help=(
             "Comma-separated values of span attributes to ignore. "
             "meta/metrics attributes can be ignored by prefixing the key "
+            "with meta. or metrics."
+        ),
+    )
+    parser.add_argument(
+        "--snapshot-removed-attrs",
+        type=Set[str],
+        default=set(_parse_csv(os.environ.get("SNAPSHOT_REMOVED_ATTRS", ""))),
+        help=(
+            "Comma-separated values of span attributes to remove. "
+            "meta/metrics attributes can be removed by prefixing the key "
             "with meta. or metrics."
         ),
     )
@@ -781,6 +908,26 @@ def main(args: Optional[List[str]] = None) -> None:
         default=os.environ.get("DD_TEST_STALL_REQUEST_SECONDS", 0.0),
         help=("Will stall trace requests for specified amount of time"),
     )
+    parser.add_argument(
+        "--suppress-trace-parse-errors",
+        type=bool,
+        default=os.environ.get("DD_SUPPRESS_TRACE_PARSE_ERRORS", False),
+        help=(
+            "Will change the test agent trace decoder to use a more resilient parser to prevent decode and span verification errors"
+        ),
+    )
+    parser.add_argument(
+        "--pool-trace-check-failures",
+        type=bool,
+        default=os.environ.get("DD_POOL_TRACE_CHECK_FAILURES", False),
+        help=("Will change the test agent to pool Trace Check failures in memory that can later be asserted on"),
+    )
+    parser.add_argument(
+        "--disable-error-responses",
+        type=bool,
+        default=os.environ.get("DD_DISABLE_ERROR_RESPONSES", False),
+        help=("Will change the test agent to send [200: Ok] responses instead of error responses back to the tracer."),
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -813,6 +960,10 @@ def main(args: Optional[List[str]] = None) -> None:
         snapshot_ignored_attrs=parsed_args.snapshot_ignored_attrs,
         agent_url=parsed_args.agent_url,
         trace_request_delay=parsed_args.trace_request_delay,
+        suppress_trace_parse_errors=parsed_args.suppress_trace_parse_errors,
+        pool_trace_check_failures=parsed_args.pool_trace_check_failures,
+        disable_error_responses=parsed_args.disable_error_responses,
+        snapshot_removed_attrs=parsed_args.snapshot_removed_attrs,
     )
 
     web.run_app(app, sock=apm_sock, port=parsed_args.port)

@@ -86,6 +86,9 @@ This is enabled by passing the agent url to the test agent either via the `--age
 
 When proxying is enabled, the response from the Datadog agent will be returned instead of one from the test agent.
 
+At the trace-level, proxying can also be disabled by including the `X-Datadog-Agent-Proxy-Disabled` header with a value of `true`. This will disable proxying after a trace 
+is handled, regardless of whether an agent URL is set.
+
 
 ### Snapshot testing
 
@@ -170,6 +173,16 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
 
 - `DD_APM_RECEIVER_SOCKET` [`""`]: When provided, the test agent will listen for traces on a socket at the path provided (e.g., `/var/run/datadog/apm.socket`)
 
+- `DD_SUPPRESS_TRACE_PARSE_ERRORS` [`false`]: Set to `"true"` to disable span parse errors when decoding handled traces. When disabled, errors will not be thrown for
+metrics incorrectly placed within the meta field, or other type errors related to span tag formatting/types. Can also be set using the `--suppress-trace-parse-errors=true` option.
+
+- `SNAPSHOT_REMOVED_ATTRS` [`""`]: The attributes to remove from spans in snapshots. This is useful for removing attributes 
+that are not relevant to the test case. **Note that removing `span_id` is not permitted to allow span 
+ordering to be maintained.**
+
+- `DD_POOL_TRACE_CHECK_FAILURES` [`false`]: Set to `"true"` to pool Trace Check failures that occured within Test-Agent memory. These failures can be queried later using the `/test/trace_check/failures` endpoint. Can also be set using the `--pool-trace-check-failures=true` option.
+
+- `DD_DISABLE_ERROR_RESPONSES` [`false`]: Set to `"true"` to disable Test-Agent `<Response 400>` when a Trace Check fails, instead sending a valid `<Response 200>`. Recommended for use with the `DD_POOL_TRACE_CHECK_FAILURES` env variable. Can also be set using the `--disable-error-responses=true` option.
 
 
 ## API
@@ -243,6 +256,12 @@ Note: the file extension will be appended to the filename.
 
 `_tracestats` will be appended to the filename for trace stats requests.
 
+#### [optional] `?removes=`
+
+Comma-separated list of keys that will be removed from spans in the snapshot.
+
+The default built-in remove list does not remove any keys.
+
 
 ### /test/session/requests
 
@@ -283,6 +302,39 @@ Return stats that have been received by the agent for the given session token.
 
 Stats are returned as a JSON list of the stats payloads received.
 
+## /test/session/responses/config (POST)
+Create a Remote Config payload to retrieve in endpoint `/v0.7/config`
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+```
+curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"roots": ["eyJ....fX0="], "targets": "ey...19", "target_files": [{"path": "datadog/2/ASM_DATA/blocked_users/config", "raw": "eyJydWxlc19kYXRhIjogW119"}], "client_configs": ["datadog/2/ASM_DATA/blocked_users/config"]}'
+```
+
+## /test/session/responses/config/path (POST)
+Due to Remote Config payload being quite complicated, this endpoint works like `/test/session/responses/config (POST)` 
+but you should send a path and a message and this endpoint builds the Remote Config payload.
+
+The keys of the JSON body are `path` and `msg`
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+```
+curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"path": "datadog/2/ASM_DATA/blocked_users/config", "msg": {"rules_data": []}}'
+```
+
+## /test/trace_check/failures (GET)
+Get any Trace Check failures that occured. Returns a `<Response 200>` if no Trace Check failures occurred, and a `<Response 400>` with the Trace Check Failure messages included in the response body. To be used in combination with `DD_POOL_TRACE_CHECK_FAILURES`, or else failures will not be saved within Test-Agent memory and a `<Response 200>` will always be returned.
+
+```
+curl -X GET 'http://0.0.0.0:8126/test/trace_check/failures'
+```
+
+### /v0.1/pipeline_stats
+
+Mimics the pipeline_stats endpoint of the agent, but always returns OK, and logs a line everytime it's called.
 
 ## Development
 

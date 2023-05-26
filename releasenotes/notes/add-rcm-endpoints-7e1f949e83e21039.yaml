@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Add Remote Config endpoint (``/v0.7/config``) and endpoints to create/update Remote Config payloads 
+    (``/test/session/responses/config`)

@@ -1,8 +1,8 @@
 import asyncio
 import logging
-from typing import Dict
 
 from aiohttp.web import Request
+from multidict import CIMultiDictProxy
 
 from .checks import Check
 
@@ -19,7 +19,7 @@ header must match the number of traces included in the payload.
 """.strip()
     default_enabled = True
 
-    def check(self, headers: Dict[str, str], num_traces: int) -> None:
+    def check(self, headers: CIMultiDictProxy, num_traces: int) -> None:
         if "X-Datadog-Trace-Count" not in headers:
             self.fail("X-Datadog-Trace-Count header not found in headers")
             return
@@ -40,7 +40,7 @@ class CheckMetaTracerVersionHeader(Check):
     description = """v0.4 payloads must include the Datadog-Meta-Tracer-Version header."""
     default_enabled = True
 
-    def check(self, headers: Dict[str, str]) -> None:
+    def check(self, headers: CIMultiDictProxy) -> None:
         if "Datadog-Meta-Tracer-Version" not in headers:
             self.fail("Datadog-Meta-Tracer-Version not found in headers")
 
@@ -52,7 +52,7 @@ The max content size of a trace payload is 50MB.
 """.strip()
     default_enabled = True
 
-    def check(self, headers: Dict[str, str]) -> None:
+    def check(self, headers: CIMultiDictProxy) -> None:
         if "Content-Length" not in headers:
             self.fail(f"content length header 'Content-Length' not in http headers {headers}")
             return
@@ -74,7 +74,7 @@ affected.
 """.strip()
     default_enabled = True
 
-    async def check(self, headers: Dict[str, str], request: Request) -> None:
+    async def check(self, headers: CIMultiDictProxy, request: Request) -> None:
         if "X-Datadog-Test-Stall-Seconds" in headers:
             duration = float(headers["X-Datadog-Test-Stall-Seconds"])
         else:

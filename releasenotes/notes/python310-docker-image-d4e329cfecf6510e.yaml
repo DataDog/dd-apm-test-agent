@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Use Python 3.11 in the Docker image.

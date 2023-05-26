@@ -1,19 +1,7 @@
-# Build stage for linux/amd64
-FROM python:3.9 AS builder-amd64
-WORKDIR /src
-COPY . /src
-RUN pip install --upgrade pip
-RUN pip install /src
+FROM python:3.11
 
-# Build stage for linux/arm64/v8
-FROM --platform=linux/arm64/v8 python:3.9 AS builder-arm64v8
-WORKDIR /src
-COPY . /src
-RUN pip install --upgrade pip
-RUN pip install /src
+EXPOSE 8126
 
-# Final stage
-FROM python:3.9
 ENV SNAPSHOT_CI=1
 ENV LOG_LEVEL=INFO
 ENV SNAPSHOT_DIR=/snapshots
