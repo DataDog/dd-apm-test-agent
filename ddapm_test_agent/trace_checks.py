@@ -5,6 +5,7 @@ from aiohttp.web import Request
 from multidict import CIMultiDictProxy
 
 from .checks import Check
+from .trace import Span
 
 
 log = logging.getLogger(__name__)
@@ -82,3 +83,26 @@ affected.
         if duration > 0:
             log.info("Stalling for %r seconds.", duration)
             await asyncio.sleep(duration)
+
+
+class CheckClientProducerSpansMeasured(Check):
+    name = "trace_client_producer_spans_measured"
+    description = """
+All Client and Producer spans should be measured, ie: span['metrics']['_dd.measured'] = 1
+""".strip()
+    default_enabled = True
+
+    def check(self, trace: list[Span]) -> None:
+        for span in trace:
+            meta = span.get("meta", {})
+            metrics = span.get("metrics", {})
+            span_kind = meta.get("span.kind", None)
+            span_name = span.get("name")
+            if span_kind in ["client", "producer"]:
+                measured = metrics.get("_dd.measured", None)
+                if measured != 1:
+                    self.fail(f"Span '{span_name}' with 'span.kind' of '{span_kind}' should have metric \
+                    '_dd.measured' equals to '1', got '{measured}'")
+                    return
+                log.debug(f"Verified that span '{span_name}' with 'span.kind' of '{span_kind}' is tagged \
+                    with metric '_dd.measured' = 1")

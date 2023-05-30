@@ -5,8 +5,8 @@ from pathlib import Path
 from ..checks import Check
 from ..checks import CheckTrace
 from .span_check_logger import ConsoleSpanCheckLogger
-from .tag_checks import SpanTagChecks
-from .tag_checks import SpanTagChecksLoader
+from .tag_check import SpanTagChecks
+from .tag_check import SpanTagChecksLoader
 
 
 log = logging.getLogger(__name__)
@@ -132,6 +132,7 @@ class SpanTagValidationCheck(Check):
                 self.logger.warn_tags_not_asserted_on(self)
         else:
             self.logger.print_validation_success(self)
+        return self._tags
 
     def extract_tags(self, span, extracted_tags):
         for k, v in span.items():

@@ -155,9 +155,9 @@ class Checks:
             return False
         return check.default_enabled
 
-    async def check(self, name: str, *args: Any, **kwargs: Any) -> None:
+    async def check(self, name: str, check_args = {},*args: Any, **kwargs: Any) -> None:
         """Find and run the check with the given ``name`` if it is enabled."""
-        check = self._get_check(name)()
+        check = self._get_check(name)(**check_args)
 
         if self.is_enabled(name):
             # Register the check with the current trace

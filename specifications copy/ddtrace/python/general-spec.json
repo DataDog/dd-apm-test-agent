@@ -1,0 +1,19 @@
+{
+    "name": "general",
+    "specification": {
+        "tags": {
+            "component": {
+                "type": "str",
+                "required": true
+            },
+            "error": {
+                "type": "int",
+                "required": true
+            },
+            "type": {
+                "type": "str",
+                "required": true
+            }
+        }
+    }
+}

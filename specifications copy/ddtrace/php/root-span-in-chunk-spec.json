@@ -1,0 +1,19 @@
+{
+    "name": "1st span in chunk",
+    "specification": {
+        "tags": {
+            "language": {
+                "type": "str",
+                "required": false
+            },
+            "runtime-id": {
+                "type": "str",
+                "required": false
+            },
+            "process_id": {
+                "type": ["int", "float"],
+                "required": false
+            }
+        }
+    }
+}

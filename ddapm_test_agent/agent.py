@@ -5,11 +5,13 @@ from collections import OrderedDict
 import json
 import logging
 import os
+from pathlib import Path
 import pprint
 import socket
 import sys
 from typing import Awaitable
 from typing import Callable
+from typing import Dict
 from typing import List
 from typing import Literal
 from typing import Optional
@@ -34,6 +36,8 @@ from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
 from .remoteconfig import RemoteConfigServer
+from .span_validation.trace_tag_validation_check import TraceTagValidationCheck
+from .span_validation.tag_check import SpanTagChecks
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -41,6 +45,7 @@ from .trace import decode_v04 as trace_decode_v04
 from .trace import decode_v05 as trace_decode_v05
 from .trace import pprint_trace
 from .trace import v04TracePayload
+from .trace_checks import CheckClientProducerSpansMeasured
 from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
@@ -73,6 +78,45 @@ def _parse_csv(s: str) -> List[str]:
     ['a']
     """
     return [s.strip() for s in s.split(",") if s.strip() != ""]
+
+def create_markdown_spec_files(documentation: Dict[str, Dict[str, SpanTagChecks]], type_specs: Dict[str, SpanTagChecks]):
+    output_directory = Path("./documentation/generated/")
+    output_directory.mkdir(parents=True, exist_ok=True)
+
+    span_type_checks = type_specs
+    for component_name, spans in documentation.items():
+        markdown_content = f"# {component_name} Span Specification \n\n"
+
+        for span_name, span_checks in spans.items():
+            markdown_content += f"## {span_name}\n\n"
+            markdown_content += "#### Span properties\n"
+            markdown_content += "Attribute | Value\n"
+            markdown_content += "---------|-----------------------------|\n"
+            markdown_content += f"Name | `{span_checks.name}`\n"
+
+            if span_checks.span_type is not None:
+                markdown_content += f"Type | `{span_checks.span_type}`\n"
+
+            markdown_content += "#### Tags\n"
+            markdown_content += "Tag Name | Required | Value Type | Value\n"
+            markdown_content += "---------|---------|---------|-----------|\n"
+
+            # Add span tag checks
+            for tag_name, tag_check in span_checks.tag_checks.items():
+                markdown_content += f"{tag_name} | {tag_check.required} | {tag_check.val_type} | {tag_check.value}\n"
+
+            # # Check if there are span type specific tag checks
+            # if span_checks.span_type in span_type_checks:
+            #     span_type_tag_checks = span_type_checks[span_checks.span_type]
+            #     for tag_name, tag_check in span_type_tag_checks.tag_checks.items():
+            #         markdown_content += f"{tag_name} | {tag_check.required} | {tag_check.val_type} | {tag_check.value}\n"
+            markdown_content += "\n\n"
+        markdown_content += "\n"
+
+        # Write markdown content to file
+        filename = output_directory / f"{component_name.lower()}-spec.md"
+        with open(filename, "w") as file:
+            file.write(markdown_content)
 
 
 def _session_token(request: Request) -> Optional[str]:
@@ -171,6 +215,8 @@ class Agent:
             "/telemetry/proxy/api/v2/apmtelemetry",
             "/v0.1/pipeline_stats",
         ]
+        self.tag_documentation: Dict[str, Dict[str, SpanTagChecks]] = {}
+        self.type_specs: Dict[str, SpanTagChecks] = {}
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -425,6 +471,16 @@ class Agent:
                         )
                     except ValueError:
                         log.info("Chunk %d could not be displayed (might be incomplete).", i)
+
+                with CheckTrace.add_frame(f"Performing Span Validation for trace with {len(trace)} spans"):
+                    # Register the check with the current trace
+                    check = checks._get_check("trace_tag_validation")(documentation=self.tag_documentation)
+                    if checks.is_enabled("trace_tag_validation"):
+                        # Register the check with the current trace
+                        CheckTrace.add_check(check)
+                        new_type_specs, self.tag_documentation = check.check(trace=trace)
+                        self.type_specs.update(new_type_specs)
+
                 log.info("end of payload %s", "-" * 40)
 
                 with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
@@ -441,6 +497,10 @@ class Agent:
 
     async def handle_session_start(self, request: Request) -> web.Response:
         self._requests.append(request)
+        return web.HTTPOk()
+
+    async def handle_create_markdown(self, request: Request) -> web.Response:
+        create_markdown_spec_files(self.tag_documentation, self.type_specs)
         return web.HTTPOk()
 
     async def handle_snapshot(self, request: Request) -> web.Response:
@@ -783,7 +843,6 @@ def make_app(
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/snapshot", agent.handle_snapshot),
             web.get("/test/session/traces", agent.handle_session_traces),
-            web.get("/test/session/agent_port", agent.handle_update_agent_port),
             web.get("/test/session/apmtelemetry", agent.handle_session_apmtelemetry),
             web.get("/test/session/stats", agent.handle_session_tracestats),
             web.get("/test/session/requests", agent.handle_session_requests),
@@ -794,7 +853,8 @@ def make_app(
             web.get("/test/apmtelemetry", agent.handle_test_apmtelemetry),
             # web.get("/test/benchmark", agent.handle_test_traces),
             web.get("/test/trace/analyze", agent.handle_trace_analyze),
-            web.get("/test/trace_check/failures", agent.get_trace_check_failures),
+            web.get("/test/check_trace/failures", agent.get_trace_check_failures),
+            web.get("/test/tag_validation/documentation", agent.handle_create_markdown)
         ]
     )
     checks = Checks(
@@ -803,7 +863,7 @@ def make_app(
             CheckTraceCountHeader,
             CheckTraceContentLength,
             CheckTraceStallAsync,
-            TraceTagValidationCheck,
+            TraceTagValidationCheck
         ],
         disabled=disabled_checks,
     )
@@ -871,7 +931,7 @@ def main(args: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--disabled-checks",
         type=List[str],
-        default=_parse_csv(os.environ.get("DISABLED_CHECKS", "trace_tag_validation")),
+        default=_parse_csv(os.environ.get("DISABLED_CHECKS", "")),
         help=(
             "Comma-separated values of checks to disable. None are disabled "
             " by default. For the list of values see "
