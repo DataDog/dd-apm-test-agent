@@ -97,33 +97,47 @@ The ``peer.service`` tag is correctly set for Client / Producer spans.
         log.info("Performing ``peer.service`` Span Check")
         meta = span.get("meta", {})
 
+        whitelisted_components = ["couchbase"]
+
         if dd_config_env.get("DD_TRACE_SPAN_ATTRIBUTE_SCHEMA", "v0") == "v1":
             if meta.get("span.kind", "") in ["client", "producer"]:
-                if meta.get("component", "") not in ["couchbase"]:
-                    if meta.get("peer.service", None) is None:
-                        self.fail(json.dumps(span, indent=4) + f"\nSpan: {span['name']} of kind: {meta['span.kind']} should have tag ``peer.service`` set.")
-                    
-                    peer_service = meta.get("peer.service")
-                    peer_service_source_key = meta.get("_dd.peer.service.source", "")
-                    peer_service_source_val = meta.get(peer_service_source_key, "")
-                    if peer_service != peer_service_source_val:
-                        self.fail(json.dumps(span, indent=4) + f"\nSpan: {span['name']} expected to have ``peer.service`` tag equal to ``{peer_service_source_key}`` of: {peer_service_source_val}, actual: {peer_service}.")
-                    return
+                for component in whitelisted_components:
+                    if component in meta.get("component", ""):
+                        skipped_component =  meta.get("component", "")
+                        log.debug(f"Skipped ``peer.service`` Span Check for Span: {span['name']} with component {skipped_component}.")
+                        return
+
+                if meta.get("peer.service", None) is None:
+                    self.fail(json.dumps(span, indent=4) + f"\nSpan: {span['name']} of kind: {meta['span.kind']} should have tag ``peer.service`` set.")
+                
+                peer_service = meta.get("peer.service")
+                peer_service_source_key = meta.get("_dd.peer.service.source", "")
+                peer_service_source_val = meta.get(peer_service_source_key, "")
+                if peer_service != peer_service_source_val:
+                    self.fail(json.dumps(span, indent=4) + f"\nSpan: {span['name']} expected to have ``peer.service`` tag equal to ``{peer_service_source_key}`` of: {peer_service_source_val}, actual: {peer_service}.")
+                log.debug(f"Successfully completed `peer.`service`` tag Span Check for Span: {span['name']}")
+                return
+                        
 
 
-# class CheckTraceSpanMeasured(Check):
-#     name = "trace_span_measured"
-#     description = """
-# The ``_dd.measured`` tag is correctly set to 1 for Client / Producer spans.
-# """.strip()
-#     default_enabled = True
+class CheckTraceDDService(Check):
+    name = "trace_dd_service"
+    description = """
+The ``service`` name is correctly set to ``DD_SERVICE`` for V1 auto-instrumented spans.
+""".strip()
+    default_enabled = True
 
-#     def check(self, span: Span, trace_config: CIMultiDictProxy) -> None:
-#         log.info("Performing ``_dd.measured`` Span Check")
-#         schema_version = trace_config.get("DD_TRACE_SPAN_ATTRIBUTE_SCHEMA", "v0")
-#         if schema_version == "v1":
-#             meta = span.get("meta", {})
-#             if meta.get("span.kind", "").lower() in ["client", "producer"]:
-#                 if meta.get("_dd.measured", None) != 1:
-#                     self.fail(f"Span: {span['name']} of kind: {meta['span.kind']} should have tag ``_dd.measured`` set to ``1``.")
-#                 return
+    def check(self, span: Span, dd_config_env: dict) -> None:
+        meta = span.get("meta", {})
+
+        if dd_config_env.get("DD_TRACE_SPAN_ATTRIBUTE_SCHEMA", "v0") == "v1" and meta.get("component", "") != "":
+            dd_service = dd_config_env.get("DD_SERVICE", None)
+            if dd_service is None:
+                self.fail(json.dumps(dd_config_env, indent=4) + f"\n``DD_SERVICE`` env not set for Span: {span['name']} with service: {span['service']}.")
+            
+            service = span.get("service")
+            if service != dd_service:
+                self.fail(json.dumps(span, indent=4) + f"\nSpan: {span['name']} expected to have ``service`` name equal to ``{dd_service}``. Actual: {service}.")
+
+            log.debug(f"Successfully completed ``service`` name Span Check for Span: {span['name']}")
+            return

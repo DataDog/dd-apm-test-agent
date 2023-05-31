@@ -44,6 +44,7 @@ from .trace import v04TracePayload
 from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
+from .trace_checks import CheckTraceDDService
 from .trace_checks import CheckTracePeerService
 from .trace_checks import CheckTraceStallAsync
 from .tracestats import decode_v06 as tracestats_decode_v06
@@ -427,7 +428,7 @@ class Agent:
                     # perform peer service check on span
                     for span in trace:
                         await checks.check("trace_peer_service", span=span, dd_config_env=request.get("_dd_trace_env_variables", {}))
-                        # await checks.check("trace_span_measured", span=span, )
+                        await checks.check("trace_dd_service", span=span, dd_config_env=request.get("_dd_trace_env_variables", {}))
                 log.info("end of payload %s", "-" * 40)
 
                 with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
@@ -675,6 +676,7 @@ class Agent:
             env_vars = {
                 key.strip(): value.strip() for key, value in (pair.split("=") for pair in var_string.split(","))
             }
+            log.debug("Found the following Datadog Trace Env Variables: " + str(env_vars))
             request["_dd_trace_env_variables"] = env_vars
 
         if "X-Datadog-Agent-Proxy-Disabled" in headers:
@@ -806,6 +808,7 @@ def make_app(
             CheckTraceContentLength,
             CheckTraceStallAsync,
             CheckTracePeerService,
+            CheckTraceDDService
         ],
         disabled=disabled_checks,
     )
