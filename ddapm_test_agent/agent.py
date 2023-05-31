@@ -44,6 +44,7 @@ from .trace import v04TracePayload
 from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
+from .trace_checks import CheckTracePeerService
 from .trace_checks import CheckTraceStallAsync
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
@@ -422,6 +423,11 @@ class Agent:
                         )
                     except ValueError:
                         log.info("Chunk %d could not be displayed (might be incomplete).", i)
+
+                    # perform peer service check on span
+                    for span in trace:
+                        await checks.check("trace_peer_service", span=span)
+                        # await checks.check("trace_span_measured", span=span, trace_config=request.get("_dd_trace_env_variables", {}))
                 log.info("end of payload %s", "-" * 40)
 
                 with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
@@ -799,6 +805,7 @@ def make_app(
             CheckTraceCountHeader,
             CheckTraceContentLength,
             CheckTraceStallAsync,
+            CheckTracePeerService,
         ],
         disabled=disabled_checks,
     )

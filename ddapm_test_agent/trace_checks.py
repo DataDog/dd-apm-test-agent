@@ -5,6 +5,7 @@ from aiohttp.web import Request
 from multidict import CIMultiDictProxy
 
 from .checks import Check
+from .trace import Span
 
 
 log = logging.getLogger(__name__)
@@ -82,3 +83,42 @@ affected.
         if duration > 0:
             log.info("Stalling for %r seconds.", duration)
             await asyncio.sleep(duration)
+
+
+class CheckTracePeerService(Check):
+    name = "trace_peer_service"
+    description = """
+The ``peer.service`` tag is correctly set for Client / Producer spans.
+""".strip()
+    default_enabled = True
+
+    def check(self, span: Span) -> None:
+        log.info("Performing ``peer.service`` Span Check")
+        meta = span.get("meta", {})
+        if meta.get("span.kind", "").lower() in ["client", "producer"]:
+            if meta.get("peer.service", None) is None:
+                self.fail(f"Span: {span['name']} of kind: {meta['span.kind']} should have tag ``peer.service`` set.")
+            
+            peer_service = meta.get("peer.service")
+            peer_service_calculated = meta.get("_dd.peer.service.source", None)
+            if peer_service != peer_service_calculated:
+                self.fail(f"Span: {span['name']} expected to have ``peer.service`` tag equal to ``_dd.peer.service.source`` of: {peer_service_calculated}, actual: {peer_service} {meta['span.kind']}.")
+            return
+
+
+# class CheckTraceSpanMeasured(Check):
+#     name = "trace_span_measured"
+#     description = """
+# The ``_dd.measured`` tag is correctly set to 1 for Client / Producer spans.
+# """.strip()
+#     default_enabled = True
+
+#     def check(self, span: Span, trace_config: CIMultiDictProxy) -> None:
+#         log.info("Performing ``_dd.measured`` Span Check")
+#         schema_version = trace_config.get("DD_TRACE_SPAN_ATTRIBUTE_SCHEMA", "v0")
+#         if schema_version == "v1":
+#             meta = span.get("meta", {})
+#             if meta.get("span.kind", "").lower() in ["client", "producer"]:
+#                 if meta.get("_dd.measured", None) != 1:
+#                     self.fail(f"Span: {span['name']} of kind: {meta['span.kind']} should have tag ``_dd.measured`` set to ``1``.")
+#                 return
