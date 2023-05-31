@@ -426,8 +426,8 @@ class Agent:
 
                     # perform peer service check on span
                     for span in trace:
-                        await checks.check("trace_peer_service", span=span)
-                        # await checks.check("trace_span_measured", span=span, trace_config=request.get("_dd_trace_env_variables", {}))
+                        await checks.check("trace_peer_service", span=span, dd_config_env=request.get("_dd_trace_env_variables", {}))
+                        # await checks.check("trace_span_measured", span=span, )
                 log.info("end of payload %s", "-" * 40)
 
                 with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):

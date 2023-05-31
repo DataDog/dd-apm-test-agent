@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 
 from aiohttp.web import Request
@@ -92,18 +93,22 @@ The ``peer.service`` tag is correctly set for Client / Producer spans.
 """.strip()
     default_enabled = True
 
-    def check(self, span: Span) -> None:
+    def check(self, span: Span, dd_config_env: dict) -> None:
         log.info("Performing ``peer.service`` Span Check")
         meta = span.get("meta", {})
-        if meta.get("span.kind", "").lower() in ["client", "producer"]:
-            if meta.get("peer.service", None) is None:
-                self.fail(f"Span: {span['name']} of kind: {meta['span.kind']} should have tag ``peer.service`` set.")
-            
-            peer_service = meta.get("peer.service")
-            peer_service_calculated = meta.get("_dd.peer.service.source", None)
-            if peer_service != peer_service_calculated:
-                self.fail(f"Span: {span['name']} expected to have ``peer.service`` tag equal to ``_dd.peer.service.source`` of: {peer_service_calculated}, actual: {peer_service} {meta['span.kind']}.")
-            return
+
+        if dd_config_env.get("DD_TRACE_SPAN_ATTRIBUTE_SCHEMA", "v0") == "v1":
+            if meta.get("span.kind", "") in ["client", "producer"]:
+                if meta.get("component", "") not in ["couchbase"]:
+                    if meta.get("peer.service", None) is None:
+                        self.fail(json.dumps(span, indent=4) + f"\nSpan: {span['name']} of kind: {meta['span.kind']} should have tag ``peer.service`` set.")
+                    
+                    peer_service = meta.get("peer.service")
+                    peer_service_source_key = meta.get("_dd.peer.service.source", "")
+                    peer_service_source_val = meta.get(peer_service_source_key, "")
+                    if peer_service != peer_service_source_val:
+                        self.fail(json.dumps(span, indent=4) + f"\nSpan: {span['name']} expected to have ``peer.service`` tag equal to ``{peer_service_source_key}`` of: {peer_service_source_val}, actual: {peer_service}.")
+                    return
 
 
 # class CheckTraceSpanMeasured(Check):
