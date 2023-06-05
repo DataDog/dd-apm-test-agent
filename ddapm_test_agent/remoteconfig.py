@@ -41,7 +41,7 @@ class RemoteConfigServer:
                     path: {
                         "custom": {"c": [""], "v": 0},
                         "hashes": {"sha256": hashlib.sha256(msg_enc).hexdigest()},
-                        "length": 24,
+                        "length": len(msg_enc),
                     }
                 },
                 "version": 0,
