@@ -151,14 +151,23 @@ class Check:
 
     def __init__(self):
         self._failed: bool = False
+        self._skipped: bool = False
         self._msg: str = ""
 
     @property
     def failed(self) -> bool:
         return self._failed
 
+    @property
+    def skipped(self) -> bool:
+        return self._skipped
+
     def fail(self, msg: str) -> None:
         self._failed = True
+        self._msg = msg
+
+    def skip(self, msg: str) -> None:
+        self._skipped = True
         self._msg = msg
 
     def check(self, *args, **kwargs):

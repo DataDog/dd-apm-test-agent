@@ -710,6 +710,7 @@ class Agent:
             env_vars = {
                 key.strip(): value.strip() for key, value in (pair.split("=") for pair in var_string.split(","))
             }
+            log.debug("Found the following Datadog Trace Env Variables: " + str(env_vars))
             request["_dd_trace_env_variables"] = env_vars
 
         if "X-Datadog-Agent-Proxy-Disabled" in headers:
