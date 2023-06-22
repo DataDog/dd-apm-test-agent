@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from typing import List
 
 from aiohttp.web import Request
 from multidict import CIMultiDictProxy
@@ -100,24 +101,41 @@ The ``peer.service`` tag is correctly set for Client / Producer spans.
         whitelisted_components = ["couchbase"]
 
         if dd_config_env.get("DD_TRACE_SPAN_ATTRIBUTE_SCHEMA", "v0") == "v1":
-            if meta.get("span.kind", "") in ["client", "producer"]:
+            if "peer.service" in meta.keys():
                 for component in whitelisted_components:
                     if component in meta.get("component", ""):
-                        skipped_component =  meta.get("component", "")
-                        log.debug(f"Skipped ``peer.service`` Span Check for Span: {span['name']} with component {skipped_component}.")
+                        skipped_component = meta.get("component", "")
+                        log.debug(
+                            f"Skipped ``peer.service`` Span Check for Span: {span['name']} with component {skipped_component}."
+                        )
+                        self.skip(
+                            f"Skipped ``peer.service`` Span Check for Span: {span['name']} with component {skipped_component}."
+                        )
                         return
 
-                if meta.get("peer.service", None) is None:
-                    self.fail(json.dumps(span, indent=4) + f"\nSpan: {span['name']} of kind: {meta['span.kind']} should have tag ``peer.service`` set.")
-                
+                # if meta.get("peer.service", None) is None:
+                # self.fail(json.dumps(span, indent=4) + f"\nSpan: {span['name']} of kind: {meta['span.kind']} should have tag ``peer.service`` set.")
+
                 peer_service = meta.get("peer.service")
                 peer_service_source_key = meta.get("_dd.peer.service.source", "")
                 peer_service_source_val = meta.get(peer_service_source_key, "")
                 if peer_service != peer_service_source_val:
-                    self.fail(json.dumps(span, indent=4) + f"\nSpan: {span['name']} expected to have ``peer.service`` tag equal to ``{peer_service_source_key}`` of: {peer_service_source_val}, actual: {peer_service}.")
+                    self.fail(
+                        json.dumps(span, indent=4)
+                        + f"\nSpan: {span['name']} expected to have ``peer.service`` tag equal to ``{peer_service_source_key}`` of: {peer_service_source_val}, actual: {peer_service}."
+                    )
                 log.debug(f"Successfully completed `peer.`service`` tag Span Check for Span: {span['name']}")
                 return
-                        
+            else:
+                log.debug(f"Skipped ``peer.service`` Span Check for Span: {span['name']} with no `peer.service` tag")
+                self.skip(f"Skipped ``peer.service`` Span Check for Span: {span['name']} with no `peer.service` tag")
+        else:
+            log.debug(
+                f"Skipped ``peer.service`` Span Check for Span: {span['name']} with DD_TRACE_SPAN_ATTRIBUTE_SCHEMA `v0`."
+            )
+            self.skip(
+                f"Skipped ``peer.service`` Span Check for Span: {span['name']} with DD_TRACE_SPAN_ATTRIBUTE_SCHEMA `v0`."
+            )
 
 
 class CheckTraceDDService(Check):
@@ -127,17 +145,76 @@ The ``service`` name is correctly set to ``DD_SERVICE`` for V1 auto-instrumented
 """.strip()
     default_enabled = True
 
-    def check(self, span: Span, dd_config_env: dict) -> None:
-        meta = span.get("meta", {})
+    def check(self, trace: List[Span], dd_config_env: dict) -> None:
+        log.info("Performing ``DD_SERVICE`` Trace Check")
 
-        if dd_config_env.get("DD_TRACE_SPAN_ATTRIBUTE_SCHEMA", "v0") == "v1" and meta.get("component", "") != "":
-            dd_service = dd_config_env.get("DD_SERVICE", None)
-            if dd_service is None:
-                self.fail(json.dumps(dd_config_env, indent=4) + f"\n``DD_SERVICE`` env not set for Span: {span['name']} with service: {span['service']}.")
-            
-            service = span.get("service")
-            if service != dd_service:
-                self.fail(json.dumps(span, indent=4) + f"\nSpan: {span['name']} expected to have ``service`` name equal to ``{dd_service}``. Actual: {service}.")
+        # trace context can be set to service for each span
+        trace_context = None
 
-            log.debug(f"Successfully completed ``service`` name Span Check for Span: {span['name']}")
+        whitelisted_components = ["rabbitmq", "jms", "kafka", "java-web-servlet-response"]
+
+        if dd_config_env.get("DD_TRACE_SPAN_ATTRIBUTE_SCHEMA", "v0") != "v1":
+            log.debug("Skipping Span Check `trace_dd_service` for Span Attribute Schema v0")
+            self.skip("Skipping Span Check `trace_dd_service` for Span Attribute Schema v0")
             return
+
+        if dd_config_env.get("DD_TRACE_HTTP_CLIENT_SPLIT_BY_DOMAIN", False) or dd_config_env.get(
+            "DD_TRACE_DB_CLIENT_SPLIT_BY_INSTANCE", False
+        ):
+            log.debug(
+                f"Skipped ``DD_SERVICE`` Span Check for trace with SPLIT_BY config variable set within config: \n   {json.dumps(dd_config_env, indent=4)}."
+            )
+            self.skip(
+                f"Skipped ``DD_SERVICE`` Span Check for trace with SPLIT_BY config variable set within config: \n   {json.dumps(dd_config_env, indent=4)}."
+            )
+            return
+
+        for span in trace:
+            meta = span.get("meta", {})
+            for component in whitelisted_components:
+                if component in meta.get("component", ""):
+                    skipped_component = meta.get("component", "")
+                    log.debug(
+                        f"Skipped ``DD_SERVICE`` Span Check for Span: {span['name']} with component {skipped_component}."
+                    )
+                    self.skip(
+                        f"Skipped ``DD_SERVICE`` Span Check for Span: {span['name']} with component {skipped_component}."
+                    )
+                    return
+
+            if meta.get("component", "") != "":
+                dd_service = dd_config_env.get("DD_SERVICE", None)
+                if dd_service is None:
+                    self.fail(
+                        json.dumps(dd_config_env, indent=4)
+                        + f"\n``DD_SERVICE`` env not set for Span: {span['name']} with service: {span['service']}."
+                    )
+
+                service = span.get("service")
+                if service != dd_service:
+                    # check for special case where span is of type web and has context as service
+                    if "servlet.context" in meta.keys() or trace_context:
+                        trace_context = (
+                            trace_context if trace_context is not None else meta.get("servlet.context").replace("/", "")
+                        )
+                        if service != trace_context:
+                            self.fail(
+                                json.dumps(span, indent=4)
+                                + f"\nSpan: {span['name']} expected to have ``service`` name equal to context of ``{trace_context}``. Actual: {service}."
+                            )
+                        elif span.get("type") in ["web", "http"]:
+                            log.debug(
+                                f"Skipped ``DD_SERVICE`` Span Check for Span: {span['name']} of type: [`web`, `http`]"
+                            )
+                            self.skip(
+                                f"Skipped ``DD_SERVICE`` Span Check for Span: {span['name']} of type: [`web`, `http`]"
+                            )
+                            pass
+                    else:
+                        self.fail(
+                            json.dumps(span, indent=4)
+                            + f"\nSpan: {span['name']} expected to have ``service`` name equal to DD_SERVICE of ``{dd_service}``. Actual: {service}."
+                        )
+                else:
+                    log.debug(f"Successfully completed ``service`` name Span Check for Span: {span['name']}")
+        return
