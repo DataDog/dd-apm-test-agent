@@ -4,6 +4,7 @@ import contextvars
 import dataclasses
 import textwrap
 from typing import Any
+from typing import Dict
 from typing import Generator
 from typing import List
 from typing import Tuple
@@ -38,6 +39,36 @@ class CheckTraceFrame:
             if c.failed:
                 return True
         return False
+
+    def get_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
+        """
+        results = {
+            check.name: {
+                "Passed_Checks": int
+                "Failed_Checks": int
+                "Skipped_Checks": int
+            }
+            ...
+        }
+
+        """
+        for c in self._checks:
+            if c.failed:
+                if c.name in results:
+                    results[c.name]["Failed_Checks"] += 1
+                else:
+                    results[c.name] = {"Passed_Checks": 0, "Failed_Checks": 1, "Skipped_Checks": 0}
+            elif c.skipped:
+                if c.name in results:
+                    results[c.name]["Skipped_Checks"] += 1
+                else:
+                    results[c.name] = {"Passed_Checks": 0, "Failed_Checks": 0, "Skipped_Checks": 1}
+            else:
+                if c.name in results:
+                    results[c.name]["Passed_Checks"] += 1
+                else:
+                    results[c.name] = {"Passed_Checks": 1, "Failed_Checks": 0, "Skipped_Checks": 0}
+        return results
 
     def __repr__(self) -> str:
         return f"<CheckTraceFrame name='{self._name}' children={len(self._children)}>"
@@ -84,6 +115,11 @@ class CheckTrace:
 
     def has_fails(self) -> bool:
         return len([f for f in self.frames() if f.has_fails()]) > 0
+
+    def get_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
+        for f in self.frames():
+            results = f.get_results(results)
+        return results
 
     def __str__(self) -> str:
         s = ""
@@ -164,6 +200,17 @@ class Checks:
                 await check.check(*args, **kwargs)
             else:
                 check.check(*args, **kwargs)
+
+    def get_check_results(self) -> Dict[str, Dict[str, int]]:
+        results: Dict[str, Dict[str, int]] = {}
+        for c in self.checks:
+            if hasattr(c, "passed_checks"):
+                results[c.name] = {
+                    "passed_checks": c.passed_checks,
+                    "failed_checks": c.failed_checks,
+                    "skipped_checks": c.skipped_checks,
+                }
+        return results
 
 
 def start_trace(msg: str) -> CheckTrace:
