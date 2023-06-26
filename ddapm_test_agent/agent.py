@@ -160,7 +160,7 @@ class Agent:
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
         self._rc_server = RemoteConfigServer()
-        self._trace_failures: Dict[str, List[str]] = {"default": []}
+        self._trace_failures: Dict[str, List[str]] = {}
         self._trace_check_results_by_check: Dict[str, Dict[str, int]] = {}
         self._forward_endpoints: List[str] = [
             "/v0.4/traces",
@@ -191,7 +191,7 @@ class Agent:
 
     async def clear_trace_check_failures(self, request: Request) -> web.Response:
         """Clear traces by session token or all traces if none is provided."""
-        token = request.get("session_token", "default")
+        token = request["session_token"]
 
         trace_failures = self._trace_failures.get(token, [])
         log.info(f"Clearing {len(trace_failures)} Trace Check Failures for Token {token}")
@@ -202,7 +202,8 @@ class Agent:
 
     def get_trace_check_failures(self, request: Request) -> web.Response:
         """Return the Trace Check failures that occurred, if pooling is enabled as a request."""
-        token = request.get("session_token", "default")
+        
+        token = request["session_token"]
 
         trace_check_failures = self._trace_failures.get(token, [])
         n_failures = len(trace_check_failures)
@@ -740,17 +741,22 @@ class Agent:
         try:
             response = await handler(request)
         except AssertionError as e:
-            token = request.get("session_token", "default")
+            token = request["session_token"]
+
             self._trace_check_results_by_check = trace.get_results(self._trace_check_results_by_check)
             # only save trace failures to memory if necessary
             msg = str(trace) + str(e)
             if request.app["pool_trace_check_failures"]:
                 log.info(f"Storing Trace Check Failure for Session Token: {token}.")
-                self._trace_failures[token] = [msg] if token not in self._trace_failures else self._trace_failures[token].append(msg)
+                if token in self._trace_failures:
+                    self._trace_failures[token].append(msg)
+                else:
+                    self._trace_failures[token] = [msg]
             log.error(msg)
             return web.HTTPBadRequest(body=msg)
         else:
             token = request["session_token"]
+
             self._trace_check_results_by_check = trace.get_results(self._trace_check_results_by_check)
             if trace.has_fails():
                 # only save trace failures to memory if necessary
@@ -759,7 +765,10 @@ class Agent:
                 msg = str(trace)
                 if request.app["pool_trace_check_failures"]:
                     log.info(f"Storing Trace Check Failure for Session Token: {token}.")
-                    self._trace_failures[token] = [msg] if token not in self._trace_failures else self._trace_failures[token].append(msg)
+                    if token in self._trace_failures:
+                        self._trace_failures[token].append(msg)
+                    else:
+                        self._trace_failures[token] = [msg]
                 log.error(msg)
                 if request.app["disable_error_responses"]:
                     return response
