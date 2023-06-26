@@ -10,6 +10,7 @@ import socket
 import sys
 from typing import Awaitable
 from typing import Callable
+from typing import Dict
 from typing import List
 from typing import Literal
 from typing import Optional
@@ -161,7 +162,8 @@ class Agent:
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
         self._rc_server = RemoteConfigServer()
-        self._trace_failures: List[str] = []
+        self._trace_failures: Dict[str, List[str]] = {"default": []}
+        self._trace_check_results_by_check: Dict[str, Dict[str, int]] = {}
         self._forward_endpoints: List[str] = [
             "/v0.4/traces",
             "/v0.5/traces",
@@ -189,17 +191,36 @@ class Agent:
                     _traces[trace_id].append(s)
         return _traces
 
+    async def clear_trace_check_failures(self, request: Request) -> web.Response:
+        """Clear traces by session token or all traces if none is provided."""
+        token = request.get("session_token", "default")
+
+        trace_failures = self._trace_failures.get(token, [])
+        log.info(f"Clearing {len(trace_failures)} Trace Check Failures for Token {token}")
+        log.info(trace_failures)
+        del self._trace_failures[token]
+        self._trace_check_results_by_check = {}
+        return web.HTTPOk()
+
     def get_trace_check_failures(self, request: Request) -> web.Response:
         """Return the Trace Check failures that occurred, if pooling is enabled as a request."""
-        trace_failures = self._trace_failures
+        token = request.get("session_token", "default")
 
-        if len(trace_failures) > 0:
-            failure_message = f"APM Test Agent Validation failed with {len(trace_failures)} Trace Check failures.\n"
-            for trace_check_message in trace_failures:
+        trace_check_failures = self._trace_failures.get(token, [])
+        n_failures = len(trace_check_failures)
+        log.info(f"{n_failures} Trace Failures Occurred for Token {token}.")
+        trace_check_full_results = self._trace_check_results_by_check
+        if n_failures > 0:
+            failure_message = f"APM Test Agent Validation failed with {n_failures} Trace Check failures.\n"
+            for trace_check_message in trace_check_failures:
                 failure_message += trace_check_message
+            failure_message += f"\nAPM Test Agent Trace Check Results by Check -------------------------------"
+            failure_message += f"\n{json.dumps(trace_check_full_results, indent=4)}"
             return web.HTTPBadRequest(text=failure_message)
         else:
-            return web.HTTPOk()
+            message = f"APM Test Agent Trace Check Results by Check --------------------------------"
+            message += f"\n{json.dumps(trace_check_full_results, indent=4)}"
+            return web.HTTPOk(text=message)
 
     async def apmtelemetry(self) -> List[TelemetryEvent]:
         """Return the telemetry events stored by the agent"""
@@ -731,25 +752,31 @@ class Agent:
         try:
             response = await handler(request)
         except AssertionError as e:
+            token = request.get("session_token", "default")
+            self._trace_check_results_by_check = trace.get_results(self._trace_check_results_by_check)
             # only save trace failures to memory if necessary
             msg = str(trace) + str(e)
-            log.error(msg)
             if request.app["pool_trace_check_failures"]:
-                log.info(f"storing failure with message {msg}")
-                self._trace_failures.append(msg)
-                log.info(self._trace_failures)
+                log.info(f"Storing Trace Check Failure for Session Token: {token}.")
+                self._trace_failures[token] = [msg] if token not in self._trace_failures else self._trace_failures[token].append(msg)
+            log.error(msg)
             return web.HTTPBadRequest(body=msg)
         else:
+            token = request["session_token"]
+            self._trace_check_results_by_check = trace.get_results(self._trace_check_results_by_check)
             if trace.has_fails():
                 # only save trace failures to memory if necessary
+                pool_failures = request.app["pool_trace_check_failures"]
+                log.error(f"Trace had the following failures, using config: token={token}, DD_POOL_TRACE_CHECK_FAILURES={pool_failures}")
                 msg = str(trace)
-                log.error(msg)
                 if request.app["pool_trace_check_failures"]:
-                    log.info(f"storing failure with message {msg}")
-                    self._trace_failures.append(msg)
+                    log.info(f"Storing Trace Check Failure for Session Token: {token}.")
+                    self._trace_failures[token] = [msg] if token not in self._trace_failures else self._trace_failures[token].append(msg)
+                log.error(msg)
                 if request.app["disable_error_responses"]:
                     return response
                 return web.HTTPBadRequest(body=msg)
+        self._trace_check_results_by_check = trace.get_results(self._trace_check_results_by_check)
         return response
 
 
@@ -804,6 +831,7 @@ def make_app(
             # web.get("/test/benchmark", agent.handle_test_traces),
             web.get("/test/trace/analyze", agent.handle_trace_analyze),
             web.get("/test/trace_check/failures", agent.get_trace_check_failures),
+            web.get("/test/trace_check/clear", agent.clear_trace_check_failures),
         ]
     )
     checks = Checks(
