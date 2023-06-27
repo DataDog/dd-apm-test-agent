@@ -568,6 +568,7 @@ class Agent:
                 self.handle_v01_pipelinestats,
                 self.handle_v2_apmtelemetry,
                 self.handle_v1_profiling,
+                self.handle_v07_remoteconfig,
             ):
                 continue
             resp.append(
