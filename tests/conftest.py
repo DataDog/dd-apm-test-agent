@@ -33,6 +33,11 @@ def agent_disabled_checks() -> Generator[List[str], None, None]:
 
 
 @pytest.fixture
+def agent_additional_checks() -> Generator[List[str], None, None]:
+    yield []
+
+
+@pytest.fixture
 def log_span_fmt() -> Generator[str, None, None]:
     yield "[{name}]"
 
@@ -86,6 +91,7 @@ def snapshot_removed_attrs() -> Generator[Set[str], None, None]:
 async def agent_app(
     aiohttp_server,
     agent_disabled_checks,
+    agent_additional_checks,
     log_span_fmt,
     snapshot_dir,
     snapshot_ci_mode,
@@ -100,6 +106,7 @@ async def agent_app(
     app = await aiohttp_server(
         make_app(
             agent_disabled_checks,
+            agent_additional_checks,
             log_span_fmt,
             str(snapshot_dir),
             snapshot_ci_mode,

@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Adds an argument that allows adding checks that are disabled by default.
+    env `ADDITIONAL_CHECKS` or cmd: `--additional-checks`
