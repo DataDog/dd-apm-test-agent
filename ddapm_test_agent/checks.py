@@ -137,6 +137,7 @@ class Check:
 class Checks:
     checks: List[Type[Check]] = dataclasses.field(init=True)
     disabled: List[str] = dataclasses.field(init=True)
+    additional: List[str] = dataclasses.field(init=True)
 
     def _get_check(self, name: str) -> Type[Check]:
         for c in self.checks:
@@ -149,6 +150,8 @@ class Checks:
         check = self._get_check(name)
         if check.name in self.disabled:
             return False
+        if check.name in self.additional:
+            return True
         return check.default_enabled
 
     async def check(self, name: str, *args: Any, **kwargs: Any) -> None:
