@@ -121,6 +121,26 @@ class CheckTrace:
             results = f.get_results(results)
         return results
 
+    def get_failures_by_check(self, failures_by_check) -> Dict[str, str]:
+        # TODO?: refactor so this code isnt duplicated with __str__
+        frame_s = ""
+        for frame, depth in self.frames_dfs():
+            indent = " " * (depth + 2) if depth > 0 else ""
+
+            frame_s += f"{indent}At {frame._name}:\n"
+            for item in frame._items:
+                frame_s += textwrap.indent(f"- {item}", prefix=f" {indent}")
+                frame_s += "\n"
+
+            for c in frame._checks:
+                if c.failed:
+                    check_s = f"{indent}❌ Check '{c.name}' failed: {c._msg}\n"
+                    if c.name in failures_by_check:
+                        failures_by_check[c.name].append(frame_s + check_s)
+                    else:
+                        failures_by_check[c.name] = [frame_s + check_s]
+        return failures_by_check
+
     def __str__(self) -> str:
         s = ""
         # TODO?: only include frames that have fails

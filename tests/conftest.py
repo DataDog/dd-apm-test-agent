@@ -69,7 +69,7 @@ def suppress_trace_parse_errors() -> Generator[bool, None, None]:
 
 @pytest.fixture
 def pool_trace_check_failures() -> Generator[bool, None, None]:
-    yield False
+    yield True
 
 
 @pytest.fixture
