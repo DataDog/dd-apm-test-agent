@@ -154,6 +154,8 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
 
 - `DISABLED_CHECKS` [`""`]: Comma-separated values of checks to disable.
 
+- `ADDITIONAL_CHECKS` [`""`]: Additional checks to enable that are not enabled by default. Currently unused
+
 - `LOG_LEVEL` [`"INFO"`]: Log level to use. DEBUG, INFO, WARNING, ERROR, CRITICAL.
 
 - `LOG_SPAN_FMT` [`"[{name}]"`]: Format string to use when outputting spans in logs.
