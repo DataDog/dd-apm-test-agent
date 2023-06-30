@@ -14,6 +14,7 @@ from typing import List
 from typing import Literal
 from typing import Optional
 from typing import Set
+from typing import Type
 from typing import cast
 from urllib.parse import urlparse
 from urllib.parse import urlunparse
@@ -30,6 +31,7 @@ from . import trace_snapshot
 from . import tracestats_snapshot
 from .apmtelemetry import TelemetryEvent
 from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
+from .checks import Check
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
@@ -402,6 +404,8 @@ class Agent:
             f.add_item(pprint.pformat(dict(headers)))
             await checks.check("meta_tracer_version_header", headers=headers)
             await checks.check("trace_content_length", headers=headers)
+            for additional_check in checks.additional:
+                await checks.check(additional_check, headers=headers)
 
             try:
                 if version == "v0.4":
@@ -754,6 +758,7 @@ def make_app(
     pool_trace_check_failures: bool,
     disable_error_responses: bool,
     snapshot_removed_attrs: List[str],
+    additional_check_classes: List[Type[Check]] = [],
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
@@ -801,7 +806,8 @@ def make_app(
             CheckTraceCountHeader,
             CheckTraceContentLength,
             CheckTraceStallAsync,
-        ],
+        ]
+        + additional_check_classes,
         disabled=disabled_checks,
         additional=additional_checks,
     )

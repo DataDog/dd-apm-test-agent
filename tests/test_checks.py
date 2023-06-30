@@ -1,6 +1,12 @@
 import time
+from typing import Generator
+from typing import List
+from typing import Type
 
+from multidict import CIMultiDictProxy
 import pytest
+
+from ddapm_test_agent.checks import Check
 
 from .conftest import v04_trace
 from .trace_utils import span
@@ -115,3 +121,39 @@ async def test_trace_stall(
     assert resp.status == 200, await resp.text()
     end = time.monotonic_ns()
     assert (end - start) / 1e9 >= 0.8
+
+
+class CheckForTesting(Check):
+    name = "for_testing"
+    description = """check for testing"""
+    default_enabled = False
+
+    def check(self, headers: CIMultiDictProxy) -> None:
+        if "For-Testing" not in headers:
+            self.fail("For-Testing not found in headers")
+
+
+class TestChecks:
+    @pytest.fixture
+    def agent_additional_check_classes(self) -> Generator[List[Type[Check]], None, None]:
+        yield [CheckForTesting]
+
+    @pytest.mark.parametrize("agent_additional_checks", [[], ["for_testing"]])
+    async def test_additional_check(
+        self,
+        agent,
+        v04_reference_http_trace_payload_headers,
+        v04_reference_http_trace_payload_data,
+        agent_additional_checks,
+        agent_additional_check_classes,
+    ):
+        resp = await agent.put(
+            "/v0.4/traces",
+            headers=v04_reference_http_trace_payload_headers,
+            data=v04_reference_http_trace_payload_data,
+        )
+        if "for_testing" in agent_additional_checks:
+            assert resp.status == 400, await resp.text()
+            assert "Check 'for_testing' failed" in await resp.text()
+        else:
+            assert resp.status == 200, await resp.text()

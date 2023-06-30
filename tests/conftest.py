@@ -8,6 +8,7 @@ from typing import List
 from typing import Literal
 from typing import Optional
 from typing import Set
+from typing import Type
 from typing import cast
 
 from aiohttp.web import Response
@@ -19,6 +20,7 @@ import pytest
 from ddapm_test_agent.agent import _parse_csv
 from ddapm_test_agent.agent import make_app
 from ddapm_test_agent.apmtelemetry import TelemetryEvent
+from ddapm_test_agent.checks import Check
 from ddapm_test_agent.trace import Span
 from ddapm_test_agent.trace import Trace
 from ddapm_test_agent.trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
@@ -34,6 +36,11 @@ def agent_disabled_checks() -> Generator[List[str], None, None]:
 
 @pytest.fixture
 def agent_additional_checks() -> Generator[List[str], None, None]:
+    yield []
+
+
+@pytest.fixture
+def agent_additional_check_classes() -> Generator[List[Type[Check]], None, None]:
     yield []
 
 
@@ -92,6 +99,7 @@ async def agent_app(
     aiohttp_server,
     agent_disabled_checks,
     agent_additional_checks,
+    agent_additional_check_classes,
     log_span_fmt,
     snapshot_dir,
     snapshot_ci_mode,
@@ -117,6 +125,7 @@ async def agent_app(
             pool_trace_check_failures,
             disable_error_responses,
             snapshot_removed_attrs,
+            additional_check_classes=agent_additional_check_classes,
         )
     )
     yield app
