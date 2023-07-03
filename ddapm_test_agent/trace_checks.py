@@ -182,8 +182,12 @@ The ``service`` name is correctly set to ``DD_SERVICE`` for V1 auto-instrumented
                     )
                     return
 
-            if meta.get("component", "") != "":
-                dd_service = dd_config_env.get("DD_SERVICE", None)
+            component = meta.get("component", "")
+            if component != "":
+                dd_service = dd_config_env.get(f"DD_{component.upper()}_SERVICE", None)
+                if not dd_service:
+                    log.error("DD_SERVICE not set for component: %s. Args %s", component, dd_config_env)
+                dd_service = dd_service or dd_config_env.get("DD_SERVICE", None)
                 if dd_service is None:
                     self.fail(
                         json.dumps(dd_config_env, indent=4)

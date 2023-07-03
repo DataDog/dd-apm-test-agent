@@ -2,6 +2,7 @@ import argparse
 import atexit
 import base64
 from collections import OrderedDict
+from collections import defaultdict
 import json
 import logging
 import os
@@ -162,7 +163,7 @@ class Agent:
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
         self._rc_server = RemoteConfigServer()
-        self._trace_failures: Dict[str, List[str]] = {"default": []}
+        self._trace_failures: Dict[str, List[str]] = defaultdict(list)
         self._trace_check_results_by_check: Dict[str, Dict[str, int]] = {}
         self._forward_endpoints: List[str] = [
             "/v0.4/traces",
@@ -758,7 +759,7 @@ class Agent:
             msg = str(trace) + str(e)
             if request.app["pool_trace_check_failures"]:
                 log.info(f"Storing Trace Check Failure for Session Token: {token}.")
-                self._trace_failures[token] = [msg] if token not in self._trace_failures else self._trace_failures[token].append(msg)
+                self._trace_failures[token].append(msg)
             log.error(msg)
             return web.HTTPBadRequest(body=msg)
         else:
@@ -771,7 +772,7 @@ class Agent:
                 msg = str(trace)
                 if request.app["pool_trace_check_failures"]:
                     log.info(f"Storing Trace Check Failure for Session Token: {token}.")
-                    self._trace_failures[token] = [msg] if token not in self._trace_failures else self._trace_failures[token].append(msg)
+                    self._trace_failures[token].append(msg)
                 log.error(msg)
                 if request.app["disable_error_responses"]:
                     return response
