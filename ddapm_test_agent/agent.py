@@ -209,10 +209,9 @@ class Agent:
         return web.HTTPOk()
 
     def get_trace_check_failures(self, request: Request) -> web.Response:
+        """Return the Trace Check failures that occurred, if pooling is enabled,
+        returned as either a Text (by default) or JSON response.
         """
-        Return the Trace Check failures that occurred, if pooling is enabled, returned as either a Text (by default) or JSON response.
-        """
-
         token = request["session_token"]
         return_all = "return_all" in request.query and request.query["return_all"].lower() == "true"
 
@@ -231,7 +230,7 @@ class Agent:
         if n_failures > 0:
             if "use_json" in request.query and request.query["use_json"].lower() == "true":
                 # check what response type to use
-                results = {}
+                results: Dict[str, List[str]] = {}
                 for check_trace, failure_message in trace_check_failures:
                     results = check_trace.get_failures_by_check(results)
                 json_summary = json.dumps(results)
@@ -247,7 +246,7 @@ class Agent:
 
     def get_trace_check_summary(self, request: Request) -> web.Response:
         token = request["session_token"]
-        summary = {}
+        summary: Dict[str, Dict[str, int]] = {}
         return_all = "return_all" in request.query and request.query["return_all"].lower() == "true"
 
         if return_all:

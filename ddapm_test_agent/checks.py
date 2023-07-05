@@ -41,15 +41,8 @@ class CheckTraceFrame:
         return False
 
     def get_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
-        """
-        results = {
-            check.name: {
-                "Passed_Checks": int
-                "Failed_Checks": int
-                "Skipped_Checks": int
-            }
-            ...
-        }
+        """Return as follows
+        output = { check.name: { "Passed_Checks": int, "Failed_Checks": int, "Skipped_Checks": int}}
 
         """
         for c in self._checks:
@@ -121,7 +114,7 @@ class CheckTrace:
             results = f.get_results(results)
         return results
 
-    def get_failures_by_check(self, failures_by_check) -> Dict[str, str]:
+    def get_failures_by_check(self, failures_by_check: Dict[str, List[str]]) -> Dict[str, List[str]]:
         # TODO?: refactor so this code isnt duplicated with __str__
         frame_s = ""
         for frame, depth in self.frames_dfs():
@@ -229,17 +222,6 @@ class Checks:
                 await check.check(*args, **kwargs)
             else:
                 check.check(*args, **kwargs)
-
-    def get_check_results(self) -> Dict[str, Dict[str, int]]:
-        results: Dict[str, Dict[str, int]] = {}
-        for c in self.checks:
-            if hasattr(c, "passed_checks"):
-                results[c.name] = {
-                    "passed_checks": c.passed_checks,
-                    "failed_checks": c.failed_checks,
-                    "skipped_checks": c.skipped_checks,
-                }
-        return results
 
 
 def start_trace(msg: str) -> CheckTrace:

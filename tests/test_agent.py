@@ -1,9 +1,6 @@
 import json
-import re
 
 from ddapm_test_agent.trace import trace_id
-
-from .conftest import v04_trace
 
 
 async def test_trace(
@@ -179,7 +176,7 @@ async def test_get_trace_check_summary_no_results(
     assert await response.json() == expected_output
 
 
-async def test_get_trace_check_summary_full_results_and_clear(
+async def test_get_trace_check_results_and_clear(
     agent, v04_reference_http_trace_payload_data, v04_reference_http_trace_payload_headers
 ):
     expected_output = {
