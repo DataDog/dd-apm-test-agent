@@ -193,9 +193,10 @@ class Agent:
     async def clear_trace_check_failures(self, request: Request) -> web.Response:
         """Clear traces by session token provided."""
         token = request["session_token"]
-
-        if "clear_all" in request.query and request.query["clear_all"].lower() == "true":
-            trace_failures = self._trace_failures
+        clear_all = "clear_all" in request.query and request.query["clear_all"].lower() == "true"
+        if clear_all:
+            failures_by_token = self._trace_failures
+            trace_failures = [value for sublist in failures_by_token.values() for value in sublist]
             self._trace_failures = {}
             self._trace_check_results_by_check = {}
         else:
@@ -204,7 +205,7 @@ class Agent:
                 del self._trace_failures[token]
             if token in self._trace_check_results_by_check:
                 del self._trace_check_results_by_check[token]
-        log.info(f"Clearing {len(trace_failures)} Trace Check Failures for Token {token}")
+        log.info(f"Clearing {len(trace_failures)} Trace Check Failures for Token {token}, clear_all={clear_all}")
         log.info(trace_failures)
         return web.HTTPOk()
 
