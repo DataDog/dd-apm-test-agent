@@ -396,6 +396,8 @@ class Agent:
         checks: Checks = request.app["checks"]
         headers = request.headers
 
+        # TODO: This method requires all checks are hard coded
+
         await checks.check("trace_stall", headers=headers, request=request)
 
         with CheckTrace.add_frame("headers") as f:
@@ -742,7 +744,7 @@ class Agent:
 
 
 def make_app(
-    disabled_checks: List[str],
+    enabled_checks: List[str],
     log_span_fmt: str,
     snapshot_dir: str,
     snapshot_ci_mode: bool,
@@ -801,7 +803,7 @@ def make_app(
             CheckTraceContentLength,
             CheckTraceStallAsync,
         ],
-        disabled=disabled_checks,
+        enabled=enabled_checks,
     )
     app["checks"] = checks
     app["snapshot_dir"] = snapshot_dir
@@ -865,11 +867,11 @@ def main(args: Optional[List[str]] = None) -> None:
         ),
     )
     parser.add_argument(
-        "--disabled-checks",
+        "--enabled-checks",
         type=List[str],
-        default=_parse_csv(os.environ.get("DISABLED_CHECKS", "")),
+        default=_parse_csv(os.environ.get("ENABLED_CHECKS", "")),
         help=(
-            "Comma-separated values of checks to disable. None are disabled "
+            "Comma-separated values of checks to enable. None are enabled "
             " by default. For the list of values see "
             "https://github.com/datadog/dd-trace-test-agent"
         ),
@@ -949,7 +951,7 @@ def main(args: Optional[List[str]] = None) -> None:
             os.path.abspath(parsed_args.snapshot_dir),
         )
     app = make_app(
-        disabled_checks=parsed_args.disabled_checks,
+        enabled_checks=parsed_args.enabled_checks,
         log_span_fmt=parsed_args.log_span_fmt,
         snapshot_dir=parsed_args.snapshot_dir,
         snapshot_ci_mode=parsed_args.snapshot_ci_mode,
