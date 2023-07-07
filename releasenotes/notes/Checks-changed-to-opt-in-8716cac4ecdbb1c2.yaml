@@ -1,7 +1,7 @@
 ---
 features:
   - |
-    Checks have been change to opt-in. This allows adding new checks before
+    Checks have been changed to opt-in. This allows adding new checks before
     all languages have implemented the feature.
 upgrade:
   - |
