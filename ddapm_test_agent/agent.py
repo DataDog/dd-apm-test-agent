@@ -743,7 +743,6 @@ class Agent:
 
 def make_app(
     disabled_checks: List[str],
-    additional_checks: List[str],
     log_span_fmt: str,
     snapshot_dir: str,
     snapshot_ci_mode: bool,
@@ -803,7 +802,6 @@ def make_app(
             CheckTraceStallAsync,
         ],
         disabled=disabled_checks,
-        additional=additional_checks,
     )
     app["checks"] = checks
     app["snapshot_dir"] = snapshot_dir
@@ -872,16 +870,6 @@ def main(args: Optional[List[str]] = None) -> None:
         default=_parse_csv(os.environ.get("DISABLED_CHECKS", "")),
         help=(
             "Comma-separated values of checks to disable. None are disabled "
-            " by default. For the list of values see "
-            "https://github.com/datadog/dd-trace-test-agent"
-        ),
-    )
-    parser.add_argument(
-        "--additional-checks",
-        type=List[str],
-        default=_parse_csv(os.environ.get("ADDITIONAL_CHECKS", "")),
-        help=(
-            "Comma-separated values of non-default checks to add. None are added "
             " by default. For the list of values see "
             "https://github.com/datadog/dd-trace-test-agent"
         ),
@@ -962,7 +950,6 @@ def main(args: Optional[List[str]] = None) -> None:
         )
     app = make_app(
         disabled_checks=parsed_args.disabled_checks,
-        additional_checks=parsed_args.additional_checks,
         log_span_fmt=parsed_args.log_span_fmt,
         snapshot_dir=parsed_args.snapshot_dir,
         snapshot_ci_mode=parsed_args.snapshot_ci_mode,
