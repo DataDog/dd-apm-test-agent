@@ -152,7 +152,7 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
 
 - `PORT` [`8126`]: Port to listen on.
 
-- `DISABLED_CHECKS` [`""`]: Comma-separated values of checks to disable.
+- `ENABLED_CHECKS` [`""`]: Comma-separated values of checks to enable. Valid values can be found in [trace invariant checks](#Trace-invariant-checks)
 
 - `LOG_LEVEL` [`"INFO"`]: Log level to use. DEBUG, INFO, WARNING, ERROR, CRITICAL.
 

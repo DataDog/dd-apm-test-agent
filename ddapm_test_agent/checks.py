@@ -110,9 +110,6 @@ class Check:
     with error messages returned to the test case.
     """
 
-    default_enabled: bool
-    """Whether the check is enabled by default or not."""
-
     def __init__(self):
         self._failed: bool = False
         self._msg: str = ""
@@ -136,7 +133,7 @@ class Check:
 @dataclasses.dataclass()
 class Checks:
     checks: List[Type[Check]] = dataclasses.field(init=True)
-    disabled: List[str] = dataclasses.field(init=True)
+    enabled: List[str] = dataclasses.field(init=True)
 
     def _get_check(self, name: str) -> Type[Check]:
         for c in self.checks:
@@ -147,9 +144,9 @@ class Checks:
 
     def is_enabled(self, name: str) -> bool:
         check = self._get_check(name)
-        if check.name in self.disabled:
-            return False
-        return check.default_enabled
+        if check.name in self.enabled:
+            return True
+        return False
 
     async def check(self, name: str, *args: Any, **kwargs: Any) -> None:
         """Find and run the check with the given ``name`` if it is enabled."""

@@ -35,12 +35,12 @@ async def test_reference_case_insensitive(
     assert resp.status == 200, await resp.text()
 
 
-@pytest.mark.parametrize("agent_disabled_checks", [[], ["trace_count_header"]])
+@pytest.mark.parametrize("agent_enabled_checks", [["trace_count_header"], []])
 async def test_trace_count_header(
     agent,
     v04_reference_http_trace_payload_headers,
     v04_reference_http_trace_payload_data,
-    agent_disabled_checks,
+    agent_enabled_checks,
 ):
     del v04_reference_http_trace_payload_headers["X-Datadog-Trace-Count"]
     resp = await agent.put(
@@ -48,17 +48,19 @@ async def test_trace_count_header(
         headers=v04_reference_http_trace_payload_headers,
         data=v04_reference_http_trace_payload_data,
     )
-    if "trace_count_header" in agent_disabled_checks:
-        assert resp.status == 200, await resp.text()
-    else:
+    if "trace_count_header" in agent_enabled_checks:
         assert resp.status == 400, await resp.text()
         assert "Check 'trace_count_header' failed" in await resp.text()
+    else:
+        assert resp.status == 200, await resp.text()
 
 
+@pytest.mark.parametrize("agent_enabled_checks", ["trace_count_header"])
 async def test_trace_count_header_mismatch(
     agent,
     v04_reference_http_trace_payload_headers,
     v04_reference_http_trace_payload_data,
+    agent_enabled_checks,
 ):
     v04_reference_http_trace_payload_headers["X-Datadog-Trace-Count"] += "1"
     resp = await agent.put(
@@ -70,12 +72,12 @@ async def test_trace_count_header_mismatch(
     assert "Check 'trace_count_header' failed" in await resp.text()
 
 
-@pytest.mark.parametrize("agent_disabled_checks", [[], ["meta_tracer_version_header"]])
+@pytest.mark.parametrize("agent_enabled_checks", [["meta_tracer_version_header"], []])
 async def test_meta_tracer_version_header(
     agent,
     v04_reference_http_trace_payload_headers,
     v04_reference_http_trace_payload_data,
-    agent_disabled_checks,
+    agent_enabled_checks,
 ):
     del v04_reference_http_trace_payload_headers["Datadog-Meta-Tracer-Version"]
     resp = await agent.put(
@@ -83,14 +85,15 @@ async def test_meta_tracer_version_header(
         headers=v04_reference_http_trace_payload_headers,
         data=v04_reference_http_trace_payload_data,
     )
-    if "meta_tracer_version_header" in agent_disabled_checks:
-        assert resp.status == 200, await resp.text()
-    else:
+    if "meta_tracer_version_header" in agent_enabled_checks:
         assert resp.status == 400, await resp.text()
         assert "Check 'meta_tracer_version_header' failed" in await resp.text()
+    else:
+        assert resp.status == 200, await resp.text()
 
 
-async def test_trace_content_length(agent):
+@pytest.mark.parametrize("agent_enabled_checks", ["trace_content_length"])
+async def test_trace_content_length(agent, agent_enabled_checks):
     # Assume a trace will be at least 100 bytes each
     s = span()
     trace = [s for _ in range(int(5e7 / 100))]
@@ -99,11 +102,12 @@ async def test_trace_content_length(agent):
     assert "Check 'trace_content_length' failed: content length" in await resp.text()
 
 
+@pytest.mark.parametrize("agent_enabled_checks", ["trace_stall"])
 async def test_trace_stall(
     agent,
     v04_reference_http_trace_payload_headers,
     v04_reference_http_trace_payload_data,
-    agent_disabled_checks,
+    agent_enabled_checks,
 ):
     v04_reference_http_trace_payload_headers["X-Datadog-Test-Stall-Seconds"] = "0.8"
     start = time.monotonic_ns()
