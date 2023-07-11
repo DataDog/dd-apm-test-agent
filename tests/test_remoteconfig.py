@@ -1,3 +1,4 @@
+import base64
 import json
 
 import pytest
@@ -155,3 +156,15 @@ async def test_remoteconfig_session(
     await _request_update_and_get_data_with_session(rc_agent, "token_1", data, {"a": "b", "c": "d"})
     data = {"e": "f"}
     await _request_update_and_get_data_with_session(rc_agent, "token_2", data, data)
+
+
+async def test_remoteconfig_requests(rc_agent):
+    resp = await rc_agent.post("/v0.7/config")
+    assert resp.status == 200, await resp.text()
+
+    resp = await rc_agent.get("/test/session/requests")
+    content = await resp.json()
+    assert resp.status == 200, content
+    assert len(content) == 1
+    assert content[0]["method"] == "POST"
+    assert base64.b64decode(content[0]["body"]) == b""

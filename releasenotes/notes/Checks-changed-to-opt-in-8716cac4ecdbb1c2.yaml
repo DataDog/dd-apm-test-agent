@@ -1,0 +1,17 @@
+---
+features:
+  - |
+    Checks have been changed to opt-in. This allows adding new checks before
+    all languages have implemented the feature.
+upgrade:
+  - |
+    Checks have been changed to opt-in. In order to maintain current
+    functionality users should update either their command or their 
+    environment. 
+    `ENABLED_CHECKS=trace_count_header,meta_tracer_version_header,trace_content_length`
+    or
+    `--enabled-checks=trace_count_header,meta_tracer_version_header,trace_content_length`
+deprecations:
+  - |
+    `DISABLED_CHECKS` and `--disabled-checks` have been removed in favor of
+    making checks opt-in.
