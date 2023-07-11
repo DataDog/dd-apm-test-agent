@@ -40,7 +40,7 @@ class CheckTraceFrame:
                 return True
         return False
 
-    def get_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
+    def update_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
         """Return as follows
         output = { check.name: { "Passed_Checks": int, "Failed_Checks": int, "Skipped_Checks": int}}
 
@@ -100,9 +100,9 @@ class CheckTrace:
     def has_fails(self) -> bool:
         return len([f for f in self.frames() if f.has_fails()]) > 0
 
-    def get_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
+    def update_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
         for f in self.frames():
-            results = f.get_results(results)
+            f.update_results(results)
         return results
 
     def get_failures_by_check(self, failures_by_check: Dict[str, List[str]]) -> Dict[str, List[str]]:

@@ -804,7 +804,7 @@ class Agent:
             token = request["session_token"]
 
             # update trace_check results
-            self._trace_check_results_by_check[token] = trace.get_results(self._trace_check_results_by_check[token])
+            trace.update_results(self._trace_check_results_by_check[token])
 
             # only save trace failures to memory if necessary
             msg = str(trace) + str(e)
@@ -817,7 +817,7 @@ class Agent:
         else:
             token = request["session_token"]
             # update trace_check results
-            self._trace_check_results_by_check[token] = trace.get_results(self._trace_check_results_by_check[token])
+            trace.update_results(self._trace_check_results_by_check[token])
             if trace.has_fails():
                 # only save trace failures to memory if necessary
                 pool_failures = request.app["pool_trace_check_failures"]
