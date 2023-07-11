@@ -2,6 +2,7 @@ import argparse
 import atexit
 import base64
 from collections import OrderedDict
+from collections import defaultdict
 import json
 import logging
 import os
@@ -150,6 +151,22 @@ def update_trace_agent_port(url, new_port):
     return new_url
 
 
+def default_value_trace_check_results_by_check():
+    return defaultdict(default_value_trace_results_summary)
+
+
+def default_value_trace_failures():
+    return []
+
+
+def default_value_trace_results_summary():
+    return {
+        "Passed_Checks": 0,
+        "Failed_Checks": 0,
+        "Skipped_Checks": 0,
+    }
+
+
 class Agent:
     def __init__(self):
         """Only store the requests sent to the agent. There are many representations
@@ -161,8 +178,10 @@ class Agent:
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
         self._rc_server = RemoteConfigServer()
-        self._trace_failures: Dict[str, List[Tuple[CheckTrace, str]]] = {}
-        self._trace_check_results_by_check: Dict[str, Dict[str, Dict[str, int]]] = {}
+        self._trace_failures: Dict[str, List[Tuple[CheckTrace, str]]] = defaultdict(default_value_trace_failures)
+        self._trace_check_results_by_check: Dict[str, Dict[str, Dict[str, int]]] = defaultdict(
+            default_value_trace_check_results_by_check
+        )
         self._forward_endpoints: List[str] = [
             "/v0.4/traces",
             "/v0.5/traces",
@@ -197,14 +216,12 @@ class Agent:
         if clear_all:
             failures_by_token = self._trace_failures
             trace_failures = [value for sublist in failures_by_token.values() for value in sublist]
-            self._trace_failures = {}
-            self._trace_check_results_by_check = {}
+            self._trace_failures = defaultdict(default_value_trace_failures)
+            self._trace_check_results_by_check = defaultdict(default_value_trace_check_results_by_check)
         else:
-            trace_failures = self._trace_failures.get(token, [])
-            if token in self._trace_failures:
-                del self._trace_failures[token]
-            if token in self._trace_check_results_by_check:
-                del self._trace_check_results_by_check[token]
+            trace_failures = self._trace_failures[token]
+            del self._trace_failures[token]
+            del self._trace_check_results_by_check[token]
         log.info(f"Clearing {len(trace_failures)} Trace Check Failures for Token {token}, clear_all={clear_all}")
         log.info(trace_failures)
         return web.HTTPOk()
@@ -219,7 +236,7 @@ class Agent:
         if return_all:
             # check for whether to return all results
             trace_check_failures = []
-            for token, f in self._trace_failures.items():
+            for f in self._trace_failures.values():
                 trace_check_failures.extend(f)
             n_failures = len(trace_check_failures)
             log.info(f"{n_failures} Trace Failures Occurred in Total")
@@ -247,22 +264,15 @@ class Agent:
 
     def get_trace_check_summary(self, request: Request) -> web.Response:
         token = request["session_token"]
-        summary: Dict[str, Dict[str, int]] = {}
+        summary: Dict[str, Dict[str, int]] = defaultdict(default_value_trace_results_summary)
         return_all = "return_all" in request.query and request.query["return_all"].lower() == "true"
 
         if return_all:
             for token, token_results in self._trace_check_results_by_check.items():
                 for check_name, check_results in token_results.items():
-                    if check_name in summary:
-                        summary[check_name]["Passed_Checks"] += check_results["Passed_Checks"]
-                        summary[check_name]["Failed_Checks"] += check_results["Failed_Checks"]
-                        summary[check_name]["Skipped_Checks"] += check_results["Skipped_Checks"]
-                    else:
-                        summary[check_name] = {
-                            "Passed_Checks": check_results["Passed_Checks"],
-                            "Failed_Checks": check_results["Failed_Checks"],
-                            "Skipped_Checks": check_results["Skipped_Checks"],
-                        }
+                    summary[check_name]["Passed_Checks"] += check_results["Passed_Checks"]
+                    summary[check_name]["Failed_Checks"] += check_results["Failed_Checks"]
+                    summary[check_name]["Skipped_Checks"] += check_results["Skipped_Checks"]
         else:
             summary = self._trace_check_results_by_check.get(token, {})
         json_summary = json.dumps(summary)
@@ -790,27 +800,21 @@ class Agent:
         except AssertionError as e:
             token = request["session_token"]
 
-            if token in self._trace_check_results_by_check:
-                self._trace_check_results_by_check[token] = trace.get_results(self._trace_check_results_by_check[token])
-            else:
-                self._trace_check_results_by_check[token] = trace.get_results({})
+            # update trace_check results
+            self._trace_check_results_by_check[token] = trace.get_results(self._trace_check_results_by_check[token])
+
             # only save trace failures to memory if necessary
             msg = str(trace) + str(e)
             if request.app["pool_trace_check_failures"]:
                 log.info(f"Storing Trace Check Failure for Session Token: {token}.")
-                if token in self._trace_failures:
-                    self._trace_failures[token].append((trace, msg))
-                else:
-                    self._trace_failures[token] = [(trace, msg)]
+                # append failure to trace failures
+                self._trace_failures[token].append((trace, msg))
             log.error(msg)
             return web.HTTPBadRequest(body=msg)
         else:
             token = request["session_token"]
-
-            if token in self._trace_check_results_by_check:
-                self._trace_check_results_by_check[token] = trace.get_results(self._trace_check_results_by_check[token])
-            else:
-                self._trace_check_results_by_check[token] = trace.get_results({})
+            # update trace_check results
+            self._trace_check_results_by_check[token] = trace.get_results(self._trace_check_results_by_check[token])
             if trace.has_fails():
                 # only save trace failures to memory if necessary
                 pool_failures = request.app["pool_trace_check_failures"]
@@ -820,10 +824,8 @@ class Agent:
                 msg = str(trace)
                 if request.app["pool_trace_check_failures"]:
                     log.info(f"Storing Trace Check Failure for Session Token: {token}.")
-                    if token in self._trace_failures:
-                        self._trace_failures[token].append((trace, msg))
-                    else:
-                        self._trace_failures[token] = [(trace, msg)]
+                    # append failure to trace failures
+                    self._trace_failures[token].append((trace, msg))
                 log.error(msg)
                 if request.app["disable_error_responses"]:
                     return response

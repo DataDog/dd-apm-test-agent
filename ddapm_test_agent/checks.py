@@ -47,20 +47,11 @@ class CheckTraceFrame:
         """
         for c in self._checks:
             if c.failed:
-                if c.name in results:
-                    results[c.name]["Failed_Checks"] += 1
-                else:
-                    results[c.name] = {"Passed_Checks": 0, "Failed_Checks": 1, "Skipped_Checks": 0}
+                results[c.name]["Failed_Checks"] += 1
             elif c.skipped:
-                if c.name in results:
-                    results[c.name]["Skipped_Checks"] += 1
-                else:
-                    results[c.name] = {"Passed_Checks": 0, "Failed_Checks": 0, "Skipped_Checks": 1}
+                results[c.name]["Skipped_Checks"] += 1
             else:
-                if c.name in results:
-                    results[c.name]["Passed_Checks"] += 1
-                else:
-                    results[c.name] = {"Passed_Checks": 1, "Failed_Checks": 0, "Skipped_Checks": 0}
+                results[c.name]["Passed_Checks"] += 1
         return results
 
     def __repr__(self) -> str:
