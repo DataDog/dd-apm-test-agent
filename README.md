@@ -328,7 +328,7 @@ curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"path
 
 ## /test/trace_check/failures (GET)
 Get Trace Check failures that occured. If a token is included, trace failures for only that session token are returned unless used in conjuction with `return_all`, which can be used to return all failures regardless of inputted token.  This method returns a `<Response 200>` if no Trace Check failures are being returned and a `<Response 400>` if Trace Check failures are being returned. Trace Check failures are returned as a content type of text, with failure messages concatenated in the response body. Optionally, set the `use_json` query string parameter to `true` to return Trace Check failures as a JSON response in the following format: 
-```json
+```
 response = { 
   "<FAILING_CHECK_NAME>" : ["<FAILURE_MESSAGE_1>", "<FAILURE_MESSAGE_2>"]
 }
@@ -358,7 +358,7 @@ curl -X GET 'http://0.0.0.0:8126/test/trace_check/clear'
 
 ## /test/trace_check/summary (GET)
 Get Trace Check summary results. If a token is included, returns summary results only for Trace Checks run during the session.  The `return_all` optional query string parameter can be used to return all trace check results (regardless of inputted session token). The method returns Trace Check results in the following JSON format: 
-```json
+```
 summary = { 
   "trace_content_length" : {
     "Passed_Checks": 10,
