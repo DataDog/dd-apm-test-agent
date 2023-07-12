@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from typing import Dict
 from typing import List
 
 from aiohttp.web import Request
@@ -90,7 +91,7 @@ The ``peer.service`` tag is correctly set for Client / Producer spans.
 """.strip()
     default_enabled = True
 
-    def check(self, span: Span, dd_config_env: dict) -> None:
+    def check(self, span: Span, dd_config_env: Dict[str, str]) -> None:
         log.info("Performing ``peer.service`` Span Check")
         meta = span.get("meta", {})
 
@@ -141,7 +142,7 @@ The ``service`` name is correctly set to ``DD_SERVICE`` for V1 auto-instrumented
 """.strip()
     default_enabled = True
 
-    def check(self, trace: List[Span], dd_config_env: dict) -> None:
+    def check(self, trace: List[Span], dd_config_env: Dict[str, str]) -> None:
         log.info("Performing ``DD_SERVICE`` Trace Check")
 
         # trace context can be set to service for each span
@@ -195,7 +196,7 @@ The ``service`` name is correctly set to ``DD_SERVICE`` for V1 auto-instrumented
                     # check for special case where span is of type web and has context as service
                     if "servlet.context" in meta.keys() or trace_context:
                         trace_context = (
-                            trace_context if trace_context is not None else meta.get("servlet.context").replace("/", "")
+                            trace_context if trace_context is not None else meta.get("servlet.context", "").replace("/", "")
                         )
                         if service != trace_context:
                             self.fail(
