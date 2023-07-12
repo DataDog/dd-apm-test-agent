@@ -196,7 +196,9 @@ The ``service`` name is correctly set to ``DD_SERVICE`` for V1 auto-instrumented
                     # check for special case where span is of type web and has context as service
                     if "servlet.context" in meta.keys() or trace_context:
                         trace_context = (
-                            trace_context if trace_context is not None else meta.get("servlet.context", "").replace("/", "")
+                            trace_context
+                            if trace_context is not None
+                            else meta.get("servlet.context", "").replace("/", "")
                         )
                         if service != trace_context:
                             self.fail(
