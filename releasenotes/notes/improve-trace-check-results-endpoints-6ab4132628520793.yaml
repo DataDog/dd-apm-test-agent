@@ -1,0 +1,4 @@
+features:
+  - |
+    Adds new endpoints to the Test-Agent API: `/test/trace_check/failures`, `/test/trace_check/clear`, and `/test/trace_check/summary`. 
+    These endpoints allow users to retrieve trace check failures, clear trace check failures, and get trace check summary results respectively. 

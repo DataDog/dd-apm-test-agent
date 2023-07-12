@@ -40,34 +40,18 @@ class CheckTraceFrame:
                 return True
         return False
 
-    def get_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
-        """
-        results = {
-            check.name: {
-                "Passed_Checks": int
-                "Failed_Checks": int
-                "Skipped_Checks": int
-            }
-            ...
-        }
+    def update_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
+        """Return as follows
+        output = { check.name: { "Passed_Checks": int, "Failed_Checks": int, "Skipped_Checks": int}}
 
         """
         for c in self._checks:
             if c.failed:
-                if c.name in results:
-                    results[c.name]["Failed_Checks"] += 1
-                else:
-                    results[c.name] = {"Passed_Checks": 0, "Failed_Checks": 1, "Skipped_Checks": 0}
+                results[c.name]["Failed_Checks"] += 1
             elif c.skipped:
-                if c.name in results:
-                    results[c.name]["Skipped_Checks"] += 1
-                else:
-                    results[c.name] = {"Passed_Checks": 0, "Failed_Checks": 0, "Skipped_Checks": 1}
+                results[c.name]["Skipped_Checks"] += 1
             else:
-                if c.name in results:
-                    results[c.name]["Passed_Checks"] += 1
-                else:
-                    results[c.name] = {"Passed_Checks": 1, "Failed_Checks": 0, "Skipped_Checks": 0}
+                results[c.name]["Passed_Checks"] += 1
         return results
 
     def __repr__(self) -> str:
@@ -116,10 +100,30 @@ class CheckTrace:
     def has_fails(self) -> bool:
         return len([f for f in self.frames() if f.has_fails()]) > 0
 
-    def get_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
+    def update_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
         for f in self.frames():
-            results = f.get_results(results)
+            f.update_results(results)
         return results
+
+    def get_failures_by_check(self, failures_by_check: Dict[str, List[str]]) -> Dict[str, List[str]]:
+        # TODO?: refactor so this code isnt duplicated with __str__
+        frame_s = ""
+        for frame, depth in self.frames_dfs():
+            indent = " " * (depth + 2) if depth > 0 else ""
+
+            frame_s += f"{indent}At {frame._name}:\n"
+            for item in frame._items:
+                frame_s += textwrap.indent(f"- {item}", prefix=f" {indent}")
+                frame_s += "\n"
+
+            for c in frame._checks:
+                if c.failed:
+                    check_s = f"{indent}❌ Check '{c.name}' failed: {c._msg}\n"
+                    if c.name in failures_by_check:
+                        failures_by_check[c.name].append(frame_s + check_s)
+                    else:
+                        failures_by_check[c.name] = [frame_s + check_s]
+        return failures_by_check
 
     def __str__(self) -> str:
         s = ""
@@ -145,9 +149,6 @@ class Check:
     """Description of the check. Be as descriptive as possible as this will be included
     with error messages returned to the test case.
     """
-
-    default_enabled: bool
-    """Whether the check is enabled by default or not."""
 
     def __init__(self):
         self._failed: bool = False
@@ -181,7 +182,7 @@ class Check:
 @dataclasses.dataclass()
 class Checks:
     checks: List[Type[Check]] = dataclasses.field(init=True)
-    disabled: List[str] = dataclasses.field(init=True)
+    enabled: List[str] = dataclasses.field(init=True)
 
     def _get_check(self, name: str) -> Type[Check]:
         for c in self.checks:
@@ -192,9 +193,9 @@ class Checks:
 
     def is_enabled(self, name: str) -> bool:
         check = self._get_check(name)
-        if check.name in self.disabled:
-            return False
-        return check.default_enabled
+        if check.name in self.enabled:
+            return True
+        return False
 
     async def check(self, name: str, *args: Any, **kwargs: Any) -> None:
         """Find and run the check with the given ``name`` if it is enabled."""

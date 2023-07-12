@@ -152,7 +152,7 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
 
 - `PORT` [`8126`]: Port to listen on.
 
-- `DISABLED_CHECKS` [`""`]: Comma-separated values of checks to disable.
+- `ENABLED_CHECKS` [`""`]: Comma-separated values of checks to enable. Valid values can be found in [trace invariant checks](#Trace-invariant-checks)
 
 - `LOG_LEVEL` [`"INFO"`]: Log level to use. DEBUG, INFO, WARNING, ERROR, CRITICAL.
 
@@ -325,12 +325,55 @@ The keys of the JSON body are `path` and `msg`
 curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"path": "datadog/2/ASM_DATA/blocked_users/config", "msg": {"rules_data": []}}'
 ```
 
+
 ## /test/trace_check/failures (GET)
-Get any Trace Check failures that occured. Returns a `<Response 200>` if no Trace Check failures occurred, and a `<Response 400>` with the Trace Check Failure messages included in the response body. To be used in combination with `DD_POOL_TRACE_CHECK_FAILURES`, or else failures will not be saved within Test-Agent memory and a `<Response 200>` will always be returned.
+Get Trace Check failures that occured. If a token is included, trace failures for only that session token are returned unless used in conjuction with `return_all`, which can be used to return all failures regardless of inputted token.  This method returns a `<Response 200>` if no Trace Check failures are being returned and a `<Response 400>` if Trace Check failures are being returned. Trace Check failures are returned as a content type of text, with failure messages concatenated in the response body. Optionally, set the `use_json` query string parameter to `true` to return Trace Check failures as a JSON response in the following format: 
+```json
+response = { 
+  "<FAILING_CHECK_NAME>" : ["<FAILURE_MESSAGE_1>", "<FAILURE_MESSAGE_2>"]
+}
+```
+
+NOTE: To be used in combination with `DD_POOL_TRACE_CHECK_FAILURES`, or else failures will not be saved within Test-Agent memory and a `<Response 200>` will always be returned.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+#### [optional] `?use_json=`
+#### [optional] `?return_all=`
 
 ```
 curl -X GET 'http://0.0.0.0:8126/test/trace_check/failures'
 ```
+
+## /test/trace_check/clear (GET)
+Clear Trace Check failures that occured. If a token is included, trace failures for only that session token are cleared unless used in conjuction with `clear_all`. This argument can be used to clear all failures (regardless of inputted session token).
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+#### [optional] `?clear_all=`
+
+```
+curl -X GET 'http://0.0.0.0:8126/test/trace_check/clear'
+```
+
+## /test/trace_check/summary (GET)
+Get Trace Check summary results. If a token is included, returns summary results only for Trace Checks run during the session.  The `return_all` optional query string parameter can be used to return all trace check results (regardless of inputted session token). The method returns Trace Check results in the following JSON format: 
+```json
+summary = { 
+  "trace_content_length" : {
+    "Passed_Checks": 10,
+    "Failed_Checks": 0,
+    "Skipped_Checks": 4,
+  }  ...
+}
+```
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+#### [optional] `?return_all=`
+
+```
+curl -X GET 'http://0.0.0.0:8126/test/trace_check/summary'
 
 ### /v0.1/pipeline_stats
 
