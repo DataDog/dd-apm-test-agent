@@ -262,9 +262,7 @@ class Agent:
                     msg += failure_message
                 return web.HTTPBadRequest(text=msg)
         else:
-            message = f"APM Test Agent Trace Check Results by Check --------------------------------"
-            message += f"\n{json.dumps(trace_check_full_results, indent=4)}"
-            return web.HTTPOk(text=message)
+            return web.HTTPOk()
 
     def get_trace_check_summary(self, request: Request) -> web.Response:
         token = request["session_token"]
@@ -847,7 +845,6 @@ class Agent:
                 if request.app["disable_error_responses"]:
                     return response
                 return web.HTTPBadRequest(body=msg)
-        self._trace_check_results_by_check = trace.get_results(self._trace_check_results_by_check)
         return response
 
 
@@ -913,7 +910,7 @@ def make_app(
             CheckTraceContentLength,
             CheckTraceStallAsync,
             CheckTracePeerService,
-            CheckTraceDDService
+            CheckTraceDDService,
         ],
         enabled=enabled_checks,
     )
