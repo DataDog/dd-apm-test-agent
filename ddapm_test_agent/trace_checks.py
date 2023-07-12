@@ -96,7 +96,7 @@ The ``peer.service`` tag is correctly set for Client / Producer spans.
 
         whitelisted_components = ["couchbase"]
 
-        if dd_config_env.get("DD_TRACE_SPAN_ATTRIBUTE_SCHEMA", "v0") == "v1":
+        if dd_config_env.get("DD_TRACE_SPAN_ATTRIBUTE_SCHEMA", "v0") != "v0":
             if "peer.service" in meta.keys():
                 for component in whitelisted_components:
                     if component in meta.get("component", ""):
