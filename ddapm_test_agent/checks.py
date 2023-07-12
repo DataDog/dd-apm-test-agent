@@ -4,6 +4,7 @@ import contextvars
 import dataclasses
 import textwrap
 from typing import Any
+from typing import Dict
 from typing import Generator
 from typing import List
 from typing import Tuple
@@ -38,6 +39,20 @@ class CheckTraceFrame:
             if c.failed:
                 return True
         return False
+
+    def update_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
+        """Return as follows
+        output = { check.name: { "Passed_Checks": int, "Failed_Checks": int, "Skipped_Checks": int}}
+
+        """
+        for c in self._checks:
+            if c.failed:
+                results[c.name]["Failed_Checks"] += 1
+            elif c.skipped:
+                results[c.name]["Skipped_Checks"] += 1
+            else:
+                results[c.name]["Passed_Checks"] += 1
+        return results
 
     def __repr__(self) -> str:
         return f"<CheckTraceFrame name='{self._name}' children={len(self._children)}>"
@@ -85,6 +100,31 @@ class CheckTrace:
     def has_fails(self) -> bool:
         return len([f for f in self.frames() if f.has_fails()]) > 0
 
+    def update_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
+        for f in self.frames():
+            f.update_results(results)
+        return results
+
+    def get_failures_by_check(self, failures_by_check: Dict[str, List[str]]) -> Dict[str, List[str]]:
+        # TODO?: refactor so this code isnt duplicated with __str__
+        frame_s = ""
+        for frame, depth in self.frames_dfs():
+            indent = " " * (depth + 2) if depth > 0 else ""
+
+            frame_s += f"{indent}At {frame._name}:\n"
+            for item in frame._items:
+                frame_s += textwrap.indent(f"- {item}", prefix=f" {indent}")
+                frame_s += "\n"
+
+            for c in frame._checks:
+                if c.failed:
+                    check_s = f"{indent}❌ Check '{c.name}' failed: {c._msg}\n"
+                    if c.name in failures_by_check:
+                        failures_by_check[c.name].append(frame_s + check_s)
+                    else:
+                        failures_by_check[c.name] = [frame_s + check_s]
+        return failures_by_check
+
     def __str__(self) -> str:
         s = ""
         # TODO?: only include frames that have fails
@@ -112,14 +152,23 @@ class Check:
 
     def __init__(self):
         self._failed: bool = False
+        self._skipped: bool = False
         self._msg: str = ""
 
     @property
     def failed(self) -> bool:
         return self._failed
 
+    @property
+    def skipped(self) -> bool:
+        return self._skipped
+
     def fail(self, msg: str) -> None:
         self._failed = True
+        self._msg = msg
+
+    def skip(self, msg: str) -> None:
+        self._skipped = True
         self._msg = msg
 
     def check(self, *args, **kwargs):

@@ -29,7 +29,7 @@ pytest_plugins = "aiohttp.pytest_plugin"
 
 @pytest.fixture
 def agent_enabled_checks() -> Generator[List[str], None, None]:
-    yield []
+    yield ["trace_content_length", "meta_tracer_version_header", "trace_count_header", "trace_stall"]
 
 
 @pytest.fixture
@@ -69,7 +69,7 @@ def suppress_trace_parse_errors() -> Generator[bool, None, None]:
 
 @pytest.fixture
 def pool_trace_check_failures() -> Generator[bool, None, None]:
-    yield False
+    yield True
 
 
 @pytest.fixture
