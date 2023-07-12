@@ -211,17 +211,6 @@ class Checks:
             else:
                 check.check(*args, **kwargs)
 
-    def get_check_results(self) -> Dict[str, Dict[str, int]]:
-        results: Dict[str, Dict[str, int]] = {}
-        for c in self.checks:
-            if hasattr(c, "passed_checks"):
-                results[c.name] = {
-                    "passed_checks": c.passed_checks,
-                    "failed_checks": c.failed_checks,
-                    "skipped_checks": c.skipped_checks,
-                }
-        return results
-
 
 def start_trace(msg: str) -> CheckTrace:
     trace = CheckTrace(CheckTraceFrame(name=msg))
