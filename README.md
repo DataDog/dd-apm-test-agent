@@ -8,11 +8,11 @@
 
 The APM test agent is an application which emulates the APM endpoints of the [Datadog agent](https://github.com/DataDog/datadog-agent/) which can be used for testing Datadog APM client libraries.
 
-See the [features](#Features) section for the complete list of functionalities provided.
+See the [features](#features) section for the complete list of functionalities provided.
 
-See the [API](#API) section for the endpoints available.
+See the [API](#api) section for the endpoints available.
 
-See the [Development](#Development) section for how to get the test agent running locally to add additional checks or fix bugs.
+See the [Development](#development) section for how to get the test agent running locally to add additional checks or fix bugs.
 
 
 ## Installation
@@ -48,7 +48,7 @@ or a specific branch:
 Many checks are provided by the test agent which will verify trace data. 
 All checks are enabled by default and can be manually disabled.
 
-See the [configuration](#Configuration) section for the options.
+See the [configuration](#configuration) section for the options.
 
 | Check description  | Check name |
 | ------------- | ------------- |
@@ -61,7 +61,7 @@ See the [configuration](#Configuration) section for the options.
 
 All data that is submitted to the test agent can be retrieved.
 
-- Traces can be returned via the `/test/traces` endpoint documented [below](#API).
+- Traces can be returned via the `/test/traces` endpoint documented [below](#api).
 
 
 ### Helpful logging
@@ -152,7 +152,7 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
 
 - `PORT` [`8126`]: Port to listen on.
 
-- `ENABLED_CHECKS` [`""`]: Comma-separated values of checks to enable. Valid values can be found in [trace invariant checks](#Trace-invariant-checks)
+- `ENABLED_CHECKS` [`""`]: Comma-separated values of checks to enable. Valid values can be found in [trace invariant checks](#trace-invariant-checks)
 
 - `LOG_LEVEL` [`"INFO"`]: Log level to use. DEBUG, INFO, WARNING, ERROR, CRITICAL.
 
