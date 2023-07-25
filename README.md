@@ -10,7 +10,7 @@ The APM test agent is an application which emulates the APM endpoints of the [Da
 
 See the [features](#features) section for the complete list of functionalities provided.
 
-See the [API](#api) section for the endpoints available.
+See the [HTTP API](#http-api) section for the endpoints available.
 
 See the [Development](#development) section for how to get the test agent running locally to add additional checks or fix bugs.
 
@@ -185,7 +185,7 @@ ordering to be maintained.**
 - `DD_DISABLE_ERROR_RESPONSES` [`false`]: Set to `"true"` to disable Test-Agent `<Response 400>` when a Trace Check fails, instead sending a valid `<Response 200>`. Recommended for use with the `DD_POOL_TRACE_CHECK_FAILURES` env variable. Can also be set using the `--disable-error-responses=true` option.
 
 
-## API
+## HTTP API
 
 ### /test/traces
 
@@ -302,7 +302,7 @@ Return stats that have been received by the agent for the given session token.
 
 Stats are returned as a JSON list of the stats payloads received.
 
-## /test/session/responses/config (POST)
+### /test/session/responses/config (POST)
 Create a Remote Config payload to retrieve in endpoint `/v0.7/config`
 
 #### [optional] `?test_session_token=`
@@ -312,7 +312,7 @@ Create a Remote Config payload to retrieve in endpoint `/v0.7/config`
 curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"roots": ["eyJ....fX0="], "targets": "ey...19", "target_files": [{"path": "datadog/2/ASM_DATA/blocked_users/config", "raw": "eyJydWxlc19kYXRhIjogW119"}], "client_configs": ["datadog/2/ASM_DATA/blocked_users/config"]}'
 ```
 
-## /test/session/responses/config/path (POST)
+### /test/session/responses/config/path (POST)
 Due to Remote Config payload being quite complicated, this endpoint works like `/test/session/responses/config (POST)` 
 but you should send a path and a message and this endpoint builds the Remote Config payload.
 
@@ -326,7 +326,7 @@ curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"path
 ```
 
 
-## /test/trace_check/failures (GET)
+### /test/trace_check/failures (GET)
 Get Trace Check failures that occured. If a token is included, trace failures for only that session token are returned unless used in conjuction with `return_all`, which can be used to return all failures regardless of inputted token.  This method returns a `<Response 200>` if no Trace Check failures are being returned and a `<Response 400>` if Trace Check failures are being returned. Trace Check failures are returned as a content type of text, with failure messages concatenated in the response body. Optionally, set the `use_json` query string parameter to `true` to return Trace Check failures as a JSON response in the following format: 
 ```
 response = { 
@@ -345,7 +345,7 @@ NOTE: To be used in combination with `DD_POOL_TRACE_CHECK_FAILURES`, or else fai
 curl -X GET 'http://0.0.0.0:8126/test/trace_check/failures'
 ```
 
-## /test/trace_check/clear (GET)
+### /test/trace_check/clear (GET)
 Clear Trace Check failures that occured. If a token is included, trace failures for only that session token are cleared unless used in conjuction with `clear_all`. This argument can be used to clear all failures (regardless of inputted session token).
 
 #### [optional] `?test_session_token=`
@@ -356,7 +356,7 @@ Clear Trace Check failures that occured. If a token is included, trace failures 
 curl -X GET 'http://0.0.0.0:8126/test/trace_check/clear'
 ```
 
-## /test/trace_check/summary (GET)
+### /test/trace_check/summary (GET)
 Get Trace Check summary results. If a token is included, returns summary results only for Trace Checks run during the session.  The `return_all` optional query string parameter can be used to return all trace check results (regardless of inputted session token). The method returns Trace Check results in the following JSON format: 
 ```
 summary = { 
