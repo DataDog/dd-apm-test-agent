@@ -36,6 +36,9 @@ from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
+from .documentation import ApmPackageDocumentation
+from .documentation import create_documentation
+from .documentation import documentation_to_markdown
 from .remoteconfig import RemoteConfigServer
 from .trace import Span
 from .trace import Trace
@@ -192,6 +195,7 @@ class Agent:
             "/telemetry/proxy/api/v2/apmtelemetry",
             "/v0.1/pipeline_stats",
         ]
+        self._documentation: Dict[str, ApmPackageDocumentation] = {}
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -508,12 +512,15 @@ class Agent:
 
                     # perform peer service check on span
                     for span in trace:
+                        dd_env_vars = request.get("_dd_trace_env_variables", {})
                         await checks.check(
-                            "trace_peer_service", span=span, dd_config_env=request.get("_dd_trace_env_variables", {})
+                            "trace_peer_service", span=span, dd_config_env=dd_env_vars
                         )
-
+                        if "component" in span.get("meta", {}):
+                            self._documentation = create_documentation(self._documentation, span, span["meta"]["component"], dd_env_vars.get("DD_TRACE_SPAN_ATTRIBUTE_SCHEMA", "v0"))
+                    documentation_to_markdown(self._documentation, dd_env_vars.get("DD_TRACE_SPAN_ATTRIBUTE_SCHEMA", "v0"))
                     await checks.check(
-                        "trace_dd_service", trace=trace, dd_config_env=request.get("_dd_trace_env_variables", {})
+                        "trace_dd_service", trace=trace, dd_config_env=dd_env_vars
                     )
                 log.info("end of payload %s", "-" * 40)
 
