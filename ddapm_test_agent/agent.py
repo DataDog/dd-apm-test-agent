@@ -124,6 +124,10 @@ async def _forward_request(request_data, headers, full_agent_url):
                         response_data = {}
                     log.info("Response %r from agent:", response_data)
                     return web.json_response(data=response_data)
+            elif "text/plain" in resp.content_type:
+                response_data = await resp.text()
+                log.info("Response %r from agent:", response_data)
+                return web.Response(text=response_data, content_type="text/plain")
             else:
                 response_data = await resp.json()
                 log.info("Response %r from agent:", response_data)
