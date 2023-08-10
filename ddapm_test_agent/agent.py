@@ -192,6 +192,7 @@ class Agent:
             "/telemetry/proxy/api/v2/apmtelemetry",
             "/v0.1/pipeline_stats",
         ]
+        self._integrations = {}
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -450,7 +451,34 @@ class Agent:
         return web.HTTPAccepted()
 
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
-        v2_apmtelemetry_decode(self._request_data(request))
+        data = v2_apmtelemetry_decode(self._request_data(request))
+        print(data["payload"].keys())
+        if "integrations" in data["payload"]:
+            print("--------------------------------------------------------------------------------------")
+            for integration in data["payload"]["integrations"]:
+                if "enabled" in integration and integration["enabled"] is True:
+                    if integration["name"] in self._integrations:
+                        self._integrations[integration["name"]]["version"].add(integration["version"])
+                        self._integrations[integration["name"]] = {
+                            "version": self._integrations[integration["name"]]["version"],
+                            "enabled": self._integrations[integration["name"]]["enabled"] or integration["enabled"],
+                            "auto_enabled": integration["auto_enabled"],
+                            "tested": self._integrations[integration["name"]]["tested"],
+                            "trace_checks": self._integrations[integration["name"]]["trace_checks"],
+                            "tags": self._integrations[integration["name"]]["tags"],
+                        }
+                    else:
+                        self._integrations[integration["name"]] = {
+                            "version": set([integration["version"]]),
+                            "enabled": integration["enabled"],
+                            "auto_enabled": integration["auto_enabled"],
+                            "tested": False,
+                            "trace_checks": set([]),
+                            "tags": {}
+                        }
+            print("AGENT_INTEGRATION:")
+            print(self._integrations)
+            print("--------------------------------------------------------------------------------------")
         # TODO: Validation
         # TODO: Snapshots
         return web.HTTPOk()
@@ -509,11 +537,26 @@ class Agent:
                     # perform peer service check on span
                     for span in trace:
                         await checks.check(
-                            "trace_peer_service", span=span, dd_config_env=request.get("_dd_trace_env_variables", {})
+                            "trace_peer_service", span=span, dd_config_env=request.get("_dd_trace_env_variables", {}), integrations=self._integrations
                         )
 
+                        if "component" in span.get("meta", {}):
+                            if span["meta"]["component"] in self._integrations:
+                                self._integrations[span["meta"]["component"]]["tested"] = True
+                            else:
+                                self._integrations[span["meta"]["component"]] = {
+                                    "version": set(),
+                                    "enabled": True,
+                                    "auto_enabled": False,
+                                    "tested": True,
+                                    "trace_checks": set([]),
+                                    "tags": {}
+                                }
+                            
+                        print(self._integrations)
+
                     await checks.check(
-                        "trace_dd_service", trace=trace, dd_config_env=request.get("_dd_trace_env_variables", {})
+                        "trace_dd_service", trace=trace, dd_config_env=request.get("_dd_trace_env_variables", {}), integrations=self._integrations
                     )
                 log.info("end of payload %s", "-" * 40)
 

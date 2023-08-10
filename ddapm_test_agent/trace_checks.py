@@ -91,7 +91,7 @@ The ``peer.service`` tag is correctly set for Client / Producer spans.
 """.strip()
     default_enabled = True
 
-    def check(self, span: Span, dd_config_env: Dict[str, str]) -> None:
+    def check(self, span: Span, dd_config_env: Dict[str, str], integrations) -> None:
         log.info("Performing ``peer.service`` Span Check")
         meta = span.get("meta", {})
 
@@ -122,6 +122,19 @@ The ``peer.service`` tag is correctly set for Client / Producer spans.
                         + f"\nSpan: {span['name']} expected to have ``peer.service`` tag equal to ``{peer_service_source_key}`` of: {peer_service_source_val}, actual: {peer_service}."
                     )
                 log.debug(f"Successfully completed `peer.`service`` tag Span Check for Span: {span['name']}")
+                if component in integrations:
+                    integrations[component]["trace_checks"].add("trace_peer_service")
+                    integrations[component]["tested"] = True
+                else:
+                    integrations[component] = {
+                        "version": set(),
+                        "enabled": True,
+                        "auto_enabled": False,
+                        "tested": True,
+                        "trace_checks": set(["trace_peer_service"]),
+                        "tags": {}
+                    }
+                print(integrations)
                 return
             else:
                 log.debug(f"Skipped ``peer.service`` Span Check for Span: {span['name']} with no `peer.service` tag")
@@ -142,7 +155,7 @@ The ``service`` name is correctly set to ``DD_SERVICE`` for V1 auto-instrumented
 """.strip()
     default_enabled = True
 
-    def check(self, trace: List[Span], dd_config_env: Dict[str, str]) -> None:
+    def check(self, trace: List[Span], dd_config_env: Dict[str, str], integrations) -> None:
         log.info("Performing ``DD_SERVICE`` Trace Check")
 
         # trace context can be set to service for each span
@@ -220,4 +233,17 @@ The ``service`` name is correctly set to ``DD_SERVICE`` for V1 auto-instrumented
                         )
                 else:
                     log.debug(f"Successfully completed ``service`` name Span Check for Span: {span['name']}")
+
+                if component in integrations:
+                    integrations[component]["trace_checks"].add("trace_dd_service")
+                else:
+                    integrations[component] = {
+                        "version": set(),
+                        "enabled": True,
+                        "auto_enabled": False,
+                        "tested": True,
+                        "trace_checks": set(["trace_dd_service"]),
+                        "tags": {}
+                    }
+                    print(integrations)
         return
