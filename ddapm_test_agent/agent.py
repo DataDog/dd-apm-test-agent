@@ -188,6 +188,7 @@ class Agent:
         self._trace_check_results_by_check: Dict[str, Dict[str, Dict[str, int]]] = defaultdict(
             default_value_trace_check_results_by_check
         )
+        self._integrations: Dict[str, dict] = {}
         self._forward_endpoints: List[str] = [
             "/v0.4/traces",
             "/v0.5/traces",
@@ -454,9 +455,31 @@ class Agent:
         return web.HTTPAccepted()
 
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
-        v2_apmtelemetry_decode(self._request_data(request))
-        # TODO: Validation
-        # TODO: Snapshots
+        telemetry_data = self._request_data(request)
+        v2_apmtelemetry_decode(telemetry_data)
+
+        if "payload" in telemetry_data and "integrations" in telemetry_data["payload"]:
+            print(telemetry_data["payload"].keys())
+            print("-" * 70)
+            for integration in telemetry_data["payload"]["integrations"]:
+                if integration["name"] in self._integrations:
+                    self._integrations[integration["name"]] = {
+                        "version": self._integrations[integration["name"]]["version"].add(integration["version"]) if "version" in integration else self._integrations[integration["name"]]["version"],
+                        "enabled": self._integrations[integration["name"]]["enabled"] or  integration["enabled"],
+                        "default_enabled": self._integrations[integration["name"]]["default_enabled"],
+                        "trace_checks": self._integrations[integration["name"]]["trace_checks"]
+                    }
+                else:
+                    self._integrations[integration["name"]] = {
+                        "version": set() if "version" not in integration else set(integration["version"]),
+                        "enabled": integration.get("enabled", False),
+                        "default_enabled": integration.get("default_enabled", False),
+                        "trace_checks": set()
+                    }
+            print("-" * 70)
+            print(self._integrations)
+            print("-" * 70)
+
         return web.HTTPOk()
 
     async def handle_info(self, request: Request) -> web.Response:
