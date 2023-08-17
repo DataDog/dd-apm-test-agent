@@ -189,6 +189,8 @@ class Agent:
             default_value_trace_check_results_by_check
         )
         self._integrations: Dict[str, dict] = {}
+        self._sent_integration_versions = set()
+        self._tracer_version = None
         self._forward_endpoints: List[str] = [
             "/v0.4/traces",
             "/v0.5/traces",
@@ -455,9 +457,11 @@ class Agent:
         return web.HTTPAccepted()
 
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
-        telemetry_data = self._request_data(request)
-        v2_apmtelemetry_decode(telemetry_data)
-
+        telemetry_data = v2_apmtelemetry_decode(self._request_data(request))
+        # get the tracer version at app-started
+        if "request_type" in telemetry_data and telemetry_data["request-type"] == "app-started":
+            if "application" in telemetry_data and "tracer_version" in telemetry_data["application"]:
+                self._tracer_version = telemetry_data["application"]["tracer_version"]
         if "payload" in telemetry_data and "integrations" in telemetry_data["payload"]:
             print(telemetry_data["payload"].keys())
             print("-" * 70)
@@ -476,11 +480,18 @@ class Agent:
                         "default_enabled": integration.get("default_enabled", False),
                         "trace_checks": set()
                     }
+                if "version" in integration and f"{integration['name']}:{integration['version']}" not in self._sent_integration_versions:
+                    self.emit_instrumentation_telemetry_to_analytics_api(integration["name"], integration["version"], tracer_version=self._tracer_version)
+                    self._sent_integration_versions.add(f"{integration['name']}:{integration['version']}")
             print("-" * 70)
             print(self._integrations)
             print("-" * 70)
 
         return web.HTTPOk()
+
+    async def emit_instrumentation_telemetry_to_analytics_api(self, integration_name, version, tracer_version):
+        # also remember to add tracer language to request, which should be set using the env variable
+        pass
 
     async def handle_info(self, request: Request) -> web.Response:
         return web.json_response(
