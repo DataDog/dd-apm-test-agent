@@ -459,35 +459,48 @@ class Agent:
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
         telemetry_data = v2_apmtelemetry_decode(self._request_data(request))
         # get the tracer version at app-started
-        if "request_type" in telemetry_data and telemetry_data["request-type"] == "app-started":
+        print(telemetry_data["payload"].keys())
+        if "request_type" in telemetry_data and telemetry_data["request_type"] == "app-started":
             if "application" in telemetry_data and "tracer_version" in telemetry_data["application"]:
                 self._tracer_version = telemetry_data["application"]["tracer_version"]
         if "payload" in telemetry_data and "integrations" in telemetry_data["payload"]:
             print(telemetry_data["payload"].keys())
             print("-" * 70)
             for integration in telemetry_data["payload"]["integrations"]:
-                if integration["name"] in self._integrations:
-                    self._integrations[integration["name"]] = {
-                        "version": self._integrations[integration["name"]]["version"].add(integration["version"]) if "version" in integration else self._integrations[integration["name"]]["version"],
-                        "enabled": self._integrations[integration["name"]]["enabled"] or  integration["enabled"],
-                        "default_enabled": self._integrations[integration["name"]]["default_enabled"],
-                        "trace_checks": self._integrations[integration["name"]]["trace_checks"]
-                    }
-                else:
-                    self._integrations[integration["name"]] = {
-                        "version": set() if "version" not in integration else set(integration["version"]),
-                        "enabled": integration.get("enabled", False),
-                        "default_enabled": integration.get("default_enabled", False),
-                        "trace_checks": set()
-                    }
-                if "version" in integration and f"{integration['name']}:{integration['version']}" not in self._sent_integration_versions:
-                    self.emit_instrumentation_telemetry_to_analytics_api(integration["name"], integration["version"], tracer_version=self._tracer_version)
-                    self._sent_integration_versions.add(f"{integration['name']}:{integration['version']}")
+                await self.update_seen_integration_versions(
+                    integration["name"],
+                    integration.get("version", None),
+                    integration.get("default_enabled", False),
+                    integration.get("enabled", False),
+                    self._tracer_version
+                )
             print("-" * 70)
             print(self._integrations)
+            print(self._tracer_version)
             print("-" * 70)
 
         return web.HTTPOk()
+
+    async def update_seen_integration_versions(self, integration_name, integration_version=None, default_enabled=False, enabled=False, tracer_version=None):
+        if integration_name in self._integrations:
+            if integration_version:
+                self._integrations[integration_name]["version"].add(integration_version) 
+            self._integrations[integration_name] = {
+                "version": self._integrations[integration_name]["version"],
+                "enabled": self._integrations[integration_name]["enabled"] or enabled,
+                "default_enabled": self._integrations[integration_name]["default_enabled"],
+                "trace_checks": self._integrations[integration_name]["trace_checks"]
+            }
+        else:
+            self._integrations[integration_name] = {
+                "version": set() if not integration_version else set([integration_version]),
+                "enabled": enabled,
+                "default_enabled": default_enabled,
+                "trace_checks": set()
+            }
+        if integration_version and f"{integration_name}:{integration_version}" not in self._sent_integration_versions:
+            await self.emit_instrumentation_telemetry_to_analytics_api(integration_name, integration_version, tracer_version=tracer_version)
+            self._sent_integration_versions.add(f"{integration_name}:{integration_version}")
 
     async def emit_instrumentation_telemetry_to_analytics_api(self, integration_name, version, tracer_version):
         # also remember to add tracer language to request, which should be set using the env variable
@@ -803,6 +816,19 @@ class Agent:
             }
             log.debug("Found the following Datadog Trace Env Variables: " + str(env_vars))
             request["_dd_trace_env_variables"] = env_vars
+
+            if "DD_PLUGIN" in env_vars and "DD_PLUGIN_VERSION" in env_vars:
+                print("-" * 100)
+                await self.update_seen_integration_versions(
+                    env_vars["DD_PLUGIN"],
+                    env_vars["DD_PLUGIN_VERSION"],
+                    default_enabled=False,
+                    enabled=True,
+                    tracer_version=self._tracer_version if self._tracer_version else headers.get('dd-client-library-version', None)
+                )
+                print(self._integrations)
+                print(self._sent_integration_versions)
+                print("-" * 100)
 
         if "X-Datadog-Agent-Proxy-Disabled" in headers:
             request["_proxy_to_agent"] = (
