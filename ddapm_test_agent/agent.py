@@ -27,6 +27,7 @@ from aiohttp.web import Request
 from aiohttp.web import middleware
 from msgpack.exceptions import ExtraData as MsgPackExtraDataException
 from multidict import CIMultiDict
+import semver
 
 from . import _get_version
 from . import trace_snapshot
@@ -77,6 +78,17 @@ def _parse_csv(s: str) -> List[str]:
     return [s.strip() for s in s.split(",") if s.strip() != ""]
 
 
+def is_semver_and_release_version(version: str) -> bool:
+    """Attempts to parse the inputted version and returns whether the version
+    is a valid semver AND is not a pre-release or dev version.
+    """
+    try:
+        v = semver.Version.parse(version)
+        return not v.prerelease and not v.build
+    except ValueError:
+        return False
+
+
 def _session_token(request: Request) -> Optional[str]:
     token: Optional[str]
     if "X-Datadog-Test-Session-Token" in request.headers:
@@ -112,7 +124,6 @@ async def _forward_request(request_data, headers, full_agent_url):
                 response_data = await resp.read()
                 if len(response_data) == 0:
                     log.info("Received empty response: %r from agent.", response_data)
-                    return web.HTTPOk()
                 else:
                     if isinstance(response_data, bytes):
                         response_data = response_data.decode()
@@ -123,16 +134,13 @@ async def _forward_request(request_data, headers, full_agent_url):
                         log.warning("Original Request: %r", request_data)
                         response_data = {}
                     log.info("Response %r from agent:", response_data)
-                    return web.json_response(data=response_data)
             elif "text/plain" in resp.content_type:
                 response_data = await resp.text()
                 log.info("Response %r from agent:", response_data)
-                return web.Response(text=response_data, content_type="text/plain")
             else:
                 response_data = await resp.json()
                 log.info("Response %r from agent:", response_data)
-                return web.json_response(data=response_data)
-
+            return resp
 
 async def _prepare_and_send_request(data, request, headers):
     headers = {
@@ -142,6 +150,8 @@ async def _prepare_and_send_request(data, request, headers):
     agent_url = request.app["agent_url"]
     full_agent_url = agent_url + request.path
     log.info("Forwarding request to agent at %r", full_agent_url)
+    if "DD_API_KEY" not in headers:
+        headers["DD_API_KEY"] = "00000000000000000000000000000000"
     log.debug(f"Using headers: {headers}")
     return await _forward_request(data, headers, full_agent_url)
 
@@ -199,6 +209,7 @@ class Agent:
             "/telemetry/proxy/api/v2/apmtelemetry",
             "/v0.1/pipeline_stats",
         ]
+        self.tested_integrations = {}
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -463,6 +474,7 @@ class Agent:
         if "request_type" in telemetry_data and telemetry_data["request_type"] == "app-started":
             if "application" in telemetry_data and "tracer_version" in telemetry_data["application"]:
                 self._tracer_version = telemetry_data["application"]["tracer_version"]
+                self._tracer_language = telemetry_data["application"]["language_name"]
         if "payload" in telemetry_data and "integrations" in telemetry_data["payload"]:
             print(telemetry_data["payload"].keys())
             print("-" * 70)
@@ -472,7 +484,8 @@ class Agent:
                     integration.get("version", None),
                     integration.get("default_enabled", False),
                     integration.get("enabled", False),
-                    self._tracer_version
+                    self._tracer_version,
+                    self._tracer_language,
                 )
             print("-" * 70)
             print(self._integrations)
@@ -481,30 +494,55 @@ class Agent:
 
         return web.HTTPOk()
 
-    async def update_seen_integration_versions(self, integration_name, integration_version=None, default_enabled=False, enabled=False, tracer_version=None):
+    async def update_seen_integration_versions(
+        self,
+        integration_name,
+        integration_version=None,
+        default_enabled=False,
+        enabled=False,
+        tracer_version=None,
+        tracer_language=None,
+    ):
         if integration_name in self._integrations:
             if integration_version:
-                self._integrations[integration_name]["version"].add(integration_version) 
-            self._integrations[integration_name] = {
-                "version": self._integrations[integration_name]["version"],
-                "enabled": self._integrations[integration_name]["enabled"] or enabled,
-                "default_enabled": self._integrations[integration_name]["default_enabled"],
-                "trace_checks": self._integrations[integration_name]["trace_checks"]
-            }
+                self._integrations[integration_name]["version"].add(integration_version)
+            self._integrations[integration_name]["enabled"] = self._integrations[integration_name]["enabled"] or enabled
         else:
             self._integrations[integration_name] = {
                 "version": set() if not integration_version else set([integration_version]),
                 "enabled": enabled,
                 "default_enabled": default_enabled,
-                "trace_checks": set()
+                "trace_checks": set(),
             }
-        if integration_version and f"{integration_name}:{integration_version}" not in self._sent_integration_versions:
-            await self.emit_instrumentation_telemetry_to_analytics_api(integration_name, integration_version, tracer_version=tracer_version)
+        tracer_version = tracer_version if tracer_version else self._tracer_version
+        tracer_language = tracer_language if tracer_language else self._tracer_language
+        if (
+            integration_version
+            and enabled is True
+            and f"{integration_name}:{integration_version}" not in self._sent_integration_versions
+        ):
+            await self.emit_instrumentation_telemetry_to_analytics_api(
+                integration_name, integration_version, tracer_version=tracer_version, tracer_language=tracer_language
+            )
             self._sent_integration_versions.add(f"{integration_name}:{integration_version}")
 
-    async def emit_instrumentation_telemetry_to_analytics_api(self, integration_name, version, tracer_version):
-        # also remember to add tracer language to request, which should be set using the env variable
+    async def emit_instrumentation_telemetry_to_analytics_api(
+        self, integration_name, version, tracer_version, tracer_language
+    ):
+
+        self.tested_integrations[f"{integration_name}:{version}"] = {
+            "integration_name": integration_name,
+            "integration_version": version,
+            "tracer_language": tracer_language,
+            "tracer_version": tracer_version
+        }
+        if is_semver_and_release_version(tracer_version):
+            pass
+            # emit request to APM Telemetry API
         pass
+    
+    async def handle_get_tested_integrations(self, request: Request) -> web.Response:
+        return web.json_response(self.tested_integrations)
 
     async def handle_info(self, request: Request) -> web.Response:
         return web.json_response(
@@ -824,7 +862,12 @@ class Agent:
                     env_vars["DD_PLUGIN_VERSION"],
                     default_enabled=False,
                     enabled=True,
-                    tracer_version=self._tracer_version if self._tracer_version else headers.get('dd-client-library-version', None)
+                    tracer_version=self._tracer_version
+                    if self._tracer_version
+                    else headers.get("dd-client-library-version", None),
+                    tracer_language=self._tracer_language
+                    if self._tracer_language
+                    else headers.get("dd-client-library-language", None),
                 )
                 print(self._integrations)
                 print(self._sent_integration_versions)
@@ -965,6 +1008,7 @@ def make_app(
             web.get("/test/trace_check/failures", agent.get_trace_check_failures),
             web.get("/test/trace_check/clear", agent.clear_trace_check_failures),
             web.get("/test/trace_check/summary", agent.get_trace_check_summary),
+            web.get("/test/integrations/tested_versions", agent.handle_get_tested_integrations)
         ]
     )
     checks = Checks(
