@@ -540,6 +540,23 @@ class Agent:
             pass
             # emit request to APM Telemetry API
         pass
+
+    async def handle_put_tested_integrations(self, request: Request) -> web.Response:
+        data = json.loads(await request.read())
+        integration_name = data.get("integration_name", "")
+        integration_version = data.get("integration_version", "")
+        tracer_version = data.get("tracer_version", "")
+        tracer_language = data.get("tracer_language", "")
+        print(["test agent details", integration_name, integration_version, tracer_version, tracer_language])
+        if integration_name and integration_version and f"{integration_name}:{integration_version}" not in self._sent_integration_versions:
+            tracer_version = tracer_version if tracer_version else self._tracer_version
+            tracer_language = tracer_language if tracer_language else self._tracer_language
+            await self.emit_instrumentation_telemetry_to_analytics_api(
+                integration_name, integration_version, tracer_version=tracer_version, tracer_language=tracer_language
+            )
+            self._sent_integration_versions.add(f"{integration_name}:{integration_version}")
+        return web.HTTPOk()
+
     
     async def handle_get_tested_integrations(self, request: Request) -> web.Response:
         return web.json_response(self.tested_integrations)
@@ -1001,6 +1018,7 @@ def make_app(
             web.post("/test/session/responses/config", agent.handle_v07_remoteconfig_create),
             web.post("/test/session/responses/config/path", agent.handle_v07_remoteconfig_path_create),
             web.put("/test/session/responses/config", agent.handle_v07_remoteconfig_put),
+            web.put("/test/session/integrations", agent.handle_put_tested_integrations),
             web.get("/test/traces", agent.handle_test_traces),
             web.get("/test/apmtelemetry", agent.handle_test_apmtelemetry),
             # web.get("/test/benchmark", agent.handle_test_traces),
