@@ -142,6 +142,7 @@ async def _forward_request(request_data, headers, full_agent_url):
                 log.info("Response %r from agent:", response_data)
             return resp
 
+
 async def _prepare_and_send_request(data, request, headers):
     headers = {
         "Content-Type": headers.get("Content-Type", "application/msgpack"),
@@ -470,28 +471,38 @@ class Agent:
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
         telemetry_data = v2_apmtelemetry_decode(self._request_data(request))
         # get the tracer version at app-started
-        print(telemetry_data["payload"].keys())
         if "request_type" in telemetry_data and telemetry_data["request_type"] == "app-started":
             if "application" in telemetry_data and "tracer_version" in telemetry_data["application"]:
                 self._tracer_version = telemetry_data["application"]["tracer_version"]
                 self._tracer_language = telemetry_data["application"]["language_name"]
         if "payload" in telemetry_data and "integrations" in telemetry_data["payload"]:
-            print(telemetry_data["payload"].keys())
-            print("-" * 70)
             for integration in telemetry_data["payload"]["integrations"]:
-                await self.update_seen_integration_versions(
-                    integration["name"],
-                    integration.get("version", None),
-                    integration.get("default_enabled", False),
-                    integration.get("enabled", False),
-                    self._tracer_version,
-                    self._tracer_language,
-                )
-            print("-" * 70)
-            print(self._integrations)
-            print(self._tracer_version)
-            print("-" * 70)
+                if integration.get("enabled", False):
+                    await self.update_seen_integration_versions(
+                        integration["name"],
+                        integration.get("version", None),
+                        integration.get("enabled", False),
+                        self._tracer_version,
+                        self._tracer_language,
+                    )
+        return web.HTTPOk()
 
+    async def handle_put_tested_integrations(self, request: Request) -> web.Response:
+        data = json.loads(await request.read())
+        integration_name = data.get("integration_name", "")
+        integration_version = data.get("integration_version", "")
+        tracer_version = data.get("tracer_version", None)
+        tracer_language = data.get("tracer_language", None)
+        dependency_name = data.get("dependency_name", None)
+        print(["test agent details", integration_name, integration_version, tracer_version, tracer_language])
+        await self.update_seen_integration_versions(
+            integration_name,
+            integration_version,
+            enabled=True,
+            tracer_version=tracer_version,
+            tracer_language=tracer_language,
+            dependency_name=dependency_name,
+        )
         return web.HTTPOk()
 
     async def update_seen_integration_versions(
@@ -502,6 +513,7 @@ class Agent:
         enabled=False,
         tracer_version=None,
         tracer_language=None,
+        dependency_name=None,
     ):
         if integration_name in self._integrations:
             if integration_version:
@@ -517,47 +529,33 @@ class Agent:
         tracer_version = tracer_version if tracer_version else self._tracer_version
         tracer_language = tracer_language if tracer_language else self._tracer_language
         if (
-            integration_version
-            and enabled is True
+            integration_name and integration_version and enabled
             and f"{integration_name}:{integration_version}" not in self._sent_integration_versions
         ):
             await self.emit_instrumentation_telemetry_to_analytics_api(
-                integration_name, integration_version, tracer_version=tracer_version, tracer_language=tracer_language
+                integration_name,
+                integration_version,
+                tracer_version=tracer_version,
+                tracer_language=tracer_language,
+                dependency_name=dependency_name,
             )
             self._sent_integration_versions.add(f"{integration_name}:{integration_version}")
 
     async def emit_instrumentation_telemetry_to_analytics_api(
-        self, integration_name, version, tracer_version, tracer_language
+        self, integration_name, version, tracer_version, tracer_language, dependency_name=None
     ):
-
-        self.tested_integrations[f"{integration_name}:{version}"] = {
+        payload = self.tested_integrations[f"{integration_name}:{version}"] = {
             "integration_name": integration_name,
             "integration_version": version,
             "tracer_language": tracer_language,
-            "tracer_version": tracer_version
+            "tracer_version": tracer_version,
+            "dependecy_name": dependency_name if dependency_name else integration_name,
         }
         if is_semver_and_release_version(tracer_version):
             pass
             # emit request to APM Telemetry API
         pass
 
-    async def handle_put_tested_integrations(self, request: Request) -> web.Response:
-        data = json.loads(await request.read())
-        integration_name = data.get("integration_name", "")
-        integration_version = data.get("integration_version", "")
-        tracer_version = data.get("tracer_version", "")
-        tracer_language = data.get("tracer_language", "")
-        print(["test agent details", integration_name, integration_version, tracer_version, tracer_language])
-        if integration_name and integration_version and f"{integration_name}:{integration_version}" not in self._sent_integration_versions:
-            tracer_version = tracer_version if tracer_version else self._tracer_version
-            tracer_language = tracer_language if tracer_language else self._tracer_language
-            await self.emit_instrumentation_telemetry_to_analytics_api(
-                integration_name, integration_version, tracer_version=tracer_version, tracer_language=tracer_language
-            )
-            self._sent_integration_versions.add(f"{integration_name}:{integration_version}")
-        return web.HTTPOk()
-
-    
     async def handle_get_tested_integrations(self, request: Request) -> web.Response:
         return web.json_response(self.tested_integrations)
 
@@ -1026,7 +1024,7 @@ def make_app(
             web.get("/test/trace_check/failures", agent.get_trace_check_failures),
             web.get("/test/trace_check/clear", agent.clear_trace_check_failures),
             web.get("/test/trace_check/summary", agent.get_trace_check_summary),
-            web.get("/test/integrations/tested_versions", agent.handle_get_tested_integrations)
+            web.get("/test/integrations/tested_versions", agent.handle_get_tested_integrations),
         ]
     )
     checks = Checks(
