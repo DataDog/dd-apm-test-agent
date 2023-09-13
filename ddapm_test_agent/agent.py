@@ -529,7 +529,9 @@ class Agent:
         tracer_version = tracer_version if tracer_version else self._tracer_version
         tracer_language = tracer_language if tracer_language else self._tracer_language
         if (
-            integration_name and integration_version and enabled
+            integration_name
+            and integration_version
+            and enabled
             and f"{integration_name}:{integration_version}" not in self._sent_integration_versions
         ):
             await self.emit_instrumentation_telemetry_to_analytics_api(
