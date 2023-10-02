@@ -475,16 +475,6 @@ class Agent:
             if "application" in telemetry_data and "tracer_version" in telemetry_data["application"]:
                 self._tracer_version = telemetry_data["application"]["tracer_version"]
                 self._tracer_language = telemetry_data["application"]["language_name"]
-        if "payload" in telemetry_data and "integrations" in telemetry_data["payload"]:
-            for integration in telemetry_data["payload"]["integrations"]:
-                if integration.get("enabled", False):
-                    await self.update_seen_integration_versions(
-                        integration["name"],
-                        integration.get("version", None),
-                        integration.get("enabled", False),
-                        self._tracer_version,
-                        self._tracer_language,
-                    )
         return web.HTTPOk()
 
     async def handle_put_tested_integrations(self, request: Request) -> web.Response:
@@ -494,11 +484,9 @@ class Agent:
         tracer_version = data.get("tracer_version", None)
         tracer_language = data.get("tracer_language", None)
         dependency_name = data.get("dependency_name", None)
-        print(["test agent details", integration_name, integration_version, tracer_version, tracer_language])
         await self.update_seen_integration_versions(
-            integration_name,
-            integration_version,
-            enabled=True,
+            integration_name=integration_name,
+            integration_version=integration_version,
             tracer_version=tracer_version,
             tracer_language=tracer_language,
             dependency_name=dependency_name,
@@ -509,8 +497,6 @@ class Agent:
         self,
         integration_name,
         integration_version=None,
-        default_enabled=False,
-        enabled=False,
         tracer_version=None,
         tracer_language=None,
         dependency_name=None,
@@ -518,25 +504,22 @@ class Agent:
         if integration_name in self._integrations:
             if integration_version:
                 self._integrations[integration_name]["version"].add(integration_version)
-            self._integrations[integration_name]["enabled"] = self._integrations[integration_name]["enabled"] or enabled
         else:
             self._integrations[integration_name] = {
+                "integration_name": integration_name,
                 "version": set() if not integration_version else set([integration_version]),
-                "enabled": enabled,
-                "default_enabled": default_enabled,
-                "trace_checks": set(),
+                "dependency_name": dependency_name if dependency_name else integration_name,
             }
         tracer_version = tracer_version if tracer_version else self._tracer_version
         tracer_language = tracer_language if tracer_language else self._tracer_language
         if (
             integration_name
             and integration_version
-            and enabled
             and f"{integration_name}:{integration_version}" not in self._sent_integration_versions
         ):
             await self.emit_instrumentation_telemetry_to_analytics_api(
-                integration_name,
-                integration_version,
+                integration_name=integration_name,
+                integration_version=integration_version,
                 tracer_version=tracer_version,
                 tracer_language=tracer_language,
                 dependency_name=dependency_name,
@@ -546,12 +529,22 @@ class Agent:
     async def emit_instrumentation_telemetry_to_analytics_api(
         self, integration_name, version, tracer_version, tracer_language, dependency_name=None
     ):
-        payload = self.tested_integrations[f"{integration_name}:{version}"] = {
-            "integration_name": integration_name,
-            "integration_version": version,
-            "tracer_language": tracer_language,
-            "tracer_version": tracer_version,
-            "dependecy_name": dependency_name if dependency_name else integration_name,
+        payload = {
+            "data": {
+                "type": "supported_integrations",
+                "id": "1",
+                "attributes": {
+                    "language_language": tracer_language,
+                    "tracer_version": tracer_version,
+                    "integrations": [
+                        {
+                            "integration_name": integration_name,
+                            "integration_version": version,
+                            "dependency_name": dependency_name if dependency_name else integration_name,
+                        }
+                    ],
+                },
+            }
         }
         if is_semver_and_release_version(tracer_version):
             pass
@@ -559,7 +552,7 @@ class Agent:
         pass
 
     async def handle_get_tested_integrations(self, request: Request) -> web.Response:
-        return web.json_response(self.tested_integrations)
+        return web.json_response(self._integrations)
 
     async def handle_info(self, request: Request) -> web.Response:
         return web.json_response(
@@ -873,12 +866,9 @@ class Agent:
             request["_dd_trace_env_variables"] = env_vars
 
             if "DD_PLUGIN" in env_vars and "DD_PLUGIN_VERSION" in env_vars:
-                print("-" * 100)
                 await self.update_seen_integration_versions(
-                    env_vars["DD_PLUGIN"],
-                    env_vars["DD_PLUGIN_VERSION"],
-                    default_enabled=False,
-                    enabled=True,
+                    integration_name=env_vars["DD_PLUGIN"],
+                    integration_version=env_vars["DD_PLUGIN_VERSION"],
                     tracer_version=self._tracer_version
                     if self._tracer_version
                     else headers.get("dd-client-library-version", None),
@@ -886,9 +876,6 @@ class Agent:
                     if self._tracer_language
                     else headers.get("dd-client-library-language", None),
                 )
-                print(self._integrations)
-                print(self._sent_integration_versions)
-                print("-" * 100)
 
         if "X-Datadog-Agent-Proxy-Disabled" in headers:
             request["_proxy_to_agent"] = (
@@ -1005,6 +992,7 @@ def make_app(
             web.post("/v0.1/pipeline_stats", agent.handle_v01_pipelinestats),
             web.put("/v0.6/stats", agent.handle_v06_tracestats),
             web.post("/v0.7/config", agent.handle_v07_remoteconfig),
+            web.post("/telemetry/proxy/api/v1/apmtelemetry", agent.handle_v2_apmtelemetry),
             web.post("/telemetry/proxy/api/v2/apmtelemetry", agent.handle_v2_apmtelemetry),
             web.post("/profiling/v1/input", agent.handle_v1_profiling),
             web.get("/info", agent.handle_info),
