@@ -412,11 +412,11 @@ class Agent:
         for req in self._requests_by_session(token):
             if "version_sent" not in req:
                 if req.match_info.handler == self.handle_put_tested_integrations:
-                    data = await req.read()
+                    data = json.loads(await req.read())
                     integration_name = data.get("integration_name", None)
                     integration_version = data.get("integration_version", None)
                     if f"{integration_name}:{integration_version}" not in self._sent_integrations:
-                        integration_requests.append({"request": req, "data": json.loads()})
+                        integration_requests.append({"request": req, "data": data})
                 # check if integration data was provided in the trace request instead
                 elif (
                     "_dd_trace_env_variables" in req
@@ -571,8 +571,8 @@ class Agent:
             }
         }
         # emit request to APM Telemetry API
-        print(payload)
-
+        log.debug("payload")
+        log.debug(payload)
         # add hash of integration name and version so that later similar requests are not emitted
         self._sent_integrations.add(f"{integration_name}:{integration_version}")
         pass
