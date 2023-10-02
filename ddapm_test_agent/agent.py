@@ -201,7 +201,6 @@ class Agent:
         )
         self._integrations: Dict[str, dict] = {}
         self._sent_integration_versions = set()
-        self._tracer_version = None
         self._forward_endpoints: List[str] = [
             "/v0.4/traces",
             "/v0.5/traces",
@@ -470,11 +469,6 @@ class Agent:
 
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
         telemetry_data = v2_apmtelemetry_decode(self._request_data(request))
-        # get the tracer version at app-started
-        if "request_type" in telemetry_data and telemetry_data["request_type"] == "app-started":
-            if "application" in telemetry_data and "tracer_version" in telemetry_data["application"]:
-                self._tracer_version = telemetry_data["application"]["tracer_version"]
-                self._tracer_language = telemetry_data["application"]["language_name"]
         return web.HTTPOk()
 
     async def handle_put_tested_integrations(self, request: Request) -> web.Response:
@@ -510,8 +504,6 @@ class Agent:
                 "version": set() if not integration_version else set([integration_version]),
                 "dependency_name": dependency_name if dependency_name else integration_name,
             }
-        tracer_version = tracer_version if tracer_version else self._tracer_version
-        tracer_language = tracer_language if tracer_language else self._tracer_language
         if (
             integration_name
             and integration_version
@@ -869,12 +861,8 @@ class Agent:
                 await self.update_seen_integration_versions(
                     integration_name=env_vars["DD_PLUGIN"],
                     integration_version=env_vars["DD_PLUGIN_VERSION"],
-                    tracer_version=self._tracer_version
-                    if self._tracer_version
-                    else headers.get("dd-client-library-version", None),
-                    tracer_language=self._tracer_language
-                    if self._tracer_language
-                    else headers.get("dd-client-library-language", None),
+                    tracer_version=headers.get("dd-client-library-version", None),
+                    tracer_language=headers.get("dd-client-library-language", None),
                 )
 
         if "X-Datadog-Agent-Proxy-Disabled" in headers:
