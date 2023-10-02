@@ -78,15 +78,20 @@ def _parse_csv(s: str) -> List[str]:
     return [s.strip() for s in s.split(",") if s.strip() != ""]
 
 
-def is_semver_and_release_version(version: str) -> bool:
-    """Attempts to parse the inputted version and returns whether the version
-    is a valid semver AND is not a pre-release or dev version.
-    """
+def get_semver_version(version: str) -> bool:
+    """Attempts to parse the inputted version and returns the parsed semver version."""
     try:
         v = semver.Version.parse(version)
-        return not v.prerelease and not v.build
+        return v
     except ValueError:
-        return False
+        raise None
+
+
+def is_release_version(version: semver.Version) -> bool:
+    """Returns whether the semver version is a valid release version and does not contain
+    dev or pre-release tags.
+    """
+    return not version.prerelease and not version.build
 
 
 def _session_token(request: Request) -> Optional[str]:
@@ -199,8 +204,6 @@ class Agent:
         self._trace_check_results_by_check: Dict[str, Dict[str, Dict[str, int]]] = defaultdict(
             default_value_trace_check_results_by_check
         )
-        self._integrations: Dict[str, dict] = {}
-        self._sent_integration_versions = set()
         self._forward_endpoints: List[str] = [
             "/v0.4/traces",
             "/v0.5/traces",
@@ -209,7 +212,6 @@ class Agent:
             "/telemetry/proxy/api/v2/apmtelemetry",
             "/v0.1/pipeline_stats",
         ]
-        self.tested_integrations = {}
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -401,6 +403,31 @@ class Agent:
                 stats.append(s)
         return stats
 
+    async def _integrations_by_session(self, token: Optional[str]) -> List[Dict]:
+        integration_requests: List[Tuple[Request, Dict]] = []
+        for req in self._requests_by_session(token):
+            if req.match_info.handler == self.handle_put_tested_integrations:
+                integration_requests.append({"request": req, "data": json.loads(await req.read())})
+            # check if integration data was provided in the trace request instead
+            elif (
+                "_dd_trace_env_variables" in req
+                and "DD_PLUGIN" in req["_dd_trace_env_variables"]
+                and "DD_PLUGIN_VERSION" in req["_dd_trace_env_variables"]
+            ):
+                integration_requests.append(
+                    {
+                        "request": req,
+                        "data": {
+                            "integration_name": req["_dd_trace_env_variables"]["DD_PLUGIN"],
+                            "integration_version": req["_dd_trace_env_variables"]["DD_PLUGIN_VERSION"],
+                            "dependency_name": req["_dd_trace_env_variables"]["DD_PLUGIN"],
+                            "tracer_version": req.headers.get("dd-client-library-version", None),
+                            "tracer_language": req.headers.get("dd-client-library-language", None),
+                        },
+                    }
+                )
+        return integration_requests
+
     def _decode_v04_traces(self, request: Request) -> v04TracePayload:
         content_type = request.content_type
         raw_data = self._request_data(request)
@@ -469,78 +496,63 @@ class Agent:
 
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
         telemetry_data = v2_apmtelemetry_decode(self._request_data(request))
+        # TODO: Validation
+        # TODO: Snapshots
         return web.HTTPOk()
 
     async def handle_put_tested_integrations(self, request: Request) -> web.Response:
-        data = json.loads(await request.read())
-        integration_name = data.get("integration_name", "")
-        integration_version = data.get("integration_version", "")
-        tracer_version = data.get("tracer_version", None)
-        tracer_language = data.get("tracer_language", None)
-        dependency_name = data.get("dependency_name", None)
-        await self.update_seen_integration_versions(
-            integration_name=integration_name,
-            integration_version=integration_version,
-            tracer_version=tracer_version,
-            tracer_language=tracer_language,
-            dependency_name=dependency_name,
-        )
+        # we need to store the request manually since this is not a real DD agent endpoint
+        await self._store_request(request)
+        await self.update_seen_integration_versions()
         return web.HTTPOk()
 
-    async def update_seen_integration_versions(
-        self,
-        integration_name,
-        integration_version=None,
-        tracer_version=None,
-        tracer_language=None,
-        dependency_name=None,
-    ):
-        if integration_name in self._integrations:
-            if integration_version:
-                self._integrations[integration_name]["version"].add(integration_version)
-        else:
-            self._integrations[integration_name] = {
-                "integration_name": integration_name,
-                "version": set() if not integration_version else set([integration_version]),
-                "dependency_name": dependency_name if dependency_name else integration_name,
-            }
-        if (
-            integration_name
-            and integration_version
-            and f"{integration_name}:{integration_version}" not in self._sent_integration_versions
-        ):
-            await self.emit_instrumentation_telemetry_to_analytics_api(
-                integration_name=integration_name,
-                integration_version=integration_version,
-                tracer_version=tracer_version,
-                tracer_language=tracer_language,
-                dependency_name=dependency_name,
-            )
-            self._sent_integration_versions.add(f"{integration_name}:{integration_version}")
+    async def update_seen_integration_versions(self):
+        integrations = await self._integrations_by_session(token=None)
+        for integration in integrations:
+            tracer_semver_version = get_semver_version(integration["data"].get("tracer_version", None))
+            # # only emit to telemetry for release tracer versions
+            if tracer_semver_version and is_release_version(tracer_semver_version):
+                # integrations should contain all following data to be emitted
+                if (
+                    integration["data"].get("integration_name", None)
+                    and integration["data"].get("integration_version", None)
+                    and integration["data"].get("tracer_version", None)
+                    and integration["data"].get("tracer_language", None)
+                    and integration["data"].get("dependency_name", None)
+                    and not integration["request"].get("version_sent", False)
+                ):
+                    await self.emit_instrumentation_telemetry_to_analytics_api(
+                        integration_name=integration["data"].get("integration_name"),
+                        integration_version=integration["data"].get("integration_version"),
+                        tracer_version=integration["data"].get("tracer_version"),
+                        tracer_language=integration["data"].get("tracer_language"),
+                        dependency_name=integration["data"].get("dependency_name"),
+                    )
+                    # update the actual request to store that the intergration and version have been emitted
+                    integration["request"]["version_sent"] = True
 
     async def emit_instrumentation_telemetry_to_analytics_api(
-        self, integration_name, version, tracer_version, tracer_language, dependency_name=None
+        self, integration_name, integration_version, tracer_version, tracer_language, dependency_name=None
     ):
         payload = {
             "data": {
                 "type": "supported_integrations",
-                "id": "1",
+                "id": "1",  # UPDATE ME
                 "attributes": {
                     "language_language": tracer_language,
                     "tracer_version": tracer_version,
                     "integrations": [
                         {
                             "integration_name": integration_name,
-                            "integration_version": version,
-                            "dependency_name": dependency_name if dependency_name else integration_name,
+                            "integration_version": integration_version,
+                            "dependency_name": dependency_name,
                         }
                     ],
                 },
             }
         }
-        if is_semver_and_release_version(tracer_version):
-            pass
-            # emit request to APM Telemetry API
+        # emit request to APM Telemetry API
+        print(payload)
         pass
 
     async def handle_get_tested_integrations(self, request: Request) -> web.Response:
@@ -858,12 +870,7 @@ class Agent:
             request["_dd_trace_env_variables"] = env_vars
 
             if "DD_PLUGIN" in env_vars and "DD_PLUGIN_VERSION" in env_vars:
-                await self.update_seen_integration_versions(
-                    integration_name=env_vars["DD_PLUGIN"],
-                    integration_version=env_vars["DD_PLUGIN_VERSION"],
-                    tracer_version=headers.get("dd-client-library-version", None),
-                    tracer_language=headers.get("dd-client-library-language", None),
-                )
+                await self.update_seen_integration_versions()
 
         if "X-Datadog-Agent-Proxy-Disabled" in headers:
             request["_proxy_to_agent"] = (
