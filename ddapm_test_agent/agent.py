@@ -79,7 +79,7 @@ def _parse_csv(s: str) -> List[str]:
 
 
 def get_semver_version(version: str) -> bool:
-    """Attempts to parse the inputted version and returns the parsed semver version."""
+    """Parse the inputted version and returns the parsed semver version."""
     try:
         v = semver.Version.parse(version)
         return v
@@ -88,7 +88,7 @@ def get_semver_version(version: str) -> bool:
 
 
 def is_release_version(version: semver.Version) -> bool:
-    """Returns whether the semver version is a valid release version and does not contain
+    """Return whether the semver version is a valid release version and does not contain
     dev or pre-release tags.
     """
     return not version.prerelease and not version.build
@@ -495,7 +495,7 @@ class Agent:
         return web.HTTPAccepted()
 
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
-        telemetry_data = v2_apmtelemetry_decode(self._request_data(request))
+        v2_apmtelemetry_decode(self._request_data(request))
         # TODO: Validation
         # TODO: Snapshots
         return web.HTTPOk()
