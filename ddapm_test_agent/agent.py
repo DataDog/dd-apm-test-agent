@@ -37,6 +37,7 @@ from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
+from .integration import Integration
 from .remoteconfig import RemoteConfigServer
 from .trace import Span
 from .trace import Trace
@@ -407,16 +408,26 @@ class Agent:
                 stats.append(s)
         return stats
 
-    async def _integrations_by_session(self, token: Optional[str]) -> List[Dict]:
+    async def _integration_requests_by_session(self, token: Optional[str], include_sent_integrations: Optional[bool] = False) -> List[Dict]:
+        """Gets all requests with an associated tested Integration.
+        """
         integration_requests: List[Tuple[Request, Dict]] = []
         for req in self._requests_by_session(token):
-            if "version_sent" not in req:
+            if "integration" not in req:
+                # see if the request was to update with a newly tested integration 
                 if req.match_info.handler == self.handle_put_tested_integrations:
                     data = json.loads(await req.read())
                     integration_name = data.get("integration_name", None)
                     integration_version = data.get("integration_version", None)
-                    if f"{integration_name}:{integration_version}" not in self._sent_integrations:
-                        integration_requests.append({"request": req, "data": data})
+                    req["integration"] = Integration(
+                        integration_name=integration_name,
+                        integration_version=integration_version,
+                        dependency_name=data.get("dependency_name", data.get("integration_name", None)),
+                        version_sent=f"{integration_name}:{integration_version}" in self._sent_integrations
+                    )
+                    req["tracer_version"] = data.get("tracer_version", None)
+                    req["tracer_language"] = data.get("tracer_language", None)
+                    integration_requests.append(req)
                 # check if integration data was provided in the trace request instead
                 elif (
                     "_dd_trace_env_variables" in req
@@ -425,23 +436,27 @@ class Agent:
                 ):
                     integration_name = req["_dd_trace_env_variables"]["DD_PLUGIN"]
                     integration_version = req["_dd_trace_env_variables"]["DD_PLUGIN_VERSION"]
-                    if f"{integration_name}:{integration_version}" not in self._sent_integrations:
-                        integration_requests.append(
-                            {
-                                "request": req,
-                                "data": {
-                                    "integration_name": req["_dd_trace_env_variables"]["DD_PLUGIN"],
-                                    "integration_version": req["_dd_trace_env_variables"]["DD_PLUGIN_VERSION"],
-                                    "dependency_name": req["_dd_trace_env_variables"]["DD_PLUGIN"],
-                                    "tracer_version": req.headers.get("dd-client-library-version", None)
-                                    if req.headers.get("dd-client-library-version", None)
-                                    else req.headers.get("datadog-meta-tracer-version", None),
-                                    "tracer_language": req.headers.get("dd-client-library-language", None)
-                                    if req.headers.get("dd-client-library-language", None)
-                                    else req.headers.get("datadog-meta-lang", None),
-                                },
-                            }
-                        )
+                    
+
+                    req["integration"] = Integration(
+                        integration_name=integration_name,
+                        integration_version=integration_version,
+                        dependency_name=req["_dd_trace_env_variables"].get("DD_DEPENDENCY_NAME", integration_name),
+                        version_sent=f"{integration_name}:{integration_version}" in self._sent_integrations
+                    )
+                    
+                    if req.headers.get("dd-client-library-version", None):
+                        req["tracer_version"] = req.headers.get("dd-client-library-version")
+                    elif req.headers.get("datadog-meta-tracer-version", None):
+                        req["tracer_version"] = req.headers.get("datadog-meta-tracer-version")
+
+                    if req.headers.get("dd-client-library-language", None):
+                        req["tracer_language"] = req.headers.get("dd-client-library-language")
+                    elif req.headers.get("datadog-meta-lang", None):
+                        req["tracer_language"] = req.headers.get("datadog-meta-lang")
+                    integration_requests.append(req)
+            elif include_sent_integrations:
+                integration_requests.append(req)
         return integration_requests
 
     def _decode_v04_traces(self, request: Request) -> v04TracePayload:
@@ -523,35 +538,34 @@ class Agent:
         return web.HTTPOk()
 
     async def update_seen_integration_versions(self):
-        integrations = await self._integrations_by_session(token=None)
-        for integration in integrations:
-            tracer_language = integration["data"].get("tracer_language", None)
-            tracer_version = integration["data"].get("tracer_version", None)
+        reqs = await self._integration_requests_by_session(token=None)
+        for req in reqs:
+            integration = req["integration"]
             # tracer_semver_version = get_semver_version(tracer_language, tracer_version)
             # only emit to telemetry for release tracer versions
             # if tracer_semver_version and is_release_version(tracer_semver_version):
             if True:
                 # integrations should contain all following data to be emitted
                 if (
-                    integration["data"].get("integration_name", None)
-                    and integration["data"].get("integration_version", None)
-                    and tracer_language
-                    and tracer_version
-                    and integration["data"].get("dependency_name", None)
-                    and not integration["request"].get("version_sent", False)
+                    integration.integration_name
+                    and integration.integration_version
+                    and integration.dependency_name
+                    and not integration.version_sent
+                    and req["tracer_language"]
+                    and req["tracer_version"]
                 ):
                     await self.emit_instrumentation_telemetry_to_analytics_api(
-                        integration_name=integration["data"].get("integration_name"),
-                        integration_version=integration["data"].get("integration_version"),
-                        tracer_version=tracer_version,
-                        tracer_language=tracer_language,
-                        dependency_name=integration["data"].get("dependency_name"),
+                        integration,
+                        tracer_language = req["tracer_language"],
+                        tracer_version = req["tracer_version"]
                     )
                     # update the actual req to store that the integration / version have been emitted so we can skip the req later
-                    integration["request"]["version_sent"] = True
+                    integration.version_sent = True
+                    # add hash of integration name and version so that later similar requests are not emitted
+                    self._sent_integrations.add(f"{integration.integration_name}:{integration.integration_version}")
 
     async def emit_instrumentation_telemetry_to_analytics_api(
-        self, integration_name, integration_version, tracer_version, tracer_language, dependency_name=None
+        self, integration: Integration, tracer_language: str, tracer_version: str
     ):
         payload = {
             "data": {
@@ -562,9 +576,9 @@ class Agent:
                     "tracer_version": tracer_version,
                     "integrations": [
                         {
-                            "integration_name": integration_name,
-                            "integration_version": integration_version,
-                            "dependency_name": dependency_name,
+                            "integration_name": integration.integration_name,
+                            "integration_version": integration.integration_version,
+                            "dependency_name": integration.dependency_name,
                         }
                     ],
                 },
@@ -573,8 +587,7 @@ class Agent:
         # emit request to APM Telemetry API
         log.debug("payload")
         log.debug(payload)
-        # add hash of integration name and version so that later similar requests are not emitted
-        self._sent_integrations.add(f"{integration_name}:{integration_version}")
+        print(payload)
         pass
 
     async def handle_get_tested_integrations(self, request: Request) -> web.Response:
