@@ -3,6 +3,7 @@ import atexit
 import base64
 from collections import OrderedDict
 from collections import defaultdict
+import csv
 import json
 import logging
 import os
@@ -27,7 +28,6 @@ from aiohttp.web import Request
 from aiohttp.web import middleware
 from msgpack.exceptions import ExtraData as MsgPackExtraDataException
 from multidict import CIMultiDict
-import semver
 
 from . import _get_version
 from . import trace_snapshot
@@ -77,25 +77,6 @@ def _parse_csv(s: str) -> List[str]:
     ['a']
     """
     return [s.strip() for s in s.split(",") if s.strip() != ""]
-
-
-def get_semver_version(language: str, version: str) -> bool:
-    """Parse the inputted version and returns the parsed semver version."""
-    # special case for python where dev branches aren't strict semver naming
-    if language == "python":
-        try:
-            return semver.Version.parse(version)
-        except TypeError:
-            return None
-    else:
-        return semver.Version.parse(version)
-
-
-def is_release_version(version: semver.Version) -> bool:
-    """Return whether the semver version is a valid release version and does not contain
-    dev or pre-release tags.
-    """
-    return not version.prerelease and not version.build
 
 
 def _session_token(request: Request) -> Optional[str]:
@@ -408,43 +389,46 @@ class Agent:
                 stats.append(s)
         return stats
 
-    async def _integration_requests_by_session(self, token: Optional[str], include_sent_integrations: Optional[bool] = False) -> List[Dict]:
-        """Gets all requests with an associated tested Integration.
-        """
+    async def _integration_requests_by_session(
+        self, token: Optional[str], include_sent_integrations: Optional[bool] = False
+    ) -> List[Dict]:
+        """Get all requests with an associated tested Integration."""
         integration_requests: List[Tuple[Request, Dict]] = []
         for req in self._requests_by_session(token):
-            if "integration" not in req:
-                # see if the request was to update with a newly tested integration 
-                if req.match_info.handler == self.handle_put_tested_integrations:
+            # see if the request was to update with a newly tested integration
+            if req.match_info.handler == self.handle_put_tested_integrations:
+                if "integration" not in req:
                     data = json.loads(await req.read())
                     integration_name = data.get("integration_name", None)
                     integration_version = data.get("integration_version", None)
                     req["integration"] = Integration(
                         integration_name=integration_name,
                         integration_version=integration_version,
-                        dependency_name=data.get("dependency_name", data.get("integration_name", None)),
-                        version_sent=f"{integration_name}:{integration_version}" in self._sent_integrations
+                        dependency_name=data.get("dependency_name", integration_name),
+                        version_sent=f"{integration_name}:{integration_version}" in self._sent_integrations,
                     )
                     req["tracer_version"] = data.get("tracer_version", None)
                     req["tracer_language"] = data.get("tracer_language", None)
                     integration_requests.append(req)
-                # check if integration data was provided in the trace request instead
-                elif (
-                    "_dd_trace_env_variables" in req
-                    and "DD_PLUGIN" in req["_dd_trace_env_variables"]
-                    and "DD_PLUGIN_VERSION" in req["_dd_trace_env_variables"]
-                ):
-                    integration_name = req["_dd_trace_env_variables"]["DD_PLUGIN"]
-                    integration_version = req["_dd_trace_env_variables"]["DD_PLUGIN_VERSION"]
-                    
+                elif include_sent_integrations:
+                    integration_requests.append(req)
+            # check if integration data was provided in the trace request instead
+            elif (
+                "_dd_trace_env_variables" in req
+                and "DD_PLUGIN" in req["_dd_trace_env_variables"]
+                and "DD_PLUGIN_VERSION" in req["_dd_trace_env_variables"]
+            ):
+                integration_name = req["_dd_trace_env_variables"]["DD_PLUGIN"]
+                integration_version = req["_dd_trace_env_variables"]["DD_PLUGIN_VERSION"]
 
+                if "integration" not in req:
                     req["integration"] = Integration(
                         integration_name=integration_name,
                         integration_version=integration_version,
                         dependency_name=req["_dd_trace_env_variables"].get("DD_DEPENDENCY_NAME", integration_name),
-                        version_sent=f"{integration_name}:{integration_version}" in self._sent_integrations
+                        version_sent=f"{integration_name}:{integration_version}" in self._sent_integrations,
                     )
-                    
+
                     if req.headers.get("dd-client-library-version", None):
                         req["tracer_version"] = req.headers.get("dd-client-library-version")
                     elif req.headers.get("datadog-meta-tracer-version", None):
@@ -455,8 +439,8 @@ class Agent:
                     elif req.headers.get("datadog-meta-lang", None):
                         req["tracer_language"] = req.headers.get("datadog-meta-lang")
                     integration_requests.append(req)
-            elif include_sent_integrations:
-                integration_requests.append(req)
+                elif include_sent_integrations:
+                    integration_requests.append(req)
         return integration_requests
 
     def _decode_v04_traces(self, request: Request) -> v04TracePayload:
@@ -541,57 +525,70 @@ class Agent:
         reqs = await self._integration_requests_by_session(token=None)
         for req in reqs:
             integration = req["integration"]
-            # tracer_semver_version = get_semver_version(tracer_language, tracer_version)
-            # only emit to telemetry for release tracer versions
-            # if tracer_semver_version and is_release_version(tracer_semver_version):
-            if True:
-                # integrations should contain all following data to be emitted
-                if (
-                    integration.integration_name
-                    and integration.integration_version
-                    and integration.dependency_name
-                    and not integration.version_sent
-                    and req["tracer_language"]
-                    and req["tracer_version"]
-                ):
-                    await self.emit_instrumentation_telemetry_to_analytics_api(
-                        integration,
-                        tracer_language = req["tracer_language"],
-                        tracer_version = req["tracer_version"]
-                    )
-                    # update the actual req to store that the integration / version have been emitted so we can skip the req later
-                    integration.version_sent = True
-                    # add hash of integration name and version so that later similar requests are not emitted
-                    self._sent_integrations.add(f"{integration.integration_name}:{integration.integration_version}")
 
-    async def emit_instrumentation_telemetry_to_analytics_api(
-        self, integration: Integration, tracer_language: str, tracer_version: str
-    ):
-        payload = {
-            "data": {
-                "type": "supported_integrations",
-                "id": "1",  # UPDATE ME
-                "attributes": {
-                    "language_language": tracer_language,
-                    "tracer_version": tracer_version,
-                    "integrations": [
-                        {
-                            "integration_name": integration.integration_name,
-                            "integration_version": integration.integration_version,
-                            "dependency_name": integration.dependency_name,
-                        }
-                    ],
-                },
-            }
-        }
-        # emit request to APM Telemetry API
-        log.debug("payload")
-        log.debug(payload)
-        print(payload)
-        pass
+            # integrations should contain all following data to be emitted
+            if (
+                integration.integration_name
+                and integration.integration_version
+                and integration.dependency_name
+                and not integration.version_sent
+                and req["tracer_language"]
+                and req["tracer_version"]
+            ):
+                await self.save_tested_integrations(
+                    integration, tracer_language=req["tracer_language"], tracer_version=req["tracer_version"]
+                )
+                # update the actual req to store that the integration / version have been emitted so we can skip the req later
+                integration.version_sent = True
+                # add hash of integration name and version so that later similar requests are not emitted
+                self._sent_integrations.add(f"{integration.integration_name}:{integration.integration_version}")
+
+    async def save_tested_integrations(self, integration: Integration, tracer_language: str, tracer_version: str):
+        headers = ["language_name", "tracer_version", "integration_name", "integration_version", "dependency_name"]
+        log.debug(f"Saving Integration: {integration.integration_name} to current directory")
+        filename = f"./artifacts/{integration.integration_name}_supported_versions.csv"
+
+        # create test artifact directory if it doesnt exist
+        directory = "./artifacts"
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+
+        # Check if the file exists
+        if os.path.exists(filename):
+            mode = "a+"  # Append mode
+        else:
+            mode = "w+"  # Write mode
+
+        with open(filename, mode, newline="") as file:
+            writer = csv.writer(file)
+            if mode == "w+":
+                writer.writerow(headers)
+            writer.writerow(
+                [
+                    tracer_language,
+                    ".".join(tracer_version.split(".")[0:3]),  # ensure semver
+                    integration.integration_name,
+                    integration.integration_version,
+                    integration.dependency_name,
+                ]
+            )
 
     async def handle_get_tested_integrations(self, request: Request) -> web.Response:
-        return web.json_response(self._integrations)
+        headers = ["language_name", "tracer_version", "integration_name", "integration_version", "dependency_name"]
+        aggregated_text = ",".join(headers) + "\n"
+
+        directory = "./artifacts"
+        files = os.listdir(directory)
+
+        for file in files:
+            filepath = os.path.join(directory, file)
+            with open(filepath, "r") as f:
+                lines = f.readlines()
+                if lines[0] == ",".join(headers) + "\n":
+                    lines = lines[1:]  # Skip the headers if they already exist in the file
+                aggregated_text += "".join(lines)
+            headers = {"file-name": file}
+        return web.Response(body=aggregated_text, content_type="text/plain", headers=headers)
 
     async def handle_info(self, request: Request) -> web.Response:
         return web.json_response(
