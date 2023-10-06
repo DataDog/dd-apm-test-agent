@@ -197,7 +197,6 @@ class Agent:
             "/telemetry/proxy/api/v2/apmtelemetry",
             "/v0.1/pipeline_stats",
         ]
-        self._sent_integrations: set = set()
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -405,7 +404,7 @@ class Agent:
                         integration_name=integration_name,
                         integration_version=integration_version,
                         dependency_name=data.get("dependency_name", integration_name),
-                        version_sent=f"{integration_name}:{integration_version}" in self._sent_integrations,
+                        version_sent=f"{integration_name}@{integration_version}" in ",".join(os.listdir("artifacts")),
                     )
                     req["tracer_version"] = data.get("tracer_version", None)
                     req["tracer_language"] = data.get("tracer_language", None)
@@ -426,7 +425,7 @@ class Agent:
                         integration_name=integration_name,
                         integration_version=integration_version,
                         dependency_name=req["_dd_trace_env_variables"].get("DD_DEPENDENCY_NAME", integration_name),
-                        version_sent=f"{integration_name}:{integration_version}" in self._sent_integrations,
+                        version_sent=f"{integration_name}@{integration_version}" in ",".join(os.listdir("artifacts")),
                     )
 
                     if req.headers.get("dd-client-library-version", None):
@@ -540,13 +539,13 @@ class Agent:
                 )
                 # update the actual req to store that the integration / version have been emitted so we can skip the req later
                 integration.version_sent = True
-                # add hash of integration name and version so that later similar requests are not emitted
-                self._sent_integrations.add(f"{integration.integration_name}:{integration.integration_version}")
 
     async def save_tested_integrations(self, integration: Integration, tracer_language: str, tracer_version: str):
         headers = ["language_name", "tracer_version", "integration_name", "integration_version", "dependency_name"]
         log.debug(f"Saving Integration: {integration.integration_name} to current directory")
-        filename = f"./artifacts/{integration.integration_name}_supported_versions.csv"
+        filename = (
+            f"./artifacts/{integration.integration_name}@{integration.integration_version}_supported_versions.csv"
+        )
 
         # create test artifact directory if it doesnt exist
         directory = "./artifacts"
@@ -587,7 +586,7 @@ class Agent:
                 if lines[0] == ",".join(headers) + "\n":
                     lines = lines[1:]  # Skip the headers if they already exist in the file
                 aggregated_text += "".join(lines)
-            headers = {"file-name": file}
+            headers = {"file-name": file.split("@")[0]}  # use integration name before @ as filename
         return web.Response(body=aggregated_text, content_type="text/plain", headers=headers)
 
     async def handle_info(self, request: Request) -> web.Response:
