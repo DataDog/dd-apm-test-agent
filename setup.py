@@ -31,7 +31,6 @@ setup(
         "ddsketch",
         "msgpack",
         "requests",
-        "semver",
         "typing_extensions",
         "yarl",
     ],
