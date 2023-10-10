@@ -140,8 +140,6 @@ async def _prepare_and_send_request(data, request, headers):
     agent_url = request.app["agent_url"]
     full_agent_url = agent_url + request.path
     log.info("Forwarding request to agent at %r", full_agent_url)
-    if "DD_API_KEY" not in headers:
-        headers["DD_API_KEY"] = "00000000000000000000000000000000"
     log.debug(f"Using headers: {headers}")
     return await _forward_request(data, headers, full_agent_url)
 
