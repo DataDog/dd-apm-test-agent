@@ -573,20 +573,21 @@ class Agent:
             )
 
     async def handle_get_tested_integrations(self, request: Request) -> web.Response:
-        headers = ["language_name", "tracer_version", "integration_name", "integration_version", "dependency_name"]
-        aggregated_text = ",".join(headers) + "\n"
-
+        file_headers = ["language_name", "tracer_version", "integration_name", "integration_version", "dependency_name"]
+        aggregated_text = ""
+        headers = {}
         directory = "./artifacts"
         files = os.listdir(directory)
-
-        for file in files:
-            filepath = os.path.join(directory, file)
-            with open(filepath, "r") as f:
-                lines = f.readlines()
-                if lines[0] == ",".join(headers) + "\n":
-                    lines = lines[1:]  # Skip the headers if they already exist in the file
-                aggregated_text += "".join(lines)
-            headers = {"file-name": file.split("@")[0]}  # use integration name before @ as filename
+        if len(files) > 0:
+            aggregated_text += ",".join(file_headers) + "\n"
+            for file in files:
+                filepath = os.path.join(directory, file)
+                with open(filepath, "r") as f:
+                    lines = f.readlines()
+                    if lines[0] == ",".join(file_headers) + "\n":
+                        lines = lines[1:]  # Skip the headers if they already exist in the file
+                    aggregated_text += "".join(lines)
+                headers["file-name"]= file.split("@")[0]  # use integration name before @ as filename
         return web.Response(body=aggregated_text, content_type="text/plain", headers=headers)
 
     async def handle_info(self, request: Request) -> web.Response:
