@@ -522,7 +522,7 @@ class Agent:
         req_headers = {}
 
         # get all requests associated with an integration
-        reqs = await self._integration_requests_by_session(token=None, include_sent_integrations=True)
+        reqs = await self._integration_requests_by_session(token=_session_token(request), include_sent_integrations=True)
         for req in reqs:
             integration = req["integration"]
 
