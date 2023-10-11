@@ -387,9 +387,9 @@ class Agent:
 
     async def _integration_requests_by_session(
         self, token: Optional[str], include_sent_integrations: Optional[bool] = False
-    ) -> List[Dict]:
+    ) -> List[Request]:
         """Get all requests with an associated tested Integration."""
-        integration_requests: List[Tuple[Request, Dict]] = []
+        integration_requests: List[Request] = []
         for req in self._requests_by_session(token):
             # see if the request was to update with a newly tested integration
             if req.match_info.handler == self.handle_put_tested_integrations:
