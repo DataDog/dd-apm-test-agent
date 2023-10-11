@@ -36,6 +36,7 @@ from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
+from .integration import Integration
 from .remoteconfig import RemoteConfigServer
 from .trace import Span
 from .trace import Trace
@@ -112,7 +113,6 @@ async def _forward_request(request_data, headers, full_agent_url):
                 response_data = await resp.read()
                 if len(response_data) == 0:
                     log.info("Received empty response: %r from agent.", response_data)
-                    return web.HTTPOk()
                 else:
                     if isinstance(response_data, bytes):
                         response_data = response_data.decode()
@@ -123,15 +123,13 @@ async def _forward_request(request_data, headers, full_agent_url):
                         log.warning("Original Request: %r", request_data)
                         response_data = {}
                     log.info("Response %r from agent:", response_data)
-                    return web.json_response(data=response_data)
             elif "text/plain" in resp.content_type:
                 response_data = await resp.text()
                 log.info("Response %r from agent:", response_data)
-                return web.Response(text=response_data, content_type="text/plain")
             else:
                 response_data = await resp.json()
                 log.info("Response %r from agent:", response_data)
-                return web.json_response(data=response_data)
+            return resp
 
 
 async def _prepare_and_send_request(data, request, headers):
@@ -387,6 +385,58 @@ class Agent:
                 stats.append(s)
         return stats
 
+    async def _integration_requests_by_session(
+        self, token: Optional[str], include_sent_integrations: Optional[bool] = False
+    ) -> List[Request]:
+        """Get all requests with an associated tested Integration."""
+        integration_requests: List[Request] = []
+        for req in self._requests_by_session(token):
+            # see if the request was to update with a newly tested integration
+            if req.match_info.handler == self.handle_put_tested_integrations:
+                if "integration" not in req:
+                    data = json.loads(await req.read())
+                    integration_name = data.get("integration_name", None)
+                    integration_version = data.get("integration_version", None)
+                    req["integration"] = Integration(
+                        integration_name=integration_name,
+                        integration_version=integration_version,
+                        dependency_name=data.get("dependency_name", integration_name),
+                    )
+                    req["tracer_version"] = data.get("tracer_version", None)
+                    req["tracer_language"] = data.get("tracer_language", None)
+                    integration_requests.append(req)
+                elif include_sent_integrations:
+                    integration_requests.append(req)
+            # check if integration data was provided in the trace request instead
+            elif (
+                "_dd_trace_env_variables" in req
+                and "DD_INTEGRATION" in req["_dd_trace_env_variables"]
+                and "DD_INTEGRATION_VERSION" in req["_dd_trace_env_variables"]
+            ):
+                integration_name = req["_dd_trace_env_variables"]["DD_INTEGRATION"]
+                integration_version = req["_dd_trace_env_variables"]["DD_INTEGRATION_VERSION"]
+
+                if "integration" not in req:
+                    req["integration"] = Integration(
+                        integration_name=integration_name,
+                        integration_version=integration_version,
+                        dependency_name=req["_dd_trace_env_variables"].get("DD_DEPENDENCY_NAME", integration_name),
+                    )
+
+                    if req.headers.get("dd-client-library-version", None):
+                        req["tracer_version"] = req.headers.get("dd-client-library-version")
+                    elif req.headers.get("datadog-meta-tracer-version", None):
+                        req["tracer_version"] = req.headers.get("datadog-meta-tracer-version")
+
+                    if req.headers.get("dd-client-library-language", None):
+                        req["tracer_language"] = req.headers.get("dd-client-library-language")
+                    elif req.headers.get("datadog-meta-lang", None):
+                        req["tracer_language"] = req.headers.get("datadog-meta-lang")
+                    integration_requests.append(req)
+                elif include_sent_integrations:
+                    integration_requests.append(req)
+        return integration_requests
+
     def _decode_v04_traces(self, request: Request) -> v04TracePayload:
         content_type = request.content_type
         raw_data = self._request_data(request)
@@ -458,6 +508,55 @@ class Agent:
         # TODO: Validation
         # TODO: Snapshots
         return web.HTTPOk()
+
+    async def handle_put_tested_integrations(self, request: Request) -> web.Response:
+        # we need to store the request manually since this is not a real DD agent endpoint
+        await self._store_request(request)
+        return web.HTTPOk()
+
+    async def handle_get_tested_integrations(self, request: Request) -> web.Response:
+        """Return all tested integrations according to integration data received by agent."""
+        text_headers = ["language_name", "tracer_version", "integration_name", "integration_version", "dependency_name"]
+        aggregated_text = ""
+        seen_integrations = set()
+        req_headers = {}
+
+        # get all requests associated with an integration
+        reqs = await self._integration_requests_by_session(
+            token=_session_token(request), include_sent_integrations=True
+        )
+        for req in reqs:
+            integration = req["integration"]
+
+            # only include the integration in response if all data is included and integration hasn't already been added
+            if (
+                integration.integration_name
+                and integration.integration_version
+                and integration.dependency_name
+                and req["tracer_language"]
+                and req["tracer_version"]
+                and f"{integration.integration_name}@{integration.integration_version}" not in seen_integrations
+            ):
+                aggregated_text += (
+                    ",".join(
+                        [
+                            req["tracer_language"],
+                            ".".join(req["tracer_version"].split("-")[0].split(".")[0:3]),  # ensure semver
+                            integration.integration_name,
+                            integration.integration_version,
+                            integration.dependency_name,
+                        ]
+                    )
+                    + "\n"
+                )
+                # update seen integrations to skip this specific integration and version next loop from another request
+                seen_integrations.add(f"{integration.integration_name}@{integration.integration_version}")
+                # given that we will mainly see one integration per call, set a header for the calling lib to know the
+                # integration name
+                req_headers["file-name"] = integration.integration_name
+        if len(aggregated_text) > 0:
+            aggregated_text = ",".join(text_headers) + "\n" + aggregated_text
+        return web.Response(body=aggregated_text, content_type="text/plain", headers=req_headers)
 
     async def handle_info(self, request: Request) -> web.Response:
         return web.json_response(
@@ -898,6 +997,7 @@ def make_app(
             web.post("/test/session/responses/config", agent.handle_v07_remoteconfig_create),
             web.post("/test/session/responses/config/path", agent.handle_v07_remoteconfig_path_create),
             web.put("/test/session/responses/config", agent.handle_v07_remoteconfig_put),
+            web.put("/test/session/integrations", agent.handle_put_tested_integrations),
             web.get("/test/traces", agent.handle_test_traces),
             web.get("/test/apmtelemetry", agent.handle_test_apmtelemetry),
             # web.get("/test/benchmark", agent.handle_test_traces),
@@ -905,6 +1005,7 @@ def make_app(
             web.get("/test/trace_check/failures", agent.get_trace_check_failures),
             web.get("/test/trace_check/clear", agent.clear_trace_check_failures),
             web.get("/test/trace_check/summary", agent.get_trace_check_summary),
+            web.get("/test/integrations/tested_versions", agent.handle_get_tested_integrations),
         ]
     )
     checks = Checks(

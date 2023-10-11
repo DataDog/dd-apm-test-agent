@@ -374,6 +374,29 @@ summary = {
 
 ```
 curl -X GET 'http://0.0.0.0:8126/test/trace_check/summary'
+```
+
+### /test/session/integrations (PUT)
+Update information about the current tested integration.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+```
+curl -X PUT 'http://0.0.0.0:8126/test/session/integrations' -d '{"integration_name": [INTEGRATION_NAME], "integration_version": [INTEGRATION_VERSION],
+"dependency_name": [DEPENDENCY_NAME], "tracer_language": [TRACER_LANGUAGE], "tracer_version": [TRACER_VERSION]}'
+```
+
+### /test/integrations/tested_versions (GET)
+Return a csv list of all tested integrations received by the agent. The format of returned data will be: 
+`tracer_language,tracer_version,integration_name,integration_version,dependency_name`.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+```
+curl -X GET 'http://0.0.0.0:8126/test/integrations/tested_versions'
+```
 
 ### /v0.1/pipeline_stats
 
