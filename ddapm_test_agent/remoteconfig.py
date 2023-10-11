@@ -18,7 +18,7 @@ class RemoteConfigServer:
     def _create_response(self, token: str, data: Dict[str, Any]) -> None:
         self._responses[token] = data
 
-    async def _get_response(self, token: str) -> Dict[str, Any]:
+    async def _get_response(self, token: str) -> Any:
         return self._responses.get(token, {})
 
     def update_config_response(self, token: str, data: Dict[str, Any]) -> None:
