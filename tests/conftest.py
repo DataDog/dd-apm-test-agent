@@ -171,7 +171,7 @@ def v04_reference_http_trace_payload_headers() -> Dict[str, str]:
         "X-Datadog-Trace-Count": "1",
         "Datadog-Meta-Tracer-Version": "v0.1",
         "datadog-meta-lang": "python",
-        "X-Datadog-Trace-Env-Variables": "DD_INTEGRATION=express,DD_INTEGRATION_VERSION=1.2.3"
+        "X-Datadog-Trace-Env-Variables": "DD_INTEGRATION=express,DD_INTEGRATION_VERSION=1.2.3",
     }
     return headers
 

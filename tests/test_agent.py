@@ -298,9 +298,7 @@ async def test_get_trace_failures_and_clear_json(
 
 
 async def test_integrations_from_trace(
-    agent,
-    v04_reference_http_trace_payload_headers,
-    v04_reference_http_trace_payload_data
+    agent, v04_reference_http_trace_payload_headers, v04_reference_http_trace_payload_data
 ):
     resp = await agent.put(
         "/v0.4/traces",
@@ -314,7 +312,10 @@ async def test_integrations_from_trace(
 
     text = await resp.text()
 
-    assert text == "language_name,tracer_version,integration_name,integration_version,dependency_name\npython,v0.1,express,1.2.3,express\n"
+    assert (
+        text
+        == "language_name,tracer_version,integration_name,integration_version,dependency_name\npython,v0.1,express,1.2.3,express\n"
+    )
 
 
 async def test_put_integrations(
@@ -322,13 +323,15 @@ async def test_put_integrations(
 ):
     resp = await agent.put(
         "/test/session/integrations",
-        data=json.dumps({
-            "integration_name": "flask",
-            "integration_version": "1.1.1",
-            "dependency_name": "not_flask",
-            "tracer_version": "v1",
-            "tracer_language": "python"
-        }),
+        data=json.dumps(
+            {
+                "integration_name": "flask",
+                "integration_version": "1.1.1",
+                "dependency_name": "not_flask",
+                "tracer_version": "v1",
+                "tracer_language": "python",
+            }
+        ),
     )
     assert resp.status == 200, await resp.text()
 
@@ -337,4 +340,7 @@ async def test_put_integrations(
 
     text = await resp.text()
 
-    assert text == "language_name,tracer_version,integration_name,integration_version,dependency_name\npython,v1,flask,1.1.1,not_flask\n"
+    assert (
+        text
+        == "language_name,tracer_version,integration_name,integration_version,dependency_name\npython,v1,flask,1.1.1,not_flask\n"
+    )
