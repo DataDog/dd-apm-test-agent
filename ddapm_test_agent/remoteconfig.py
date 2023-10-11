@@ -90,5 +90,5 @@ class RemoteConfigServer:
     def create_config_response(self, token: str, data: Dict[str, Any]) -> None:
         self._create_response(token, data)
 
-    async def get_config_response(self, token: str) -> Dict[str, Any]:
+    async def get_config_response(self, token: str) -> Any:
         return await self._get_response(token)
