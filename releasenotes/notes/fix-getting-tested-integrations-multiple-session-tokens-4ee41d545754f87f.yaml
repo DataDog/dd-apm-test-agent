@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    Add fix for getting tested integrations when multiple session tokens are used. When no session token is included for a [GET] request to 
+    '/test/integrations/tested_versions', all tested integrations are returned now.
