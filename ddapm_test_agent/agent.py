@@ -386,11 +386,14 @@ class Agent:
         return stats
 
     async def _integration_requests_by_session(
-        self, token: Optional[str], include_sent_integrations: Optional[bool] = False
+        self,
+        token: Optional[str],
+        include_sent_integrations: Optional[bool] = False,
     ) -> List[Request]:
         """Get all requests with an associated tested Integration."""
         integration_requests: List[Request] = []
-        for req in self._requests_by_session(token):
+        requests = self._requests if token is None else self._requests_by_session(token)
+        for req in requests:
             # see if the request was to update with a newly tested integration
             if req.match_info.handler == self.handle_put_tested_integrations:
                 if "integration" not in req:
@@ -520,11 +523,10 @@ class Agent:
         aggregated_text = ""
         seen_integrations = set()
         req_headers = {}
+        token = _session_token(request)
 
         # get all requests associated with an integration
-        reqs = await self._integration_requests_by_session(
-            token=_session_token(request), include_sent_integrations=True
-        )
+        reqs = await self._integration_requests_by_session(token=token, include_sent_integrations=True)
         for req in reqs:
             integration = req["integration"]
 
