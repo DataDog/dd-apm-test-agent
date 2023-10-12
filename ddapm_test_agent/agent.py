@@ -389,56 +389,55 @@ class Agent:
         self,
         token: Optional[str],
         include_sent_integrations: Optional[bool] = False,
-        get_all_requests: Optional[bool] = False,
     ) -> List[Request]:
         """Get all requests with an associated tested Integration."""
         integration_requests: List[Request] = []
-        for req in self._requests:
-            if _session_token(req) in [token, None] or get_all_requests:
-                # see if the request was to update with a newly tested integration
-                if req.match_info.handler == self.handle_put_tested_integrations:
-                    if "integration" not in req:
-                        data = json.loads(await req.read())
-                        integration_name = data.get("integration_name", None)
-                        integration_version = data.get("integration_version", None)
-                        req["integration"] = Integration(
-                            integration_name=integration_name,
-                            integration_version=integration_version,
-                            dependency_name=data.get("dependency_name", integration_name),
-                        )
-                        req["tracer_version"] = data.get("tracer_version", None)
-                        req["tracer_language"] = data.get("tracer_language", None)
-                        integration_requests.append(req)
-                    elif include_sent_integrations:
-                        integration_requests.append(req)
-                # check if integration data was provided in the trace request instead
-                elif (
-                    "_dd_trace_env_variables" in req
-                    and "DD_INTEGRATION" in req["_dd_trace_env_variables"]
-                    and "DD_INTEGRATION_VERSION" in req["_dd_trace_env_variables"]
-                ):
-                    integration_name = req["_dd_trace_env_variables"]["DD_INTEGRATION"]
-                    integration_version = req["_dd_trace_env_variables"]["DD_INTEGRATION_VERSION"]
+        requests = self._requests if token is None else self._requests_by_session(token)
+        for req in requests:
+            # see if the request was to update with a newly tested integration
+            if req.match_info.handler == self.handle_put_tested_integrations:
+                if "integration" not in req:
+                    data = json.loads(await req.read())
+                    integration_name = data.get("integration_name", None)
+                    integration_version = data.get("integration_version", None)
+                    req["integration"] = Integration(
+                        integration_name=integration_name,
+                        integration_version=integration_version,
+                        dependency_name=data.get("dependency_name", integration_name),
+                    )
+                    req["tracer_version"] = data.get("tracer_version", None)
+                    req["tracer_language"] = data.get("tracer_language", None)
+                    integration_requests.append(req)
+                elif include_sent_integrations:
+                    integration_requests.append(req)
+            # check if integration data was provided in the trace request instead
+            elif (
+                "_dd_trace_env_variables" in req
+                and "DD_INTEGRATION" in req["_dd_trace_env_variables"]
+                and "DD_INTEGRATION_VERSION" in req["_dd_trace_env_variables"]
+            ):
+                integration_name = req["_dd_trace_env_variables"]["DD_INTEGRATION"]
+                integration_version = req["_dd_trace_env_variables"]["DD_INTEGRATION_VERSION"]
 
-                    if "integration" not in req:
-                        req["integration"] = Integration(
-                            integration_name=integration_name,
-                            integration_version=integration_version,
-                            dependency_name=req["_dd_trace_env_variables"].get("DD_DEPENDENCY_NAME", integration_name),
-                        )
+                if "integration" not in req:
+                    req["integration"] = Integration(
+                        integration_name=integration_name,
+                        integration_version=integration_version,
+                        dependency_name=req["_dd_trace_env_variables"].get("DD_DEPENDENCY_NAME", integration_name),
+                    )
 
-                        if req.headers.get("dd-client-library-version", None):
-                            req["tracer_version"] = req.headers.get("dd-client-library-version")
-                        elif req.headers.get("datadog-meta-tracer-version", None):
-                            req["tracer_version"] = req.headers.get("datadog-meta-tracer-version")
+                    if req.headers.get("dd-client-library-version", None):
+                        req["tracer_version"] = req.headers.get("dd-client-library-version")
+                    elif req.headers.get("datadog-meta-tracer-version", None):
+                        req["tracer_version"] = req.headers.get("datadog-meta-tracer-version")
 
-                        if req.headers.get("dd-client-library-language", None):
-                            req["tracer_language"] = req.headers.get("dd-client-library-language")
-                        elif req.headers.get("datadog-meta-lang", None):
-                            req["tracer_language"] = req.headers.get("datadog-meta-lang")
-                        integration_requests.append(req)
-                    elif include_sent_integrations:
-                        integration_requests.append(req)
+                    if req.headers.get("dd-client-library-language", None):
+                        req["tracer_language"] = req.headers.get("dd-client-library-language")
+                    elif req.headers.get("datadog-meta-lang", None):
+                        req["tracer_language"] = req.headers.get("datadog-meta-lang")
+                    integration_requests.append(req)
+                elif include_sent_integrations:
+                    integration_requests.append(req)
         return integration_requests
 
     def _decode_v04_traces(self, request: Request) -> v04TracePayload:
@@ -527,9 +526,7 @@ class Agent:
         token = _session_token(request)
 
         # get all requests associated with an integration
-        reqs = await self._integration_requests_by_session(
-            token=token, include_sent_integrations=True, get_all_requests=token is None
-        )
+        reqs = await self._integration_requests_by_session(token=token, include_sent_integrations=True)
         for req in reqs:
             integration = req["integration"]
 
