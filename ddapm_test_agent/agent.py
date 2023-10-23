@@ -985,6 +985,7 @@ def make_app(
             web.post("/v0.6/stats", agent.handle_v06_tracestats),
             web.post("/v0.1/pipeline_stats", agent.handle_v01_pipelinestats),
             web.put("/v0.6/stats", agent.handle_v06_tracestats),
+            web.get("/v0.7/config", agent.handle_v07_remoteconfig),
             web.post("/v0.7/config", agent.handle_v07_remoteconfig),
             web.post("/telemetry/proxy/api/v2/apmtelemetry", agent.handle_v2_apmtelemetry),
             web.post("/profiling/v1/input", agent.handle_v1_profiling),

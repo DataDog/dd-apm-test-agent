@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    Add GET method support for the ``/v0.7/config`` endpoint. The Go library
+    uses ``GET`` requests and the Datadog Agent supports multiple HTTP methods.
