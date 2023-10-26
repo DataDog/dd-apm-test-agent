@@ -130,39 +130,39 @@ def verify_span(d: Any) -> Span:
                 ), f"Expected value of key 'metrics.{k}' to be of type: 'float/int', got: {type(v)}"
         if "span_links" in d:
             assert isinstance(d["span_links"], list)
-            for l in d["span_links"]:
-                assert isinstance(l, dict), f"Expected all span_links to be of type: 'dict', got: {type(l)}"
+            for link in d["span_links"]:
+                assert isinstance(link, dict), f"Expected all span_links to be of type: 'dict', got: {type(link)}"
                 required_attrs = ["span_id", "trace_id"]
                 for attr in required_attrs:
-                    assert attr in l, f"'{attr}' required in span link"
-                assert isinstance(l["span_id"], int), "Expected 'span_id' to be of type: 'int', got: " + str(
-                    type(l["span_id"])
+                    assert attr in link, f"'{attr}' required in span link"
+                assert isinstance(link["span_id"], int), "Expected 'span_id' to be of type: 'int', got: " + str(
+                    type(link["span_id"])
                 )
-                assert isinstance(l["trace_id"], int), "Expected 'trace_id' to be of type: 'int', got: " + str(
-                    type(l["trace_id"])
+                assert isinstance(link["trace_id"], int), "Expected 'trace_id' to be of type: 'int', got: " + str(
+                    type(link["trace_id"])
                 )
-                if "trace_id_high" in l:
+                if "trace_id_high" in link:
                     assert isinstance(
-                        l["trace_id_high"], (int, NoneType)
+                        link["trace_id_high"], (int, NoneType)
                     ), "Expected 'trace_id_high' to be of type: 'int', got: " + str(
-                        type(l["trace_id_high"])
+                        type(link["trace_id_high"])
                     )  # type: ignore
-                if "attributes" in l:
-                    assert isinstance(l["attributes"], dict)
-                    for k, v in l["attributes"].items():
+                if "attributes" in link:
+                    assert isinstance(link["attributes"], dict)
+                    for k, v in link["attributes"].items():
                         assert isinstance(k, str), f"Expected key 'attributes.{k}' to be of type: 'str', got: {type(k)}"
                         assert isinstance(
                             v, str
                         ), f"Expected value of key 'attributes.{k}' to be of type: 'str', got: {type(v)}"
-                if "tracestate" in l:
+                if "tracestate" in link:
                     assert isinstance(
-                        l["tracestate"], (str, NoneType)
+                        link["tracestate"], (str, NoneType)
                     ), "Expected 'tracestate' to be of type: 'str', got: " + str(
-                        type(l["tracestate"])
+                        type(link["tracestate"])
                     )  # type: ignore
-                if "flags" in l:
-                    assert isinstance(l["flags"], int), "Expected flags to be of type: 'int', got: " + str(
-                        type(l["flags"])
+                if "flags" in link:
+                    assert isinstance(link["flags"], int), "Expected flags to be of type: 'int', got: " + str(
+                        type(link["flags"])
                     )
         return cast(Span, d)
     except AssertionError as e:

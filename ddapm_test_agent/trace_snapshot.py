@@ -381,10 +381,10 @@ def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
         d[k] = s[k]  # type: ignore
 
     if "span_links" in d:
-        for l in d["span_links"]:
-            if "attributes" in l:
-                l["attributes"] = OrderedDict(
-                    sorted(l["attributes"].items(), key=operator.itemgetter(0))
+        for link in d["span_links"]:
+            if "attributes" in link:
+                link["attributes"] = OrderedDict(
+                    sorted(link["attributes"].items(), key=operator.itemgetter(0))
                 )  # type: ignore
 
     for k in ["meta", "metrics"]:
