@@ -221,7 +221,7 @@ def _diff_spans(
                 diffs.append(k)
         results.append(diffs)
 
-    diffs = []
+    link_diffs = []
     if len(s1.get("span_links") or []) != len(s2.get("span_links") or []):
         results[0].append("span_links")
     else:
@@ -234,7 +234,7 @@ def _diff_spans(
                 Dict[str, TopLevelSpanValue],
                 {k: v for k, v in l2.items() if k != "attributes"},
             )
-            link_diffs = []
+            link_diff = []
             for d1, d2, ignored in [
                 (l1_no_tags, l2_no_tags, set(i[11:] for i in ignored if i.startswith("span_links."))),
                 (
@@ -245,14 +245,14 @@ def _diff_spans(
             ]:
                 d1 = cast(Dict[str, Any], d1)
                 d2 = cast(Dict[str, Any], d2)
-                link_diff = []
+                diffs = []
                 for k in (set(d1.keys()) | set(d2.keys())) - ignored:
                     if not _key_match(d1, d2, k):
-                        link_diff.append(k)
-                link_diffs.append(link_diff)
+                        diffs.append(k)
+                link_diff.append(diffs)
 
-            diffs.append(link_diffs)
-    results.append(diffs)
+            link_diffs.append(link_diff)
+    results.append(link_diffs)  # type: ignore
 
     return cast(Tuple[List[str], List[str], List[str], List[Tuple[List[str], List[str]]]], tuple(results))
 
@@ -297,7 +297,7 @@ def _compare_traces(expected: Trace, received: Trace, ignored: Set[str]) -> None
                         )
                     elif diff_key == "span_links":
                         raise AssertionError(
-                            f"{diff_type} mismatch on '{diff_key}': got {len(d_rec[diff_key])} values for {diff_key} which does not match expected {len(d_exp[diff_key])}."
+                            f"{diff_type} mismatch on '{diff_key}': got {len(d_rec[diff_key])} values for {diff_key} which does not match expected {len(d_exp[diff_key])}."  # type: ignore
                         )
                     else:
                         raise AssertionError(
@@ -383,9 +383,7 @@ def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
     if "span_links" in d:
         for link in d["span_links"]:
             if "attributes" in link:
-                link["attributes"] = OrderedDict(
-                    sorted(link["attributes"].items(), key=operator.itemgetter(0))
-                )  # type: ignore
+                link["attributes"] = OrderedDict(sorted(link["attributes"].items(), key=operator.itemgetter(0)))
 
     for k in ["meta", "metrics"]:
         if k in d and len(d[k]) == 0:
@@ -415,7 +413,7 @@ def _snapshot_trace_str(trace: Trace, removed: Optional[List[str]] = None) -> st
                 elif key.startswith("span_links."):
                     if "span_links" in span:
                         for link in span["span_links"]:
-                            link.pop(key[11:], None)
+                            link.pop(key[11:], None)  # type: ignore
                 else:
                     span.pop(key, None)  # type: ignore
 

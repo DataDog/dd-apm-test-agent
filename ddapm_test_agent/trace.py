@@ -143,10 +143,8 @@ def verify_span(d: Any) -> Span:
                 )
                 if "trace_id_high" in link:
                     assert isinstance(
-                        link["trace_id_high"], (int, NoneType)
-                    ), "Expected 'trace_id_high' to be of type: 'int', got: " + str(
-                        type(link["trace_id_high"])
-                    )  # type: ignore
+                        link["trace_id_high"], (int, NoneType)  # type: ignore
+                    ), "Expected 'trace_id_high' to be of type: 'int', got: " + str(type(link["trace_id_high"]))
                 if "attributes" in link:
                     assert isinstance(link["attributes"], dict)
                     for k, v in link["attributes"].items():
@@ -156,10 +154,8 @@ def verify_span(d: Any) -> Span:
                         ), f"Expected value of key 'attributes.{k}' to be of type: 'str', got: {type(v)}"
                 if "tracestate" in link:
                     assert isinstance(
-                        link["tracestate"], (str, NoneType)
-                    ), "Expected 'tracestate' to be of type: 'str', got: " + str(
-                        type(link["tracestate"])
-                    )  # type: ignore
+                        link["tracestate"], (str, NoneType)  # type: ignore
+                    ), "Expected 'tracestate' to be of type: 'str', got: " + str(type(link["tracestate"]))
                 if "flags" in link:
                     assert isinstance(link["flags"], int), "Expected flags to be of type: 'int', got: " + str(
                         type(link["flags"])
@@ -333,10 +329,12 @@ def set_metric_tag(s: Span, k: str, v: MetricType) -> Span:
     return s
 
 
-def add_span_link(s: Span, link: Span, attributes: Dict[str, str] = None, flags=None) -> Span:
+def add_span_link(
+    s: Span, link: Span, attributes: Optional[Dict[str, str]] = None, flags: Optional[int] = None
+) -> Span:
     if "span_links" not in s:
         s["span_links"] = []
-    new_link = SpanLink(trace_id=link["trace_id"], span_id=link["span_id"])
+    new_link = SpanLink(trace_id=link["trace_id"], span_id=link["span_id"], trace_id_high=0)
     if attributes is not None:
         new_link["attributes"] = attributes
     if flags is not None:
