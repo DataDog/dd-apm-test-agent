@@ -30,7 +30,7 @@ from .trace import trace_id as get_trace_id
 log = logging.getLogger(__name__)
 
 
-DEFAULT_SNAPSHOT_IGNORES = "span_id,trace_id,parent_id,duration,start,metrics.system.pid,metrics.system.process_id,metrics.process_id,meta.runtime-id"
+DEFAULT_SNAPSHOT_IGNORES = "span_id,trace_id,parent_id,duration,start,metrics.system.pid,metrics.system.process_id,metrics.process_id,meta.runtime-id,span_links.trace_id_high"
 
 
 def _key_match(d1: Dict[str, Any], d2: Dict[str, Any], key: str) -> bool:
@@ -83,37 +83,53 @@ def _trace_similarity(t1: Trace, t2: Trace) -> int:
     return score
 
 
-def _normalize_trace(trace: Trace, trace_id: TraceId) -> Trace:
-    normed_trace = copy_trace(list(bfs_order(trace)))
-    # Have to start at 1 since 0 is reserved for indicating no parent (i.e. root span)
-    span_id = 1
-
-    new_id_map: Dict[SpanId, int] = {}
-    for span in normed_trace:
-        span["trace_id"] = trace_id
-        new_id_map[span["span_id"]] = span_id
-        span["span_id"] = span_id
-        parent_id = span.get("parent_id")
-        if parent_id:
-            # If parent_id is not in the map, assume this is a trace chunk with
-            # a parent not in the trace chunk. Eg: distributed traces.
-            span["parent_id"] = new_id_map.get(parent_id, parent_id)
-        else:
-            # Normalize the parent of root spans to be 0.
-            span["parent_id"] = 0
-
-        if "meta" not in span:
-            span["meta"] = {}
-        if "metrics" not in span:
-            span["metrics"] = {}
-        span_id += 1
-    return normed_trace
-
-
 def _normalize_traces(traces: List[Trace]) -> List[Trace]:
     normed_traces = []
-    for i, trace in enumerate(traces):
-        normed_traces.append(_normalize_trace(trace, i))
+    trace_id_map: Dict[TraceId, Tuple[int, Dict[SpanId, int]]] = {}
+
+    for trace_id, trace in enumerate(traces):
+        normed_trace = copy_trace(list(bfs_order(trace)))
+        # Have to start at 1 since 0 is reserved for indicating no parent (i.e. root span)
+        span_id = 1
+        old_trace_id = 0
+
+        span_id_map: Dict[SpanId, int] = {}
+        for span in normed_trace:
+            old_trace_id = span["trace_id"]
+            span["trace_id"] = trace_id
+            span_id_map[span["span_id"]] = span_id
+            span["span_id"] = span_id
+            parent_id = span.get("parent_id")
+            if parent_id:
+                # If parent_id is not in the map, assume this is a trace chunk with
+                # a parent not in the trace chunk. Eg: distributed traces.
+                span["parent_id"] = span_id_map.get(parent_id, parent_id)
+            else:
+                # Normalize the parent of root spans to be 0.
+                span["parent_id"] = 0
+
+            if "meta" not in span:
+                span["meta"] = {}
+            if "metrics" not in span:
+                span["metrics"] = {}
+            span_id += 1
+
+        normed_traces.append(normed_trace)
+
+        if old_trace_id != 0:
+            trace_id_map[old_trace_id] = (trace_id, span_id_map)
+
+    for normed_trace in normed_traces:
+        for span in normed_trace:
+            if "span_links" in span:
+                for link in span["span_links"]:
+                    if link["trace_id"] in trace_id_map:
+                        (trace_id, span_id_map) = trace_id_map[link["trace_id"]]
+                        link["trace_id"] = trace_id
+                        if link["span_id"] in span_id_map:
+                            link["span_id"] = span_id_map[link["span_id"]]
+                    # TODO: maybe normalize traceparent too?
+
     return normed_traces
 
 
@@ -153,7 +169,9 @@ def _match_traces(t1s: List[Trace], t2s: List[Trace]) -> List[Tuple[Trace, Trace
     return matches
 
 
-def _diff_spans(s1: Span, s2: Span, ignored: Set[str]) -> Tuple[List[str], List[str], List[str]]:
+def _diff_spans(
+    s1: Span, s2: Span, ignored: Set[str]
+) -> Tuple[List[str], List[str], List[str], List[Tuple[List[str], List[str]]]]:
     """Return differing attributes between two spans and their meta/metrics maps.
 
     It is assumed that the spans have passed through preliminary validation
@@ -164,27 +182,27 @@ def _diff_spans(s1: Span, s2: Span, ignored: Set[str]) -> Tuple[List[str], List[
     >>> span2 = copy_span(span)
     >>> span2["resource"] = ""
     >>> _diff_spans(span, span2, set())
-    (['resource'], [], [])
+    (['resource'], [], [], [])
     >>> span2["type"] = "web"
-    >>> tuple(map(set, _diff_spans(span, span2, set()))) == ({'resource', 'type'}, set(), set())
+    >>> tuple(map(set, _diff_spans(span, span2, set()))) == ({'resource', 'type'}, set(), set(), set())
     True
     >>> span2["meta"]["key"] = "value"
-    >>> tuple(map(set, _diff_spans(span, span2, set()))) == ({'resource', 'type'}, {'key'}, set())
+    >>> tuple(map(set, _diff_spans(span, span2, set()))) == ({'resource', 'type'}, {'key'}, set(), set())
     True
     >>> span2["metrics"]["key2"] = 100.0
-    >>> tuple(map(set, _diff_spans(span, span2, set()))) == ({'resource', 'type'}, {'key'}, {'key2'})
+    >>> tuple(map(set, _diff_spans(span, span2, set()))) == ({'resource', 'type'}, {'key'}, {'key2'}, set())
     True
     >>> _diff_spans(span, span2, set(['metrics.key2', 'meta.key', 'resource', 'type', 'meta.key2']))
-    ([], [], [])
+    ([], [], [], [])
     """
     results = []
     s1_no_tags = cast(
         Dict[str, TopLevelSpanValue],
-        {k: v for k, v in s1.items() if k not in ("meta", "metrics")},
+        {k: v for k, v in s1.items() if k not in ("meta", "metrics", "span_links")},
     )
     s2_no_tags = cast(
         Dict[str, TopLevelSpanValue],
-        {k: v for k, v in s2.items() if k not in ("meta", "metrics")},
+        {k: v for k, v in s2.items() if k not in ("meta", "metrics", "span_links")},
     )
     for d1, d2, ignored in [
         (s1_no_tags, s2_no_tags, ignored),
@@ -202,7 +220,41 @@ def _diff_spans(s1: Span, s2: Span, ignored: Set[str]) -> Tuple[List[str], List[
             if not _key_match(d1, d2, k):
                 diffs.append(k)
         results.append(diffs)
-    return cast(Tuple[List[str], List[str], List[str]], tuple(results))
+
+    link_diffs = []
+    if len(s1.get("span_links") or []) != len(s2.get("span_links") or []):
+        results[0].append("span_links")
+    else:
+        for l1, l2 in zip(s1.get("span_links") or [], s2.get("span_links") or []):
+            l1_no_tags = cast(
+                Dict[str, TopLevelSpanValue],
+                {k: v for k, v in l1.items() if k != "attributes"},
+            )
+            l2_no_tags = cast(
+                Dict[str, TopLevelSpanValue],
+                {k: v for k, v in l2.items() if k != "attributes"},
+            )
+            link_diff = []
+            for d1, d2, ignored in [
+                (l1_no_tags, l2_no_tags, set(i[11:] for i in ignored if i.startswith("span_links."))),
+                (
+                    l1.get("attributes") or {},
+                    l2.get("attributes") or {},
+                    set(i[22:] for i in ignored if i.startswith("span_links.attributes.")),
+                ),
+            ]:
+                d1 = cast(Dict[str, Any], d1)
+                d2 = cast(Dict[str, Any], d2)
+                diffs = []
+                for k in (set(d1.keys()) | set(d2.keys())) - ignored:
+                    if not _key_match(d1, d2, k):
+                        diffs.append(k)
+                link_diff.append(diffs)
+
+            link_diffs.append(link_diff)
+    results.append(link_diffs)  # type: ignore
+
+    return cast(Tuple[List[str], List[str], List[str], List[Tuple[List[str], List[str]]]], tuple(results))
 
 
 def _compare_traces(expected: Trace, received: Trace, ignored: Set[str]) -> None:
@@ -227,7 +279,7 @@ def _compare_traces(expected: Trace, received: Trace, ignored: Set[str]) -> None
         ) as frame:
             frame.add_item(f"Expected span:\n{pprint.pformat(s_exp)}")
             frame.add_item(f"Received span:\n{pprint.pformat(s_rec)}")
-            top_level_diffs, meta_diffs, metrics_diffs = _diff_spans(s_exp, s_rec, ignored)
+            top_level_diffs, meta_diffs, metrics_diffs, span_link_diffs = _diff_spans(s_exp, s_rec, ignored)
 
             for diffs, diff_type, d_exp, d_rec in [
                 (top_level_diffs, "span", s_exp, s_rec),
@@ -243,10 +295,38 @@ def _compare_traces(expected: Trace, received: Trace, ignored: Set[str]) -> None
                         raise AssertionError(
                             f"Span{' ' + diff_type if diff_type != 'span' else ''} value '{diff_key}' in expected span but is not in the received span."
                         )
+                    elif diff_key == "span_links":
+                        raise AssertionError(
+                            f"{diff_type} mismatch on '{diff_key}': got {len(d_rec[diff_key])} values for {diff_key} which does not match expected {len(d_exp[diff_key])}."  # type: ignore
+                        )
                     else:
                         raise AssertionError(
                             f"{diff_type} mismatch on '{diff_key}': got '{d_rec[diff_key]}' which does not match expected '{d_exp[diff_key]}'."
                         )
+
+            for i, (link_level_diffs, attribute_diffs) in enumerate(span_link_diffs):
+                for diffs, diff_type, d_exp, d_rec in [
+                    (link_level_diffs, f"{i}", s_exp["span_links"][i], s_rec["span_links"][i]),
+                    (
+                        attribute_diffs,
+                        f"{i} attributes",
+                        s_exp["span_links"][i].get("attributes") or {},
+                        s_rec["span_links"][i].get("attributes") or {},
+                    ),
+                ]:
+                    for diff_key in diffs:
+                        if diff_key not in d_exp:
+                            raise AssertionError(
+                                f"Span link {diff_type} value '{diff_key}' in received span link but is not in the expected span link."
+                            )
+                        elif diff_key not in d_rec:
+                            raise AssertionError(
+                                f"Span link {diff_type} value '{diff_key}' in expected span link but is not in the received span link."
+                            )
+                        else:
+                            raise AssertionError(
+                                f"Span link {diff_type} mismatch on '{diff_key}': got '{d_rec[diff_key]}' which does not match expected '{d_exp[diff_key]}'."
+                            )
 
 
 class SnapshotFailure(Exception):
@@ -286,6 +366,7 @@ def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
         "error",
         "meta",
         "metrics",
+        "span_links",
     ]
     for k in order:
         if k in s:
@@ -298,6 +379,11 @@ def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
     # Add the rest of the attributes in alphanumeric order.
     for k in sorted(set(s.keys()) - set(order)):
         d[k] = s[k]  # type: ignore
+
+    if "span_links" in d:
+        for link in d["span_links"]:
+            if "attributes" in link:
+                link["attributes"] = OrderedDict(sorted(link["attributes"].items(), key=operator.itemgetter(0)))
 
     for k in ["meta", "metrics"]:
         if k in d and len(d[k]) == 0:
@@ -319,6 +405,15 @@ def _snapshot_trace_str(trace: Trace, removed: Optional[List[str]] = None) -> st
                     span["meta"].pop(key[5:], None)
                 elif key.startswith("metrics."):
                     span["metrics"].pop(key[8:], None)
+                elif key.startswith("span_links.attributes."):
+                    if "span_links" in span:
+                        for link in span["span_links"]:
+                            if "attributes" in link:
+                                link["attributes"].pop(key[22:], None)
+                elif key.startswith("span_links."):
+                    if "span_links" in span:
+                        for link in span["span_links"]:
+                            link.pop(key[11:], None)  # type: ignore
                 else:
                     span.pop(key, None)  # type: ignore
 

@@ -47,6 +47,15 @@ SPAN_REQUIRED_ATTRS = [
 MetricType = Union[int, float]
 
 
+class SpanLink(TypedDict):
+    trace_id: int
+    trace_id_high: int
+    span_id: SpanId
+    attributes: NotRequired[Dict[str, str]]
+    tracestate: NotRequired[Optional[str]]
+    flags: NotRequired[Optional[int]]
+
+
 class Span(TypedDict):
     name: str
     span_id: SpanId
@@ -60,6 +69,7 @@ class Span(TypedDict):
     error: NotRequired[Optional[int]]
     meta: NotRequired[Dict[str, str]]
     metrics: NotRequired[Dict[str, MetricType]]
+    span_links: NotRequired[List[SpanLink]]
 
 
 SpanAttr = Literal[
@@ -75,8 +85,9 @@ SpanAttr = Literal[
     "error",
     "meta",
     "metrics",
+    "span_links",
 ]
-TopLevelSpanValue = Union[None, SpanId, TraceId, int, str, Dict[str, str], Dict[str, MetricType]]
+TopLevelSpanValue = Union[None, SpanId, TraceId, int, str, Dict[str, str], Dict[str, MetricType], List[SpanLink]]
 Trace = List[Span]
 v04TracePayload = List[List[Span]]
 TraceMap = OrderedDict[int, Trace]
@@ -117,6 +128,38 @@ def verify_span(d: Any) -> Span:
                 assert isinstance(
                     v, (int, float)
                 ), f"Expected value of key 'metrics.{k}' to be of type: 'float/int', got: {type(v)}"
+        if "span_links" in d:
+            assert isinstance(d["span_links"], list)
+            for link in d["span_links"]:
+                assert isinstance(link, dict), f"Expected all span_links to be of type: 'dict', got: {type(link)}"
+                required_attrs = ["span_id", "trace_id"]
+                for attr in required_attrs:
+                    assert attr in link, f"'{attr}' required in span link"
+                assert isinstance(link["span_id"], int), "Expected 'span_id' to be of type: 'int', got: " + str(
+                    type(link["span_id"])
+                )
+                assert isinstance(link["trace_id"], int), "Expected 'trace_id' to be of type: 'int', got: " + str(
+                    type(link["trace_id"])
+                )
+                if "trace_id_high" in link:
+                    assert isinstance(
+                        link["trace_id_high"], (int, NoneType)  # type: ignore
+                    ), "Expected 'trace_id_high' to be of type: 'int', got: " + str(type(link["trace_id_high"]))
+                if "attributes" in link:
+                    assert isinstance(link["attributes"], dict)
+                    for k, v in link["attributes"].items():
+                        assert isinstance(k, str), f"Expected key 'attributes.{k}' to be of type: 'str', got: {type(k)}"
+                        assert isinstance(
+                            v, str
+                        ), f"Expected value of key 'attributes.{k}' to be of type: 'str', got: {type(v)}"
+                if "tracestate" in link:
+                    assert isinstance(
+                        link["tracestate"], (str, NoneType)  # type: ignore
+                    ), "Expected 'tracestate' to be of type: 'str', got: " + str(type(link["tracestate"]))
+                if "flags" in link:
+                    assert isinstance(link["flags"], int), "Expected flags to be of type: 'int', got: " + str(
+                        type(link["flags"])
+                    )
         return cast(Span, d)
     except AssertionError as e:
         raise TypeError(*e.args) from e
@@ -217,14 +260,25 @@ def pprint_trace(
     return s
 
 
+def copy_span_links(s: SpanLink) -> SpanLink:
+    attributes = s["attributes"].copy() if "attributes" in s else None
+    copy = s.copy()
+    if attributes is not None:
+        copy["attributes"] = attributes
+    return copy
+
+
 def copy_span(s: Span) -> Span:
     meta = s["meta"].copy() if "meta" in s else None
     metrics = s["metrics"].copy() if "metrics" in s else None
+    links = s["span_links"].copy() if "span_links" in s else None
     copy = s.copy()
     if meta is not None:
         copy["meta"] = meta
     if metrics is not None:
         copy["metrics"] = metrics
+    if links is not None:
+        copy["span_links"] = [copy_span_links(link) for link in links]
     return copy
 
 
@@ -272,6 +326,20 @@ def set_meta_tag(s: Span, k: str, v: str) -> Span:
 
 def set_metric_tag(s: Span, k: str, v: MetricType) -> Span:
     s["metrics"][k] = v
+    return s
+
+
+def add_span_link(
+    s: Span, link: Span, attributes: Optional[Dict[str, str]] = None, flags: Optional[int] = None
+) -> Span:
+    if "span_links" not in s:
+        s["span_links"] = []
+    new_link = SpanLink(trace_id=link["trace_id"], span_id=link["span_id"], trace_id_high=0)
+    if attributes is not None:
+        new_link["attributes"] = attributes
+    if flags is not None:
+        new_link["flags"] = flags
+    s["span_links"].append(new_link)
     return s
 
 
