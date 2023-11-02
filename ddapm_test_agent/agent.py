@@ -1,4 +1,5 @@
 import argparse
+from asyncio import StreamReader
 import atexit
 import base64
 from collections import OrderedDict
@@ -9,6 +10,7 @@ import os
 import pprint
 import socket
 import sys
+from typing import Any
 from typing import Awaitable
 from typing import Callable
 from typing import Dict
@@ -22,6 +24,7 @@ from urllib.parse import urlparse
 from urllib.parse import urlunparse
 
 from aiohttp import ClientSession
+from aiohttp import MultipartReader
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
@@ -193,6 +196,7 @@ class Agent:
             "/v0.7/config",
             "/telemetry/proxy/api/v2/apmtelemetry",
             "/v0.1/pipeline_stats",
+            "/tracer_flare/v1",
         ]
 
     async def traces(self) -> TraceMap:
@@ -512,6 +516,33 @@ class Agent:
         # TODO: Snapshots
         return web.HTTPOk()
 
+    async def handle_v1_tracer_flare(self, request: Request) -> web.Response:
+        # reconstruct stream from previously cached bytes
+        stream = StreamReader()
+        stream.feed_data(self._request_data(request))
+        stream.feed_eof()
+
+        tracer_flare: Dict[str, Any] = {}
+
+        async for part in MultipartReader(request.headers, stream):
+            if part.name is not None:
+                if part.name == "flare_file":
+                    tracer_flare[part.name] = await part.read()  # zipfile
+                else:
+                    tracer_flare[part.name] = await part.text()
+
+        request["_tracer_flare"] = tracer_flare
+
+        expectedFields = ["source", "case_id", "email", "hostname", "flare_file"]
+        missingFields = [k for k in expectedFields if k not in tracer_flare]
+
+        if len(missingFields) == 0:
+            return web.HTTPOk()
+        else:
+            msg = f"Flare request is missing {','.join(missingFields)}"
+            log.error(msg)
+            return web.HTTPBadRequest(text=msg)
+
     async def handle_put_tested_integrations(self, request: Request) -> web.Response:
         # we need to store the request manually since this is not a real DD agent endpoint
         await self._store_request(request)
@@ -570,6 +601,7 @@ class Agent:
                     "/v0.6/stats",
                     "/telemetry/proxy/",
                     "/v0.7/config",
+                    "/tracer_flare/v1",
                 ],
                 "feature_flags": [],
                 "config": {},
@@ -767,6 +799,7 @@ class Agent:
                 self.handle_v2_apmtelemetry,
                 self.handle_v1_profiling,
                 self.handle_v07_remoteconfig,
+                self.handle_v1_tracer_flare,
             ):
                 continue
             resp.append(
@@ -989,6 +1022,7 @@ def make_app(
             web.post("/v0.7/config", agent.handle_v07_remoteconfig),
             web.post("/telemetry/proxy/api/v2/apmtelemetry", agent.handle_v2_apmtelemetry),
             web.post("/profiling/v1/input", agent.handle_v1_profiling),
+            web.post("/tracer_flare/v1", agent.handle_v1_tracer_flare),
             web.get("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
