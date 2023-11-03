@@ -9,5 +9,5 @@ ENV SNAPSHOT_DIR=/snapshots
 RUN mkdir -p /src
 WORKDIR /src
 COPY . /src
-RUN pip install /src
+RUN pip install -r docker_deps.txt
 CMD ["ddapm-test-agent"]
