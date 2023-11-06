@@ -402,6 +402,12 @@ curl -X GET 'http://0.0.0.0:8126/test/integrations/tested_versions'
 
 Mimics the pipeline_stats endpoint of the agent, but always returns OK, and logs a line everytime it's called.
 
+### /tracer_flare/v1
+
+Mimics the tracer_flare endpoint of the agent. Returns OK if the flare contains the required form fields, otherwise `400`.
+
+Logs a line everytime it's called and stores the tracer flare details in the request under `"_tracer_flare"`.
+
 ## Development
 
 ### Prerequisites

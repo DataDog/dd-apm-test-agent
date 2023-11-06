@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add ``/tracer_flare/v1`` endpoint with basic form-field validation.

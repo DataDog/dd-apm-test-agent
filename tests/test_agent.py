@@ -64,6 +64,7 @@ async def test_info(agent):
             "/v0.6/stats",
             "/telemetry/proxy/",
             "/v0.7/config",
+            "/tracer_flare/v1",
         ],
         "feature_flags": [],
         "config": {},
