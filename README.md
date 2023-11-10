@@ -408,6 +408,31 @@ Mimics the tracer_flare endpoint of the agent. Returns OK if the flare contains 
 
 Logs a line everytime it's called and stores the tracer flare details in the request under `"_tracer_flare"`.
 
+### /test/session/tracerflares
+
+Return all tracer-flares that have been received by the agent for the given session token.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+Returns the tracer-flares in the following json format:
+
+```json
+[
+  {
+    "source": "...",
+    "case_id": "...",
+    "email": "...",
+    "hostname": "...",
+    "flare_file": "...",
+  }
+]
+```
+
+`flare_file` is the base64 encoded content of the tracer-flare payload.
+
+If there was an error parsing the tracer-flare form, that will be recorded under `error`.
+
 ## Development
 
 ### Prerequisites

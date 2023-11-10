@@ -1,0 +1,4 @@
+features:
+  - |
+    Add ``/test/session/tracerflares`` endpoint to return all tracer-flares received
+    by the test agent for a given session token.
