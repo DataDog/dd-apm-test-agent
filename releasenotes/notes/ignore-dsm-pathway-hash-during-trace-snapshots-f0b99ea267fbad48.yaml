@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Adds dsm `pathway.hash` span tag to the ignored attributes for a trace snapshot.
