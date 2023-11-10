@@ -1,5 +1,4 @@
 import argparse
-from asyncio import StreamReader
 import atexit
 import base64
 from collections import OrderedDict
@@ -10,7 +9,6 @@ import os
 import pprint
 import socket
 import sys
-from typing import Any
 from typing import Awaitable
 from typing import Callable
 from typing import Dict
@@ -24,7 +22,6 @@ from urllib.parse import urlparse
 from urllib.parse import urlunparse
 
 from aiohttp import ClientSession
-from aiohttp import MultipartReader
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
@@ -54,6 +51,8 @@ from .trace_checks import CheckTraceCountHeader
 from .trace_checks import CheckTraceDDService
 from .trace_checks import CheckTracePeerService
 from .trace_checks import CheckTraceStallAsync
+from .tracerflare import TracerFlareEvent
+from .tracerflare import v1_decode as v1_tracerflare_decode
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 
@@ -381,6 +380,19 @@ class Agent:
         # TODO: Sort the events?
         return events
 
+    async def _tracerflares_by_session(self, token: Optional[str]) -> List[TracerFlareEvent]:
+        """Return the tracer-flare events that belong to the given session token.
+
+        If token is None or if the token was used to manually start a session
+        with /session-start then return all tracer-flare events that were sent
+        since the last /session-start request was made.
+        """
+        events: List[TracerFlareEvent] = []
+        for req in self._requests_by_session(token):
+            if req.match_info.handler == self.handle_v1_tracer_flare:
+                events.append(await v1_tracerflare_decode(req.headers, await req.read()))
+        return events
+
     async def _tracestats_by_session(self, token: Optional[str]) -> List[v06StatsPayload]:
         stats: List[v06StatsPayload] = []
         for req in self._requests_by_session(token):
@@ -517,21 +529,7 @@ class Agent:
         return web.HTTPOk()
 
     async def handle_v1_tracer_flare(self, request: Request) -> web.Response:
-        # reconstruct stream from previously cached bytes
-        stream = StreamReader()
-        stream.feed_data(self._request_data(request))
-        stream.feed_eof()
-
-        tracer_flare: Dict[str, Any] = {}
-
-        async for part in MultipartReader(request.headers, stream):
-            if part.name is not None:
-                if part.name == "flare_file":
-                    tracer_flare[part.name] = await part.read()  # zipfile
-                else:
-                    tracer_flare[part.name] = await part.text()
-
-        request["_tracer_flare"] = tracer_flare
+        tracer_flare: TracerFlareEvent = await v1_tracerflare_decode(request.headers, self._request_data(request))
 
         expectedFields = ["source", "case_id", "email", "hostname", "flare_file"]
         missingFields = [k for k in expectedFields if k not in tracer_flare]
@@ -782,6 +780,11 @@ class Agent:
         events = await self._apmtelemetry_by_session(token)
         return web.json_response(events)
 
+    async def handle_session_tracerflares(self, request: Request) -> web.Response:
+        token = request["session_token"]
+        events = await self._tracerflares_by_session(token)
+        return web.json_response(events)
+
     async def handle_session_tracestats(self, request: Request) -> web.Response:
         token = request["session_token"]
         stats = await self._tracestats_by_session(token)
@@ -1029,6 +1032,7 @@ def make_app(
             web.get("/test/session/snapshot", agent.handle_snapshot),
             web.get("/test/session/traces", agent.handle_session_traces),
             web.get("/test/session/apmtelemetry", agent.handle_session_apmtelemetry),
+            web.get("/test/session/tracerflares", agent.handle_session_tracerflares),
             web.get("/test/session/stats", agent.handle_session_tracestats),
             web.get("/test/session/requests", agent.handle_session_requests),
             web.post("/test/session/responses/config", agent.handle_v07_remoteconfig_create),
