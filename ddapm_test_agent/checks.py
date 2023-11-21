@@ -8,7 +8,6 @@ from typing import Dict
 from typing import Generator
 from typing import List
 from typing import Tuple
-from typing import Type
 
 
 CHECK_TRACE: contextvars.ContextVar["CheckTrace"] = contextvars.ContextVar("check_trace")
@@ -181,10 +180,10 @@ class Check:
 
 @dataclasses.dataclass()
 class Checks:
-    checks: List[Type[Check]] = dataclasses.field(init=True)
+    checks: List[Check] = dataclasses.field(init=True)
     enabled: List[str] = dataclasses.field(init=True)
 
-    def _get_check(self, name: str) -> Type[Check]:
+    def _get_check(self, name: str) -> Check:
         for c in self.checks:
             if c.name == name:
                 return c
@@ -199,7 +198,7 @@ class Checks:
 
     async def check(self, name: str, *args: Any, **kwargs: Any) -> None:
         """Find and run the check with the given ``name`` if it is enabled."""
-        check = self._get_check(name)()
+        check = self._get_check(name)
 
         if self.is_enabled(name):
             # Register the check with the current trace

@@ -33,6 +33,7 @@ setup(
         "requests",
         "typing_extensions",
         "yarl",
+        "jsonschema",
     ],
     tests_require=testing_deps,
     setup_requires=["setuptools_scm"],
