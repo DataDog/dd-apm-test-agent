@@ -3,6 +3,8 @@ import atexit
 import base64
 from collections import OrderedDict
 from collections import defaultdict
+from dataclasses import dataclass
+from dataclasses import field
 import json
 import logging
 import os
@@ -11,6 +13,7 @@ import socket
 import sys
 from typing import Awaitable
 from typing import Callable
+from typing import DefaultDict
 from typing import Dict
 from typing import List
 from typing import Literal
@@ -179,13 +182,19 @@ def default_value_trace_results_summary():
     }
 
 
+@dataclass
+class _AgentSession:
+    """Maintain Agent state across requests."""
+
+    sample_rate_by_service_env: Dict[str, float] = field(default_factory=dict)
+
+
 class Agent:
     def __init__(self) -> None:
-        """Only store the requests sent to the agent. There are many representations
-        of data but typically information is lost while transforming the data.
-
-        Storing exactly what is sent to the agent enables us to transform the data
-        however we desire later on.
+        """
+        Try to only store the requests sent to the agent. There are many representations
+        of data but typically information is lost while transforming the data so it is best
+        to keep the original and compute transformation when needed.
         """
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
@@ -203,6 +212,12 @@ class Agent:
             "/v0.1/pipeline_stats",
             "/tracer_flare/v1",
         ]
+
+        # Note that sessions are not cleared at any point since we don't know
+        # definitively when a session is over.
+        self._sessions: DefaultDict[Optional[str], _AgentSession] = defaultdict(
+            lambda: _AgentSession(sample_rate_by_service_env={})
+        )
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -667,11 +682,14 @@ class Agent:
             except MsgPackExtraDataException as e:
                 log.error(f"Error unpacking trace bytes with Msgpack: {str(e)}, error {e}")
 
-        # TODO: implement sampling logic
-        return web.json_response(data={"rate_by_service": {}})
+        return web.json_response(data={"rate_by_service": self._sessions[token].sample_rate_by_service_env})
 
     async def handle_session_start(self, request: Request) -> web.Response:
+        rates = json.loads(request.url.query.get("agent_sample_rate_by_service", "{}"))
         self._requests.append(request)
+        session = self._sessions[_session_token(request)]
+        session.sample_rate_by_service_env = rates
+        log.info("Starting new session with token %r: %r", _session_token(request), session)
         return web.HTTPOk()
 
     async def handle_snapshot(self, request: Request) -> web.Response:

@@ -203,6 +203,12 @@ Specify trace ids as comma separated values (eg. `12345,7890,2468`)
 Initiate a _synchronous_ session. All subsequent traces received will be
 associated with the required test token provided.
 
+#### [optional] `?agent_sample_rate_by_service=`
+
+Sample rates to be returned by the agent in response to trace v0.4 and v0.5 requests.
+
+Example: `"{'service:test,env:staging': 0.5, 'service:test2,env:prod': 0.2}"` (note the JSON has to be URL-encoded).
+
 #### [optional] `?test_session_token=`
 #### [optional] `X-Datadog-Test-Session-Token`
 
