@@ -448,7 +448,7 @@ and work out of a virtualenv:
 
     python3.11 -m venv .venv
     source .venv/bin/activate
-    pip install -e .[testing]
+    pip install -e '.[testing]'
 
 
 ### Running the tests
