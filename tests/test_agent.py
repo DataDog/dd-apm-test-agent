@@ -53,6 +53,27 @@ async def test_trace_clear_token(
     assert await resp.text() == "[[]]"
 
 
+async def test_trace_agent_sample_rate(
+    agent,
+    v04_reference_http_trace_payload_headers,
+    v04_reference_http_trace_payload_data,
+):
+    agent_rates = {"service:test,env:staging": 0.5}
+    resp = await agent.get(
+        "/test/session/start",
+        params={"test_session_token": "1", "agent_sample_rate_by_service": json.dumps(agent_rates)},
+    )
+    assert resp.status == 200, await resp.text()
+    resp = await agent.put(
+        "/v0.4/traces",
+        params={"test_session_token": "1"},
+        headers=v04_reference_http_trace_payload_headers,
+        data=v04_reference_http_trace_payload_data,
+    )
+    assert resp.status == 200, await resp.text()
+    assert await resp.json() == {"rate_by_service": {"service:test,env:staging": 0.5}}
+
+
 async def test_info(agent):
     resp = await agent.get("/info")
     assert resp.status == 200
