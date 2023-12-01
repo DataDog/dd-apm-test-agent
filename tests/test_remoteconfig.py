@@ -28,10 +28,13 @@ async def _request_update_and_get_data_with_session(rc_agent, token, data, expec
     assert json.loads(content) == expected
 
 
-async def test_remoteconfig(
-    rc_agent,
-):
+async def test_remoteconfig(rc_agent):
     resp = await rc_agent.post("/v0.7/config")
+    content = await resp.text()
+    assert resp.status == 200
+    assert content == "{}"
+
+    resp = await rc_agent.get("/v0.7/config")
     content = await resp.text()
     assert resp.status == 200
     assert content == "{}"

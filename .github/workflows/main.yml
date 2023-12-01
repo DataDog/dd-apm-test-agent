@@ -1,7 +1,9 @@
 name: CI
 on:
-  push:
   pull_request:
+  push:
+    branches:
+      - master
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -12,10 +14,10 @@ jobs:
       - uses: actions/checkout@v2
         with:
           fetch-depth: 0
-      - run: pip install riot==0.13.0
+      - run: pip install .[testing]
       - run: riot -v run -s check_fmt
       - run: riot -v run -s flake8
-      - run: riot -v run -s mypy
+      - run: riot -v run mypy
   test:
     strategy:
       matrix:
@@ -28,7 +30,7 @@ jobs:
         uses: actions/setup-python@v2
         with:
           python-version: ${{ matrix.python-version }}
-      - name: install riot
-        run: pip install riot==0.12.1
+      - name: install deps
+        run: pip install .[testing]
       - run: |
           riot run -p ${{ matrix.python-version}} test

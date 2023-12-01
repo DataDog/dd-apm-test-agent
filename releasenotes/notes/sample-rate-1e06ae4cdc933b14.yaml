@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add the ability to set the trace sample rates returned by the agent.

@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Added ability to parse and verify span links in payloads as well as
+    comparing them in snapshots.

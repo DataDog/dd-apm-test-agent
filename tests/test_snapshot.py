@@ -5,6 +5,7 @@ import pytest
 
 from ddapm_test_agent import trace_snapshot
 from ddapm_test_agent import tracestats_snapshot
+from ddapm_test_agent.trace import add_span_link
 from ddapm_test_agent.trace import copy_span
 from ddapm_test_agent.trace import set_attr
 from ddapm_test_agent.trace import set_meta_tag
@@ -201,10 +202,10 @@ async def test_snapshot_trace_differences(agent, expected_traces, actual_traces,
         (
             [
                 [
-                    {"span_id": 1, "start": 0},
-                    {"parent_id": 1, "span_id": 2, "start": 1},
-                    {"parent_id": 1, "span_id": 3, "start": 2},
-                    {"parent_id": 2, "span_id": 4, "start": 4},
+                    {"trace_id": 1, "span_id": 1, "start": 0},
+                    {"trace_id": 1, "parent_id": 1, "span_id": 2, "start": 1},
+                    {"trace_id": 1, "parent_id": 1, "span_id": 3, "start": 2},
+                    {"trace_id": 1, "parent_id": 2, "span_id": 4, "start": 4},
                 ]
             ],
             """[[
@@ -236,10 +237,10 @@ async def test_snapshot_trace_differences(agent, expected_traces, actual_traces,
         (
             [
                 [
-                    {"parent_id": None, "span_id": 1, "start": 0},
-                    {"parent_id": 1, "span_id": 2, "start": 1},
-                    {"parent_id": 1, "span_id": 3, "start": 2},
-                    {"parent_id": 2, "span_id": 4, "start": 4},
+                    {"trace_id": 1, "parent_id": None, "span_id": 1, "start": 0},
+                    {"trace_id": 1, "parent_id": 1, "span_id": 2, "start": 1},
+                    {"trace_id": 1, "parent_id": 1, "span_id": 3, "start": 2},
+                    {"trace_id": 1, "parent_id": 2, "span_id": 4, "start": 4},
                 ]
             ],
             """[[
@@ -554,6 +555,113 @@ FIVE_SPAN_TRACE_NO_START = random_trace(5, remove_keys=["start"])
                 [
                     TWO_SPAN_TRACE_NO_START[0],
                     set_metric_tag(copy_span(TWO_SPAN_TRACE_NO_START[1]), "received", 123.32),
+                ]
+            ],
+            "",
+            {"start"},
+        ),
+        # Mismatching span links count
+        (
+            [
+                TWO_SPAN_TRACE_NO_START,
+            ],
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    add_span_link(copy_span(TWO_SPAN_TRACE_NO_START[1]), TWO_SPAN_TRACE_NO_START[0]),
+                ]
+            ],
+            "Span value 'span_links' in received span but is not in the expected span.",
+            {"start"},
+        ),
+        # Mismatching span link reference
+        (
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    add_span_link(copy_span(TWO_SPAN_TRACE_NO_START[1]), TWO_SPAN_TRACE_NO_START[1]),
+                ]
+            ],
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    add_span_link(copy_span(TWO_SPAN_TRACE_NO_START[1]), TWO_SPAN_TRACE_NO_START[0]),
+                ]
+            ],
+            "Span link 0 mismatch on 'span_id': got '1' which does not match expected '2'.",
+            {"start"},
+        ),
+        # Mismatching span link value
+        (
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    add_span_link(copy_span(TWO_SPAN_TRACE_NO_START[1]), TWO_SPAN_TRACE_NO_START[0], flags=1),
+                ]
+            ],
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    add_span_link(copy_span(TWO_SPAN_TRACE_NO_START[1]), TWO_SPAN_TRACE_NO_START[0], flags=0),
+                ]
+            ],
+            "Span link 0 mismatch on 'flags': got '0' which does not match expected '1'.",
+            {"start"},
+        ),
+        # Mismatching span link fields
+        (
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    add_span_link(copy_span(TWO_SPAN_TRACE_NO_START[1]), TWO_SPAN_TRACE_NO_START[0]),
+                ]
+            ],
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    add_span_link(copy_span(TWO_SPAN_TRACE_NO_START[1]), TWO_SPAN_TRACE_NO_START[0], flags=1),
+                ]
+            ],
+            "Span link 0 value 'flags' in received span link but is not in the expected span link.",
+            {"start"},
+        ),
+        # Mismatching span link attribute
+        (
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    add_span_link(
+                        copy_span(TWO_SPAN_TRACE_NO_START[1]), TWO_SPAN_TRACE_NO_START[0], {"a": "2", "b": "3"}
+                    ),
+                ]
+            ],
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    add_span_link(
+                        copy_span(TWO_SPAN_TRACE_NO_START[1]), TWO_SPAN_TRACE_NO_START[0], {"a": "2", "b": "0"}
+                    ),
+                ]
+            ],
+            "Span link 0 attributes mismatch on 'b': got '0' which does not match expected '3'.",
+            {"start"},
+        ),
+        # Matching span link
+        (
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    add_span_link(
+                        copy_span(TWO_SPAN_TRACE_NO_START[1]), TWO_SPAN_TRACE_NO_START[0], {"a": "2", "b": "0"}, 1
+                    ),
+                ]
+            ],
+            [
+                [
+                    TWO_SPAN_TRACE_NO_START[0],
+                    add_span_link(
+                        copy_span(TWO_SPAN_TRACE_NO_START[1]), TWO_SPAN_TRACE_NO_START[0], {"a": "2", "b": "0"}, 1
+                    ),
                 ]
             ],
             "",

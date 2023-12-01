@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    Adds two new Trace Checks for service naming and peer service. `trace_dd_service` check ensures that handled traces
+    have a correctly configured service name according to the trace's Span Attribute Schema Version. `trace_peer_service`
+    ensures the that the correct `peer.service` value is set for spans according to the supplied span precursors.

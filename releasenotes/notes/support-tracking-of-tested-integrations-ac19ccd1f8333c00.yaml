@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    Add support for tracking the integrations being tested. Tracked integrations can be recorded by a [PUT] request to the Test Agent
+    at `/test/session/integrations`. To get data about which integrations the Test Agent encountered, make a [GET] request to `/test/integrations/tested_versions`.
+    Tested integrations include information such as the integration name, the tested integration version, the tracer language, the tracer version and the 
+    dependency name of the integration.
