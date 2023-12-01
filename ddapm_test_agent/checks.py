@@ -150,7 +150,7 @@ class Check:
     with error messages returned to the test case.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._failed: bool = False
         self._skipped: bool = False
         self._msg: str = ""
