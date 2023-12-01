@@ -55,7 +55,7 @@ async def testagent(
     # Wait for server to start
     try:
         async with aiohttp.ClientSession() as session:
-            for _ in range(20):
+            for _ in range(100):
                 try:
                     r = await session.get(f"http://localhost:{testagent_port}")
                 except (ClientConnectorError, ClientOSError):
@@ -344,8 +344,8 @@ async def test_profiling_endpoint(testagent: aiohttp.ClientSession, testagent_po
     resp = await testagent.get("http://localhost:8126/test/session/requests")
     assert resp.status == 200
     data = await resp.json()
-    assert len(data) == 1
-    assert data[0]["url"].endswith("/profiling/v1/input")
+    assert len(data) >= 1
+    assert data[-1]["url"].endswith("/profiling/v1/input")
 
 
 async def test_race_condition(

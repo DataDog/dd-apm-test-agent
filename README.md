@@ -440,7 +440,7 @@ If there was an error parsing the tracer-flare form, that will be recorded under
 A Python version of 3.8 or above and [`riot`](https://github.com/Datadog/riot) are required. It is recommended to create
 and work out of a virtualenv:
 
-    virtualenv --python=3.8 .venv
+    python3.11 -m venv .venv
     source .venv/bin/activate
     pip install -e .[testing]
 
@@ -449,7 +449,7 @@ and work out of a virtualenv:
 
 To run the tests (in Python 3.8):
 
-    riot run -p3.8 test
+    riot run -p3.11 test
 
 Note: if snapshots need to be (re)generated in the tests set the environment variable `GENERATE_SNAPSHOTS=1`.
 

@@ -14,6 +14,7 @@ from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Literal
+from typing import Mapping
 from typing import Optional
 from typing import Set
 from typing import Tuple
@@ -21,6 +22,7 @@ from typing import cast
 from urllib.parse import urlparse
 from urllib.parse import urlunparse
 
+from aiohttp import ClientResponse
 from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
@@ -91,7 +93,7 @@ def _session_token(request: Request) -> Optional[str]:
     return token
 
 
-@middleware  # type: ignore
+@middleware
 async def session_token_middleware(request: Request, handler: _Handler) -> web.Response:
     """Extract session token from the request and store it in the request.
 
@@ -102,7 +104,7 @@ async def session_token_middleware(request: Request, handler: _Handler) -> web.R
     return await handler(request)
 
 
-async def _forward_request(request_data, headers, full_agent_url):
+async def _forward_request(request_data: bytes, headers: Mapping[str, str], full_agent_url: str) -> ClientResponse:
     async with ClientSession() as session:
         async with session.post(
             full_agent_url,
@@ -112,29 +114,27 @@ async def _forward_request(request_data, headers, full_agent_url):
             assert resp.status == 200, f"Request to agent unsuccessful, received [{resp.status}] response."
 
             if "text/html" in resp.content_type:
-                response_data = await resp.read()
-                if len(response_data) == 0:
-                    log.info("Received empty response: %r from agent.", response_data)
+                raw_response_data = await resp.read()
+                if len(raw_response_data) == 0:
+                    log.info("Received empty response: %r from agent.", raw_response_data)
                 else:
-                    if isinstance(response_data, bytes):
-                        response_data = response_data.decode()
+                    if isinstance(raw_response_data, bytes):
+                        response_data = raw_response_data.decode()
                     try:
-                        response_data = json.loads(response_data)
+                        response_data = json.loads(raw_response_data)
                     except json.JSONDecodeError as e:
                         log.warning("Error decoding response data: %s, data=%r", str(e), response_data)
                         log.warning("Original Request: %r", request_data)
-                        response_data = {}
+                        response_data = ""
                     log.info("Response %r from agent:", response_data)
             elif "text/plain" in resp.content_type:
-                response_data = await resp.text()
-                log.info("Response %r from agent:", response_data)
+                log.info("Response %r from agent:", await resp.text())
             else:
-                response_data = await resp.json()
-                log.info("Response %r from agent:", response_data)
+                log.info("Response %r from agent:", await resp.json())
             return resp
 
 
-async def _prepare_and_send_request(data, request, headers):
+async def _prepare_and_send_request(data: bytes, request: Request, headers: Mapping[str, str]) -> web.Response:
     headers = {
         "Content-Type": headers.get("Content-Type", "application/msgpack"),
         **{k: v for k, v in headers.items() if k.lower() not in ["content-type", "host", "transfer-encoding"]},
@@ -143,7 +143,13 @@ async def _prepare_and_send_request(data, request, headers):
     full_agent_url = agent_url + request.path
     log.info("Forwarding request to agent at %r", full_agent_url)
     log.debug(f"Using headers: {headers}")
-    return await _forward_request(data, headers, full_agent_url)
+
+    client_response = await _forward_request(data, headers, full_agent_url)
+    return web.Response(
+        status=client_response.status,
+        headers=client_response.headers,
+        body=await client_response.read(),
+    )
 
 
 def update_trace_agent_port(url, new_port):
@@ -174,7 +180,7 @@ def default_value_trace_results_summary():
 
 
 class Agent:
-    def __init__(self):
+    def __init__(self) -> None:
         """Only store the requests sent to the agent. There are many representations
         of data but typically information is lost while transforming the data.
 
@@ -233,7 +239,7 @@ class Agent:
         log.info(trace_failures)
         return web.HTTPOk()
 
-    def get_trace_check_failures(self, request: Request) -> web.Response:
+    async def get_trace_check_failures(self, request: Request) -> web.Response:
         """Return the Trace Check failures that occurred, if pooling is enabled,
         returned as either a Text (by default) or JSON response.
         """
@@ -269,7 +275,7 @@ class Agent:
         else:
             return web.HTTPOk()
 
-    def get_trace_check_summary(self, request: Request) -> web.Response:
+    async def get_trace_check_summary(self, request: Request) -> web.Response:
         token = request["session_token"]
         summary: Dict[str, Dict[str, int]] = defaultdict(default_value_trace_results_summary)
         return_all = "return_all" in request.query and request.query["return_all"].lower() == "true"
@@ -886,7 +892,7 @@ class Agent:
         # wait 1s, gather traces and assert tags
         raise NotImplementedError
 
-    @middleware  # type: ignore
+    @middleware
     async def store_request_middleware(self, request: Request, handler: _Handler) -> web.Response:
         # only store requests for specific endpoints
         if request.path in self._forward_endpoints:
@@ -895,7 +901,7 @@ class Agent:
         # Call the original handler
         return await handler(request)
 
-    @middleware  # type: ignore
+    @middleware
     async def request_forwarder_middleware(self, request: Request, handler: _Handler) -> web.Response:
         headers = CIMultiDict(request.headers)
 
@@ -947,7 +953,7 @@ class Agent:
         else:
             return endpoint_response
 
-    @middleware  # type: ignore
+    @middleware
     async def check_failure_middleware(self, request: Request, handler: _Handler) -> web.Response:
         """Convert any failed checks into an HttpException."""
         trace = start_trace("request %r" % request)
@@ -1006,10 +1012,10 @@ def make_app(
     app = web.Application(
         client_max_size=int(100e6),  # 100MB - arbitrary
         middlewares=[
-            agent.check_failure_middleware,
-            agent.store_request_middleware,
-            agent.request_forwarder_middleware,
-            session_token_middleware,
+            agent.check_failure_middleware,  # type: ignore
+            agent.store_request_middleware,  # type: ignore
+            agent.request_forwarder_middleware,  # type: ignore
+            session_token_middleware,  # type: ignore
         ],
     )
     app.add_routes(

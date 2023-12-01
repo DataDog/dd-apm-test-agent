@@ -22,7 +22,7 @@ X-Datadog-Trace-Count http header with each payload. The value of the
 header must match the number of traces included in the payload.
 """.strip()
 
-    def check(self, headers: CIMultiDictProxy, num_traces: int) -> None:
+    def check(self, headers: CIMultiDictProxy[str], num_traces: int) -> None:
         if "X-Datadog-Trace-Count" not in headers:
             self.fail("X-Datadog-Trace-Count header not found in headers")
             return
@@ -42,7 +42,7 @@ class CheckMetaTracerVersionHeader(Check):
     name = "meta_tracer_version_header"
     description = """v0.4 payloads must include the Datadog-Meta-Tracer-Version header."""
 
-    def check(self, headers: CIMultiDictProxy) -> None:
+    def check(self, headers: CIMultiDictProxy[str]) -> None:
         if "Datadog-Meta-Tracer-Version" not in headers:
             self.fail("Datadog-Meta-Tracer-Version not found in headers")
 
@@ -53,7 +53,7 @@ class CheckTraceContentLength(Check):
 The max content size of a trace payload is 50MB.
 """.strip()
 
-    def check(self, headers: CIMultiDictProxy) -> None:
+    def check(self, headers: CIMultiDictProxy[str]) -> None:
         if "Content-Length" not in headers:
             self.fail(f"content length header 'Content-Length' not in http headers {headers}")
             return
@@ -74,7 +74,7 @@ Note that only the request for this trace is stalled, subsequent requests will n
 affected.
 """.strip()
 
-    async def check(self, headers: CIMultiDictProxy, request: Request) -> None:
+    async def check(self, headers: CIMultiDictProxy[str], request: Request) -> None:
         if "X-Datadog-Test-Stall-Seconds" in headers:
             duration = float(headers["X-Datadog-Test-Stall-Seconds"])
         else:
