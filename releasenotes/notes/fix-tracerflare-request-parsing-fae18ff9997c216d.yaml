@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Fix the parsing logic for tracer flare requests
