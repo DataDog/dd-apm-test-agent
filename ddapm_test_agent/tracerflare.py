@@ -1,8 +1,10 @@
 import base64
+from typing import Dict
+
 from aiohttp import MultipartReader
 from aiohttp import StreamReader
 from aiohttp.web import Request
-from typing import Dict
+
 
 TracerFlareEvent = Dict[str, str]
 
