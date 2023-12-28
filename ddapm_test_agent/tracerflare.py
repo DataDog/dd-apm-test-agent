@@ -1,24 +1,23 @@
-from asyncio import StreamReader
+from aiohttp import StreamReader
 import base64
-import typing
 from typing import Dict
-from typing import Mapping
-
-import aiohttp
+import traceback
 from aiohttp import MultipartReader
+from aiohttp.web import Request
 
 
 TracerFlareEvent = Dict[str, str]
 
 
-async def v1_decode(headers: Mapping[str, str], data: bytes) -> TracerFlareEvent:
+async def v1_decode(request: Request, data: bytes) -> TracerFlareEvent:
     """Decode v1 tracer flare form as a dict"""
     tracer_flare: TracerFlareEvent = {}
+
     try:
-        stream = StreamReader()
+        stream = StreamReader(request.protocol, len(data))
         stream.feed_data(data)
         stream.feed_eof()
-        async for part in MultipartReader(headers, typing.cast(aiohttp.StreamReader, stream)):
+        async for part in MultipartReader(request.headers, stream):
             if part.name is not None:
                 if part.name == "flare_file":
                     tracer_flare[part.name] = base64.b64encode(await part.read()).decode("ascii")

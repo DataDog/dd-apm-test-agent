@@ -411,7 +411,7 @@ class Agent:
         events: List[TracerFlareEvent] = []
         for req in self._requests_by_session(token):
             if req.match_info.handler == self.handle_v1_tracer_flare:
-                events.append(await v1_tracerflare_decode(req.headers, await req.read()))
+                events.append(await v1_tracerflare_decode(req, await req.read()))
         return events
 
     async def _tracestats_by_session(self, token: Optional[str]) -> List[v06StatsPayload]:
@@ -550,7 +550,12 @@ class Agent:
         return web.HTTPOk()
 
     async def handle_v1_tracer_flare(self, request: Request) -> web.Response:
-        tracer_flare: TracerFlareEvent = await v1_tracerflare_decode(request.headers, self._request_data(request))
+        tracer_flare: TracerFlareEvent = await v1_tracerflare_decode(request, self._request_data(request))
+
+        if "error" in tracer_flare:
+            msg = f"Error while parsing flare request: {tracer_flare['error']}"
+            log.error(msg)
+            return web.HTTPBadRequest(text=msg)
 
         expectedFields = ["source", "case_id", "email", "hostname", "flare_file"]
         missingFields = [k for k in expectedFields if k not in tracer_flare]
