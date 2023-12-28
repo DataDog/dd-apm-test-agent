@@ -1,6 +1,6 @@
 import base64
-from aiohttp import StreamReader
 from aiohttp import MultipartReader
+from aiohttp import StreamReader
 from aiohttp.web import Request
 from typing import Dict
 
