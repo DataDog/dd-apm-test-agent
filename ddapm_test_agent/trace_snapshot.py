@@ -265,7 +265,7 @@ def _compare_traces(expected: Trace, received: Trace, ignored: Set[str]) -> None
     if len(received) != len(expected):
         names = ["'%s'" % s["name"] for s in received[len(expected) - len(received) :]]
         raise AssertionError(
-            f"Received different number of spans ({len(received)}) than expected ({len(expected)}). Unmatched span names: {', '.join(names)}."
+            f"Received different number of spans ({len(received)}) than expected ({len(expected)}). Unmatched spans: {', '.join(names)}. "
             f"If spans<=10, will display received and expected.\nReceived: {received if (len(received) <= 10) else 'too long'}"
             f"\nExpected: {expected if (len(expected) <= 10) else 'too long'}"
         )
