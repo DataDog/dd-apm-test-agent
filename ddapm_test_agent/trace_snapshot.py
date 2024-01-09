@@ -262,7 +262,7 @@ def _compare_traces(expected: Trace, received: Trace, ignored: Set[str]) -> None
 
     The given traces are assumed to be in BFS order.
     """
-    if (len(received) != len(expected)):
+    if len(received) != len(expected):
         names = ["'%s'" % s["name"] for s in received[len(expected) - len(received) :]]
         raise AssertionError(
             f"Received different number of spans ({len(received)}) than expected ({len(expected)}). Unmatched span names: {', '.join(names)}."
