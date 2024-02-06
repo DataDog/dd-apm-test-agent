@@ -17,7 +17,7 @@ venv = Venv(
         ),
         Venv(
             pkgs={
-                "black": latest,
+                "black": "==23.10.1",
                 "isort": latest,
                 "toml": latest,
             },
