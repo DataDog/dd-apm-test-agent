@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Adds a qsarg ``trace_count_tolerance`` to the ``test/session/snapshot`` endpoint that configures the maximum
+    difference between expected and received trace counts that is still considered a match.
