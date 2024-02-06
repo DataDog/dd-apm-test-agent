@@ -787,9 +787,7 @@ class Agent:
                 # Do the snapshot comparison
                 with open(tracestats_snap_file, mode="r") as f:
                     raw_snapshot = json.load(f)
-                tracestats_snapshot.snapshot(
-                    expected_stats=raw_snapshot, received_stats=received_stats, count_tolerance=count_tolerance
-                )
+                tracestats_snapshot.snapshot(expected_stats=raw_snapshot, received_stats=received_stats)
             elif received_stats:
                 # Create a new snapshot for the data received
                 with open(tracestats_snap_file, mode="w") as f:
