@@ -134,9 +134,7 @@ def _normalize_traces(traces: List[Trace]) -> List[Trace]:
 
 
 def _match_traces(t1s: List[Trace], t2s: List[Trace], count_tolerance: int = 0) -> List[Tuple[Trace, Trace]]:
-    """
-    :param count_tolerance: The maximum allowed difference in count between expected and received spans
-    """
+    """:param count_tolerance: The maximum allowed difference in count between expected and received spans"""
     t1_map: Dict[TraceId, Trace] = {get_trace_id(t): t for t in t1s}
     t2_map: Dict[TraceId, Trace] = {get_trace_id(t): t for t in t2s}
     # Note: cannot assume trace_ids are unique between t1s and t2s (since snapshot normalizes them)
