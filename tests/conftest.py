@@ -28,8 +28,8 @@ pytest_plugins = "aiohttp.pytest_plugin"
 
 
 @pytest.fixture
-def agent_disabled_checks() -> Generator[List[str], None, None]:
-    yield []
+def agent_enabled_checks() -> Generator[List[str], None, None]:
+    yield ["trace_content_length", "meta_tracer_version_header", "trace_count_header", "trace_stall"]
 
 
 @pytest.fixture
@@ -63,25 +63,53 @@ def trace_request_delay() -> Generator[float, None, None]:
 
 
 @pytest.fixture
+def suppress_trace_parse_errors() -> Generator[bool, None, None]:
+    yield False
+
+
+@pytest.fixture
+def pool_trace_check_failures() -> Generator[bool, None, None]:
+    yield True
+
+
+@pytest.fixture
+def disable_error_responses() -> Generator[bool, None, None]:
+    yield False
+
+
+@pytest.fixture
+def snapshot_removed_attrs() -> Generator[Set[str], None, None]:
+    yield set()
+
+
+@pytest.fixture
 async def agent_app(
     aiohttp_server,
-    agent_disabled_checks,
+    agent_enabled_checks,
     log_span_fmt,
     snapshot_dir,
     snapshot_ci_mode,
     snapshot_ignored_attrs,
     agent_url,
     trace_request_delay,
+    suppress_trace_parse_errors,
+    pool_trace_check_failures,
+    disable_error_responses,
+    snapshot_removed_attrs,
 ):
     app = await aiohttp_server(
         make_app(
-            agent_disabled_checks,
+            agent_enabled_checks,
             log_span_fmt,
             str(snapshot_dir),
             snapshot_ci_mode,
             snapshot_ignored_attrs,
             agent_url,
             trace_request_delay,
+            suppress_trace_parse_errors,
+            pool_trace_check_failures,
+            disable_error_responses,
+            snapshot_removed_attrs,
         )
     )
     yield app
@@ -108,13 +136,18 @@ def v04_reference_http_trace_payload_data_raw() -> List[Trace]:
                     "type": "http",
                     "start": 1342343123,
                     "duration": 123214,
+                    "error": 0,
                     "meta": {
+                        "component": "",
                         "http.url": "http://localhost:8080/users",
                         "http.method": "GET",
                         "http.status_code": "200",
                         "http.status_msg": "OK",
+                        "language": "python",
+                        "runtime-id": "2d377516ca12429aaf072f037ed2e4cc",
                     },
                     "metrics": {
+                        "process_id": 111,
                         "sampling_priority_v1": 1.0,
                     },
                 }
@@ -137,6 +170,8 @@ def v04_reference_http_trace_payload_headers() -> Dict[str, str]:
         "Content-Type": "application/msgpack",
         "X-Datadog-Trace-Count": "1",
         "Datadog-Meta-Tracer-Version": "v0.1",
+        "datadog-meta-lang": "python",
+        "X-Datadog-Trace-Env-Variables": "DD_INTEGRATION=express,DD_INTEGRATION_VERSION=1.2.3",
     }
     return headers
 
@@ -233,12 +268,8 @@ def v06_reference_http_stats_payload_data_raw():
                         "TopLevelHits": ok_n + err_n,
                         "Duration": total,
                         "Errors": err_n,
-                        "OkSummary": DDSketchProto.to_proto(
-                            ok_dist
-                        ).SerializeToString(),
-                        "ErrorSummary": DDSketchProto.to_proto(
-                            err_dist
-                        ).SerializeToString(),
+                        "OkSummary": DDSketchProto.to_proto(ok_dist).SerializeToString(),
+                        "ErrorSummary": DDSketchProto.to_proto(err_dist).SerializeToString(),
                     },
                 ],
             }
@@ -342,14 +373,107 @@ def v2_reference_http_apmtelemetry_payload_data(
 
 
 @pytest.fixture
+def v07_reference_http_remoteconfig_payload_data_raw():
+    data = {
+        "client": {
+            "id": "test-id",
+            "products": ["ASM_DATA", "ASM", "ASM_DD"],
+            "is_tracer": True,
+            "client_tracer": {
+                "runtime_id": "test_runtime_id",
+                "language": "python",
+                "tracer_version": "test-1.x",
+                "service": "test_agent_service",
+                "env": "staging",
+                "app_version": "0.1",
+                "tags": ["env:staging", "version:0.1", "tracer_version:test-1.x", "host_name:test_agent_service"],
+            },
+            "state": {
+                "root_version": 1,
+                "targets_version": 46924638,
+                "config_states": [
+                    {"id": "blocking", "version": 296, "product": "ASM", "apply_state": 2},
+                    {"id": "custom_rules", "version": 24, "product": "ASM", "apply_state": 2},
+                    {"id": "disabled_rules", "version": 1, "product": "ASM", "apply_state": 2},
+                    {"id": "exclusion_filters", "version": 256, "product": "ASM", "apply_state": 2},
+                    {"id": "blocked_ips", "version": 4732, "product": "ASM_DATA", "apply_state": 2},
+                    {"id": "blocked_users", "version": 5, "product": "ASM_DATA", "apply_state": 2},
+                    {"id": "16.recommended.json", "version": 1, "product": "ASM_DD", "apply_state": 2},
+                ],
+                "has_error": False,
+                "backend_client_state": "backend_client_state_hash",
+            },
+            "capabilities": "Afw=",
+        },
+        "cached_target_files": [
+            {
+                "path": "datadog/2/ASM/blocking/config",
+                "length": 21,
+                "hashes": [
+                    {"algorithm": "sha256", "hash": "d75be3984bbd00451d1d56eff464d63a05727f192f0fa367d1aac03869b5d74c"}
+                ],
+            },
+            {
+                "path": "datadog/2/ASM/custom_rules/config",
+                "length": 425,
+                "hashes": [
+                    {"algorithm": "sha256", "hash": "5c49e86c48d88e3e836e2cb85469ebf05c02a5d1bc768639e4c45c75620deb23"}
+                ],
+            },
+            {
+                "path": "datadog/2/ASM/disabled_rules/config",
+                "length": 57,
+                "hashes": [
+                    {"algorithm": "sha256", "hash": "ab06f434cf8b9bc50bf75c27abada0781dfb2590aea9c19963b86e87e236fe1b"}
+                ],
+            },
+            {
+                "path": "datadog/2/ASM/exclusion_filters/config",
+                "length": 21,
+                "hashes": [
+                    {"algorithm": "sha256", "hash": "d75be3984bbd00451d1d56eff464d63a05727f192f0fa367d1aac03869b5d74c"}
+                ],
+            },
+            {
+                "path": "datadog/2/ASM_DATA/blocked_ips/config",
+                "length": 1290,
+                "hashes": [
+                    {"algorithm": "sha256", "hash": "a5e3b56034a6ad61d9853cd1b80061d04068ada2d5e3b1b120a68c861006db27"}
+                ],
+            },
+            {
+                "path": "datadog/2/ASM_DATA/blocked_users/config",
+                "length": 760,
+                "hashes": [
+                    {"algorithm": "sha256", "hash": "53e2dd0da7a7d6ca57f10c0e1d17fdfc7e44a987bb128265258b3bc7d0c48193"}
+                ],
+            },
+            {
+                "path": "employee/ASM_DD/16.recommended.json/config",
+                "length": 203383,
+                "hashes": [
+                    {"algorithm": "sha256", "hash": "ad984f3d9020ee932783ee6448cc4efc8a58aa2c8d3f4fd8d2d730452a8dd4df"}
+                ],
+            },
+        ],
+    }
+    yield data
+
+
+@pytest.fixture
+def v07_reference_http_remoteconfig_payload_data(
+    v07_reference_http_remoteconfig_payload_data_raw,
+):
+    yield json.dumps(v07_reference_http_remoteconfig_payload_data_raw)
+
+
+@pytest.fixture
 def v2_reference_http_apmtelemetry_payload_headers(  # type: ignore
     v2_reference_http_apmtelemetry_payload_data_raw,
 ) -> Generator[Dict[str, str], None, None]:
     headers = {
         "Content-type": "application/json",
-        "DD-Telemetry-Request-Type": v2_reference_http_apmtelemetry_payload_data_raw[
-            "request_type"
-        ],
+        "DD-Telemetry-Request-Type": v2_reference_http_apmtelemetry_payload_data_raw["request_type"],
         "DD-Telemetry-API-Version": "v1",
     }
     yield headers

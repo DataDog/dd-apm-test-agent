@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add session token to Remote Config endpoint.

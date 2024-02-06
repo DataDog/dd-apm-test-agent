@@ -52,7 +52,7 @@ def test_trace_chunk():
     ],
 )
 def test_decode_v04(content_type, payload):
-    assert decode_v04(content_type, payload) is not None
+    assert decode_v04(content_type, payload, False) is not None
 
 
 @pytest.mark.parametrize(
@@ -64,7 +64,19 @@ def test_decode_v04(content_type, payload):
 )
 def test_decode_v04_bad(content_type, payload):
     with pytest.raises(TypeError):
-        decode_v04(content_type, payload)
+        decode_v04(content_type, payload, False)
+
+
+@pytest.mark.parametrize(
+    "content_type, payload",
+    [
+        ("application/msgpack", msgpack.packb([{"name": "test"}])),
+        ("application/json", json.dumps([{"name": "test"}])),
+    ],
+)
+def test_decode_v04_bad_doesnt_raise_with_supress(content_type, payload):
+    with pytest.raises(TypeError):
+        decode_v04(content_type, payload, True)
 
 
 @pytest.mark.parametrize(

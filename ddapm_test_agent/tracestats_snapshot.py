@@ -11,9 +11,7 @@ def _normalize_statsbuckets(buckets: List[StatsBucket]) -> List[StatsBucket]:
     normed_buckets = []
     for bucket in buckets:
         bcopy = bucket.copy()
-        bcopy["Stats"] = [
-            aggr.copy() for aggr in bucket["Stats"]
-        ]  # Copy the aggregations
+        bcopy["Stats"] = [aggr.copy() for aggr in bucket["Stats"]]  # Copy the aggregations
         normed_buckets.append(bcopy)
 
     # Order the buckets by time
@@ -41,9 +39,7 @@ def _normalize_statsbuckets(buckets: List[StatsBucket]) -> List[StatsBucket]:
     return normed_buckets
 
 
-def snapshot(
-    expected_stats: List[StatsBucket], received_stats: List[StatsBucket]
-) -> None:
+def snapshot(expected_stats: List[StatsBucket], received_stats: List[StatsBucket]) -> None:
     # Normalize the stats buckets by making them independent of time. Only ordering matters.
 
     # Sort the buckets by start time.
@@ -55,13 +51,9 @@ def snapshot(
         normed_expected
     ), f"Number of stats buckets ({len(normed_received)}) doesn't match expected ({len(normed_expected)})."
 
-    with CheckTrace.add_frame(
-        f"snapshot compare of {len(normed_received)} stats buckets"
-    ):
+    with CheckTrace.add_frame(f"snapshot compare of {len(normed_received)} stats buckets"):
         # Do a really rough comparison.
-        for i, (exp_bucket, rec_bucket) in enumerate(
-            zip(normed_expected, normed_received)
-        ):
+        for i, (exp_bucket, rec_bucket) in enumerate(zip(normed_expected, normed_received)):
             with CheckTrace.add_frame(f"comparison of bucket {i}") as frame:
                 exp_aggrs = exp_bucket["Stats"]
                 rec_aggrs = rec_bucket["Stats"]

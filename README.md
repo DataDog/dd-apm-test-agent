@@ -1,6 +1,6 @@
 # Datadog APM test agent
 
-[![GitHub Workflow Status (branch)](https://img.shields.io/github/workflow/status/DataDog/dd-apm-test-agent/CI/master?style=flat-square)](https://github.com/DataDog/dd-apm-test-agent/actions?query=workflow%3ACI+branch%3Amaster)
+[![GitHub Workflow Status (with branch)](https://img.shields.io/github/actions/workflow/status/DataDog/dd-apm-test-agent/main.yml?style=flat-square)](https://github.com/DataDog/dd-apm-test-agent/actions?query=workflow%3ACI+branch%3Amaster)
 [![PyPI](https://img.shields.io/pypi/v/ddapm-test-agent?style=flat-square)](https://pypi.org/project/ddapm-test-agent/)
 
 
@@ -8,11 +8,11 @@
 
 The APM test agent is an application which emulates the APM endpoints of the [Datadog agent](https://github.com/DataDog/datadog-agent/) which can be used for testing Datadog APM client libraries.
 
-See the [features](#Features) section for the complete list of functionalities provided.
+See the [features](#features) section for the complete list of functionalities provided.
 
-See the [API](#API) section for the endpoints available.
+See the [HTTP API](#http-api) section for the endpoints available.
 
-See the [Development](#Development) section for how to get the test agent running locally to add additional checks or fix bugs.
+See the [Development](#development) section for how to get the test agent running locally to add additional checks or fix bugs.
 
 
 ## Installation
@@ -48,7 +48,7 @@ or a specific branch:
 Many checks are provided by the test agent which will verify trace data. 
 All checks are enabled by default and can be manually disabled.
 
-See the [configuration](#Configuration) section for the options.
+See the [configuration](#configuration) section for the options.
 
 | Check description  | Check name |
 | ------------- | ------------- |
@@ -61,7 +61,7 @@ See the [configuration](#Configuration) section for the options.
 
 All data that is submitted to the test agent can be retrieved.
 
-- Traces can be returned via the `/test/traces` endpoint documented [below](#API).
+- Traces can be returned via the `/test/traces` endpoint documented [below](#api).
 
 
 ### Helpful logging
@@ -85,6 +85,9 @@ The test agent provides proxying to the Datadog agent.
 This is enabled by passing the agent url to the test agent either via the `--agent-url` command-line argument or by the `DD_TRACE_AGENT_URL` or `DD_AGENT_URL` environment variables.
 
 When proxying is enabled, the response from the Datadog agent will be returned instead of one from the test agent.
+
+At the trace-level, proxying can also be disabled by including the `X-Datadog-Agent-Proxy-Disabled` header with a value of `true`. This will disable proxying after a trace 
+is handled, regardless of whether an agent URL is set.
 
 
 ### Snapshot testing
@@ -149,7 +152,7 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
 
 - `PORT` [`8126`]: Port to listen on.
 
-- `DISABLED_CHECKS` [`""`]: Comma-separated values of checks to disable.
+- `ENABLED_CHECKS` [`""`]: Comma-separated values of checks to enable. Valid values can be found in [trace invariant checks](#trace-invariant-checks)
 
 - `LOG_LEVEL` [`"INFO"`]: Log level to use. DEBUG, INFO, WARNING, ERROR, CRITICAL.
 
@@ -170,9 +173,19 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
 
 - `DD_APM_RECEIVER_SOCKET` [`""`]: When provided, the test agent will listen for traces on a socket at the path provided (e.g., `/var/run/datadog/apm.socket`)
 
+- `DD_SUPPRESS_TRACE_PARSE_ERRORS` [`false`]: Set to `"true"` to disable span parse errors when decoding handled traces. When disabled, errors will not be thrown for
+metrics incorrectly placed within the meta field, or other type errors related to span tag formatting/types. Can also be set using the `--suppress-trace-parse-errors=true` option.
+
+- `SNAPSHOT_REMOVED_ATTRS` [`""`]: The attributes to remove from spans in snapshots. This is useful for removing attributes 
+that are not relevant to the test case. **Note that removing `span_id` is not permitted to allow span 
+ordering to be maintained.**
+
+- `DD_POOL_TRACE_CHECK_FAILURES` [`false`]: Set to `"true"` to pool Trace Check failures that occured within Test-Agent memory. These failures can be queried later using the `/test/trace_check/failures` endpoint. Can also be set using the `--pool-trace-check-failures=true` option.
+
+- `DD_DISABLE_ERROR_RESPONSES` [`false`]: Set to `"true"` to disable Test-Agent `<Response 400>` when a Trace Check fails, instead sending a valid `<Response 200>`. Recommended for use with the `DD_POOL_TRACE_CHECK_FAILURES` env variable. Can also be set using the `--disable-error-responses=true` option.
 
 
-## API
+## HTTP API
 
 ### /test/traces
 
@@ -189,6 +202,12 @@ Specify trace ids as comma separated values (eg. `12345,7890,2468`)
 
 Initiate a _synchronous_ session. All subsequent traces received will be
 associated with the required test token provided.
+
+#### [optional] `?agent_sample_rate_by_service=`
+
+Sample rates to be returned by the agent in response to trace v0.4 and v0.5 requests.
+
+Example: `"{'service:test,env:staging': 0.5, 'service:test2,env:prod': 0.2}"` (note the JSON has to be URL-encoded).
 
 #### [optional] `?test_session_token=`
 #### [optional] `X-Datadog-Test-Session-Token`
@@ -243,6 +262,12 @@ Note: the file extension will be appended to the filename.
 
 `_tracestats` will be appended to the filename for trace stats requests.
 
+#### [optional] `?removes=`
+
+Comma-separated list of keys that will be removed from spans in the snapshot.
+
+The default built-in remove list does not remove any keys.
+
 
 ### /test/session/requests
 
@@ -283,6 +308,136 @@ Return stats that have been received by the agent for the given session token.
 
 Stats are returned as a JSON list of the stats payloads received.
 
+### /test/session/responses/config (POST)
+Create a Remote Config payload to retrieve in endpoint `/v0.7/config`
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+```
+curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"roots": ["eyJ....fX0="], "targets": "ey...19", "target_files": [{"path": "datadog/2/ASM_DATA/blocked_users/config", "raw": "eyJydWxlc19kYXRhIjogW119"}], "client_configs": ["datadog/2/ASM_DATA/blocked_users/config"]}'
+```
+
+### /test/session/responses/config/path (POST)
+Due to Remote Config payload being quite complicated, this endpoint works like `/test/session/responses/config (POST)` 
+but you should send a path and a message and this endpoint builds the Remote Config payload.
+
+The keys of the JSON body are `path` and `msg`
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+```
+curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"path": "datadog/2/ASM_DATA/blocked_users/config", "msg": {"rules_data": []}}'
+```
+
+
+### /test/trace_check/failures (GET)
+Get Trace Check failures that occured. If a token is included, trace failures for only that session token are returned unless used in conjuction with `return_all`, which can be used to return all failures regardless of inputted token.  This method returns a `<Response 200>` if no Trace Check failures are being returned and a `<Response 400>` if Trace Check failures are being returned. Trace Check failures are returned as a content type of text, with failure messages concatenated in the response body. Optionally, set the `use_json` query string parameter to `true` to return Trace Check failures as a JSON response in the following format: 
+```
+response = { 
+  "<FAILING_CHECK_NAME>" : ["<FAILURE_MESSAGE_1>", "<FAILURE_MESSAGE_2>"]
+}
+```
+
+NOTE: To be used in combination with `DD_POOL_TRACE_CHECK_FAILURES`, or else failures will not be saved within Test-Agent memory and a `<Response 200>` will always be returned.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+#### [optional] `?use_json=`
+#### [optional] `?return_all=`
+
+```
+curl -X GET 'http://0.0.0.0:8126/test/trace_check/failures'
+```
+
+### /test/trace_check/clear (GET)
+Clear Trace Check failures that occured. If a token is included, trace failures for only that session token are cleared unless used in conjuction with `clear_all`. This argument can be used to clear all failures (regardless of inputted session token).
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+#### [optional] `?clear_all=`
+
+```
+curl -X GET 'http://0.0.0.0:8126/test/trace_check/clear'
+```
+
+### /test/trace_check/summary (GET)
+Get Trace Check summary results. If a token is included, returns summary results only for Trace Checks run during the session.  The `return_all` optional query string parameter can be used to return all trace check results (regardless of inputted session token). The method returns Trace Check results in the following JSON format: 
+```
+summary = { 
+  "trace_content_length" : {
+    "Passed_Checks": 10,
+    "Failed_Checks": 0,
+    "Skipped_Checks": 4,
+  }  ...
+}
+```
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+#### [optional] `?return_all=`
+
+```
+curl -X GET 'http://0.0.0.0:8126/test/trace_check/summary'
+```
+
+### /test/session/integrations (PUT)
+Update information about the current tested integration.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+```
+curl -X PUT 'http://0.0.0.0:8126/test/session/integrations' -d '{"integration_name": [INTEGRATION_NAME], "integration_version": [INTEGRATION_VERSION],
+"dependency_name": [DEPENDENCY_NAME], "tracer_language": [TRACER_LANGUAGE], "tracer_version": [TRACER_VERSION]}'
+```
+
+### /test/integrations/tested_versions (GET)
+Return a csv list of all tested integrations received by the agent. The format of returned data will be: 
+`tracer_language,tracer_version,integration_name,integration_version,dependency_name`.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+```
+curl -X GET 'http://0.0.0.0:8126/test/integrations/tested_versions'
+```
+
+### /v0.1/pipeline_stats
+
+Mimics the pipeline_stats endpoint of the agent, but always returns OK, and logs a line everytime it's called.
+
+### /tracer_flare/v1
+
+Mimics the tracer_flare endpoint of the agent. Returns OK if the flare contains the required form fields, otherwise `400`.
+
+Logs a line everytime it's called and stores the tracer flare details in the request under `"_tracer_flare"`.
+
+### /test/session/tracerflares
+
+Return all tracer-flares that have been received by the agent for the given session token.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+Returns the tracer-flares in the following json format:
+
+```json
+[
+  {
+    "source": "...",
+    "case_id": "...",
+    "email": "...",
+    "hostname": "...",
+    "flare_file": "...",
+  }
+]
+```
+
+`flare_file` is the base64 encoded content of the tracer-flare payload.
+
+If there was an error parsing the tracer-flare form, that will be recorded under `error`.
 
 ## Development
 
@@ -291,16 +446,16 @@ Stats are returned as a JSON list of the stats payloads received.
 A Python version of 3.8 or above and [`riot`](https://github.com/Datadog/riot) are required. It is recommended to create
 and work out of a virtualenv:
 
-    virtualenv --python=3.8 .venv
+    python3.11 -m venv .venv
     source .venv/bin/activate
-    pip install -e .[testing]
+    pip install -e '.[testing]'
 
 
 ### Running the tests
 
 To run the tests (in Python 3.8):
 
-    riot run -p3.8 test
+    riot run -p3.11 test
 
 Note: if snapshots need to be (re)generated in the tests set the environment variable `GENERATE_SNAPSHOTS=1`.
 

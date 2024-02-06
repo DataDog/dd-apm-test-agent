@@ -12,7 +12,7 @@ venv = Venv(
         Venv(
             name="test",
             command="pytest {cmdargs}",
-            pys=["3.8", "3.9", "3.10"],
+            pys=["3.8", "3.9", "3.10", "3.11"],
             pkgs={pkg: latest for pkg in testing_deps},
         ),
         Venv(
@@ -55,7 +55,7 @@ venv = Venv(
             create=True,
             command="mypy {cmdargs}",
             pkgs={
-                "mypy": latest,
+                "mypy": "==1.7.1",
                 "pytest": latest,
                 "types-protobuf": latest,
                 "types-requests": latest,

@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    This change adds support for disabling / enabling proxying for a trace by sending 
+    the X-Datadog-Agent-Proxy-Disabled with a boolean value within a trace's headers. By default,
+    proxying is enabled if the Test-Agent has an agent_url set.

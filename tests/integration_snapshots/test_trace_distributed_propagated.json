@@ -1,9 +1,10 @@
 [[
   {
     "name": "root",
-    "service": null,
+    "service": "",
     "resource": "root",
     "trace_id": 0,
+    "type": "",
     "span_id": 1,
     "parent_id": 5678,
     "meta": {
@@ -15,15 +16,18 @@
       "system.pid": 81934
     },
     "duration": 171000,
+    "error": 0,
     "start": 1653668237165110000
   },
      {
        "name": "child",
-       "service": null,
+       "service": "",
        "resource": "child",
        "trace_id": 0,
+       "type": "",
        "span_id": 2,
        "parent_id": 1,
        "duration": 6000,
+       "error": 0,
        "start": 1653668237165133000
      }]]

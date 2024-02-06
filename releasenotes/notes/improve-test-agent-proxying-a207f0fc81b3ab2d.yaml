@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    This change improves APM Test Agent proxying in a few ways. Proxying is now done first when a trace is 
+    received, instead of waiting for Test Agent checks to complete. This means that a failing check will 
+    no longer prevent the trace(s) being proxied to the final destination. Additionally, proxying now 
+    has better handling of response types including byte, json and text/html responses.

@@ -2,6 +2,9 @@ import argparse
 import atexit
 import base64
 from collections import OrderedDict
+from collections import defaultdict
+from dataclasses import dataclass
+from dataclasses import field
 import json
 import logging
 import os
@@ -10,16 +13,25 @@ import socket
 import sys
 from typing import Awaitable
 from typing import Callable
+from typing import DefaultDict
+from typing import Dict
 from typing import List
 from typing import Literal
+from typing import Mapping
 from typing import Optional
 from typing import Set
+from typing import Tuple
 from typing import cast
+from urllib.parse import urlparse
+from urllib.parse import urlunparse
 
+from aiohttp import ClientResponse
 from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import middleware
+from msgpack.exceptions import ExtraData as MsgPackExtraDataException
+from multidict import CIMultiDict
 
 from . import _get_version
 from . import trace_snapshot
@@ -29,6 +41,8 @@ from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
+from .integration import Integration
+from .remoteconfig import RemoteConfigServer
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -39,7 +53,11 @@ from .trace import v04TracePayload
 from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
+from .trace_checks import CheckTraceDDService
+from .trace_checks import CheckTracePeerService
 from .trace_checks import CheckTraceStallAsync
+from .tracerflare import TracerFlareEvent
+from .tracerflare import v1_decode as v1_tracerflare_decode
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 
@@ -67,24 +85,6 @@ def _parse_csv(s: str) -> List[str]:
     return [s.strip() for s in s.split(",") if s.strip() != ""]
 
 
-@middleware  # type: ignore
-async def check_failure_middleware(request: Request, handler: _Handler) -> web.Response:
-    """Convert any failed checks into an HttpException."""
-    trace = start_trace("request %r" % request)
-    try:
-        response = await handler(request)
-    except AssertionError as e:
-        msg = str(trace) + str(e)
-        log.error(msg)
-        return web.HTTPBadRequest(body=msg)
-    else:
-        if trace.has_fails():
-            msg = str(trace)
-            log.error(msg)
-            return web.HTTPBadRequest(body=msg)
-    return response
-
-
 def _session_token(request: Request) -> Optional[str]:
     token: Optional[str]
     if "X-Datadog-Test-Session-Token" in request.headers:
@@ -96,7 +96,7 @@ def _session_token(request: Request) -> Optional[str]:
     return token
 
 
-@middleware  # type: ignore
+@middleware
 async def session_token_middleware(request: Request, handler: _Handler) -> web.Response:
     """Extract session token from the request and store it in the request.
 
@@ -107,16 +107,117 @@ async def session_token_middleware(request: Request, handler: _Handler) -> web.R
     return await handler(request)
 
 
-class Agent:
-    def __init__(self):
-        """Only store the requests sent to the agent. There are many representations
-        of data but typically information is lost while transforming the data.
+async def _forward_request(request_data: bytes, headers: Mapping[str, str], full_agent_url: str) -> ClientResponse:
+    async with ClientSession() as session:
+        async with session.post(
+            full_agent_url,
+            headers=headers,
+            data=request_data,
+        ) as resp:
+            assert resp.status == 200, f"Request to agent unsuccessful, received [{resp.status}] response."
 
-        Storing exactly what is sent to the agent enables us to transform the data
-        however we desire later on.
+            if "text/html" in resp.content_type:
+                raw_response_data = await resp.read()
+                if len(raw_response_data) == 0:
+                    log.info("Received empty response: %r from agent.", raw_response_data)
+                else:
+                    if isinstance(raw_response_data, bytes):
+                        response_data = raw_response_data.decode()
+                    try:
+                        response_data = json.loads(raw_response_data)
+                    except json.JSONDecodeError as e:
+                        log.warning("Error decoding response data: %s, data=%r", str(e), response_data)
+                        log.warning("Original Request: %r", request_data)
+                        response_data = ""
+                    log.info("Response %r from agent:", response_data)
+            elif "text/plain" in resp.content_type:
+                log.info("Response %r from agent:", await resp.text())
+            else:
+                log.info("Response %r from agent:", await resp.json())
+            return resp
+
+
+async def _prepare_and_send_request(data: bytes, request: Request, headers: Mapping[str, str]) -> web.Response:
+    headers = {
+        "Content-Type": headers.get("Content-Type", "application/msgpack"),
+        **{k: v for k, v in headers.items() if k.lower() not in ["content-type", "host", "transfer-encoding"]},
+    }
+    agent_url = request.app["agent_url"]
+    full_agent_url = agent_url + request.path
+    log.info("Forwarding request to agent at %r", full_agent_url)
+    log.debug(f"Using headers: {headers}")
+
+    client_response = await _forward_request(data, headers, full_agent_url)
+    return web.Response(
+        status=client_response.status,
+        headers=client_response.headers,
+        body=await client_response.read(),
+    )
+
+
+def update_trace_agent_port(url, new_port):
+    # Updates the Agent URL with a new port number, returning the updated URL and old port
+    parsed_url = urlparse(url)
+    old_port = parsed_url.port
+    new_netloc = parsed_url.netloc.replace(f":{old_port}", f":{new_port}")
+    new_url = urlunparse(
+        (parsed_url.scheme, new_netloc, parsed_url.path, parsed_url.params, parsed_url.query, parsed_url.fragment)
+    )
+    return new_url
+
+
+def default_value_trace_check_results_by_check():
+    return defaultdict(default_value_trace_results_summary)
+
+
+def default_value_trace_failures():
+    return []
+
+
+def default_value_trace_results_summary():
+    return {
+        "Passed_Checks": 0,
+        "Failed_Checks": 0,
+        "Skipped_Checks": 0,
+    }
+
+
+@dataclass
+class _AgentSession:
+    """Maintain Agent state across requests."""
+
+    sample_rate_by_service_env: Dict[str, float] = field(default_factory=dict)
+
+
+class Agent:
+    def __init__(self) -> None:
+        """
+        Try to only store the requests sent to the agent. There are many representations
+        of data but typically information is lost while transforming the data so it is best
+        to keep the original and compute transformation when needed.
         """
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
+        self._rc_server = RemoteConfigServer()
+        self._trace_failures: Dict[str, List[Tuple[CheckTrace, str]]] = defaultdict(default_value_trace_failures)
+        self._trace_check_results_by_check: Dict[str, Dict[str, Dict[str, int]]] = defaultdict(
+            default_value_trace_check_results_by_check
+        )
+        self._forward_endpoints: List[str] = [
+            "/v0.4/traces",
+            "/v0.5/traces",
+            "/v0.6/stats",
+            "/v0.7/config",
+            "/telemetry/proxy/api/v2/apmtelemetry",
+            "/v0.1/pipeline_stats",
+            "/tracer_flare/v1",
+        ]
+
+        # Note that sessions are not cleared at any point since we don't know
+        # definitively when a session is over.
+        self._sessions: DefaultDict[Optional[str], _AgentSession] = defaultdict(
+            lambda: _AgentSession(sample_rate_by_service_env={})
+        )
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -135,6 +236,75 @@ class Agent:
                         _traces[trace_id] = []
                     _traces[trace_id].append(s)
         return _traces
+
+    async def clear_trace_check_failures(self, request: Request) -> web.Response:
+        """Clear traces by session token provided."""
+        token = request["session_token"]
+        clear_all = "clear_all" in request.query and request.query["clear_all"].lower() == "true"
+        if clear_all:
+            failures_by_token = self._trace_failures
+            trace_failures = [value for sublist in failures_by_token.values() for value in sublist]
+            self._trace_failures = defaultdict(default_value_trace_failures)
+            self._trace_check_results_by_check = defaultdict(default_value_trace_check_results_by_check)
+        else:
+            trace_failures = self._trace_failures[token]
+            del self._trace_failures[token]
+            del self._trace_check_results_by_check[token]
+        log.info(f"Clearing {len(trace_failures)} Trace Check Failures for Token {token}, clear_all={clear_all}")
+        log.info(trace_failures)
+        return web.HTTPOk()
+
+    async def get_trace_check_failures(self, request: Request) -> web.Response:
+        """Return the Trace Check failures that occurred, if pooling is enabled,
+        returned as either a Text (by default) or JSON response.
+        """
+        token = request["session_token"]
+        return_all = "return_all" in request.query and request.query["return_all"].lower() == "true"
+
+        if return_all:
+            # check for whether to return all results
+            trace_check_failures = []
+            for f in self._trace_failures.values():
+                trace_check_failures.extend(f)
+            n_failures = len(trace_check_failures)
+            log.info(f"{n_failures} Trace Failures Occurred in Total")
+        else:
+            # or return results by token
+            trace_check_failures = self._trace_failures.get(token, [])
+            n_failures = len(trace_check_failures)
+            log.info(f"{n_failures} Trace Failures Occurred for Token {token}")
+        if n_failures > 0:
+            if "use_json" in request.query and request.query["use_json"].lower() == "true":
+                # check what response type to use
+                results: Dict[str, List[str]] = {}
+                for check_trace, failure_message in trace_check_failures:
+                    results = check_trace.get_failures_by_check(results)
+                json_summary = json.dumps(results)
+                return web.HTTPBadRequest(body=json_summary, content_type="application/json")
+            else:
+                # or use default response of text
+                msg = f"APM Test Agent Validation failed with {n_failures} Trace Check failures.\n"
+                for check_trace, failure_message in trace_check_failures:
+                    msg += failure_message
+                return web.HTTPBadRequest(text=msg)
+        else:
+            return web.HTTPOk()
+
+    async def get_trace_check_summary(self, request: Request) -> web.Response:
+        token = request["session_token"]
+        summary: Dict[str, Dict[str, int]] = defaultdict(default_value_trace_results_summary)
+        return_all = "return_all" in request.query and request.query["return_all"].lower() == "true"
+
+        if return_all:
+            for token, token_results in self._trace_check_results_by_check.items():
+                for check_name, check_results in token_results.items():
+                    summary[check_name]["Passed_Checks"] += check_results["Passed_Checks"]
+                    summary[check_name]["Failed_Checks"] += check_results["Failed_Checks"]
+                    summary[check_name]["Skipped_Checks"] += check_results["Skipped_Checks"]
+        else:
+            summary = self._trace_check_results_by_check.get(token, {})
+        json_summary = json.dumps(summary)
+        return web.HTTPOk(body=json_summary, content_type="application/json")
 
     async def apmtelemetry(self) -> List[TelemetryEvent]:
         """Return the telemetry events stored by the agent"""
@@ -231,6 +401,19 @@ class Agent:
         # TODO: Sort the events?
         return events
 
+    async def _tracerflares_by_session(self, token: Optional[str]) -> List[TracerFlareEvent]:
+        """Return the tracer-flare events that belong to the given session token.
+
+        If token is None or if the token was used to manually start a session
+        with /session-start then return all tracer-flare events that were sent
+        since the last /session-start request was made.
+        """
+        events: List[TracerFlareEvent] = []
+        for req in self._requests_by_session(token):
+            if req.match_info.handler == self.handle_v1_tracer_flare:
+                events.append(await v1_tracerflare_decode(req, await req.read()))
+        return events
+
     async def _tracestats_by_session(self, token: Optional[str]) -> List[v06StatsPayload]:
         stats: List[v06StatsPayload] = []
         for req in self._requests_by_session(token):
@@ -239,10 +422,65 @@ class Agent:
                 stats.append(s)
         return stats
 
+    async def _integration_requests_by_session(
+        self,
+        token: Optional[str],
+        include_sent_integrations: Optional[bool] = False,
+    ) -> List[Request]:
+        """Get all requests with an associated tested Integration."""
+        integration_requests: List[Request] = []
+        requests = self._requests if token is None else self._requests_by_session(token)
+        for req in requests:
+            # see if the request was to update with a newly tested integration
+            if req.match_info.handler == self.handle_put_tested_integrations:
+                if "integration" not in req:
+                    data = json.loads(await req.read())
+                    integration_name = data.get("integration_name", None)
+                    integration_version = data.get("integration_version", None)
+                    req["integration"] = Integration(
+                        integration_name=integration_name,
+                        integration_version=integration_version,
+                        dependency_name=data.get("dependency_name", integration_name),
+                    )
+                    req["tracer_version"] = data.get("tracer_version", None)
+                    req["tracer_language"] = data.get("tracer_language", None)
+                    integration_requests.append(req)
+                elif include_sent_integrations:
+                    integration_requests.append(req)
+            # check if integration data was provided in the trace request instead
+            elif (
+                "_dd_trace_env_variables" in req
+                and "DD_INTEGRATION" in req["_dd_trace_env_variables"]
+                and "DD_INTEGRATION_VERSION" in req["_dd_trace_env_variables"]
+            ):
+                integration_name = req["_dd_trace_env_variables"]["DD_INTEGRATION"]
+                integration_version = req["_dd_trace_env_variables"]["DD_INTEGRATION_VERSION"]
+
+                if "integration" not in req:
+                    req["integration"] = Integration(
+                        integration_name=integration_name,
+                        integration_version=integration_version,
+                        dependency_name=req["_dd_trace_env_variables"].get("DD_DEPENDENCY_NAME", integration_name),
+                    )
+
+                    if req.headers.get("dd-client-library-version", None):
+                        req["tracer_version"] = req.headers.get("dd-client-library-version")
+                    elif req.headers.get("datadog-meta-tracer-version", None):
+                        req["tracer_version"] = req.headers.get("datadog-meta-tracer-version")
+
+                    if req.headers.get("dd-client-library-language", None):
+                        req["tracer_language"] = req.headers.get("dd-client-library-language")
+                    elif req.headers.get("datadog-meta-lang", None):
+                        req["tracer_language"] = req.headers.get("datadog-meta-lang")
+                    integration_requests.append(req)
+                elif include_sent_integrations:
+                    integration_requests.append(req)
+        return integration_requests
+
     def _decode_v04_traces(self, request: Request) -> v04TracePayload:
         content_type = request.content_type
         raw_data = self._request_data(request)
-        return trace_decode_v04(content_type, raw_data)
+        return trace_decode_v04(content_type, raw_data, request.app["suppress_trace_parse_errors"])
 
     def _decode_v05_traces(self, request: Request) -> v04TracePayload:
         raw_data = self._request_data(request)
@@ -259,7 +497,6 @@ class Agent:
         return await self._handle_traces(request, version="v0.5")
 
     async def handle_v06_tracestats(self, request: Request) -> web.Response:
-        await self._store_request(request)
         stats = self._decode_v06_tracestats(request)
         nstats = len(stats["Stats"])
         log.info(
@@ -269,12 +506,114 @@ class Agent:
         )
         return web.HTTPOk()
 
+    async def handle_v01_pipelinestats(self, request: Request) -> web.Response:
+        log.info("received /v0.1/pipeline_stats payload")
+        return web.HTTPOk()
+
+    async def handle_v07_remoteconfig(self, request: Request) -> web.Response:
+        """Emulates Remote Config endpoint: /v0.7/config"""
+        token = _session_token(request)
+        data = await self._rc_server.get_config_response(token)
+        return web.json_response(data)
+
+    async def handle_v07_remoteconfig_create(self, request: Request) -> web.Response:
+        """Configure the response payload of /v0.7/config."""
+        raw_data = await request.read()
+        token = _session_token(request)
+        self._rc_server.create_config_response(token, json.loads(raw_data))
+        return web.HTTPAccepted()
+
+    async def handle_v07_remoteconfig_path_create(self, request: Request) -> web.Response:
+        """
+        Remote Config payloads are quite complex. This endpoints builds a remote config payload with a target
+        file path and the content of it (msg)
+        """
+        raw_data = await request.read()
+        content = json.loads(raw_data)
+        path = content["path"]
+        msg = content["msg"]
+        token = _session_token(request)
+        self._rc_server.create_config_path_response(token, path, msg)
+        return web.HTTPAccepted()
+
+    async def handle_v07_remoteconfig_put(self, request: Request) -> web.Response:
+        """Configure the response payload of /v0.7/config"""
+        raw_data = await request.read()
+        token = _session_token(request)
+        self._rc_server.update_config_response(token, json.loads(raw_data))
+        return web.HTTPAccepted()
+
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
-        await self._store_request(request)
         v2_apmtelemetry_decode(self._request_data(request))
         # TODO: Validation
         # TODO: Snapshots
         return web.HTTPOk()
+
+    async def handle_v1_tracer_flare(self, request: Request) -> web.Response:
+        tracer_flare: TracerFlareEvent = await v1_tracerflare_decode(request, self._request_data(request))
+
+        if "error" in tracer_flare:
+            msg = f"Error while parsing flare request: {tracer_flare['error']}"
+            log.error(msg)
+            return web.HTTPBadRequest(text=msg)
+
+        expectedFields = ["source", "case_id", "email", "hostname", "flare_file"]
+        missingFields = [k for k in expectedFields if k not in tracer_flare]
+
+        if len(missingFields) == 0:
+            return web.HTTPOk()
+        else:
+            msg = f"Flare request is missing {','.join(missingFields)}"
+            log.error(msg)
+            return web.HTTPBadRequest(text=msg)
+
+    async def handle_put_tested_integrations(self, request: Request) -> web.Response:
+        # we need to store the request manually since this is not a real DD agent endpoint
+        await self._store_request(request)
+        return web.HTTPOk()
+
+    async def handle_get_tested_integrations(self, request: Request) -> web.Response:
+        """Return all tested integrations according to integration data received by agent."""
+        text_headers = ["language_name", "tracer_version", "integration_name", "integration_version", "dependency_name"]
+        aggregated_text = ""
+        seen_integrations = set()
+        req_headers = {}
+        token = _session_token(request)
+
+        # get all requests associated with an integration
+        reqs = await self._integration_requests_by_session(token=token, include_sent_integrations=True)
+        for req in reqs:
+            integration = req["integration"]
+
+            # only include the integration in response if all data is included and integration hasn't already been added
+            if (
+                integration.integration_name
+                and integration.integration_version
+                and integration.dependency_name
+                and req["tracer_language"]
+                and req["tracer_version"]
+                and f"{integration.integration_name}@{integration.integration_version}" not in seen_integrations
+            ):
+                aggregated_text += (
+                    ",".join(
+                        [
+                            req["tracer_language"],
+                            ".".join(req["tracer_version"].split("-")[0].split(".")[0:3]),  # ensure semver
+                            integration.integration_name,
+                            integration.integration_version,
+                            integration.dependency_name,
+                        ]
+                    )
+                    + "\n"
+                )
+                # update seen integrations to skip this specific integration and version next loop from another request
+                seen_integrations.add(f"{integration.integration_name}@{integration.integration_version}")
+                # given that we will mainly see one integration per call, set a header for the calling lib to know the
+                # integration name
+                req_headers["file-name"] = integration.integration_name
+        if len(aggregated_text) > 0:
+            aggregated_text = ",".join(text_headers) + "\n" + aggregated_text
+        return web.Response(body=aggregated_text, content_type="text/plain", headers=req_headers)
 
     async def handle_info(self, request: Request) -> web.Response:
         return web.json_response(
@@ -285,6 +624,8 @@ class Agent:
                     "/v0.5/traces",
                     "/v0.6/stats",
                     "/telemetry/proxy/",
+                    "/v0.7/config",
+                    "/tracer_flare/v1",
                 ],
                 "feature_flags": [],
                 "config": {},
@@ -293,63 +634,67 @@ class Agent:
         )
 
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5"]) -> web.Response:
-        await self._store_request(request)
         token = request["session_token"]
         checks: Checks = request.app["checks"]
+        headers = request.headers
 
-        await checks.check("trace_stall", headers=dict(request.headers), request=request)
+        # TODO: This method requires all checks are hard coded
+
+        await checks.check("trace_stall", headers=headers, request=request)
 
         with CheckTrace.add_frame("headers") as f:
-            f.add_item(pprint.pformat(dict(request.headers)))
-            await checks.check("meta_tracer_version_header", headers=dict(request.headers))
-            await checks.check("trace_content_length", headers=dict(request.headers))
+            f.add_item(pprint.pformat(dict(headers)))
+            await checks.check("meta_tracer_version_header", headers=headers)
+            await checks.check("trace_content_length", headers=headers)
 
-            if version == "v0.4":
-                traces = self._decode_v04_traces(request)
-            elif version == "v0.5":
-                traces = self._decode_v05_traces(request)
-            log.info(
-                "received trace for token %r payload with %r trace chunks",
-                token,
-                len(traces),
-            )
-            for i, trace in enumerate(traces):
-                try:
-                    log.info(
-                        "Chunk %d\n%s",
-                        i,
-                        pprint_trace(trace, request.app["log_span_fmt"]),
-                    )
-                except ValueError:
-                    log.info("Chunk %d could not be displayed (might be incomplete).", i)
-            log.info("end of payload %s", "-" * 40)
-
-            with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
-                await checks.check(
-                    "trace_count_header",
-                    headers=dict(request.headers),
-                    num_traces=len(traces),
+            try:
+                if version == "v0.4":
+                    traces = self._decode_v04_traces(request)
+                elif version == "v0.5":
+                    traces = self._decode_v05_traces(request)
+                log.info(
+                    "received trace for token %r payload with %r trace chunks",
+                    token,
+                    len(traces),
                 )
+                for i, trace in enumerate(traces):
+                    try:
+                        log.info(
+                            "Chunk %d\n%s",
+                            i,
+                            pprint_trace(trace, request.app["log_span_fmt"]),
+                        )
+                    except ValueError:
+                        log.info("Chunk %d could not be displayed (might be incomplete).", i)
 
-        agent_url = request.app["agent_url"]
-        if agent_url:
-            log.info("Forwarding request to agent at %r", agent_url)
-            async with ClientSession() as session:
-                async with session.post(
-                    f"{agent_url}/v0.4/traces",
-                    headers=request.headers,
-                    data=self._request_data(request),
-                ) as resp:
-                    assert resp.status == 200
-                    data = await resp.json()
-                    log.info("Got response %r from agent", data)
-                    return web.json_response(data=data)
+                    # perform peer service check on span
+                    for span in trace:
+                        await checks.check(
+                            "trace_peer_service", span=span, dd_config_env=request.get("_dd_trace_env_variables", {})
+                        )
 
-        # TODO: implement sampling logic
-        return web.json_response(data={"rate_by_service": {}})
+                    await checks.check(
+                        "trace_dd_service", trace=trace, dd_config_env=request.get("_dd_trace_env_variables", {})
+                    )
+                log.info("end of payload %s", "-" * 40)
+
+                with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
+                    await checks.check(
+                        "trace_count_header",
+                        headers=headers,
+                        num_traces=len(traces),
+                    )
+            except MsgPackExtraDataException as e:
+                log.error(f"Error unpacking trace bytes with Msgpack: {str(e)}, error {e}")
+
+        return web.json_response(data={"rate_by_service": self._sessions[token].sample_rate_by_service_env})
 
     async def handle_session_start(self, request: Request) -> web.Response:
+        rates = json.loads(request.url.query.get("agent_sample_rate_by_service", "{}"))
         self._requests.append(request)
+        session = self._sessions[_session_token(request)]
+        session.sample_rate_by_service_env = rates
+        log.info("Starting new session with token %r: %r", _session_token(request), session)
         return web.HTTPOk()
 
     async def handle_snapshot(self, request: Request) -> web.Response:
@@ -369,6 +714,15 @@ class Agent:
         overrides = set(_parse_csv(request.url.query.get("ignores", "")))
         span_ignores = list(default_span_ignores | overrides)
         log.info("using ignores %r", span_ignores)
+
+        # Get the span attributes that are to be removed for this snapshot.
+        default_span_removes: Set[str] = request.app["snapshot_removed_attrs"]
+        overrides = set(_parse_csv(request.url.query.get("removes", "")))
+        span_removes = list(default_span_removes | overrides)
+        log.info("using removes %r", span_removes)
+
+        if "span_id" in span_removes:
+            raise AssertionError("Cannot remove 'span_id' from spans")
 
         with CheckTrace.add_frame(f"snapshot (token='{token}')") as frame:
             frame.add_item(f"Directory: {snap_dir}")
@@ -414,7 +768,7 @@ class Agent:
             elif received_traces:
                 # Create a new snapshot for the data received
                 with open(trace_snap_file, mode="w") as f:
-                    f.write(trace_snapshot.generate_snapshot(received_traces))
+                    f.write(trace_snapshot.generate_snapshot(received_traces=received_traces, removed=span_removes))
                 log.info("wrote new trace snapshot to %r", os.path.abspath(trace_snap_file))
 
             # Get all stats buckets from the payloads since we don't care about the other fields (hostname, env, etc)
@@ -456,6 +810,11 @@ class Agent:
         events = await self._apmtelemetry_by_session(token)
         return web.json_response(events)
 
+    async def handle_session_tracerflares(self, request: Request) -> web.Response:
+        token = request["session_token"]
+        events = await self._tracerflares_by_session(token)
+        return web.json_response(events)
+
     async def handle_session_tracestats(self, request: Request) -> web.Response:
         token = request["session_token"]
         stats = await self._tracestats_by_session(token)
@@ -469,8 +828,11 @@ class Agent:
                 self.handle_v04_traces,
                 self.handle_v05_traces,
                 self.handle_v06_tracestats,
+                self.handle_v01_pipelinestats,
                 self.handle_v2_apmtelemetry,
                 self.handle_v1_profiling,
+                self.handle_v07_remoteconfig,
+                self.handle_v1_tracer_flare,
             ):
                 continue
             resp.append(
@@ -554,22 +916,130 @@ class Agent:
         # wait 1s, gather traces and assert tags
         raise NotImplementedError
 
+    @middleware
+    async def store_request_middleware(self, request: Request, handler: _Handler) -> web.Response:
+        # only store requests for specific endpoints
+        if request.path in self._forward_endpoints:
+            await self._store_request(request)
+
+        # Call the original handler
+        return await handler(request)
+
+    @middleware
+    async def request_forwarder_middleware(self, request: Request, handler: _Handler) -> web.Response:
+        headers = CIMultiDict(request.headers)
+
+        if "X-Datadog-Trace-Env-Variables" in headers:
+            var_string = headers.pop("X-Datadog-Trace-Env-Variables")
+            env_vars = {
+                key.strip(): value.strip() for key, value in (pair.split("=") for pair in var_string.split(","))
+            }
+            log.debug("Found the following Datadog Trace Env Variables: " + str(env_vars))
+            request["_dd_trace_env_variables"] = env_vars
+
+        if "X-Datadog-Agent-Proxy-Disabled" in headers:
+            request["_proxy_to_agent"] = (
+                headers.pop("X-Datadog-Agent-Proxy-Disabled").lower() != "true" and request.app["agent_url"] != ""
+            )
+
+        if "X-Datadog-Proxy-Port" in headers:
+            port = headers.pop("X-Datadog-Proxy-Port")
+            request.app["agent_url"] = update_trace_agent_port(request.app["agent_url"], new_port=port)
+            log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
+
+        request["_headers"] = headers
+        if request.path in self._forward_endpoints:
+            # forward the request then call the handler
+            return await self._forward_request_to_agent(request, handler)
+        else:
+            # Call the original handler and do nothing
+            return await handler(request)
+
+    async def _forward_request_to_agent(self, request: Request, handler: _Handler) -> web.Response:
+        """Forward all requests to the agent_url if set."""
+        data = self._request_data(request)
+        headers = request["_headers"]
+        agent_url = request.app["agent_url"]
+        proxy_to_agent = request.get("_proxy_to_agent", True)
+
+        log.debug(f"New request: {request} with headers: {headers}")
+        log.debug(f"Request Data: {data!r}")
+
+        if agent_url and proxy_to_agent:
+            agent_response = await _prepare_and_send_request(data, request, headers)
+
+        endpoint_response = await handler(request)
+
+        # return the agent response if this was sent to a trace endpoint
+        endpoint_path = request.path
+        if "traces" in endpoint_path and agent_url and proxy_to_agent:
+            return agent_response
+        else:
+            return endpoint_response
+
+    @middleware
+    async def check_failure_middleware(self, request: Request, handler: _Handler) -> web.Response:
+        """Convert any failed checks into an HttpException."""
+        trace = start_trace("request %r" % request)
+        try:
+            response = await handler(request)
+        except AssertionError as e:
+            token = request["session_token"]
+
+            # update trace_check results
+            trace.update_results(self._trace_check_results_by_check[token])
+
+            # only save trace failures to memory if necessary
+            msg = str(trace) + str(e)
+            if request.app["pool_trace_check_failures"]:
+                log.info(f"Storing Trace Check Failure for Session Token: {token}.")
+                # append failure to trace failures
+                self._trace_failures[token].append((trace, msg))
+            log.error(msg)
+            return web.HTTPBadRequest(body=msg)
+        else:
+            token = request["session_token"]
+            # update trace_check results
+            trace.update_results(self._trace_check_results_by_check[token])
+            if trace.has_fails():
+                # only save trace failures to memory if necessary
+                pool_failures = request.app["pool_trace_check_failures"]
+                log.error(
+                    f"Trace had the following failures, using config: token={token}, DD_POOL_TRACE_CHECK_FAILURES={pool_failures}"
+                )
+                msg = str(trace)
+                if request.app["pool_trace_check_failures"]:
+                    log.info(f"Storing Trace Check Failure for Session Token: {token}.")
+                    # append failure to trace failures
+                    self._trace_failures[token].append((trace, msg))
+                log.error(msg)
+                if request.app["disable_error_responses"]:
+                    return response
+                return web.HTTPBadRequest(body=msg)
+        return response
+
 
 def make_app(
-    disabled_checks: List[str],
+    enabled_checks: List[str],
     log_span_fmt: str,
     snapshot_dir: str,
     snapshot_ci_mode: bool,
     snapshot_ignored_attrs: List[str],
     agent_url: str,
     trace_request_delay: float,
+    suppress_trace_parse_errors: bool,
+    pool_trace_check_failures: bool,
+    disable_error_responses: bool,
+    snapshot_removed_attrs: List[str],
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
         client_max_size=int(100e6),  # 100MB - arbitrary
         middlewares=[
-            check_failure_middleware,
-            session_token_middleware,
+            agent.check_failure_middleware,  # type: ignore
+            agent.store_request_middleware,  # type: ignore
+            agent.request_forwarder_middleware,  # type: ignore
+            session_token_middleware,  # type: ignore
         ],
     )
     app.add_routes(
@@ -579,21 +1049,34 @@ def make_app(
             web.post("/v0.5/traces", agent.handle_v05_traces),
             web.put("/v0.5/traces", agent.handle_v05_traces),
             web.post("/v0.6/stats", agent.handle_v06_tracestats),
+            web.post("/v0.1/pipeline_stats", agent.handle_v01_pipelinestats),
             web.put("/v0.6/stats", agent.handle_v06_tracestats),
+            web.get("/v0.7/config", agent.handle_v07_remoteconfig),
+            web.post("/v0.7/config", agent.handle_v07_remoteconfig),
             web.post("/telemetry/proxy/api/v2/apmtelemetry", agent.handle_v2_apmtelemetry),
             web.post("/profiling/v1/input", agent.handle_v1_profiling),
+            web.post("/tracer_flare/v1", agent.handle_v1_tracer_flare),
             web.get("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/snapshot", agent.handle_snapshot),
             web.get("/test/session/traces", agent.handle_session_traces),
             web.get("/test/session/apmtelemetry", agent.handle_session_apmtelemetry),
+            web.get("/test/session/tracerflares", agent.handle_session_tracerflares),
             web.get("/test/session/stats", agent.handle_session_tracestats),
             web.get("/test/session/requests", agent.handle_session_requests),
+            web.post("/test/session/responses/config", agent.handle_v07_remoteconfig_create),
+            web.post("/test/session/responses/config/path", agent.handle_v07_remoteconfig_path_create),
+            web.put("/test/session/responses/config", agent.handle_v07_remoteconfig_put),
+            web.put("/test/session/integrations", agent.handle_put_tested_integrations),
             web.get("/test/traces", agent.handle_test_traces),
             web.get("/test/apmtelemetry", agent.handle_test_apmtelemetry),
             # web.get("/test/benchmark", agent.handle_test_traces),
             web.get("/test/trace/analyze", agent.handle_trace_analyze),
+            web.get("/test/trace_check/failures", agent.get_trace_check_failures),
+            web.get("/test/trace_check/clear", agent.clear_trace_check_failures),
+            web.get("/test/trace_check/summary", agent.get_trace_check_summary),
+            web.get("/test/integrations/tested_versions", agent.handle_get_tested_integrations),
         ]
     )
     checks = Checks(
@@ -602,8 +1085,10 @@ def make_app(
             CheckTraceCountHeader,
             CheckTraceContentLength,
             CheckTraceStallAsync,
+            CheckTracePeerService,
+            CheckTraceDDService,
         ],
-        disabled=disabled_checks,
+        enabled=enabled_checks,
     )
     app["checks"] = checks
     app["snapshot_dir"] = snapshot_dir
@@ -612,6 +1097,10 @@ def make_app(
     app["snapshot_ignored_attrs"] = snapshot_ignored_attrs
     app["agent_url"] = agent_url
     app["trace_request_delay"] = trace_request_delay
+    app["suppress_trace_parse_errors"] = suppress_trace_parse_errors
+    app["pool_trace_check_failures"] = pool_trace_check_failures
+    app["disable_error_responses"] = disable_error_responses
+    app["snapshot_removed_attrs"] = snapshot_removed_attrs
     return app
 
 
@@ -653,11 +1142,21 @@ def main(args: Optional[List[str]] = None) -> None:
         ),
     )
     parser.add_argument(
-        "--disabled-checks",
-        type=List[str],
-        default=_parse_csv(os.environ.get("DISABLED_CHECKS", "")),
+        "--snapshot-removed-attrs",
+        type=Set[str],
+        default=set(_parse_csv(os.environ.get("SNAPSHOT_REMOVED_ATTRS", ""))),
         help=(
-            "Comma-separated values of checks to disable. None are disabled "
+            "Comma-separated values of span attributes to remove. "
+            "meta/metrics attributes can be removed by prefixing the key "
+            "with meta. or metrics."
+        ),
+    )
+    parser.add_argument(
+        "--enabled-checks",
+        type=List[str],
+        default=_parse_csv(os.environ.get("ENABLED_CHECKS", "")),
+        help=(
+            "Comma-separated values of checks to enable. None are enabled "
             " by default. For the list of values see "
             "https://github.com/datadog/dd-trace-test-agent"
         ),
@@ -692,6 +1191,26 @@ def main(args: Optional[List[str]] = None) -> None:
         default=os.environ.get("DD_TEST_STALL_REQUEST_SECONDS", 0.0),
         help=("Will stall trace requests for specified amount of time"),
     )
+    parser.add_argument(
+        "--suppress-trace-parse-errors",
+        type=bool,
+        default=os.environ.get("DD_SUPPRESS_TRACE_PARSE_ERRORS", False),
+        help=(
+            "Will change the test agent trace decoder to use a more resilient parser to prevent decode and span verification errors"
+        ),
+    )
+    parser.add_argument(
+        "--pool-trace-check-failures",
+        type=bool,
+        default=os.environ.get("DD_POOL_TRACE_CHECK_FAILURES", False),
+        help=("Will change the test agent to pool Trace Check failures in memory that can later be asserted on"),
+    )
+    parser.add_argument(
+        "--disable-error-responses",
+        type=bool,
+        default=os.environ.get("DD_DISABLE_ERROR_RESPONSES", False),
+        help=("Will change the test agent to send [200: Ok] responses instead of error responses back to the tracer."),
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -717,13 +1236,17 @@ def main(args: Optional[List[str]] = None) -> None:
             os.path.abspath(parsed_args.snapshot_dir),
         )
     app = make_app(
-        disabled_checks=parsed_args.disabled_checks,
+        enabled_checks=parsed_args.enabled_checks,
         log_span_fmt=parsed_args.log_span_fmt,
         snapshot_dir=parsed_args.snapshot_dir,
         snapshot_ci_mode=parsed_args.snapshot_ci_mode,
         snapshot_ignored_attrs=parsed_args.snapshot_ignored_attrs,
         agent_url=parsed_args.agent_url,
         trace_request_delay=parsed_args.trace_request_delay,
+        suppress_trace_parse_errors=parsed_args.suppress_trace_parse_errors,
+        pool_trace_check_failures=parsed_args.pool_trace_check_failures,
+        disable_error_responses=parsed_args.disable_error_responses,
+        snapshot_removed_attrs=parsed_args.snapshot_removed_attrs,
     )
 
     web.run_app(app, sock=apm_sock, port=parsed_args.port)

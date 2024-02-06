@@ -22,12 +22,7 @@ def _resolve_files(files: List[str]) -> List[str]:
             curdir = os.getcwd()
             try:
                 os.chdir(fname)
-                resolved.extend(
-                    [
-                        os.path.join(fname, f)
-                        for f in glob.glob("**/*.json", recursive=True)
-                    ]
-                )
+                resolved.extend([os.path.join(fname, f) for f in glob.glob("**/*.json", recursive=True)])
             finally:
                 os.chdir(curdir)
         else:
