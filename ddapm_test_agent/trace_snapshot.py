@@ -116,7 +116,10 @@ def _normalize_traces(traces: List[Trace]) -> List[Trace]:
     return normed_traces
 
 
-def _match_traces(t1s: List[Trace], t2s: List[Trace]) -> List[Tuple[Trace, Trace]]:
+def _match_traces(t1s: List[Trace], t2s: List[Trace], count_tolerance: int = 0) -> List[Tuple[Trace, Trace]]:
+    """
+    :param count_tolerance: The maximum allowed difference in count between expected and received spans
+    """
     t1_map: Dict[TraceId, Trace] = {get_trace_id(t): t for t in t1s}
     t2_map: Dict[TraceId, Trace] = {get_trace_id(t): t for t in t2s}
     # Note: cannot assume trace_ids are unique between t1s and t2s (since snapshot normalizes them)
@@ -141,26 +144,18 @@ def _match_traces(t1s: List[Trace], t2s: List[Trace]) -> List[Tuple[Trace, Trace
         matched_t1s.add(t1_trace_id)
         matched_t2s.add(t2_trace_id)
 
-    if len(matched_t1s) != len(t1_map):
+    if abs(len(matched_t1s) - len(t1_map)) > count_tolerance:
         unmatched_ids = set(t1_map.keys()) - matched_t1s
         op_names = [t1_map[tid][0]["name"] for tid in unmatched_ids]
-        raise AssertionError(
-            "Did not receive expected traces: %s"
-            % (",".join(map(lambda s: f"'{s}'", op_names)))
-        )
-    if len(matched_t2s) != len(t2_map):
+        raise AssertionError("Did not receive expected traces: %s" % (",".join(map(lambda s: f"'{s}'", op_names))))
+    if abs(len(matched_t2s) - len(t2_map)) > count_tolerance:
         unmatched_ids = set(t2_map.keys()) - matched_t2s
         op_names = [t2_map[tid][0]["name"] for tid in unmatched_ids]
-        raise AssertionError(
-            "Received unmatched traces: %s"
-            % (",".join(map(lambda s: f"'{s}'", op_names)))
-        )
+        raise AssertionError("Received unmatched traces: %s" % (",".join(map(lambda s: f"'{s}'", op_names))))
     return matches
 
 
-def _diff_spans(
-    s1: Span, s2: Span, ignored: Set[str]
-) -> Tuple[List[str], List[str], List[str]]:
+def _diff_spans(s1: Span, s2: Span, ignored: Set[str]) -> Tuple[List[str], List[str], List[str]]:
     """Return differing attributes between two spans and their meta/metrics maps.
 
     It is assumed that the spans have passed through preliminary validation
@@ -234,9 +229,7 @@ def _compare_traces(expected: Trace, received: Trace, ignored: Set[str]) -> None
         ) as frame:
             frame.add_item(f"Expected span:\n{pprint.pformat(s_exp)}")
             frame.add_item(f"Received span:\n{pprint.pformat(s_rec)}")
-            top_level_diffs, meta_diffs, metrics_diffs = _diff_spans(
-                s_exp, s_rec, ignored
-            )
+            top_level_diffs, meta_diffs, metrics_diffs = _diff_spans(s_exp, s_rec, ignored)
 
             for diffs, diff_type, d_exp, d_rec in [
                 (top_level_diffs, "span", s_exp, s_rec),
@@ -268,14 +261,14 @@ class SnapshotCheck(Check):
 
 
 def snapshot(
-    expected_traces: List[Trace], received_traces: List[Trace], ignored: List[str]
+    expected_traces: List[Trace], received_traces: List[Trace], ignored: List[str], count_tolerance: int
 ) -> None:
     normed_expected = _normalize_traces(expected_traces)
     normed_received = _normalize_traces(received_traces)
     with CheckTrace.add_frame(
         f"compare of {len(normed_expected)} expected trace(s) to {len(normed_received)} received trace(s)"
     ):
-        matched = _match_traces(normed_expected, normed_received)
+        matched = _match_traces(normed_expected, normed_received, count_tolerance=count_tolerance)
         log.debug("Matched traces %r", matched)
 
         for exp, rec in matched:
@@ -328,9 +321,7 @@ def _snapshot_trace_str(trace: Trace) -> str:
             else:
                 stack.insert(0, (prefix + 3, child))
 
-        s += textwrap.indent(
-            json.dumps(_ordered_span(span), indent=2), " " * (prefix + 2)
-        )
+        s += textwrap.indent(json.dumps(_ordered_span(span), indent=2), " " * (prefix + 2))
         if stack:
             s += ",\n"
     s += "]"
