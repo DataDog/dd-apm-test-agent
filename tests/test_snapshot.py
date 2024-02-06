@@ -734,3 +734,36 @@ async def test_removed_attributes_fails_span_id(agent, tmp_path, snapshot_remove
     resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test_case"})
     assert resp.status == 400
     assert "Cannot remove 'span_id' from spans" in await resp.text()
+
+
+@pytest.mark.parametrize(
+    "expected_traces,actual_traces,error",
+    [
+        ([ONE_SPAN_TRACE], [], ""),
+        ([ONE_SPAN_TRACE], [ONE_SPAN_TRACE], ""),
+        ([], [FIVE_SPAN_TRACE], ""),
+        ([ONE_SPAN_TRACE, FIVE_SPAN_TRACE], [], "At compare of 2 expected trace(s) to 0 received trace(s)"),
+    ],
+)
+async def test_snapshot_trace_count_mismatches(agent, expected_traces, actual_traces, error):
+    resp = await v04_trace(agent, expected_traces, token="test")
+    assert resp.status == 200, await resp.text()
+
+    resp = await agent.get(
+        "/test/session/snapshot", params={"test_session_token": "test", "trace_count_tolerance": "1"}
+    )
+    assert resp.status == 200, await resp.text()
+    resp = await agent.get("/test/session/clear", params={"test_session_token": "test", "trace_count_tolerance": "1"})
+    assert resp.status == 200, await resp.text()
+
+    resp = await v04_trace(agent, actual_traces, token="test")
+    assert resp.status == 200, await resp.text()
+    resp = await agent.get(
+        "/test/session/snapshot", params={"test_session_token": "test", "trace_count_tolerance": "1"}
+    )
+    resp_text = await resp.text()
+    if error:
+        assert resp.status == 400, resp_text
+        assert error in resp_text, resp_text
+    else:
+        assert resp.status == 200, resp_text

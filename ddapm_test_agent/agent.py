@@ -750,7 +750,7 @@ class Agent:
             trace_snap_path_exists = os.path.exists(trace_snap_file)
 
             received_traces = await self._traces_by_session(token)
-            count_tolerance = int(request.query.get("count_tolerance", 0))
+            count_tolerance = int(request.query.get("trace_count_tolerance", 0))
             if snap_ci_mode and received_traces and not trace_snap_path_exists:
                 raise AssertionError(
                     f"Trace snapshot file '{trace_snap_file}' not found. "
