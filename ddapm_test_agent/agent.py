@@ -53,6 +53,10 @@ from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 
 
+class NoSuchSessionException(Exception):
+    pass
+
+
 _Handler = Callable[[Request], Awaitable[web.Response]]
 
 
@@ -215,11 +219,11 @@ class Agent:
             failure_message = f"APM Test Agent Validation failed with {n_failures} Trace Check failures.\n"
             for trace_check_message in trace_check_failures:
                 failure_message += trace_check_message
-            failure_message += f"\nAPM Test Agent Trace Check Results by Check -------------------------------"
+            failure_message += "\nAPM Test Agent Trace Check Results by Check -------------------------------"
             failure_message += f"\n{json.dumps(trace_check_full_results, indent=4)}"
             return web.HTTPBadRequest(text=failure_message)
         else:
-            message = f"APM Test Agent Trace Check Results by Check --------------------------------"
+            message = "APM Test Agent Trace Check Results by Check --------------------------------"
             message += f"\n{json.dumps(trace_check_full_results, indent=4)}"
             return web.HTTPOk(text=message)
 
@@ -262,18 +266,34 @@ class Agent:
         """
         # Go backwards in the requests received gathering requests until
         # the /session-start request for the token is found.
-        reqs: List[Request] = []
+        # Note that this may not return all associated traces, because some
+        # may be generated before the session-start call
+        session_reqs: List[Request] = []
+        sessionless_reqs: List[Request] = []
+        matched = token is None
+
         for req in reversed(self._requests):
             if req.match_info.handler == self.handle_session_start:
-                if token is None or _session_token(req) == token:
+                if token is None:
+                    # If no token is specified, then we match the latest session
                     break
-                else:
-                    # The requests made were from a different manual session
-                    # so continue.
+                elif _session_token(req) == token:
+                    # If a token is specified and it matches, we've hit the start of our session
+                    matched = True
+                    break
+                elif _session_token(req) != token:
+                    # If a token is specified and it doesn't match, we've hit the start of a different session
+                    # So we reset the list of requests
+                    sessionless_reqs: List[Request] = []
                     continue
-            if _session_token(req) in [token, None]:
-                reqs.append(req)
-        return reqs
+            if _session_token(req) == token:
+                session_reqs.append(req)
+            elif _session_token(req) is None:
+                sessionless_reqs.append(req)
+
+        if not matched and not session_reqs:
+            raise NoSuchSessionException(f"No session found for token '{token}'")
+        return session_reqs + sessionless_reqs
 
     async def _traces_from_request(self, req: Request) -> List[List[Span]]:
         """Return the trace from a trace request."""
@@ -476,109 +496,117 @@ class Agent:
 
     async def handle_snapshot(self, request: Request) -> web.Response:
         """Generate a snapshot or perform a snapshot test."""
-        token = request["session_token"]
-        snap_dir = request.url.query.get("dir", request.app["snapshot_dir"])
-        snap_ci_mode = request.app["snapshot_ci_mode"]
-        log.info(
-            "performing snapshot with token=%r, ci_mode=%r and snapshot directory=%r",
-            token,
-            snap_ci_mode,
-            snap_dir,
-        )
+        try:
+            token = request["session_token"]
+            snap_dir = request.url.query.get("dir", request.app["snapshot_dir"])
+            snap_ci_mode = request.app["snapshot_ci_mode"]
+            log.info(
+                "performing snapshot with token=%r, ci_mode=%r and snapshot directory=%r",
+                token,
+                snap_ci_mode,
+                snap_dir,
+            )
 
-        # Get the span attributes that are to be ignored for this snapshot.
-        default_span_ignores: Set[str] = request.app["snapshot_ignored_attrs"]
-        overrides = set(_parse_csv(request.url.query.get("ignores", "")))
-        span_ignores = list(default_span_ignores | overrides)
-        log.info("using ignores %r", span_ignores)
+            # Get the span attributes that are to be ignored for this snapshot.
+            default_span_ignores: Set[str] = request.app["snapshot_ignored_attrs"]
+            overrides = set(_parse_csv(request.url.query.get("ignores", "")))
+            span_ignores = list(default_span_ignores | overrides)
+            log.info("using ignores %r", span_ignores)
 
-        # Get the span attributes that are to be removed for this snapshot.
-        default_span_removes: Set[str] = request.app["snapshot_removed_attrs"]
-        overrides = set(_parse_csv(request.url.query.get("removes", "")))
-        span_removes = list(default_span_removes | overrides)
-        log.info("using removes %r", span_removes)
+            # Get the span attributes that are to be removed for this snapshot.
+            default_span_removes: Set[str] = request.app["snapshot_removed_attrs"]
+            overrides = set(_parse_csv(request.url.query.get("removes", "")))
+            span_removes = list(default_span_removes | overrides)
+            log.info("using removes %r", span_removes)
 
-        if "span_id" in span_removes:
-            raise AssertionError("Cannot remove 'span_id' from spans")
+            if "span_id" in span_removes:
+                raise AssertionError("Cannot remove 'span_id' from spans")
 
-        with CheckTrace.add_frame(f"snapshot (token='{token}')") as frame:
-            frame.add_item(f"Directory: {snap_dir}")
-            frame.add_item(f"CI mode: {snap_ci_mode}")
+            with CheckTrace.add_frame(f"snapshot (token='{token}')") as frame:
+                frame.add_item(f"Directory: {snap_dir}")
+                frame.add_item(f"CI mode: {snap_ci_mode}")
 
-            if "X-Datadog-Test-Snapshot-Filename" in request.headers:
-                snap_file = request.headers["X-Datadog-Test-Snapshot-Filename"]
-            elif "file" in request.url.query:
-                snap_file = request.url.query["file"]
-            else:
-                snap_file = os.path.join(snap_dir, token)
+                if "X-Datadog-Test-Snapshot-Filename" in request.headers:
+                    snap_file = request.headers["X-Datadog-Test-Snapshot-Filename"]
+                elif "file" in request.url.query:
+                    snap_file = request.url.query["file"]
+                else:
+                    snap_file = os.path.join(snap_dir, token)
 
-            # The logic from here is mostly duplicated for traces and trace stats.
-            # If another data type is to be snapshotted then it probably makes sense to abstract away
-            # the required pieces of snapshotting (loading, generating and comparing).
+                # The logic from here is mostly duplicated for traces and trace stats.
+                # If another data type is to be snapshotted then it probably makes sense to abstract away
+                # the required pieces of snapshotting (loading, generating and comparing).
 
-            # For backwards compatibility traces don't have a postfix of `_trace.json`
-            trace_snap_file = f"{snap_file}.json"
-            tracestats_snap_file = f"{snap_file}_tracestats.json"
+                # For backwards compatibility traces don't have a postfix of `_trace.json`
+                trace_snap_file = f"{snap_file}.json"
+                tracestats_snap_file = f"{snap_file}_tracestats.json"
 
-            frame.add_item(f"Trace File: {trace_snap_file}")
-            frame.add_item(f"Stats File: {tracestats_snap_file}")
-            log.info("using snapshot files %r and %r", trace_snap_file, tracestats_snap_file)
+                frame.add_item(f"Trace File: {trace_snap_file}")
+                frame.add_item(f"Stats File: {tracestats_snap_file}")
+                log.info("using snapshot files %r and %r", trace_snap_file, tracestats_snap_file)
 
-            trace_snap_path_exists = os.path.exists(trace_snap_file)
+                trace_snap_path_exists = os.path.exists(trace_snap_file)
 
-            received_traces = await self._traces_by_session(token)
-            if snap_ci_mode and received_traces and not trace_snap_path_exists:
-                raise AssertionError(
-                    f"Trace snapshot file '{trace_snap_file}' not found. "
-                    "Perhaps the file was not checked into source control? "
-                    "The snapshot file is automatically generated when the test agent is not in CI mode."
-                )
-            elif trace_snap_path_exists:
-                # Do the snapshot comparison
-                with open(trace_snap_file, mode="r") as f:
-                    raw_snapshot = json.load(f)
-                trace_snapshot.snapshot(
-                    expected_traces=raw_snapshot,
-                    received_traces=received_traces,
-                    ignored=span_ignores,
-                )
-            elif received_traces:
-                # Create a new snapshot for the data received
-                with open(trace_snap_file, mode="w") as f:
-                    f.write(trace_snapshot.generate_snapshot(received_traces=received_traces, removed=span_removes))
-                log.info("wrote new trace snapshot to %r", os.path.abspath(trace_snap_file))
+                received_traces = await self._traces_by_session(token)
+                if snap_ci_mode and received_traces and not trace_snap_path_exists:
+                    raise AssertionError(
+                        f"Trace snapshot file '{trace_snap_file}' not found. "
+                        "Perhaps the file was not checked into source control? "
+                        "The snapshot file is automatically generated when the test agent is not in CI mode."
+                    )
+                elif trace_snap_path_exists:
+                    # Do the snapshot comparison
+                    with open(trace_snap_file, mode="r") as f:
+                        raw_snapshot = json.load(f)
+                    trace_snapshot.snapshot(
+                        expected_traces=raw_snapshot,
+                        received_traces=received_traces,
+                        ignored=span_ignores,
+                    )
+                elif received_traces:
+                    # Create a new snapshot for the data received
+                    with open(trace_snap_file, mode="w") as f:
+                        f.write(trace_snapshot.generate_snapshot(received_traces=received_traces, removed=span_removes))
+                    log.info("wrote new trace snapshot to %r", os.path.abspath(trace_snap_file))
 
-            # Get all stats buckets from the payloads since we don't care about the other fields (hostname, env, etc)
-            # in the payload.
-            received_stats = [bucket for p in (await self._tracestats_by_session(token)) for bucket in p["Stats"]]
-            tracestats_snap_path_exists = os.path.exists(tracestats_snap_file)
-            if snap_ci_mode and received_stats and not tracestats_snap_path_exists:
-                raise AssertionError(
-                    f"Trace stats snapshot file '{tracestats_snap_file}' not found. "
-                    "Perhaps the file was not checked into source control? "
-                    "The snapshot file is automatically generated when the test case is run when not in CI mode."
-                )
-            elif tracestats_snap_path_exists:
-                # Do the snapshot comparison
-                with open(tracestats_snap_file, mode="r") as f:
-                    raw_snapshot = json.load(f)
-                tracestats_snapshot.snapshot(
-                    expected_stats=raw_snapshot,
-                    received_stats=received_stats,
-                )
-            elif received_stats:
-                # Create a new snapshot for the data received
-                with open(tracestats_snap_file, mode="w") as f:
-                    f.write(tracestats_snapshot.generate(received_stats))
-                log.info(
-                    "wrote new tracestats snapshot to %r",
-                    os.path.abspath(tracestats_snap_file),
-                )
-        return web.HTTPOk()
+                # Get all stats buckets from the payloads since we don't care about the other fields (hostname, env, etc)
+                # in the payload.
+                received_stats = [bucket for p in (await self._tracestats_by_session(token)) for bucket in p["Stats"]]
+                tracestats_snap_path_exists = os.path.exists(tracestats_snap_file)
+                if snap_ci_mode and received_stats and not tracestats_snap_path_exists:
+                    raise AssertionError(
+                        f"Trace stats snapshot file '{tracestats_snap_file}' not found. "
+                        "Perhaps the file was not checked into source control? "
+                        "The snapshot file is automatically generated when the test case is run when not in CI mode."
+                    )
+                elif tracestats_snap_path_exists:
+                    # Do the snapshot comparison
+                    with open(tracestats_snap_file, mode="r") as f:
+                        raw_snapshot = json.load(f)
+                    tracestats_snapshot.snapshot(
+                        expected_stats=raw_snapshot,
+                        received_stats=received_stats,
+                    )
+                elif received_stats:
+                    # Create a new snapshot for the data received
+                    with open(tracestats_snap_file, mode="w") as f:
+                        f.write(tracestats_snapshot.generate(received_stats))
+                    log.info(
+                        "wrote new tracestats snapshot to %r",
+                        os.path.abspath(tracestats_snap_file),
+                    )
+            return web.HTTPOk()
+        except Exception as e:
+            return web.HTTPBadRequest(reason=str(e))
 
     async def handle_session_traces(self, request: Request) -> web.Response:
         token = request["session_token"]
-        traces = await self._traces_by_session(token)
+        traces = []
+        try:
+            traces = await self._traces_by_session(token)
+        except NoSuchSessionException as e:
+            return web.HTTPNotFound(reason=str(e))
+
         return web.json_response(traces)
 
     async def handle_session_apmtelemetry(self, request: Request) -> web.Response:
@@ -665,14 +693,19 @@ class Agent:
                 if req.match_info.handler == self.handle_session_start:
                     if _session_token(req) == session_token:
                         in_token_sync_session = True
+                        continue  # Don't clear the session start
                     else:
                         in_token_sync_session = False
                 if in_token_sync_session:
                     setattr(req, "__delete", True)
 
-            # Filter out all the requests.
+            # Filter out all requests marked for deletion.
+            # Keep session starts.
             self._requests = [
-                r for r in self._requests if _session_token(r) != session_token and not hasattr(r, "__delete")
+                r
+                for r in self._requests
+                if (_session_token(r) != session_token or r.match_info.handler == self.handle_session_start)
+                and not hasattr(r, "__delete")
             ]
         else:
             self._requests = []
@@ -768,7 +801,9 @@ class Agent:
             if trace.has_fails():
                 # only save trace failures to memory if necessary
                 pool_failures = request.app["pool_trace_check_failures"]
-                log.error(f"Trace had the following failures, using config: token={token}, DD_POOL_TRACE_CHECK_FAILURES={pool_failures}")
+                log.error(
+                    f"Trace had the following failures, using config: token={token}, DD_POOL_TRACE_CHECK_FAILURES={pool_failures}"
+                )
                 msg = str(trace)
                 if request.app["pool_trace_check_failures"]:
                     log.info(f"Storing Trace Check Failure for Session Token: {token}.")
@@ -842,7 +877,7 @@ def make_app(
             CheckTraceContentLength,
             CheckTraceStallAsync,
             CheckTracePeerService,
-            CheckTraceDDService
+            CheckTraceDDService,
         ],
         disabled=disabled_checks,
     )

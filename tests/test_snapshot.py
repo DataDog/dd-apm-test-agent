@@ -32,6 +32,9 @@ async def test_snapshot_single_trace(
             When the same trace is sent again
                 The snapshot should pass
     """  # noqa: RST301
+    # Start a session
+    resp = await agent.get("/test/session/start", params={"test_session_token": "test_case"})
+    assert resp.status == 200
     # Send a trace
     resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200
@@ -176,6 +179,8 @@ FIVE_SPAN_TRACE = random_trace(5)
     ],
 )
 async def test_snapshot_trace_differences(agent, expected_traces, actual_traces, error):
+    resp = await agent.get("/test/session/start", params={"test_session_token": "test"})
+    assert resp.status == 200
     resp = await v04_trace(agent, expected_traces, token="test")
     assert resp.status == 200, await resp.text()
 
@@ -363,6 +368,8 @@ def test_generate_tracestats_snapshot(buckets, expected):
 
 
 async def test_snapshot_custom_dir(agent, tmp_path, do_reference_v04_http_trace):
+    resp = await agent.get("/test/session/start", params={"test_session_token": "test_case"})
+    assert resp.status == 200
     resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200
 
@@ -381,6 +388,8 @@ async def test_snapshot_custom_dir(agent, tmp_path, do_reference_v04_http_trace)
 
 
 async def test_snapshot_custom_file(agent, tmp_path, do_reference_v04_http_trace):
+    resp = await agent.get("/test/session/start", params={"test_session_token": "test_case"})
+    assert resp.status == 200
     resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200
 
@@ -401,6 +410,8 @@ async def test_snapshot_custom_file(agent, tmp_path, do_reference_v04_http_trace
 
 @pytest.mark.parametrize("snapshot_ci_mode", [False, True])
 async def test_snapshot_tracestats(agent, tmp_path, snapshot_ci_mode, do_reference_v06_http_stats, snapshot_dir):
+    resp = await agent.get("/test/session/start", params={"test_session_token": "test_case"})
+    assert resp.status == 200
     resp = await do_reference_v06_http_stats(token="test_case")
     assert resp.status == 200
 
@@ -430,6 +441,8 @@ async def test_snapshot_tracestats(agent, tmp_path, snapshot_ci_mode, do_referen
 
 @pytest.mark.parametrize("snapshot_removed_attrs", [{"start", "duration"}])
 async def test_removed_attributes(agent, tmp_path, snapshot_removed_attrs, do_reference_v04_http_trace):
+    resp = await agent.get("/test/session/start", params={"test_session_token": "test_case"})
+    assert resp.status == 200
     resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200
 
@@ -454,6 +467,8 @@ async def test_removed_attributes(agent, tmp_path, snapshot_removed_attrs, do_re
 
 @pytest.mark.parametrize("snapshot_removed_attrs", [{"metrics.process_id"}])
 async def test_removed_attributes_metrics(agent, tmp_path, snapshot_removed_attrs, do_reference_v04_http_trace):
+    resp = await agent.get("/test/session/start", params={"test_session_token": "test_case"})
+    assert resp.status == 200
     resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200
 
@@ -599,6 +614,8 @@ FIVE_SPAN_TRACE_NO_START = random_trace(5, remove_keys=["start"])
     ],
 )
 async def test_snapshot_trace_differences_removed_start(agent, expected_traces, actual_traces, error):
+    resp = await agent.get("/test/session/start", params={"test_session_token": "test"})
+    assert resp.status == 200
     resp = await v04_trace(agent, expected_traces, token="test")
     assert resp.status == 200, await resp.text()
 

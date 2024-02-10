@@ -102,3 +102,24 @@ async def test_apmtelemetry(
     )
     assert resp.status == 200
     assert await resp.text() == "[]"
+
+
+async def test_trace_new_session(
+    agent,
+    v04_reference_http_trace_payload_headers,
+    v04_reference_http_trace_payload_data,
+):
+    resp = await agent.put(
+        "/v0.4/traces",
+        params={"test_session_token": "1"},
+        headers=v04_reference_http_trace_payload_headers,
+        data=v04_reference_http_trace_payload_data,
+    )
+    assert resp.status == 200, await resp.text()
+
+    resp = await agent.get("/test/session/clear", params={"test_session_token": "1"})
+    assert resp.status == 200
+
+    resp = await agent.get("/test/traces", params={"trace_ids": "123456"})
+    assert resp.status == 200
+    assert await resp.text() == "[[]]"

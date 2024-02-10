@@ -42,14 +42,18 @@ class CheckTraceFrame:
 
     def get_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
         """
-        results = {
-            check.name: {
-                "Passed_Checks": int
-                "Failed_Checks": int
-                "Skipped_Checks": int
+        Return the following format
+
+        .. code-block:: python
+
+            results = {
+                check.name: {
+                    "Passed_Checks": int,
+                    "Failed_Checks": int,
+                    "Skipped_Checks": int
+                }
+                ...
             }
-            ...
-        }
 
         """
         for c in self._checks:

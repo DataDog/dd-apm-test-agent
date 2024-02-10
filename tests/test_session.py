@@ -59,7 +59,8 @@ async def test_concurrent_session(
     for token in ["test_case", "test_case2"]:
         resp = await agent.get("/test/session/traces", params={"test_session_token": token})
         assert resp.status == 200
-        assert await resp.json() == v04_reference_http_trace_payload_data_raw
+        result = await resp.json()
+        assert result == v04_reference_http_trace_payload_data_raw, result
 
     resp = await agent.get("/test/session/traces")
     assert resp.status == 200
@@ -69,8 +70,7 @@ async def test_concurrent_session(
     assert resp.status == 200
     for token in ["test_case", "test_case2"]:
         resp = await agent.get("/test/session/traces", params={"test_session_token": token})
-        assert resp.status == 200
-        assert await resp.json() == []
+        assert resp.status == 404
 
 
 async def test_two_sessions(
