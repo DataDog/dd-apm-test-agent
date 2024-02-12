@@ -1,4 +1,5 @@
 """Tracing specific functions and types"""
+
 import json
 from typing import Any
 from typing import Callable
