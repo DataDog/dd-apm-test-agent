@@ -8,7 +8,7 @@
 
 The APM test agent is an application which emulates the APM endpoints of the [Datadog agent](https://github.com/DataDog/datadog-agent/) which can be used for testing Datadog APM client libraries.
 
-See the [features](#features) section for the complete list of functionalities provided.
+See the [Features](#features) section for the complete list of functionalities provided.
 
 See the [HTTP API](#http-api) section for the endpoints available.
 
@@ -446,20 +446,20 @@ If there was an error parsing the tracer-flare form, that will be recorded under
 A Python version of 3.8 or above and [`riot`](https://github.com/Datadog/riot) are required. It is recommended to create
 and work out of a virtualenv:
 
-    python3.11 -m venv .venv
+    python3.12 -m venv .venv
     source .venv/bin/activate
     pip install -e '.[testing]'
 
 
 ### Running the tests
 
-To run the tests (in Python 3.8):
+To run the tests (in Python 3.12):
 
-    riot run -p3.11 test
+    riot run -p3.12 test
 
 Note: if snapshots need to be (re)generated in the tests set the environment variable `GENERATE_SNAPSHOTS=1`.
 
-    GENERATE_SNAPSHOTS=1 riot run --pass-env -p3.8 test -k test_trace_missing_received
+    GENERATE_SNAPSHOTS=1 riot run --pass-env -p3.12 test -k test_trace_missing_received
 
 
 ### Linting and formatting
