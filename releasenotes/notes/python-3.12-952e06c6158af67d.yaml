@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    Add support for Python 3.12. The interpreter used in the Docker image is
+    now also Python 3.12. This should lead to some better error messages and
+    some performance improvement.
