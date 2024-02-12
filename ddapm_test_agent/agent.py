@@ -28,9 +28,9 @@ from urllib.parse import urlunparse
 from aiohttp import ClientResponse
 from aiohttp import ClientSession
 from aiohttp import web
+from aiohttp.web import HTTPException
 from aiohttp.web import Request
 from aiohttp.web import middleware
-from aiohttp.web import HTTPException
 from msgpack.exceptions import ExtraData as MsgPackExtraDataException
 from multidict import CIMultiDict
 
@@ -1048,7 +1048,7 @@ def make_app(
     app = web.Application(
         client_max_size=int(100e6),  # 100MB - arbitrary
         middlewares=[
-            handle_exception_middleware,  #type: ignore
+            handle_exception_middleware,  # type: ignore
             agent.check_failure_middleware,  # type: ignore
             agent.store_request_middleware,  # type: ignore
             agent.request_forwarder_middleware,  # type: ignore
