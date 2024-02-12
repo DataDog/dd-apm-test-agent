@@ -30,7 +30,7 @@ from .trace import trace_id as get_trace_id
 log = logging.getLogger(__name__)
 
 
-DEFAULT_SNAPSHOT_IGNORES = "span_id,trace_id,parent_id,duration,start,metrics.system.pid,metrics.system.process_id,metrics.process_id,metrics._dd.tracer_kr,meta.runtime-id,span_links.trace_id_high,meta.pathway.hash"
+DEFAULT_SNAPSHOT_IGNORES = "span_id,trace_id,parent_id,duration,start,metrics.system.pid,metrics.system.process_id,metrics.process_id,metrics._dd.tracer_kr,meta.runtime-id,span_links.trace_id_high,meta.pathway.hash,meta._dd.p.tid"
 
 
 def _key_match(d1: Dict[str, Any], d2: Dict[str, Any], key: str) -> bool:
