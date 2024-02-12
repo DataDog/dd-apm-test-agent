@@ -110,14 +110,14 @@ async def session_token_middleware(request: Request, handler: _Handler) -> web.R
 
 @middleware
 async def handle_exception_middleware(request: Request, handler: _Handler) -> web.Response:
-        """Turn exceptions into 400s with the reason from the exception."""
-        try:
-            response = await handler(request)
-            return response
-        except HTTPException:
-            raise
-        except Exception as e:
-            return web.HTTPBadRequest(reason=str(e))
+    """Turn exceptions into 400s with the reason from the exception."""
+    try:
+        response = await handler(request)
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        return web.HTTPBadRequest(reason=str(e))
 
 
 async def _forward_request(request_data: bytes, headers: Mapping[str, str], full_agent_url: str) -> ClientResponse:
