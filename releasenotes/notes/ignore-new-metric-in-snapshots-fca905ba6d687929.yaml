@@ -1,6 +1,0 @@
----
-fixes:
-  - |
-    Prior to this change, snapshot tests were  with newer versions of the tracers
-    because of a new metric, metrics._dd.tracer_kr.  After this change, tests pass
-    because the new metric is ignored.
