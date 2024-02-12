@@ -4,35 +4,36 @@
     "service": "",
     "resource": "root0",
     "trace_id": 0,
-    "type": "",
     "span_id": 1,
     "parent_id": 0,
+    "type": "",
+    "error": 0,
     "meta": {
       "_dd.p.dm": "-0",
-      "runtime-id": "2d377516ca12429aaf072f037ed2e4cc"
+      "_dd.p.tid": "65caa2a800000000",
+      "language": "python",
+      "runtime-id": "ce77bb0dd15e4f36aa106905fdddbc19"
     },
     "metrics": {
-      "_dd.agent_psr": 1.0,
       "_dd.top_level": 1,
       "_dd.tracer_kr": 1.0,
       "_sampling_priority_v1": 1,
-      "system.pid": 28509
+      "process_id": 94638
     },
-    "duration": 137000,
-    "error": 0,
-    "start": 1633558542938056000
+    "duration": 223000,
+    "start": 1707778728600188000
   },
      {
        "name": "child0",
        "service": "",
        "resource": "child0",
        "trace_id": 0,
-       "type": "",
        "span_id": 2,
        "parent_id": 1,
-       "duration": 16000,
+       "type": "",
        "error": 0,
-       "start": 1633558542938164000
+       "duration": 9000,
+       "start": 1707778728600249000
      }],
 [
   {
@@ -40,33 +41,34 @@
     "service": "",
     "resource": "root1",
     "trace_id": 1,
-    "type": "",
     "span_id": 1,
     "parent_id": 0,
+    "type": "",
+    "error": 0,
     "meta": {
       "_dd.p.dm": "-0",
-      "runtime-id": "2d377516ca12429aaf072f037ed2e4cc"
+      "_dd.p.tid": "65caa2a800000000",
+      "language": "python",
+      "runtime-id": "ce77bb0dd15e4f36aa106905fdddbc19"
     },
     "metrics": {
-      "_dd.agent_psr": 1.0,
       "_dd.top_level": 1,
       "_dd.tracer_kr": 1.0,
       "_sampling_priority_v1": 1,
-      "system.pid": 28509
+      "process_id": 94638
     },
-    "duration": 51000,
-    "error": 0,
-    "start": 1633558542938430000
+    "duration": 136000,
+    "start": 1707778728600778000
   },
      {
        "name": "child1",
        "service": "",
        "resource": "child1",
        "trace_id": 1,
-       "type": "",
        "span_id": 2,
        "parent_id": 1,
-       "duration": 12000,
+       "type": "",
        "error": 0,
-       "start": 1633558542938461000
+       "duration": 8000,
+       "start": 1707778728600803000
      }]]
