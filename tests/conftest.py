@@ -210,13 +210,13 @@ def do_reference_v04_http_trace(
     v04_reference_http_trace_payload_headers,
     v04_reference_http_trace_payload_data,
 ):
-    def fn(token: Optional[str] = None) -> Awaitable[Response]:
+    def fn(token: Optional[str] = None, payload_override: Optional[bytes] = None) -> Awaitable[Response]:
         params = {"test_session_token": token} if token is not None else {}
         return agent.put(  # type: ignore
             "/v0.4/traces",
             params=params,
             headers=v04_reference_http_trace_payload_headers,
-            data=v04_reference_http_trace_payload_data,
+            data=payload_override or v04_reference_http_trace_payload_data,
         )
 
     yield fn

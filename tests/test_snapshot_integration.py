@@ -300,6 +300,7 @@ async def test_tracestats(
     do_traces: Callable[[Tracer], None],
     fail: bool,
 ) -> None:
+    await testagent.get("http://localhost:8126/test/session/start?test_session_token=test_trace_stats")
     do_traces(stats_tracer)
     stats_tracer.shutdown()  # force out the stats
     resp = await testagent.get("http://localhost:8126/test/session/snapshot?test_session_token=test_trace_stats")
