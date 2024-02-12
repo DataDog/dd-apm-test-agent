@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Serialize ddsketches in the trace stats snapshots.
