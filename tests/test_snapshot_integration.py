@@ -2,6 +2,7 @@
 If snapshots need to be (re)generated, set GENERATE_SNAPSHOTS=1
 and run the tests as usual.
 """
+
 import asyncio
 import os
 import subprocess
@@ -149,6 +150,7 @@ async def test_single_trace(
             span.set_metric(k, v)
     tracer.shutdown()
     resp = await testagent.get("http://localhost:8126/test/session/snapshot?test_session_token=test_single_trace")
+
     assert resp.status == response_code
 
 
