@@ -6,12 +6,13 @@
       {
         "Name": "http.request",
         "Resource": "/users/view",
+        "Service": null,
         "Type": null,
         "HTTPStatusCode": 0,
         "Synthetics": false,
         "Hits": 5,
         "TopLevelHits": 5,
-        "Duration": 107000,
+        "Duration": 118000,
         "Errors": 1,
         "OkSummary": 1046,
         "ErrorSummary": 1046
