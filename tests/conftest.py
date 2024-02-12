@@ -242,11 +242,11 @@ def v06_reference_http_stats_payload_data_raw():
     ok_n = 97
     err_n = 3
     for _ in range(ok_n):
-        n = rng.randint(1e9, 2e9)
+        n = rng.randint(int(1e9), int(2e9))
         total += n
         ok_dist.add(n)
     for _ in range(err_n):
-        n = rng.randint(2e9, 3e9)
+        n = rng.randint(int(2e9), int(3e9))
         total += n
         err_dist.add(n)
 
