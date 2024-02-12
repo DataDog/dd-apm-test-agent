@@ -1,0 +1,4 @@
+---
+other:
+  - |
+    Exceptions will now result in a 400 status code with a body containing the exception that occurred.

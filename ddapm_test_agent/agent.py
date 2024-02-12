@@ -28,6 +28,7 @@ from urllib.parse import urlunparse
 from aiohttp import ClientResponse
 from aiohttp import ClientSession
 from aiohttp import web
+from aiohttp.web import HTTPException
 from aiohttp.web import Request
 from aiohttp.web import middleware
 from msgpack.exceptions import ExtraData as MsgPackExtraDataException
@@ -105,6 +106,18 @@ async def session_token_middleware(request: Request, handler: _Handler) -> web.R
     token = _session_token(request)
     request["session_token"] = token
     return await handler(request)
+
+
+@middleware
+async def handle_exception_middleware(request: Request, handler: _Handler) -> web.Response:
+    """Turn exceptions into 400s with the reason from the exception."""
+    try:
+        response = await handler(request)
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        return web.HTTPBadRequest(reason=str(e))
 
 
 async def _forward_request(request_data: bytes, headers: Mapping[str, str], full_agent_url: str) -> ClientResponse:
@@ -1035,6 +1048,7 @@ def make_app(
     app = web.Application(
         client_max_size=int(100e6),  # 100MB - arbitrary
         middlewares=[
+            handle_exception_middleware,  # type: ignore
             agent.check_failure_middleware,  # type: ignore
             agent.store_request_middleware,  # type: ignore
             agent.request_forwarder_middleware,  # type: ignore
