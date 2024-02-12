@@ -12,7 +12,7 @@ venv = Venv(
         Venv(
             name="test",
             command="pytest {cmdargs}",
-            pys=["3.8", "3.9", "3.10", "3.11"],
+            pys=["3.8", "3.9", "3.10", "3.11", "3.12"],
             pkgs={pkg: latest for pkg in testing_deps},
         ),
         Venv(
