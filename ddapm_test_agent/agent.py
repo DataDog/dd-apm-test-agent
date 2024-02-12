@@ -800,7 +800,7 @@ class Agent:
                     )
             return web.HTTPOk()
         except Exception as e:
-            return web.HTTPInternalServerError(reason=str(e))
+            return web.HTTPBadRequest(reason=str(e))
 
     async def handle_session_traces(self, request: Request) -> web.Response:
         token = request["session_token"]
