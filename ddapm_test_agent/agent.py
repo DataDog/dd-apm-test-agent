@@ -63,6 +63,10 @@ from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 
 
+class NoSuchSessionException(Exception):
+    pass
+
+
 _Handler = Callable[[Request], Awaitable[web.Response]]
 
 
@@ -358,18 +362,34 @@ class Agent:
         """
         # Go backwards in the requests received gathering requests until
         # the /session-start request for the token is found.
-        reqs: List[Request] = []
-        for req in reversed(self._requests):
+        # Note that this may not return all associated traces, because some
+        # may be generated before the session-start call
+        session_reqs: List[Tuple[int, Request]] = []
+        sessionless_reqs: List[Tuple[int, Request]] = []
+        matched = token is None
+
+        for i, req in enumerate(reversed(self._requests)):
             if req.match_info.handler == self.handle_session_start:
-                if token is None or _session_token(req) == token:
+                if token is None:
+                    # If no token is specified, then we match the latest session
                     break
-                else:
-                    # The requests made were from a different manual session
-                    # so continue.
+                elif _session_token(req) == token:
+                    # If a token is specified and it matches, we've hit the start of our session
+                    matched = True
+                    break
+                elif _session_token(req) != token:
+                    # If a token is specified and it doesn't match, we've hit the start of a different session
+                    # So we reset the list of requests
+                    sessionless_reqs = []
                     continue
-            if _session_token(req) in [token, None]:
-                reqs.append(req)
-        return reqs
+            if _session_token(req) == token:
+                session_reqs.append((i, req))
+            elif _session_token(req) is None:
+                sessionless_reqs.append((i, req))
+
+        if not matched and not session_reqs:
+            raise NoSuchSessionException(f"No session found for token '{token}'")
+        return [x[1] for x in sorted(session_reqs + sessionless_reqs, key=lambda x: x[0])]
 
     async def _traces_from_request(self, req: Request) -> List[List[Span]]:
         """Return the trace from a trace request."""
@@ -814,7 +834,12 @@ class Agent:
 
     async def handle_session_traces(self, request: Request) -> web.Response:
         token = request["session_token"]
-        traces = await self._traces_by_session(token)
+        traces = []
+        try:
+            traces = await self._traces_by_session(token)
+        except NoSuchSessionException as e:
+            return web.HTTPNotFound(reason=str(e))
+
         return web.json_response(traces)
 
     async def handle_session_apmtelemetry(self, request: Request) -> web.Response:
@@ -908,14 +933,19 @@ class Agent:
                 if req.match_info.handler == self.handle_session_start:
                     if _session_token(req) == session_token:
                         in_token_sync_session = True
+                        continue  # Don't clear the session start
                     else:
                         in_token_sync_session = False
                 if in_token_sync_session:
                     setattr(req, "__delete", True)
 
-            # Filter out all the requests.
+            # Filter out all requests marked for deletion.
+            # Keep session starts.
             self._requests = [
-                r for r in self._requests if _session_token(r) != session_token and not hasattr(r, "__delete")
+                r
+                for r in self._requests
+                if (_session_token(r) != session_token or r.match_info.handler == self.handle_session_start)
+                and not hasattr(r, "__delete")
             ]
         else:
             self._requests = []

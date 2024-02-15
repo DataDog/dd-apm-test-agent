@@ -1,0 +1,13 @@
+---
+features:
+  - |
+    Updates the logic for associating requests with a session.  Prior to this change:
+    (1) non-existent tokens were permitted and returned associations with all requests, 
+    (2) existent tokens returned associations with all matching requests + all untokenized requests after the session was created
+
+    After this change:
+    (1) Requests with non-existent tokens return 400 error codes
+    (2) Requests with existent tokens return all matching requests + all untokenized requests after the session was created but 
+    only up to the next session creation.
+
+    Requests without a token continue to return all requests.
