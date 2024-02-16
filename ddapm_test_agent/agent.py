@@ -1267,7 +1267,10 @@ def main(args: Optional[List[str]] = None) -> None:
             os.unlink(parsed_args.trace_uds_socket)
         apm_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         apm_sock.bind(parsed_args.trace_uds_socket)
-        os.chmod(parsed_args.trace_uds_socket, 0o722)
+        try:
+            os.chmod(parsed_args.trace_uds_socket, 0o722)
+        except OSError as e:
+            log.warning("could not set permissions on UDS socket %r due to %r", parsed_args.trace_uds_socket, str(e))
         atexit.register(lambda: os.unlink(parsed_args.trace_uds_socket))
 
     if parsed_args.trace_request_delay is not None:
