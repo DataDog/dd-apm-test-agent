@@ -6,7 +6,7 @@ ENV SNAPSHOT_CI=1
 ENV LOG_LEVEL=INFO
 ENV SNAPSHOT_DIR=/snapshots
 
-RUN apt update && apt install -y git
+RUN apt update && apt install -y git curl
 
 RUN mkdir -p /src
 WORKDIR /src
