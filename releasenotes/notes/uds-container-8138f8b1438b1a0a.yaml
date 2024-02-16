@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    Workaround an issue where `chmod`ing the UDS socket in containers causes
+    the testagent to crash. Instead, a warning is emitted.
