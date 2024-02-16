@@ -10,7 +10,10 @@ RUN apt update && apt install -y git curl
 
 RUN mkdir -p /src
 WORKDIR /src
-COPY . /src
+# Add only necessary files to speed up development builds
+ADD README.md setup.py test_deps.txt ./
+ADD ddapm_test_agent ./ddapm_test_agent
+ADD .git ./.git
 RUN pip install /src
 
 # Cleanup
