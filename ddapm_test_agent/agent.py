@@ -122,7 +122,7 @@ async def handle_exception_middleware(request: Request, handler: _Handler) -> we
     except HTTPException:
         raise
     except Exception as e:
-        return web.HTTPBadRequest(reason=str(e))
+        raise web.HTTPBadRequest(reason=str(e))
 
 
 async def _forward_request(
@@ -302,13 +302,13 @@ class Agent:
                 for check_trace, failure_message in trace_check_failures:
                     results = check_trace.get_failures_by_check(results)
                 json_summary = json.dumps(results)
-                return web.HTTPBadRequest(body=json_summary, content_type="application/json")
+                raise web.HTTPBadRequest(body=json_summary, content_type="application/json")
             else:
                 # or use default response of text
                 msg = f"APM Test Agent Validation failed with {n_failures} Trace Check failures.\n"
                 for check_trace, failure_message in trace_check_failures:
                     msg += failure_message
-                return web.HTTPBadRequest(text=msg)
+                raise web.HTTPBadRequest(text=msg)
         else:
             return web.HTTPOk()
 
@@ -602,7 +602,7 @@ class Agent:
         if "error" in tracer_flare:
             msg = f"Error while parsing flare request: {tracer_flare['error']}"
             log.error(msg)
-            return web.HTTPBadRequest(text=msg)
+            raise web.HTTPBadRequest(text=msg)
 
         expectedFields = ["source", "case_id", "email", "hostname", "flare_file"]
         missingFields = [k for k in expectedFields if k not in tracer_flare]
@@ -612,7 +612,7 @@ class Agent:
         else:
             msg = f"Flare request is missing {','.join(missingFields)}"
             log.error(msg)
-            return web.HTTPBadRequest(text=msg)
+            raise web.HTTPBadRequest(text=msg)
 
     async def handle_evp_proxy_v2_api_v2_llmobs(self, request: Request) -> web.Response:
         return web.HTTPOk()
@@ -877,7 +877,7 @@ class Agent:
         try:
             traces = await self._traces_by_session(token)
         except NoSuchSessionException as e:
-            return web.HTTPNotFound(reason=str(e))
+            raise web.HTTPNotFound(reason=str(e))
 
         return web.json_response(traces)
 
@@ -1079,7 +1079,7 @@ class Agent:
                 # append failure to trace failures
                 self._trace_failures[token].append((trace, msg))
             log.error(msg)
-            return web.HTTPBadRequest(body=msg)
+            raise web.HTTPBadRequest(body=msg)
         else:
             token = request["session_token"]
             # update trace_check results
@@ -1098,7 +1098,7 @@ class Agent:
                 log.error(msg)
                 if request.app["disable_error_responses"]:
                     return response
-                return web.HTTPBadRequest(body=msg)
+                raise web.HTTPBadRequest(body=msg)
         return response
 
 
