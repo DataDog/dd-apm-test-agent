@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import random
+import socket
 from typing import Awaitable
 from typing import Dict
 from typing import Generator
@@ -515,3 +516,12 @@ def do_reference_v2_http_apmtelemetry(
         )
 
     yield fn
+
+
+@pytest.fixture
+def available_port():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("", 0))  # Bind to a free port provided by the host.
+    port = s.getsockname()[1]  # Get the port number assigned.
+    s.close()  # Release the socket.
+    yield port

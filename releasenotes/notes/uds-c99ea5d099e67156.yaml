@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    Remove any existing UDS socket. If a socket was left behind by a previous
+    instance of the test agent then it would fail to start.

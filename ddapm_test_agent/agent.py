@@ -1263,6 +1263,8 @@ def main(args: Optional[List[str]] = None) -> None:
 
     apm_sock: Optional[socket.socket] = None
     if parsed_args.trace_uds_socket is not None:
+        if os.path.exists(parsed_args.trace_uds_socket):
+            os.unlink(parsed_args.trace_uds_socket)
         apm_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         apm_sock.bind(parsed_args.trace_uds_socket)
         os.chmod(parsed_args.trace_uds_socket, 0o722)

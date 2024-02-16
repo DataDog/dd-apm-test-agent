@@ -1,4 +1,8 @@
 import json
+import os
+import signal
+import subprocess
+import time
 
 from ddapm_test_agent.trace import trace_id
 
@@ -366,3 +370,33 @@ async def test_put_integrations(
         text
         == "language_name,tracer_version,integration_name,integration_version,dependency_name\npython,v1,flask,1.1.1,not_flask\n"
     )
+
+
+def test_uds(tmp_path, available_port):
+    env = os.environ.copy()
+    env["DD_APM_RECEIVER_SOCKET"] = str(tmp_path / "apm.socket")
+    env["PORT"] = str(available_port)
+    p = subprocess.Popen(["ddapm-test-agent"], env=env)
+
+    # Check for the socket
+    for i in range(50):
+        if (tmp_path / "apm.socket").exists():
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("Test agent did not create the socket in time")
+
+    # Check the permissions
+    assert (tmp_path / "apm.socket").stat().st_mode & 0o722 == 0o722
+
+    # Kill the process without atexit handlers
+    os.kill(p.pid, signal.SIGKILL)
+
+    # Ensure the test agent can start again
+    try:
+        subprocess.run(["ddapm-test-agent"], env=env, timeout=0.1)
+    except subprocess.TimeoutExpired:
+        # Expected since the test agent should start up normally
+        pass
+    else:
+        raise Exception("Test agent failed to start")
