@@ -12,6 +12,10 @@ import pytest
 
 
 pytestmark = pytest.mark.skipif(os.getenv("SKIP_CONTAINER") is not None, reason="SKIP_CONTAINER set")
+pytestmark = pytest.mark.skipif(
+    platform.system() == "Darwin" and os.getenv("GITHUB_ACTIONS") is not None,
+    reason="Github actions doesn't support docker",
+)
 
 
 class DockerContainer:
