@@ -32,4 +32,4 @@ jobs:
       - name: install deps
         run: pip install .[testing]
       - run: |
-          riot run -p ${{ matrix.python-version}} test
+          riot run -p --pass-env ${{ matrix.python-version}} test
