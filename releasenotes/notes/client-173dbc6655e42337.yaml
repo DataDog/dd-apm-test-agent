@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Add a `client` module which provides an API client that can be used to
+    programmatically interface with the test agent.

@@ -1,7 +1,11 @@
+import asyncio
 import json
+import os
 from pathlib import Path
 import random
 import socket
+import subprocess
+from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Dict
 from typing import Generator
@@ -11,6 +15,9 @@ from typing import Optional
 from typing import Set
 from typing import cast
 
+import aiohttp
+from aiohttp.client_exceptions import ClientConnectorError
+from aiohttp.client_exceptions import ClientOSError
 from aiohttp.web import Response
 from ddsketch import LogCollapsingLowestDenseDDSketch
 from ddsketch.pb.proto import DDSketchProto
@@ -519,9 +526,60 @@ def do_reference_v2_http_apmtelemetry(
 
 
 @pytest.fixture
-def available_port():
+def available_port() -> str:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("", 0))  # Bind to a free port provided by the host.
     port = s.getsockname()[1]  # Get the port number assigned.
     s.close()  # Release the socket.
-    yield port
+    return str(port)
+
+
+@pytest.fixture
+def testagent_port(available_port: str) -> str:
+    return available_port
+
+
+@pytest.fixture
+def testagent_url(testagent_port: str) -> str:
+    return "http://localhost:%s" % testagent_port
+
+
+@pytest.fixture(scope="module")
+def testagent_snapshot_ci_mode() -> bool:
+    # Default all tests in this module to be run in CI mode
+    # unless a special env var is passed to make generating
+    # the snapshots easier.
+    return os.getenv("GENERATE_SNAPSHOTS") != "1"
+
+
+@pytest.fixture
+async def testagent(
+    loop: asyncio.BaseEventLoop, testagent_port: str, testagent_snapshot_ci_mode: bool
+) -> AsyncGenerator[aiohttp.ClientSession, None]:
+    env = os.environ.copy()
+    env.update(
+        {
+            "PORT": testagent_port,
+            "SNAPSHOT_CI": "1" if testagent_snapshot_ci_mode else "0",
+            "SNAPSHOT_DIR": os.path.join(os.path.dirname(__file__), "integration_snapshots"),
+        }
+    )
+    p = subprocess.Popen(["ddapm-test-agent"], env=env)
+
+    # Wait for server to start
+    try:
+        async with aiohttp.ClientSession() as session:
+            for _ in range(100):
+                try:
+                    r = await session.get(f"http://localhost:{testagent_port}")
+                except (ClientConnectorError, ClientOSError):
+                    pass
+                else:
+                    if r.status == 404:
+                        break
+                await asyncio.sleep(0.05)
+            else:
+                assert 0
+            yield session
+    finally:
+        p.terminate()
