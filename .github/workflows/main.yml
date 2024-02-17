@@ -31,5 +31,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: install deps
         run: pip install .[testing]
+
+      - name: Install Docker on macOS
+        if: runner.os == 'macOS'
+        run: |
+          brew install --cask docker
+          colima start
+          while ! docker system info > /dev/null 2>&1; do sleep 1; done
       - run: |
           riot run -p ${{ matrix.python-version}} test
