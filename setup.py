@@ -30,7 +30,7 @@ setup(
     python_requires=">=3.8",
     install_requires=[
         "aiohttp",
-        "ddsketch",
+        "ddsketch[serialization]",
         "msgpack",
         "requests",
         "typing_extensions",
