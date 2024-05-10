@@ -37,3 +37,6 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+
+# nix/direnv
+.envrc

@@ -1,3 +1,0 @@
-ddtrace==2.6.0
-pytest
-riot==0.13.0
