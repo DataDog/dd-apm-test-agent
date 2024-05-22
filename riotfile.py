@@ -2,8 +2,8 @@ from riot import Venv
 from riot import latest
 
 
-with open("test_deps.txt") as f:
-    testing_deps = [line.strip() for line in f.readlines()]
+# with open("test_deps.txt") as f:
+#     testing_deps = [line.strip() for line in f.readlines()]
 
 
 venv = Venv(
@@ -13,7 +13,7 @@ venv = Venv(
             name="test",
             command="pytest {cmdargs}",
             pys=["3.8", "3.9", "3.10", "3.11", "3.12"],
-            pkgs={pkg: latest for pkg in testing_deps},
+            # pkgs={pkg: latest for pkg in testing_deps},
         ),
         Venv(
             pkgs={
