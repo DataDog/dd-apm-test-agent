@@ -49,6 +49,7 @@ from .trace import Trace
 from .trace import TraceMap
 from .trace import decode_v04 as trace_decode_v04
 from .trace import decode_v05 as trace_decode_v05
+from .trace import decode_v07 as trace_decode_v07
 from .trace import pprint_trace
 from .trace import v04TracePayload
 from .trace_checks import CheckMetaTracerVersionHeader
@@ -223,6 +224,7 @@ class Agent:
         self._forward_endpoints: List[str] = [
             "/v0.4/traces",
             "/v0.5/traces",
+            "/v0.7/traces",
             "/v0.6/stats",
             "/v0.7/config",
             "/telemetry/proxy/api/v2/apmtelemetry",
@@ -397,6 +399,8 @@ class Agent:
             return self._decode_v04_traces(req)
         elif req.match_info.handler == self.handle_v05_traces:
             return self._decode_v05_traces(req)
+        elif req.match_info.handler == self.handle_v07_traces:
+            return self._decode_v07_traces(req)
         return []
 
     async def _traces_by_session(self, token: Optional[str]) -> List[Trace]:
@@ -519,6 +523,10 @@ class Agent:
         raw_data = self._request_data(request)
         return trace_decode_v05(raw_data)
 
+    def _decode_v07_traces(self, request: Request) -> v04TracePayload:
+        raw_data = self._request_data(request)
+        return trace_decode_v07(raw_data)
+
     def _decode_v06_tracestats(self, request: Request) -> v06StatsPayload:
         raw_data = self._request_data(request)
         return tracestats_decode_v06(raw_data)
@@ -528,6 +536,9 @@ class Agent:
 
     async def handle_v05_traces(self, request: Request) -> web.Response:
         return await self._handle_traces(request, version="v0.5")
+
+    async def handle_v07_traces(self, request: Request) -> web.Response:
+        return await self._handle_traces(request, version="v0.7")
 
     async def handle_v06_tracestats(self, request: Request) -> web.Response:
         stats = self._decode_v06_tracestats(request)
@@ -655,6 +666,7 @@ class Agent:
                 "endpoints": [
                     "/v0.4/traces",
                     "/v0.5/traces",
+                    "/v0.7/traces",
                     "/v0.6/stats",
                     "/telemetry/proxy/",
                     "/v0.7/config",
@@ -666,7 +678,7 @@ class Agent:
             }
         )
 
-    async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5"]) -> web.Response:
+    async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5", "v0.7"]) -> web.Response:
         token = request["session_token"]
         checks: Checks = request.app["checks"]
         headers = request.headers
@@ -685,6 +697,8 @@ class Agent:
                     traces = self._decode_v04_traces(request)
                 elif version == "v0.5":
                     traces = self._decode_v05_traces(request)
+                elif version == "v0.7":
+                    traces = self._decode_v07_traces(request)
                 log.info(
                     "received trace for token %r payload with %r trace chunks",
                     token,
@@ -864,6 +878,7 @@ class Agent:
             if req.match_info.handler not in (
                 self.handle_v04_traces,
                 self.handle_v05_traces,
+                self.handle_v07_traces,
                 self.handle_v06_tracestats,
                 self.handle_v01_pipelinestats,
                 self.handle_v2_apmtelemetry,
@@ -1091,6 +1106,8 @@ def make_app(
             web.put("/v0.4/traces", agent.handle_v04_traces),
             web.post("/v0.5/traces", agent.handle_v05_traces),
             web.put("/v0.5/traces", agent.handle_v05_traces),
+            web.post("/v0.7/traces", agent.handle_v07_traces),
+            web.put("/v0.7/traces", agent.handle_v07_traces),
             web.post("/v0.6/stats", agent.handle_v06_tracestats),
             web.post("/v0.1/pipeline_stats", agent.handle_v01_pipelinestats),
             web.put("/v0.6/stats", agent.handle_v06_tracestats),
