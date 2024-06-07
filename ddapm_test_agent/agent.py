@@ -125,8 +125,9 @@ async def handle_exception_middleware(request: Request, handler: _Handler) -> we
         return web.HTTPBadRequest(reason=str(e))
 
 
-async def _forward_request(request_data: bytes, headers: Mapping[str, str], full_agent_url: str) -> tuple[
-    ClientResponse, str]:
+async def _forward_request(
+    request_data: bytes, headers: Mapping[str, str], full_agent_url: str
+) -> tuple[ClientResponse, str]:
     async with ClientSession() as session:
         async with session.post(
             full_agent_url,
@@ -136,8 +137,8 @@ async def _forward_request(request_data: bytes, headers: Mapping[str, str], full
             assert resp.status == 200, f"Request to agent unsuccessful, received [{resp.status}] response."
 
             if "text/plain" in resp.content_type:
-                raw_response_data = await resp.text()
-                log.info("Response %r from agent:", raw_response_data)
+                response_data = await resp.text()
+                log.info("Response %r from agent:", response_data)
             else:
                 raw_response_data = await resp.read()
                 if len(raw_response_data) == 0:
@@ -146,13 +147,13 @@ async def _forward_request(request_data: bytes, headers: Mapping[str, str], full
                     if isinstance(raw_response_data, bytes):
                         response_data = raw_response_data.decode()
                     try:
-                        response_data = json.loads(raw_response_data)
+                        response_data = json.dumps(json.loads(raw_response_data))
                     except json.JSONDecodeError as e:
                         log.warning("Error decoding response data: %s, data=%r", str(e), response_data)
                         log.warning("Original Request: %r", request_data)
                         response_data = ""
                     log.info("Response %r from agent:", response_data)
-            return resp, raw_response_data
+            return resp, response_data
 
 
 async def _prepare_and_send_request(data: bytes, request: Request, headers: Mapping[str, str]) -> web.Response:
