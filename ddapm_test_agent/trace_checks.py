@@ -5,7 +5,10 @@ from typing import Dict
 from typing import List
 
 from aiohttp.web import Request
+from jsonschema import ValidationError
+from jsonschema import validate
 from multidict import CIMultiDictProxy
+import requests
 
 from .checks import Check
 from .trace import Span
@@ -221,3 +224,36 @@ The ``service`` name is correctly set to ``DD_SERVICE`` for V1 auto-instrumented
                 else:
                     log.debug(f"Successfully completed ``service`` name Span Check for Span: {span['name']}")
         return
+
+
+SCHEMA_URL = "https://raw.githubusercontent.com/DataDog/schema/main/semantic-core/v1/schema.json"
+
+
+class CheckTraceSemantics(Check):
+    name = "trace_semantics"
+    description = """
+The trace should follow semantic conventions defined by semantic-core.
+More info here: https://github.com/datadog/semantic-core.
+""".strip()
+    schema = None
+
+    def __init__(self):
+        log.debug("Initializing CheckTraceSemantics")
+
+        resp = requests.get(SCHEMA_URL)
+        if resp.status_code != 200:
+            log.fatal(f"Failed to download trace semantics schema: {resp}")
+
+        log.debug("Successfully downloaded semantic-core JSON Schema")
+
+        self.schema = resp.json()
+        super().__init__()
+
+    def check(self, span: Span) -> None:
+        log.info("Performing ``Trace Semantics`` Span Check")
+
+        try:
+            validate(instance=span, schema=self.schema)
+            log.debug(f"Span Check ``trace_semantics`` succeeded for Span {span['name']}")
+        except ValidationError as err:
+            self.fail(json.dumps(span, indent=4) + f"\nSpan '{span['name']}' failed semantic validation: {err}.")
