@@ -143,6 +143,7 @@ async def _forward_request(
                 raw_response_data = await resp.read()
                 if len(raw_response_data) == 0:
                     log.info("Received empty response: %r from agent.", raw_response_data)
+                    response_data = ""
                 else:
                     if isinstance(raw_response_data, bytes):
                         response_data = raw_response_data.decode()
