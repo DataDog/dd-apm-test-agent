@@ -127,7 +127,11 @@ async def handle_exception_middleware(request: Request, handler: _Handler) -> we
 
 async def _forward_request(request_data: bytes, headers: Mapping[str, str], full_agent_url: str) -> ClientResponse:
     async with ClientSession() as session:
-        async with session.post(full_agent_url, headers=headers, data=request_data,) as resp:
+        async with session.post(
+            full_agent_url,
+            headers=headers,
+            data=request_data,
+        ) as resp:
             assert resp.status == 200, f"Request to agent unsuccessful, received [{resp.status}] response."
 
             if "text/html" in resp.content_type:
@@ -163,7 +167,9 @@ async def _prepare_and_send_request(data: bytes, request: Request, headers: Mapp
 
     client_response = await _forward_request(data, headers, full_agent_url)
     return web.Response(
-        status=client_response.status, headers=client_response.headers, body=await client_response.read(),
+        status=client_response.status,
+        headers=client_response.headers,
+        body=await client_response.read(),
     )
 
 
@@ -454,7 +460,9 @@ class Agent:
         return stats
 
     async def _integration_requests_by_session(
-        self, token: Optional[str], include_sent_integrations: Optional[bool] = False,
+        self,
+        token: Optional[str],
+        include_sent_integrations: Optional[bool] = False,
     ) -> List[Request]:
         """Get all requests with an associated tested Integration."""
         integration_requests: List[Request] = []
@@ -536,7 +544,9 @@ class Agent:
         stats = self._decode_v06_tracestats(request)
         nstats = len(stats["Stats"])
         log.info(
-            "received /v0.6/stats payload with %r stats bucket%s", nstats, "s" if nstats else "",
+            "received /v0.6/stats payload with %r stats bucket%s",
+            nstats,
+            "s" if nstats else "",
         )
         return web.HTTPOk()
 
@@ -690,12 +700,16 @@ class Agent:
                 elif version == "v0.7":
                     traces = self._decode_v07_traces(request)
                 log.info(
-                    "received trace for token %r payload with %r trace chunks", token, len(traces),
+                    "received trace for token %r payload with %r trace chunks",
+                    token,
+                    len(traces),
                 )
                 for i, trace in enumerate(traces):
                     try:
                         log.info(
-                            "Chunk %d\n%s", i, pprint_trace(trace, request.app["log_span_fmt"]),
+                            "Chunk %d\n%s",
+                            i,
+                            pprint_trace(trace, request.app["log_span_fmt"]),
                         )
                     except ValueError:
                         log.info("Chunk %d could not be displayed (might be incomplete).", i)
@@ -713,7 +727,9 @@ class Agent:
 
                 with CheckTrace.add_frame(f"payload ({len(traces)} traces)"):
                     await checks.check(
-                        "trace_count_header", headers=headers, num_traces=len(traces),
+                        "trace_count_header",
+                        headers=headers,
+                        num_traces=len(traces),
                     )
             except MsgPackExtraDataException as e:
                 log.error(f"Error unpacking trace bytes with Msgpack: {str(e)}, error {e}")
@@ -734,7 +750,10 @@ class Agent:
         snap_dir = request.url.query.get("dir", request.app["snapshot_dir"])
         snap_ci_mode = request.app["snapshot_ci_mode"]
         log.info(
-            "performing snapshot with token=%r, ci_mode=%r and snapshot directory=%r", token, snap_ci_mode, snap_dir,
+            "performing snapshot with token=%r, ci_mode=%r and snapshot directory=%r",
+            token,
+            snap_ci_mode,
+            snap_dir,
         )
 
         # Get the span attributes that are to be ignored for this snapshot.
@@ -789,7 +808,9 @@ class Agent:
                 with open(trace_snap_file, mode="r") as f:
                     raw_snapshot = json.load(f)
                 trace_snapshot.snapshot(
-                    expected_traces=raw_snapshot, received_traces=received_traces, ignored=span_ignores,
+                    expected_traces=raw_snapshot,
+                    received_traces=received_traces,
+                    ignored=span_ignores,
                 )
             elif received_traces:
                 # Create a new snapshot for the data received
@@ -812,14 +833,16 @@ class Agent:
                 with open(tracestats_snap_file, mode="r") as f:
                     raw_snapshot = json.load(f)
                 tracestats_snapshot.snapshot(
-                    expected_stats=raw_snapshot, received_stats=received_stats,
+                    expected_stats=raw_snapshot,
+                    received_stats=received_stats,
                 )
             elif received_stats:
                 # Create a new snapshot for the data received
                 with open(tracestats_snap_file, mode="w") as f:
                     f.write(tracestats_snapshot.generate(received_stats))
                 log.info(
-                    "wrote new tracestats snapshot to %r", os.path.abspath(tracestats_snap_file),
+                    "wrote new tracestats snapshot to %r",
+                    os.path.abspath(tracestats_snap_file),
                 )
         return web.HTTPOk()
 
@@ -1144,9 +1167,16 @@ def make_app(
 def main(args: Optional[List[str]] = None) -> None:
     if args is None:
         args = sys.argv[1:]
-    parser = argparse.ArgumentParser(description="Datadog APM test agent", prog="ddapm-test-agent",)
+    parser = argparse.ArgumentParser(
+        description="Datadog APM test agent",
+        prog="ddapm-test-agent",
+    )
     parser.add_argument(
-        "-v", "--version", action="store_true", dest="version", help="Print version info and exit.",
+        "-v",
+        "--version",
+        action="store_true",
+        dest="version",
+        help="Print version info and exit.",
     )
     parser.add_argument("-p", "--port", type=int, default=int(os.environ.get("PORT", 8126)))
     parser.add_argument(
@@ -1262,7 +1292,8 @@ def main(args: Optional[List[str]] = None) -> None:
 
     if parsed_args.trace_request_delay is not None:
         log.info(
-            "Trace request stall seconds setting set to %r.", parsed_args.trace_request_delay,
+            "Trace request stall seconds setting set to %r.",
+            parsed_args.trace_request_delay,
         )
     if not os.path.exists(parsed_args.snapshot_dir) or not os.access(parsed_args.snapshot_dir, os.W_OK | os.X_OK):
         log.warning(
