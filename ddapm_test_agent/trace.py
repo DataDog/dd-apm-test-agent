@@ -94,6 +94,8 @@ v04TracePayload = List[List[Span]]
 TraceMap = OrderedDict[int, Trace]
 
 
+# TODO:ban add extra tags to add to the span
+# TODO:ban warn about dropping metastruct
 def verify_span(d: Any) -> Span:
     try:
         assert isinstance(d, dict), f"Expected 'span' to be of type: '{dict}', got: '{type(d)}'"
@@ -447,3 +449,58 @@ def decode_v05(data: bytes) -> v04TracePayload:
             trace.append(span)
         traces.append(trace)
     return traces
+
+
+def decode_v07(data: bytes) -> v04TracePayload:
+    """Decode a v07 trace payload.
+    The v07 format is almost the same as the v04 format, but the there is some
+    extra structure to the payload.
+
+    These are the types of the payload:
+
+    class TracerPayloadV07(TypedDict):
+        container_id: NotRequired[str]
+        language_name: NotRequired[str]
+        language_version: NotRequired[str]
+        tracer_version: NotRequired[str]
+        runtime_id: NotRequired[str]
+        chunks: List[TraceChunkV07]
+        tags: NotRequired[Dict[str, str]]
+        env: NotRequired[str]
+        hostname: NotRequired[str]
+        app_version: NotRequired[str]
+
+    class TraceChunkV07(TypedDict):
+        priority: int
+        origin: str
+        spans: List[Span]
+        tags: NotRequired[Dict[str, str]]
+        droppedTrace: NotRequired[bool]
+    """
+    payload = msgpack.unpackb(data)
+    return _verify_v07_payload(payload)
+
+
+def _verify_v07_payload(data: Any) -> v04TracePayload:
+    if not isinstance(data, dict):
+        raise TypeError("Trace payload must be a map, got type %r." % type(data))
+    if "chunks" not in data:
+        raise TypeError("Trace payload must contain a 'chunks' key.")
+    if not isinstance(data["chunks"], list):
+        raise TypeError("Trace payload 'chunks' must be a list.")
+    # TODO:ban pull out the tags and other things that should be applied to all spans
+    traces: List[List[Span]] = []
+    for chunk in data["chunks"]:
+        traces.append(_verify_v07_chunk(chunk))
+    return cast(v04TracePayload, traces)
+
+
+def _verify_v07_chunk(chunk: Any) -> List[Span]:
+    if not isinstance(chunk, dict):
+        raise TypeError("Chunk must be a map.")
+    if "spans" not in chunk:
+        raise TypeError("Chunk must contain a 'spans' key.")
+    if not isinstance(chunk["spans"], list):
+        raise TypeError("Chunk 'spans' must be a list.")
+    # TODO:ban pull out the tags and other things that should be applied to all spans
+    return v04_verify_trace(chunk["spans"])
