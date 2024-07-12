@@ -34,6 +34,7 @@
         treefmt = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
 
         nix2container = nix2containerPkg.packages.${system}.nix2container;
+        getExe = pkgs.lib.getExe;
 
         ddsketch = pkgs.callPackage ./ddsketch.nix { inherit python pkgs; };
         ddtrace = pkgs.callPackage ./ddtrace.nix { inherit python pkgs ddsketch; };
@@ -89,6 +90,17 @@
 
           env.SETUPTOOLS_SCM_PRETEND_VERSION = version;
         };
+
+        run_with_agent = pkgs.writeShellScriptBin "run_with_agent" ''
+          #!${pkgs.bash}/bin/bash
+          set -euxo pipefail
+          export storagePath=$(${pkgs.mktemp}/bin/mktemp -d)
+
+          ${pkgs.coreutils}/bin/nohup ${pkgs.bash}/bin/bash -c "${ddapm-test-agent}/bin/ddapm-test-agent" &
+
+          exec $@
+        '';
+
         toolContainer = nix2container.buildImage {
           name = "ghcr.io/pawelchcki/ddapm-test-agent";
           tag = "latest";
@@ -98,7 +110,7 @@
 
           copyToRoot = pkgs.buildEnv {
             name = "root";
-            paths = [ ddapm-test-agent ];
+            paths = [ ddapm-test-agent run_with_agent];
             pathsToLink = [ "/bin" ];
           };
         };
@@ -111,6 +123,7 @@
             ddtrace
             ddsketch
             toolContainer
+            run_with_agent
             ;
           default = ddapm-test-agent;
           reno = pkgs.reno;
