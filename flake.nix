@@ -94,7 +94,6 @@
         run_with_agent = pkgs.writeShellScriptBin "run_with_agent" ''
           #!${pkgs.bash}/bin/bash
           set -euxo pipefail
-          export storagePath=$(${pkgs.mktemp}/bin/mktemp -d)
 
           ${pkgs.coreutils}/bin/nohup ${pkgs.bash}/bin/bash -c "${ddapm-test-agent}/bin/ddapm-test-agent" &
 
