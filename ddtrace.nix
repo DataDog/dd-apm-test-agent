@@ -35,7 +35,7 @@ let
         setuptools_scm
         cython
       ])
-      ++ pkgs.lib.optionals stdenv.isDarwin [ darwin.apple_sdk.frameworks.IOKit ];
+      ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.apple_sdk.frameworks.IOKit ];
 
     propagatedBuildInputs = with python.pkgs; [
       attrs

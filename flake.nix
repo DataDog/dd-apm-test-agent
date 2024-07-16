@@ -98,10 +98,23 @@
 
           copyToRoot = pkgs.buildEnv {
             name = "root";
-            paths = [ ddapm-test-agent ];
+            paths = [
+              ddapm-test-agent
+              run_with_agent
+            ];
             pathsToLink = [ "/bin" ];
           };
         };
+
+        getExe = pkgs.lib.getExe;
+        run_with_agent = pkgs.writeShellScriptBin "run_with_agent" ''
+          #!${pkgs.bash}/bin/bash
+          set -euxo pipefail
+
+          ${pkgs.coreutils}/bin/nohup ${pkgs.bash}/bin/bash -c "${ddapm-test-agent}/bin/ddapm-test-agent" &
+
+          exec $@
+        '';
       in
       {
         packages = {
@@ -111,6 +124,7 @@
             ddtrace
             ddsketch
             toolContainer
+            run_with_agent
             ;
           default = ddapm-test-agent;
           reno = pkgs.reno;
@@ -125,7 +139,10 @@
 
         devShells.default = pkgs.mkShell {
           venvDir = "./.venv";
-          nativeBuildInputs = ddapm-test-agent.nativeBuildInputs ++ [ ddapm-test-agent ];
+          nativeBuildInputs = ddapm-test-agent.nativeBuildInputs ++ [
+            ddapm-test-agent
+            run_with_agent
+          ];
         };
       }
     ))
