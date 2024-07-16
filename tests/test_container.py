@@ -2,6 +2,7 @@ import contextlib
 import os
 import platform
 import subprocess
+import shutil
 import time
 from typing import Dict
 from typing import Generator
@@ -10,12 +11,15 @@ from typing import Tuple
 
 import pytest
 
+
+def is_docker_available():
+    """Check if the Docker binary is available on the system."""
+    return shutil.which("docker") is not None
+
+
 pytestmark = [
     pytest.mark.skipif(os.getenv("SKIP_CONTAINER") is not None, reason="SKIP_CONTAINER set"),
-    pytest.mark.skipif(
-        platform.system() == "Darwin" and os.getenv("GITHUB_ACTIONS") is not None,
-        reason="Github actions doesn't support docker",
-    ),
+    pytest.mark.skipif(not is_docker_available(), reason="Docker is not available"),
 ]
 
 
