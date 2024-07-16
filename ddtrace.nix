@@ -48,9 +48,7 @@ let
       bytecode
     ];
 
-    buildInputs =
-      [ ]
-      ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.apple_sdk.frameworks.IOKit ];
+    buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.apple_sdk.frameworks.IOKit ];
 
     postPatch = ''
       substituteInPlace setup.py --replace "cmake>=3.24.2,<3.28" "cmake"

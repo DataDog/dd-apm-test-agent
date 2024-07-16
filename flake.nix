@@ -28,6 +28,7 @@
     (flake-utils.lib.eachDefaultSystem (
       system:
       let
+        # setup dependencies
         pkgs = nixpkgs.legacyPackages.${system};
         python = pkgs.python312;
 
@@ -35,60 +36,88 @@
 
         nix2container = nix2containerPkg.packages.${system}.nix2container;
 
+        # Check if the GITHUB_ACTIONS environment variable is set
+        isGithubActions = builtins.getEnv "GITHUB_ACTIONS" != "";
+
+        # Define common environment variables to pass to the derivation
+        commonEnv =
+          if isGithubActions then
+            {
+              # by default env is not passed into derivation builds to avoid side effects
+              # since GHA doesn't support docker on mac we need to detect the environment
+              # within the check
+              GITHUB_ACTIONS = "true";
+            }
+          else
+            { };
+
+        # include dependencies not publish to nixpkgs
         ddsketch = pkgs.callPackage ./ddsketch.nix { inherit python pkgs; };
         ddtrace = pkgs.callPackage ./ddtrace.nix { inherit python pkgs ddsketch; };
 
-        ddapm-test-agent = python.pkgs.buildPythonApplication rec {
-          name = "ddapm-test-agent";
-          version = "0.0.0";
-          src = ./.;
+        # build test agent
+        ddapm-test-agent =
+          python.pkgs.buildPythonApplication rec {
+            name = "ddapm-test-agent";
+            version = "0.0.0";
+            src = ./.;
 
-          postPatch = ''
-            # remove riot since its not available from nixpkgs
-            substituteInPlace test_deps.txt --replace "riot==0.13.0" ""
-          '';
+            postPatch = ''
+              # remove riot since its not available from nixpkgs
+              substituteInPlace test_deps.txt --replace "riot==0.13.0" ""
+            '';
 
-          dontUseCmakeConfigure = true;
+            dontUseCmakeConfigure = true;
 
-          propagatedBuildInputs = with python.pkgs; [
-            aiohttp
-            msgpack
-            ddsketch
-            requests
-            yarl
-          ];
-          nativeBuildInputs = with python.pkgs; [
-            setuptools
-            setuptools_scm
-          ];
+            propagatedBuildInputs = with python.pkgs; [
+              aiohttp
+              msgpack
+              ddsketch
+              requests
+              yarl
+            ];
+            nativeBuildInputs = with python.pkgs; [
+              setuptools
+              setuptools_scm
+            ];
+            checkInputs = [
+              python.pkgs.pytest
+              ddtrace
+              pkgs.cmake
+            ];
 
-          checkInputs = [
-            python.pkgs.pytest
-            ddtrace
-            pkgs.cmake
-          ];
+            doCheck = false;
 
-          doCheck = false;
+            installCheckPhase = ''
+              runHook preCheck
+              export TEST_AGENT="$out/bin/ddapm-test-agent"
+              $TEST_AGENT --version
 
-          installCheckPhase = ''
-            runHook preCheck
-            export TEST_AGENT="$out/bin/ddapm-test-agent"
-            $TEST_AGENT --version
+              # use nix provided agent for testing
+              substituteInPlace \
+                  tests/test_snapshot_integration.py \
+                  tests/test_agent.py \
+                  tests/conftest.py \
+                   --replace "ddapm-test-agent" "$TEST_AGENT"
 
-            # use nix provided agent for testing
-            substituteInPlace \
-                tests/test_snapshot_integration.py \
-                tests/test_agent.py \
-                tests/conftest.py \
-                 --replace "ddapm-test-agent" "$TEST_AGENT"
+              ${python.pkgs.pytest}/bin/pytest -vv
 
-            ${python.pkgs.pytest}/bin/pytest -vv
+              runHook postCheck
+            '';
 
-            runHook postCheck
-          '';
+            env.SETUPTOOLS_SCM_PRETEND_VERSION = version;
+          }
+          // commonEnv;
 
-          env.SETUPTOOLS_SCM_PRETEND_VERSION = version;
-        };
+        run_with_agent = pkgs.writeShellScriptBin "run_with_agent" ''
+          #!${pkgs.bash}/bin/bash
+          set -euxo pipefail
+
+          ${pkgs.coreutils}/bin/nohup ${pkgs.bash}/bin/bash -c "${ddapm-test-agent}/bin/ddapm-test-agent" &
+
+          exec $@
+        '';
+
         toolContainer = nix2container.buildImage {
           name = "ghcr.io/pawelchcki/ddapm-test-agent";
           tag = "latest";
@@ -105,16 +134,6 @@
             pathsToLink = [ "/bin" ];
           };
         };
-
-        getExe = pkgs.lib.getExe;
-        run_with_agent = pkgs.writeShellScriptBin "run_with_agent" ''
-          #!${pkgs.bash}/bin/bash
-          set -euxo pipefail
-
-          ${pkgs.coreutils}/bin/nohup ${pkgs.bash}/bin/bash -c "${ddapm-test-agent}/bin/ddapm-test-agent" &
-
-          exec $@
-        '';
       in
       {
         packages = {
