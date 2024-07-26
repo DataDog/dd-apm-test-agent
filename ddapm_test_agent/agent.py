@@ -677,6 +677,8 @@ class Agent:
                 "feature_flags": [],
                 "config": {},
                 "client_drop_p0s": True,
+                # Just a random selection of some peer_tags to aggregate on for testing, not exhaustive
+                "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
             }
         )
 
