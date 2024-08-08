@@ -71,6 +71,7 @@ class Span(TypedDict):
     meta: NotRequired[Dict[str, str]]
     metrics: NotRequired[Dict[str, MetricType]]
     span_links: NotRequired[List[SpanLink]]
+    meta_struct: NotRequired[Dict[str, dict]]
 
 
 SpanAttr = Literal[
@@ -87,6 +88,7 @@ SpanAttr = Literal[
     "meta",
     "metrics",
     "span_links",
+    "meta_struct",
 ]
 TopLevelSpanValue = Union[None, SpanId, TraceId, int, str, Dict[str, str], Dict[str, MetricType], List[SpanLink]]
 Trace = List[Span]
@@ -124,6 +126,16 @@ def verify_span(d: Any) -> Span:
             for k, v in d["meta"].items():
                 assert isinstance(k, str), f"Expected key 'meta.{k}' to be of type: 'str', got: {type(k)}"
                 assert isinstance(v, str), f"Expected value of key 'meta.{k}' to be of type: 'str', got: {type(v)}"
+        if "meta_struct" in d:
+            assert isinstance(d["meta_struct"], dict)
+            for k, v in d["meta_struct"].items():
+                assert isinstance(k, str), f"Expected key 'meta_struct.{k}' to be of type: 'str', got: {type(k)}"
+                assert isinstance(v, bytes), f"Expected msgpack'd value of key 'meta_struct.{k}' to be of type: 'bytes', got: {type(v)}"
+            # Decode meta_struct msgpack values
+            decoded_meta_struct = { key: msgpack.unpackb(val_bytes) for key, val_bytes in d["meta_struct"] }
+            for k, val in decoded_meta_struct.items():
+                assert isinstance(v, dict), f"Expected msgpack decoded value of key 'meta_struct.{k}' to be of type: 'dict', got: {type(v)}"               
+            d["meta_struct"] = decoded_meta_struct
         if "metrics" in d:
             assert isinstance(d["metrics"], dict)
             for k, v in d["metrics"].items():
@@ -383,7 +395,6 @@ def _trace_decoder_flexible(json_string: bytes) -> Dict[str, Any]:
     parsed_data: Dict[str, Any] = json.loads(json_string, object_hook=json_decoder)
     return parsed_data
 
-
 def decode_v04(content_type: str, data: bytes, suppress_errors: bool) -> v04TracePayload:
     if content_type == "application/msgpack":
         payload = msgpack.unpackb(data)
@@ -391,6 +402,7 @@ def decode_v04(content_type: str, data: bytes, suppress_errors: bool) -> v04Trac
         payload = _trace_decoder_flexible(data) if suppress_errors else json.loads(data)
     else:
         raise TypeError("Content type %r not supported" % content_type)
+
     return _verify_v04_payload(payload)
 
 
