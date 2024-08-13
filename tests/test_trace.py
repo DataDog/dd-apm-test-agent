@@ -91,34 +91,34 @@ def test_decode_v04(content_type, payload):
             ),
         ),
         (
-                "application/msgpack",
-                msgpack.packb(
+            "application/msgpack",
+            msgpack.packb(
+                [
                     [
-                        [
-                            {
-                                "name": "span",
-                                "span_id": 1234,
-                                "trace_id": 321,
-                                "meta_struct": ["this is not a dict"],
-                            }
-                        ]
+                        {
+                            "name": "span",
+                            "span_id": 1234,
+                            "trace_id": 321,
+                            "meta_struct": ["this is not a dict"],
+                        }
                     ]
-                ),
+                ]
+            ),
         ),
         (
-                "application/msgpack",
-                msgpack.packb(
+            "application/msgpack",
+            msgpack.packb(
+                [
                     [
-                        [
-                            {
-                                "name": "span",
-                                "span_id": 1234,
-                                "trace_id": 321,
-                                "meta_struct": {"key": msgpack.packb(["this is not a dict"])},
-                            }
-                        ]
+                        {
+                            "name": "span",
+                            "span_id": 1234,
+                            "trace_id": 321,
+                            "meta_struct": {"key": msgpack.packb(["this is not a dict"])},
+                        }
                     ]
-                ),
+                ]
+            ),
         ),
     ],
 )
