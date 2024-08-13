@@ -126,7 +126,6 @@ def verify_span(d: Any) -> Span:
             for k, v in d["meta"].items():
                 assert isinstance(k, str), f"Expected key 'meta.{k}' to be of type: 'str', got: {type(k)}"
                 assert isinstance(v, str), f"Expected value of key 'meta.{k}' to be of type: 'str', got: {type(v)}"
-
         if "meta_struct" in d:
             assert isinstance(d["meta_struct"], dict)
             for k, v in d["meta_struct"].items():
@@ -136,10 +135,8 @@ def verify_span(d: Any) -> Span:
             decoded_meta_struct = { key: msgpack.unpackb(val_bytes) for key, val_bytes in d["meta_struct"].items() }
             for k, val in decoded_meta_struct.items():
                 assert isinstance(val, dict), f"Expected msgpack decoded value of key 'meta_struct.{k}' to be of type: 'dict', got: {type(val)}"
-
                 for inner_k in val:
                     assert isinstance(inner_k, str), f"Expected key 'meta_struct.{k}.{inner_k}' to be of type: 'str', got: {type(inner_k)}"
-
             d["meta_struct"] = decoded_meta_struct
         if "metrics" in d:
             assert isinstance(d["metrics"], dict)
@@ -400,6 +397,7 @@ def _trace_decoder_flexible(json_string: bytes) -> Dict[str, Any]:
     parsed_data: Dict[str, Any] = json.loads(json_string, object_hook=json_decoder)
     return parsed_data
 
+
 def decode_v04(content_type: str, data: bytes, suppress_errors: bool) -> v04TracePayload:
     if content_type == "application/msgpack":
         payload = msgpack.unpackb(data)
@@ -407,7 +405,6 @@ def decode_v04(content_type: str, data: bytes, suppress_errors: bool) -> v04Trac
         payload = _trace_decoder_flexible(data) if suppress_errors else json.loads(data)
     else:
         raise TypeError("Content type %r not supported" % content_type)
-
     return _verify_v04_payload(payload)
 
 
