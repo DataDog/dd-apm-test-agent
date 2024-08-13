@@ -126,6 +126,7 @@ def verify_span(d: Any) -> Span:
             for k, v in d["meta"].items():
                 assert isinstance(k, str), f"Expected key 'meta.{k}' to be of type: 'str', got: {type(k)}"
                 assert isinstance(v, str), f"Expected value of key 'meta.{k}' to be of type: 'str', got: {type(v)}"
+
         if "meta_struct" in d:
             assert isinstance(d["meta_struct"], dict)
             for k, v in d["meta_struct"].items():
@@ -134,9 +135,9 @@ def verify_span(d: Any) -> Span:
             # Decode meta_struct msgpack values
             decoded_meta_struct = { key: msgpack.unpackb(val_bytes) for key, val_bytes in d["meta_struct"].items() }
             for k, val in decoded_meta_struct.items():
-                assert isinstance(val, dict), f"Expected msgpack decoded value of key 'meta_struct.{k}' to be of type: 'dict', got: {type(v)}"
+                assert isinstance(val, dict), f"Expected msgpack decoded value of key 'meta_struct.{k}' to be of type: 'dict', got: {type(val)}"
 
-                for inner_k in val.keys():
+                for inner_k in val:
                     assert isinstance(inner_k, str), f"Expected key 'meta_struct.{k}.{inner_k}' to be of type: 'str', got: {type(inner_k)}"
 
             d["meta_struct"] = decoded_meta_struct
