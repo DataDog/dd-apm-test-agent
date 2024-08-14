@@ -133,9 +133,7 @@ def verify_span(d: Any) -> Span:
                 assert isinstance(
                     v, bytes
                 ), f"Expected msgpack'd value of key 'meta_struct.{k}' to be of type: 'bytes', got: {type(v)}"
-            # Decode meta_struct msgpack values
-            decoded_meta_struct = {key: msgpack.unpackb(val_bytes) for key, val_bytes in d["meta_struct"].items()}
-            for k, val in decoded_meta_struct.items():
+            for k, val in d["meta_struct"].items():
                 assert isinstance(
                     val, dict
                 ), f"Expected msgpack decoded value of key 'meta_struct.{k}' to be of type: 'dict', got: {type(val)}"
@@ -143,7 +141,6 @@ def verify_span(d: Any) -> Span:
                     assert isinstance(
                         inner_k, str
                     ), f"Expected key 'meta_struct.{k}.{inner_k}' to be of type: 'str', got: {type(inner_k)}"
-            d["meta_struct"] = decoded_meta_struct
         if "metrics" in d:
             assert isinstance(d["metrics"], dict)
             for k, v in d["metrics"].items():
@@ -186,6 +183,26 @@ def verify_span(d: Any) -> Span:
         return cast(Span, d)
     except AssertionError as e:
         raise TypeError(*e.args) from e
+
+
+def _parse_meta_struct(value: Any) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(value, dict):
+        raise TypeError("Expected meta_struct to be of type: 'dict', got: %s" % type(value))
+
+    return {key: msgpack.unpackb(val_bytes) for key, val_bytes in value.items()}
+
+
+def _flexible_decode_meta_struct(value: Any) -> None:
+    if not isinstance(value, list):
+        return
+    for maybe_trace in value:
+        if not isinstance(maybe_trace, list):
+            continue
+        for maybe_span in maybe_trace:
+            if not isinstance(maybe_span, dict):
+                continue
+            if "meta_struct" in maybe_span:
+                maybe_span["meta_struct"] = _parse_meta_struct(maybe_span["meta_struct"])
 
 
 def v04_verify_trace(maybe_trace: Any) -> Trace:
@@ -411,6 +428,7 @@ def decode_v04(content_type: str, data: bytes, suppress_errors: bool) -> v04Trac
         payload = _trace_decoder_flexible(data) if suppress_errors else json.loads(data)
     else:
         raise TypeError("Content type %r not supported" % content_type)
+    _flexible_decode_meta_struct(payload)
     return _verify_v04_payload(payload)
 
 
