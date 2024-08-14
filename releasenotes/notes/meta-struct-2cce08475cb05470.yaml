@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    Add support for parsing the `meta_struct` field in traces. This field just like the `meta` field map but the values
+    are arbitrary inner msgpack-encoded values. When the `meta_struct` field is present, its inner messages will be
+    parsed and added to the trace as a dictionary.
