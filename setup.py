@@ -25,7 +25,7 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     license="BSD 3",
-    packages=find_packages(exclude=["tests*"]),
+    packages=find_packages(exclude=["tests*", "releasenotes", "scripts"]),
     package_data={"ddapm_test_agent": ["py.typed"]},
     python_requires=">=3.8",
     install_requires=[
