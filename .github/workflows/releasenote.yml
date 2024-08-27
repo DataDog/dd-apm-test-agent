@@ -1,15 +1,15 @@
-name: Changelog
+name: Release notes
 on:
   push:
     branches:
       - master
   pull_request:
-    # Important that we run on `labeled` and `unlabeled` to pick up `changelog/no-changelog` being added/removed
+    # Important that we run on `labeled` and `unlabeled` to pick up `no-releasenote` being added/removed
     # DEV: [opened, reopened, synchronize] is the default
     types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review]
 jobs:
   validate:
-    name: Validate changelog
+    name: Validate release notes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
@@ -18,12 +18,12 @@ jobs:
           fetch-depth: 0
 
       # Ensure a new reno release note was added in this PR.
-      # Use `reno new <slug>` to add a new note to `releasenotes/notes`,
-      #   or add `changelog/no-changelog` label if no release note is needed.
+      # Use `reno new <slug>` to add a new note to `no-releasenote`,
+      #   or add `no-releasenote` label if no release note is needed.
       - name: Ensure release note added
         # Only run this on pull requests
         if: github.event_name == 'pull_request'
-        run: scripts/check-releasenotes
+        run: releasenotes/check-releasenotes
 
       - uses: actions/setup-python@v2
         name: Install Python
@@ -33,5 +33,5 @@ jobs:
       - name: Install Dependencies
         run: pip install reno docutils
 
-      - name: Lint changelog notes
+      - name: Lint release notes
         run: reno lint

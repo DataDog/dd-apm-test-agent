@@ -11,9 +11,9 @@ echo "JQ: $(which jq)"
 
 
 # Skip the label check if we do not have a GitHub event path
-if [[ -f "${GITHUB_EVENT_PATH}" ]] && jq -e '.pull_request?.labels[]?.name | select(. == "no-changelog")' "${GITHUB_EVENT_PATH}";
+if [[ -f "${GITHUB_EVENT_PATH}" ]] && jq -e '.pull_request?.labels[]?.name | select(. == "no-releasenote")' "${GITHUB_EVENT_PATH}";
 then
-    echo "PR has label 'no-changelog', skipping validation"
+    echo "PR has label 'no-releasenote', skipping validation"
     exit 0
 fi
 
@@ -24,6 +24,6 @@ then
     exit 0
 else
     echo "Release note not found."
-    echo "Use 'reno new <slug>' to add a new note to 'releasenotes/notes', or add the label 'no-changelog' to skip this validation"
+    echo "Use 'reno new <slug>' to add a new note to 'releasenotes/notes', or add the label 'no-releasenote' to skip this validation"
     exit 1
 fi
