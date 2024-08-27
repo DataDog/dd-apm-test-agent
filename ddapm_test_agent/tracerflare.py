@@ -18,7 +18,7 @@ async def v1_decode(request: Request, data: bytes) -> TracerFlareEvent:
         stream = StreamReader(request.protocol, len(data))
         stream.feed_data(data)
         stream.feed_eof()
-        async for part in MultipartReader(request.headers, stream):  # type: ignore
+        async for part in MultipartReader(request.headers, stream):
             if isinstance(part, BodyPartReader) and part.name:
                 if part.name == "flare_file":
                     tracer_flare[part.name] = base64.b64encode(await part.read()).decode("ascii")
