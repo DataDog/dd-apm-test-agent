@@ -1,0 +1,6 @@
+# use https://github.com/nix-community/nix-direnv  to load all tools needed to develop in the repository 
+# $ cp .envrc.example .envrc
+# $ direnv allow .
+use flake --impure . 
+
+# alternatively just use `nix develop` or `nix-shell`
