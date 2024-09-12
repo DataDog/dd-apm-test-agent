@@ -679,7 +679,8 @@ class Agent:
                 "client_drop_p0s": True,
                 # Just a random selection of some peer_tags to aggregate on for testing, not exhaustive
                 "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
-            }
+            },
+            headers={"Datadog-Agent-State": "03e868b3ecdd62a91423cc4c3917d0d151fb9fa486736911ab7f5a0750c63824"},
         )
 
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5", "v0.7"]) -> web.Response:
