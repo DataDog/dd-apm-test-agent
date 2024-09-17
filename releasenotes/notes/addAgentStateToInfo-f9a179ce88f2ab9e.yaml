@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Agent-State-Header` to `/info` endpoint.
