@@ -112,7 +112,7 @@ def _normalize_traces(traces: List[Trace]) -> List[Trace]:
             if "meta" not in span:
                 span["meta"] = {}
             elif span["meta"].get("_dd.parent_id"):
-                span["meta"]["_dd.parent_id"] = parent_id
+                span["meta"]["_dd.parent_id"] = str(parent_id)
             if "metrics" not in span:
                 span["metrics"] = {}
             span_id += 1
