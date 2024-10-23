@@ -1,4 +1,4 @@
 ---
 features:
   - |
-    Agent-State-Header` to `/info` endpoint.
+    Add `Datadog-Agent-State` header to `/info` endpoint.
