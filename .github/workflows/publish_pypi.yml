@@ -47,6 +47,7 @@ jobs:
 
       - name: Build sdist
         run: |
+          python -m pip install --upgrade setuptools
           python setup.py sdist
 
       - uses: actions/upload-artifact@v4
