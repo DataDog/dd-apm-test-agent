@@ -661,6 +661,22 @@ class Agent:
             aggregated_text = ",".join(text_headers) + "\n" + aggregated_text
         return web.Response(body=aggregated_text, content_type="text/plain", headers=req_headers)
 
+    async def handle_settings(self, request: Request) -> web.Response:
+        """Allows to change test agent settings on the fly"""
+        raw_data = await request.read()
+        data = json.loads(raw_data)
+
+        # First pass to validate the data
+        for key in data:
+            if key not in request.app:
+                return web.HTTPUnprocessableEntity(f"Unknown key: {key}")
+
+        # Second pass to apply the config
+        for key in data:
+            request.app[key] = data[key]
+
+        return web.HTTPAccepted()
+
     async def handle_info(self, request: Request) -> web.Response:
         return web.json_response(
             {
@@ -1142,6 +1158,7 @@ def make_app(
             web.get("/test/trace_check/clear", agent.clear_trace_check_failures),
             web.get("/test/trace_check/summary", agent.get_trace_check_summary),
             web.get("/test/integrations/tested_versions", agent.handle_get_tested_integrations),
+            web.post("/test/settings", agent.handle_settings),
         ]
     )
     checks = Checks(
