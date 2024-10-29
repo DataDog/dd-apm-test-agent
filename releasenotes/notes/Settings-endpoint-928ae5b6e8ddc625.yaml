@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    Added a /test/settings endpoint to change the settings on the fly.
+    It takes a json encoded list of key/values, that will be applied to the app dict.
+    Example:
+    { "trace_request_delay": 5 }
