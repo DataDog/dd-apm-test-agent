@@ -38,7 +38,7 @@ from . import _get_version
 from . import trace_snapshot
 from . import tracestats_snapshot
 from .apmtelemetry import TelemetryEvent
-from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
+from .apmtelemetry import v2_decode_request as v2_apmtelemetry_decode_request
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
@@ -332,7 +332,7 @@ class Agent:
         _events: List[TelemetryEvent] = []
         for req in reversed(self._requests):
             if req.match_info.handler == self.handle_v2_apmtelemetry:
-                _events.append(v2_apmtelemetry_decode(await req.read()))
+                _events.append(await v2_apmtelemetry_decode_request(req, await req.read()))
         return _events
 
     async def _trace_by_trace_id(self, trace_id: int) -> Trace:
@@ -590,7 +590,7 @@ class Agent:
         return web.HTTPAccepted()
 
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
-        v2_apmtelemetry_decode(self._request_data(request))
+        await v2_apmtelemetry_decode_request(request, self._request_data(request))
         # TODO: Validation
         # TODO: Snapshots
         return web.HTTPOk()
@@ -1254,7 +1254,7 @@ def main(args: Optional[List[str]] = None) -> None:
         "--trace-request-delay",
         type=float,
         default=os.environ.get("DD_TEST_STALL_REQUEST_SECONDS", 0.0),
-        help=("Will stall trace requests for specified amount of time"),
+        help=("Will stall trace and telemetry requests for specified amount of time"),
     )
     parser.add_argument(
         "--suppress-trace-parse-errors",
