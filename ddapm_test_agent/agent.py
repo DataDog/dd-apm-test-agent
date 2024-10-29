@@ -435,7 +435,7 @@ class Agent:
         events: List[TelemetryEvent] = []
         for req in self._requests_by_session(token):
             if req.match_info.handler == self.handle_v2_apmtelemetry:
-                events.append(v2_apmtelemetry_decode(await req.read()))
+                events.append(await v2_apmtelemetry_decode_request(req, await req.read()))
 
         # TODO: Sort the events?
         return events
