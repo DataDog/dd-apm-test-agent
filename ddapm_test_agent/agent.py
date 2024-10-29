@@ -669,7 +669,7 @@ class Agent:
         # First pass to validate the data
         for key in data:
             if key not in request.app:
-                return web.HTTPUnprocessableEntity(f"Unknown key: {key}")
+                return web.HTTPUnprocessableEntity(text=f"Unknown key: {key}")
 
         # Second pass to apply the config
         for key in data:
