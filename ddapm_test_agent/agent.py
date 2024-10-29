@@ -662,7 +662,7 @@ class Agent:
         return web.Response(body=aggregated_text, content_type="text/plain", headers=req_headers)
 
     async def handle_settings(self, request: Request) -> web.Response:
-        """Allows to change test agent settings on the fly"""
+        """Allow to change test agent settings on the fly"""
         raw_data = await request.read()
         data = json.loads(raw_data)
 
