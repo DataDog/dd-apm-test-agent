@@ -439,6 +439,22 @@ Returns the tracer-flares in the following json format:
 
 If there was an error parsing the tracer-flare form, that will be recorded under `error`.
 
+### /test/settings (POST)
+
+Allows to change some settings on the fly.
+This endpoint takes a POST request with a json content listing the keys and values to apply.
+
+```json
+{ 'key': value }
+```
+
+Supported keys:
+ - `trace_request_delay`: sets a delay to apply to trace and telemetry requests
+
+ ```
+curl -X POST 'http://0.0.0.0:8126/test/settings' -d '{ "trace_request_delay": 5 }'
+```
+
 ## Development
 
 ### Prerequisites

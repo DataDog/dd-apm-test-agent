@@ -38,7 +38,7 @@ from . import _get_version
 from . import trace_snapshot
 from . import tracestats_snapshot
 from .apmtelemetry import TelemetryEvent
-from .apmtelemetry import v2_decode as v2_apmtelemetry_decode
+from .apmtelemetry import v2_decode_request as v2_apmtelemetry_decode_request
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
@@ -332,7 +332,7 @@ class Agent:
         _events: List[TelemetryEvent] = []
         for req in reversed(self._requests):
             if req.match_info.handler == self.handle_v2_apmtelemetry:
-                _events.append(v2_apmtelemetry_decode(await req.read()))
+                _events.append(await v2_apmtelemetry_decode_request(req, await req.read()))
         return _events
 
     async def _trace_by_trace_id(self, trace_id: int) -> Trace:
@@ -435,7 +435,7 @@ class Agent:
         events: List[TelemetryEvent] = []
         for req in self._requests_by_session(token):
             if req.match_info.handler == self.handle_v2_apmtelemetry:
-                events.append(v2_apmtelemetry_decode(await req.read()))
+                events.append(await v2_apmtelemetry_decode_request(req, await req.read()))
 
         # TODO: Sort the events?
         return events
@@ -590,7 +590,7 @@ class Agent:
         return web.HTTPAccepted()
 
     async def handle_v2_apmtelemetry(self, request: Request) -> web.Response:
-        v2_apmtelemetry_decode(self._request_data(request))
+        await v2_apmtelemetry_decode_request(request, self._request_data(request))
         # TODO: Validation
         # TODO: Snapshots
         return web.HTTPOk()
@@ -660,6 +660,22 @@ class Agent:
         if len(aggregated_text) > 0:
             aggregated_text = ",".join(text_headers) + "\n" + aggregated_text
         return web.Response(body=aggregated_text, content_type="text/plain", headers=req_headers)
+
+    async def handle_settings(self, request: Request) -> web.Response:
+        """Allow to change test agent settings on the fly"""
+        raw_data = await request.read()
+        data = json.loads(raw_data)
+
+        # First pass to validate the data
+        for key in data:
+            if key not in request.app:
+                return web.HTTPUnprocessableEntity(text=f"Unknown key: '{key}'")
+
+        # Second pass to apply the config
+        for key in data:
+            request.app[key] = data[key]
+
+        return web.HTTPAccepted()
 
     async def handle_info(self, request: Request) -> web.Response:
         return web.json_response(
@@ -1142,6 +1158,7 @@ def make_app(
             web.get("/test/trace_check/clear", agent.clear_trace_check_failures),
             web.get("/test/trace_check/summary", agent.get_trace_check_summary),
             web.get("/test/integrations/tested_versions", agent.handle_get_tested_integrations),
+            web.post("/test/settings", agent.handle_settings),
         ]
     )
     checks = Checks(
@@ -1254,7 +1271,7 @@ def main(args: Optional[List[str]] = None) -> None:
         "--trace-request-delay",
         type=float,
         default=os.environ.get("DD_TEST_STALL_REQUEST_SECONDS", 0.0),
-        help=("Will stall trace requests for specified amount of time"),
+        help=("Will stall trace and telemetry requests for specified amount of time"),
     )
     parser.add_argument(
         "--suppress-trace-parse-errors",

@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    --trace-request-delay now also affects telemetry requests.
+    The delay can be set independently for each request by setting the X-Datadog-Test-Stall-Seconds header.

@@ -400,3 +400,35 @@ def test_uds(tmp_path, available_port):
         pass
     else:
         raise Exception("Test agent failed to start")
+
+
+async def test_post_known_settings(agent):
+    resp = await agent.post(
+        "/test/settings",
+        data='{ "trace_request_delay": 5 }',
+    )
+
+    assert resp.status == 202, await resp.text()
+    assert agent.app["trace_request_delay"] == 5
+
+    resp = await agent.post(
+        "/test/settings",
+        data='{ "trace_request_delay": 0 }',
+    )
+
+    assert resp.status == 202, await resp.text()
+    assert agent.app["trace_request_delay"] == 0
+
+
+async def test_post_unknown_settings(
+    agent,
+):
+    resp = await agent.post(
+        "/test/settings",
+        data='{ "dummy_setting": 5 }',
+    )
+
+    assert resp.status == 422
+    text = await resp.text()
+    assert text == "Unknown key: 'dummy_setting'"
+    assert "dummy_setting" not in agent.app
