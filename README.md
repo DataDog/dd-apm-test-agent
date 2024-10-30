@@ -444,7 +444,7 @@ If there was an error parsing the tracer-flare form, that will be recorded under
 Allows to change some settings on the fly.
 This endpoint takes a POST request with a json content listing the keys and values to apply.
 
-```json
+```js
 { 'key': value }
 ```
 
