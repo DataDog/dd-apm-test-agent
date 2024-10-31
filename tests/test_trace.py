@@ -59,6 +59,9 @@ def test_trace_chunk():
                             "span_id": 1234,
                             "trace_id": 321,
                             "meta_struct": {"key": msgpack.packb({"subkey": "value"})},
+                            "span_events": [
+                                {"time_unix_nano": 1, "name": "event", "attributes": {"a": "1", "b": [2, 3]}}
+                            ],
                         }
                     ]
                 ]
@@ -115,6 +118,21 @@ def test_decode_v04(content_type, payload):
                             "span_id": 1234,
                             "trace_id": 321,
                             "meta_struct": {"key": msgpack.packb(["this is not a dict"])},
+                        }
+                    ]
+                ]
+            ),
+        ),
+        (
+            "application/msgpack",
+            msgpack.packb(
+                [
+                    [
+                        {
+                            "name": "span",
+                            "span_id": 1234,
+                            "trace_id": 321,
+                            "span_events": [{"time_unix_nano": 1, "name": "event", "attributes": {"b": ["2", 3]}}],
                         }
                     ]
                 ]

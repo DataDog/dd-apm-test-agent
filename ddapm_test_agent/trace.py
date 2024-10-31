@@ -57,6 +57,12 @@ class SpanLink(TypedDict):
     flags: NotRequired[Optional[int]]
 
 
+class SpanEvent(TypedDict):
+    time_unix_nano: int
+    name: str
+    attributes: NotRequired[Dict[str, Any]]
+
+
 class Span(TypedDict):
     name: str
     span_id: SpanId
@@ -71,6 +77,7 @@ class Span(TypedDict):
     meta: NotRequired[Dict[str, str]]
     metrics: NotRequired[Dict[str, MetricType]]
     span_links: NotRequired[List[SpanLink]]
+    span_events: NotRequired[List[SpanEvent]]
     meta_struct: NotRequired[Dict[str, Dict[str, Any]]]
 
 
@@ -88,9 +95,20 @@ SpanAttr = Literal[
     "meta",
     "metrics",
     "span_links",
+    "span_events",
     "meta_struct",
 ]
-TopLevelSpanValue = Union[None, SpanId, TraceId, int, str, Dict[str, str], Dict[str, MetricType], List[SpanLink]]
+TopLevelSpanValue = Union[
+    None,
+    SpanId,
+    TraceId,
+    int,
+    str,
+    Dict[str, str],
+    Dict[str, MetricType],
+    List[SpanLink],
+    List[SpanEvent],
+]
 Trace = List[Span]
 v04TracePayload = List[List[Span]]
 TraceMap = OrderedDict[int, Trace]
@@ -176,6 +194,32 @@ def verify_span(d: Any) -> Span:
                     assert isinstance(link["flags"], int), "Expected flags to be of type: 'int', got: " + str(
                         type(link["flags"])
                     )
+        if "span_events" in d:
+            assert isinstance(d["span_events"], list)
+            for event in d["span_events"]:
+                assert isinstance(event, dict), f"Expected all span_events to be of type: 'dict', got: {type(event)}"
+                required_attrs = ["time_unix_nano", "name"]
+                for attr in required_attrs:
+                    assert attr in event, f"'{attr}' required in span event"
+                assert isinstance(
+                    event["time_unix_nano"], int
+                ), "Expected 'time_unix_nano' to be of type: 'int', got: " + str(type(event["time_unix_nano"]))
+                assert isinstance(event["name"], str), "Expected 'name' to be of type: 'str', got: " + str(
+                    type(event["name"])
+                )
+                if "attributes" in event:
+                    assert isinstance(event["attributes"], dict)
+                    for k, v in event["attributes"].items():
+                        assert isinstance(k, str), f"Expected key 'attributes.{k}' to be of type: 'str', got: {type(k)}"
+                        assert isinstance(
+                            v, (str, int, float, bool, list)
+                        ), f"Expected value of key 'attributes.{k}' to be of type: 'str/int/float/bool/list', got: {type(v)}"
+                        if isinstance(v, list) and v:  # Check if list is homogeneous
+                            first_type = type(v[0])
+                            i = None
+                            assert all(
+                                isinstance(i, first_type) for i in v
+                            ), f"Expected all elements in list to be of the same type: '{first_type}', got: {type(i)}"
         return cast(Span, d)
     except AssertionError as e:
         raise TypeError(*e.args) from e
@@ -304,10 +348,23 @@ def copy_span_links(s: SpanLink) -> SpanLink:
     return copy
 
 
+def copy_span_events(s: SpanEvent) -> SpanEvent:
+    attributes = s["attributes"].copy() if "attributes" in s else None
+    copy = s.copy()
+    if attributes is not None:
+        # Copy arrays inside attributes
+        for k, v in attributes.items():
+            if isinstance(v, list):
+                attributes[k] = v.copy()
+        copy["attributes"] = attributes
+    return copy
+
+
 def copy_span(s: Span) -> Span:
     meta = s["meta"].copy() if "meta" in s else None
     metrics = s["metrics"].copy() if "metrics" in s else None
     links = s["span_links"].copy() if "span_links" in s else None
+    events = s["span_events"].copy() if "span_events" in s else None
     copy = s.copy()
     if meta is not None:
         copy["meta"] = meta
@@ -315,6 +372,8 @@ def copy_span(s: Span) -> Span:
         copy["metrics"] = metrics
     if links is not None:
         copy["span_links"] = [copy_span_links(link) for link in links]
+    if events is not None:
+        copy["span_events"] = [copy_span_events(event) for event in events]
     return copy
 
 
@@ -376,6 +435,18 @@ def add_span_link(
     if flags is not None:
         new_link["flags"] = flags
     s["span_links"].append(new_link)
+    return s
+
+
+def add_span_event(
+    s: Span, time_unix_nano: int = 1730405656000000000, name: str = "event", attributes: Optional[Dict[str, Any]] = None
+) -> Span:
+    if "span_events" not in s:
+        s["span_events"] = []
+    new_event = SpanEvent(time_unix_nano=time_unix_nano, name=name)
+    if attributes is not None:
+        new_event["attributes"] = attributes
+    s["span_events"].append(new_event)
     return s
 
 

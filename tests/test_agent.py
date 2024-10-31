@@ -86,6 +86,7 @@ async def test_info(agent):
         "endpoints": [
             "/v0.4/traces",
             "/v0.5/traces",
+            "/v0.7/traces",
             "/v0.6/stats",
             "/telemetry/proxy/",
             "/v0.7/config",
@@ -94,6 +95,8 @@ async def test_info(agent):
         "feature_flags": [],
         "config": {},
         "client_drop_p0s": True,
+        "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
+        "span_events": True,
     }
 
 
