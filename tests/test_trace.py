@@ -59,6 +59,18 @@ def test_trace_chunk():
                             "span_id": 1234,
                             "trace_id": 321,
                             "meta_struct": {"key": msgpack.packb({"subkey": "value"})},
+                            "span_events": [
+                                {
+                                    "time_unix_nano": 1,
+                                    "name": "event",
+                                    "attributes": {
+                                        "b": {
+                                            "type": 4,
+                                            "array_value": [{"type": 2, "int_value": 2}, {"type": 2, "int_value": 3}],
+                                        }
+                                    },
+                                }
+                            ],
                         }
                     ]
                 ]
@@ -115,6 +127,35 @@ def test_decode_v04(content_type, payload):
                             "span_id": 1234,
                             "trace_id": 321,
                             "meta_struct": {"key": msgpack.packb(["this is not a dict"])},
+                        }
+                    ]
+                ]
+            ),
+        ),
+        (
+            "application/msgpack",
+            msgpack.packb(
+                [
+                    [
+                        {
+                            "name": "span",
+                            "span_id": 1234,
+                            "trace_id": 321,
+                            "span_events": [
+                                {
+                                    "time_unix_nano": 1,
+                                    "name": "event",
+                                    "attributes": {
+                                        "b": {
+                                            "type": 4,
+                                            "array_value": [
+                                                {"type": 2, "int_value": 2},
+                                                {"type": 0, "string_value": "3"},
+                                            ],
+                                        }
+                                    },
+                                }
+                            ],
                         }
                     ]
                 ]
