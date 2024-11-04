@@ -613,6 +613,10 @@ class Agent:
             log.error(msg)
             return web.HTTPBadRequest(text=msg)
 
+    async def handle_evp_proxy_v2_api_v2_llmobs(self, request: Request) -> web.Response:
+        await self._store_request(request)
+        return web.HTTPOk()
+
     async def handle_put_tested_integrations(self, request: Request) -> web.Response:
         # we need to store the request manually since this is not a real DD agent endpoint
         await self._store_request(request)
@@ -1137,6 +1141,7 @@ def make_app(
             web.post("/telemetry/proxy/api/v2/apmtelemetry", agent.handle_v2_apmtelemetry),
             web.post("/profiling/v1/input", agent.handle_v1_profiling),
             web.post("/tracer_flare/v1", agent.handle_v1_tracer_flare),
+            web.put("/evp_proxy/v2/api/v2/llmobs", agent.handle_evp_proxy_v2_api_v2_llmobs),
             web.get("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
