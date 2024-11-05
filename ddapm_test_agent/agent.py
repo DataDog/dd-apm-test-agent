@@ -232,6 +232,7 @@ class Agent:
             "/telemetry/proxy/api/v2/apmtelemetry",
             "/v0.1/pipeline_stats",
             "/tracer_flare/v1",
+            "/evp_proxy/v2/api/v2/llmobs",
         ]
 
         # Note that sessions are not cleared at any point since we don't know
@@ -614,7 +615,6 @@ class Agent:
             return web.HTTPBadRequest(text=msg)
 
     async def handle_evp_proxy_v2_api_v2_llmobs(self, request: Request) -> web.Response:
-        await self._store_request(request)
         return web.HTTPOk()
 
     async def handle_put_tested_integrations(self, request: Request) -> web.Response:
@@ -910,6 +910,7 @@ class Agent:
                 self.handle_v1_profiling,
                 self.handle_v07_remoteconfig,
                 self.handle_v1_tracer_flare,
+                self.handle_evp_proxy_v2_api_v2_llmobs,
             ):
                 continue
             resp.append(
@@ -1141,7 +1142,7 @@ def make_app(
             web.post("/telemetry/proxy/api/v2/apmtelemetry", agent.handle_v2_apmtelemetry),
             web.post("/profiling/v1/input", agent.handle_v1_profiling),
             web.post("/tracer_flare/v1", agent.handle_v1_tracer_flare),
-            web.put("/evp_proxy/v2/api/v2/llmobs", agent.handle_evp_proxy_v2_api_v2_llmobs),
+            web.post("/evp_proxy/v2/api/v2/llmobs", agent.handle_evp_proxy_v2_api_v2_llmobs),
             web.get("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),

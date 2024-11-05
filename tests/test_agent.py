@@ -432,3 +432,13 @@ async def test_post_unknown_settings(
     text = await resp.text()
     assert text == "Unknown key: 'dummy_setting'"
     assert "dummy_setting" not in agent.app
+
+
+async def test_evp_proxy_v2_api_v2_llmobs(agent):
+    resp = await agent.post("/evp_proxy/v2/api/v2/llmobs", data='{"key": "value"}')
+    assert resp.status == 200, await resp.text()
+
+    resp = await agent.get("/test/session/requests")
+    assert resp.status == 200
+    reqs = await resp.json()
+    assert len(reqs) == 1
