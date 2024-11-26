@@ -6,7 +6,6 @@
     nixpkgs.url = "github:NixOS/nixpkgs/24.05";
 
     flake-utils.url = "github:numtide/flake-utils";
-    nix-filter.url = "github:numtide/nix-filter";
 
     nix2containerPkg.url = "github:nlewo/nix2container";
     treefmt-nix.url = "github:numtide/treefmt-nix";
@@ -20,7 +19,6 @@
       self,
       nixpkgs,
       flake-utils,
-      nix-filter,
       treefmt-nix,
       nix2containerPkg,
       nix-github-actions,
@@ -39,11 +37,13 @@
         # include dependencies not publish to nixpkgs
         ddsketch = pkgs.callPackage ./ddsketch.nix { inherit python pkgs; };
         ddtrace = pkgs.callPackage ./ddtrace.nix { inherit python pkgs ddsketch; };
-
+        pretendVersion = "0.0.0";
         # build test agent
-        ddapm-test-agent = python.pkgs.buildPythonApplication rec {
+        ddapm-test-agent_base = (attrs: python.pkgs.buildPythonApplication {
+          inherit (attrs) doCheck;
+
           name = "ddapm-test-agent";
-          version = "0.0.0";
+          version = pretendVersion;
           src = ./.;
 
           postPatch = ''
@@ -70,8 +70,6 @@
             pkgs.cmake
           ];
 
-          doCheck = false;
-
           installCheckPhase = ''
             runHook preCheck
             export TEST_AGENT="$out/bin/ddapm-test-agent"
@@ -89,8 +87,10 @@
             runHook postCheck
           '';
 
-          env.SETUPTOOLS_SCM_PRETEND_VERSION = version;
-        };
+          env.SETUPTOOLS_SCM_PRETEND_VERSION = pretendVersion;
+        });
+
+        ddapm-test-agent = ddapm-test-agent_base { doCheck = false; };
 
         run_with_agent = pkgs.writeShellScriptBin "run_with_agent" ''
           #!${pkgs.bash}/bin/bash
@@ -123,6 +123,7 @@
           inherit
             python
             ddapm-test-agent
+            ddapm-test-agent_base
             ddtrace
             ddsketch
             toolContainer
@@ -135,7 +136,7 @@
         formatter = treefmt.config.build.wrapper;
 
         checks = {
-          ddapm-test-agent = ddapm-test-agent.override { doCheck = true; };
+          ddapm-test-agent = ddapm-test-agent_base { doCheck = true; };
           formatting = treefmt.config.build.check self;
         };
 
