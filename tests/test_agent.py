@@ -92,6 +92,11 @@ async def test_info(agent):
             "/v0.7/config",
             "/tracer_flare/v1",
         ],
+        "peer_tags": [
+            "db.name",
+            "mongodb.db",
+            "messaging.system",
+        ],
         "feature_flags": [],
         "config": {},
         "client_drop_p0s": True,

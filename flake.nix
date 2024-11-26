@@ -39,56 +39,59 @@
         ddtrace = pkgs.callPackage ./ddtrace.nix { inherit python pkgs ddsketch; };
         pretendVersion = "0.0.0";
         # build test agent
-        ddapm-test-agent_base = (attrs: python.pkgs.buildPythonApplication {
-          inherit (attrs) doCheck;
+        ddapm-test-agent_base = (
+          attrs:
+          python.pkgs.buildPythonApplication {
+            inherit (attrs) doCheck;
 
-          name = "ddapm-test-agent";
-          version = pretendVersion;
-          src = ./.;
+            name = "ddapm-test-agent";
+            version = pretendVersion;
+            src = ./.;
 
-          postPatch = ''
-            # remove riot since its not available from nixpkgs
-            substituteInPlace test_deps.txt --replace "riot==0.13.0" ""
-          '';
+            postPatch = ''
+              # remove riot since its not available from nixpkgs
+              substituteInPlace test_deps.txt --replace "riot==0.13.0" ""
+            '';
 
-          dontUseCmakeConfigure = true;
+            dontUseCmakeConfigure = true;
 
-          propagatedBuildInputs = with python.pkgs; [
-            aiohttp
-            msgpack
-            ddsketch
-            requests
-            yarl
-          ];
-          nativeBuildInputs = with python.pkgs; [
-            setuptools
-            setuptools_scm
-          ];
-          checkInputs = [
-            python.pkgs.pytest
-            ddtrace
-            pkgs.cmake
-          ];
+            propagatedBuildInputs = with python.pkgs; [
+              aiohttp
+              msgpack
+              ddsketch
+              requests
+              yarl
+            ];
+            nativeBuildInputs = with python.pkgs; [
+              setuptools
+              setuptools_scm
+            ];
+            checkInputs = [
+              python.pkgs.pytest
+              ddtrace
+              pkgs.cmake
+            ];
 
-          installCheckPhase = ''
-            runHook preCheck
-            export TEST_AGENT="$out/bin/ddapm-test-agent"
-            $TEST_AGENT --version
+            installCheckPhase = ''
+              runHook preCheck
+              export TEST_AGENT="$out/bin/ddapm-test-agent"
+              $TEST_AGENT --version
 
-            # use nix provided agent for testing
-            substituteInPlace \
-                tests/test_snapshot_integration.py \
-                tests/test_agent.py \
-                tests/conftest.py \
-                 --replace "ddapm-test-agent" "$TEST_AGENT"
+              # use nix provided agent for testing
+              substituteInPlace \
+                  tests/test_snapshot_integration.py \
+                  tests/test_agent.py \
+                  tests/conftest.py \
+                   --replace "ddapm-test-agent" "$TEST_AGENT"
 
-            ${python.pkgs.pytest}/bin/pytest -vv
+              ${python.pkgs.pytest}/bin/pytest -vv
 
-            runHook postCheck
-          '';
+              runHook postCheck
+            '';
 
-          env.SETUPTOOLS_SCM_PRETEND_VERSION = pretendVersion;
-        });
+            env.SETUPTOOLS_SCM_PRETEND_VERSION = pretendVersion;
+          }
+        );
 
         ddapm-test-agent = ddapm-test-agent_base { doCheck = false; };
 
@@ -123,7 +126,6 @@
           inherit
             python
             ddapm-test-agent
-            ddapm-test-agent_base
             ddtrace
             ddsketch
             toolContainer
