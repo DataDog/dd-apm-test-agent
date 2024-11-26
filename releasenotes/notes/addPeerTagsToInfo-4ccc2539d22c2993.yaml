@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add `peer_tags` field to `/info` endpoint for testing client side stats.

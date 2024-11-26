@@ -49,6 +49,21 @@ def test_trace_chunk():
                 ]
             ),
         ),
+        (
+            "application/msgpack",
+            msgpack.packb(
+                [
+                    [
+                        {
+                            "name": "span",
+                            "span_id": 1234,
+                            "trace_id": 321,
+                            "meta_struct": {"key": msgpack.packb({"subkey": "value"})},
+                        }
+                    ]
+                ]
+            ),
+        ),
     ],
 )
 def test_decode_v04(content_type, payload):
@@ -58,8 +73,53 @@ def test_decode_v04(content_type, payload):
 @pytest.mark.parametrize(
     "content_type, payload",
     [
-        ("application/msgpack", msgpack.packb([{"name": "test"}])),
         ("application/json", json.dumps([{"name": "test"}])),
+        ("application/msgpack", msgpack.packb([{"name": "test"}])),
+        (
+            "application/msgpack",
+            msgpack.packb(
+                [
+                    [
+                        {
+                            "name": "span",
+                            "span_id": 1234,
+                            "trace_id": 321,
+                            "meta_struct": "not a valid msgpack",
+                        }
+                    ]
+                ]
+            ),
+        ),
+        (
+            "application/msgpack",
+            msgpack.packb(
+                [
+                    [
+                        {
+                            "name": "span",
+                            "span_id": 1234,
+                            "trace_id": 321,
+                            "meta_struct": ["this is not a dict"],
+                        }
+                    ]
+                ]
+            ),
+        ),
+        (
+            "application/msgpack",
+            msgpack.packb(
+                [
+                    [
+                        {
+                            "name": "span",
+                            "span_id": 1234,
+                            "trace_id": 321,
+                            "meta_struct": {"key": msgpack.packb(["this is not a dict"])},
+                        }
+                    ]
+                ]
+            ),
+        ),
     ],
 )
 def test_decode_v04_bad(content_type, payload):

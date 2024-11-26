@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add `/evp_proxy/v2/api/v2/llmobs` endpoint to collect requests.

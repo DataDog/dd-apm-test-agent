@@ -1,6 +1,7 @@
 import base64
 from typing import Dict
 
+from aiohttp import BodyPartReader
 from aiohttp import MultipartReader
 from aiohttp import StreamReader
 from aiohttp.web import Request
@@ -18,7 +19,7 @@ async def v1_decode(request: Request, data: bytes) -> TracerFlareEvent:
         stream.feed_data(data)
         stream.feed_eof()
         async for part in MultipartReader(request.headers, stream):
-            if part.name is not None:
+            if isinstance(part, BodyPartReader) and part.name:
                 if part.name == "flare_file":
                     tracer_flare[part.name] = base64.b64encode(await part.read()).decode("ascii")
                 else:
