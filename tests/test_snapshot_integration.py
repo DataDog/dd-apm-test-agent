@@ -169,7 +169,8 @@ async def test_trace_distributed_propagated(testagent_url, testagent, tracer):
     resp = await testagent.get(
         f"{testagent_url}/test/session/snapshot?test_session_token=test_trace_distributed_propagated"
     )
-    assert resp.status == 200
+
+    assert resp.status == 200, await resp.text()
 
 
 async def test_trace_missing_received(testagent_url, testagent, tracer):
@@ -245,7 +246,7 @@ async def test_tracestats(
     if fail:
         assert resp.status == 400
     else:
-        assert resp.status == 200
+        assert resp.status == 200, await resp.text()
 
 
 async def test_cmd(testagent_url: str, testagent: aiohttp.ClientSession, tracer: Tracer) -> None:

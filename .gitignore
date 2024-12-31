@@ -37,3 +37,10 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+
+# Automated dev env setup - see .envrc.example
+/.envrc
+/.direnv/
+
+# nix 
+/result
