@@ -86,10 +86,16 @@ async def test_info(agent):
         "endpoints": [
             "/v0.4/traces",
             "/v0.5/traces",
+            "/v0.7/traces",
             "/v0.6/stats",
             "/telemetry/proxy/",
             "/v0.7/config",
             "/tracer_flare/v1",
+        ],
+        "peer_tags": [
+            "db.name",
+            "mongodb.db",
+            "messaging.system",
         ],
         "feature_flags": [],
         "config": {},
