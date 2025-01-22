@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add agent support for Span Events.

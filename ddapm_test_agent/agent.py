@@ -699,6 +699,7 @@ class Agent:
                 "client_drop_p0s": True,
                 # Just a random selection of some peer_tags to aggregate on for testing, not exhaustive
                 "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
+                "span_events": True,  # Advertise support for the top-level Span field for Span Events
             },
             headers={"Datadog-Agent-State": "03e868b3ecdd62a91423cc4c3917d0d151fb9fa486736911ab7f5a0750c63824"},
         )

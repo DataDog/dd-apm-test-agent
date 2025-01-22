@@ -100,6 +100,8 @@ async def test_info(agent):
         "feature_flags": [],
         "config": {},
         "client_drop_p0s": True,
+        "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
+        "span_events": True,
     }
 
 
