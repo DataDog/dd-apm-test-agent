@@ -5,6 +5,7 @@ import pytest
 
 from ddapm_test_agent import trace_snapshot
 from ddapm_test_agent import tracestats_snapshot
+from ddapm_test_agent.trace import add_span_event
 from ddapm_test_agent.trace import add_span_link
 from ddapm_test_agent.trace import copy_span
 from ddapm_test_agent.trace import set_attr
@@ -429,7 +430,7 @@ async def test_snapshot_tracestats(agent, tmp_path, snapshot_ci_mode, do_referen
         assert resp.status == 200, await resp.text()
 
 
-@pytest.mark.parametrize("snapshot_removed_attrs", [{"start", "duration"}])
+@pytest.mark.parametrize("snapshot_removed_attrs", [{"start", "duration", "span_events.name"}])
 async def test_removed_attributes(agent, tmp_path, snapshot_removed_attrs, do_reference_v04_http_trace):
     resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200
@@ -667,6 +668,34 @@ FIVE_SPAN_TRACE_NO_START = random_trace(5, remove_keys=["start"])
             "",
             {"start"},
         ),
+        # Mismatching span events count
+        (
+            [TWO_SPAN_TRACE_NO_START],
+            [[TWO_SPAN_TRACE_NO_START[0], add_span_event(copy_span(TWO_SPAN_TRACE_NO_START[1]))]],
+            "Span value 'span_events' in received span but is not in the expected span.",
+            {"start"},
+        ),
+        # Mismatching span event name
+        (
+            [[add_span_event(copy_span(ONE_SPAN_TRACE_NO_START[0]), name="expected_name")]],
+            [[add_span_event(copy_span(ONE_SPAN_TRACE_NO_START[0]), name="got_name")]],
+            "Span event 0 mismatch on 'name': got 'got_name' which does not match expected 'expected_name'.",
+            {"start"},
+        ),
+        # Mismatching span event attributes
+        (
+            [[add_span_event(copy_span(ONE_SPAN_TRACE_NO_START[0]), attributes={"a": "1", "b": "2"})]],
+            [[add_span_event(copy_span(ONE_SPAN_TRACE_NO_START[0]), attributes={"a": "1", "b": "0"})]],
+            "Span event 0 attributes mismatch on 'b': got '{'type': 0, 'string_value': '0'}' which does not match expected '{'type': 0, 'string_value': '2'}'.",
+            {"start"},
+        ),
+        # Matching span event
+        (
+            [[add_span_event(copy_span(ONE_SPAN_TRACE_NO_START[0]), attributes={"a": "1", "b": 2, "c": [3]})]],
+            [[add_span_event(copy_span(ONE_SPAN_TRACE_NO_START[0]), attributes={"a": "1", "b": 2, "c": [3]})]],
+            "",
+            {"start"},
+        ),
         # Default ignored fields
         (
             [
@@ -682,6 +711,12 @@ FIVE_SPAN_TRACE_NO_START = random_trace(5, remove_keys=["start"])
                         "error": 0,
                         "meta": {},
                         "metrics": {},
+                        "span_events": [
+                            {
+                                "time_unix_nano": 123,
+                                "name": "event_name",
+                            },
+                        ],
                     }
                 ]
             ],
@@ -698,6 +733,12 @@ FIVE_SPAN_TRACE_NO_START = random_trace(5, remove_keys=["start"])
                         "error": 0,
                         "meta": {},
                         "metrics": {},
+                        "span_events": [
+                            {
+                                "time_unix_nano": 456,
+                                "name": "event_name",
+                            },
+                        ],
                     }
                 ]
             ],

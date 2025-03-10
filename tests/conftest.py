@@ -158,6 +158,19 @@ def v04_reference_http_trace_payload_data_raw() -> List[Trace]:
                         "process_id": 111,
                         "sampling_priority_v1": 1.0,
                     },
+                    "span_events": [
+                        {
+                            "name": "event1",
+                            "time_unix_nano": 123,
+                            "attributes": {
+                                "string": {"type": 0, "string_value": "foo"},
+                                "array": {
+                                    "type": 4,
+                                    "array_value": [{"type": 2, "int_value": 1}, {"type": 2, "int_value": 2}],
+                                },
+                            },
+                        },
+                    ],
                 }
             ),
         ]
