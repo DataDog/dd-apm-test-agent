@@ -57,6 +57,7 @@ from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
 from .trace_checks import CheckTraceDDService
 from .trace_checks import CheckTracePeerService
+from .trace_checks import CheckTraceSemantics
 from .trace_checks import CheckTraceStallAsync
 from .tracerflare import TracerFlareEvent
 from .tracerflare import v1_decode as v1_tracerflare_decode
@@ -745,6 +746,7 @@ class Agent:
                         await checks.check(
                             "trace_peer_service", span=span, dd_config_env=request.get("_dd_trace_env_variables", {})
                         )
+                        await checks.check("trace_semantics", span=span)
 
                     await checks.check(
                         "trace_dd_service", trace=trace, dd_config_env=request.get("_dd_trace_env_variables", {})
@@ -1170,12 +1172,13 @@ def make_app(
     )
     checks = Checks(
         checks=[
-            CheckMetaTracerVersionHeader,
-            CheckTraceCountHeader,
-            CheckTraceContentLength,
-            CheckTraceStallAsync,
-            CheckTracePeerService,
-            CheckTraceDDService,
+            CheckMetaTracerVersionHeader(),
+            CheckTraceCountHeader(),
+            CheckTraceContentLength(),
+            CheckTraceStallAsync(),
+            CheckTracePeerService(),
+            CheckTraceDDService(),
+            CheckTraceSemantics(),
         ],
         enabled=enabled_checks,
     )
