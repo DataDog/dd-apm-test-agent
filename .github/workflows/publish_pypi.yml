@@ -29,6 +29,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
+          name: wheel
           path: dist/*.whl
 
   build_sdist:
@@ -65,7 +66,12 @@ jobs:
           name: sdist
           path: dist
 
-      - uses: pypa/gh-action-pypi-publish@master
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           user: __token__
           password: ${{ secrets.PYPI_TOKEN }}
