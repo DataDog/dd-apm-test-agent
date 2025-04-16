@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import pprint
+import re
 import socket
 import sys
 from typing import Awaitable
@@ -89,6 +90,15 @@ def _parse_csv(s: str) -> List[str]:
     ['a']
     """
     return [s.strip() for s in s.split(",") if s.strip() != ""]
+
+
+def _parse_map(s: str) -> Dict[str, str]:
+    """Return the values of a csv string.
+
+    >>> _parse_map("a:b,b:c,c:d")
+    {'a': 'b', 'b': 'c', 'c': 'd'}
+    """
+    return dict([s.strip().split(":", 2) for s in s.split(",") if s.strip() != ""])
 
 
 def _session_token(request: Request) -> Optional[str]:
@@ -794,6 +804,15 @@ class Agent:
         span_removes = list(default_span_removes | overrides)
         log.info("using removes %r", span_removes)
 
+        # Get the span attributes that are to be removed for this snapshot.
+        default_attribute_regex_replaces: Dict[str, str] = request.app["snapshot_regex_placeholders"]
+        regex_overrides = _parse_map(request.url.query.get("regex_placeholders", ""))
+        attribute_regex_replaces = dict(
+            (f"{{{key}}}", re.compile(regex))
+            for (key, regex) in (default_attribute_regex_replaces | regex_overrides).items()
+        )
+        log.info("using regex placeholders %r", span_removes)
+
         if "span_id" in span_removes:
             raise AssertionError("Cannot remove 'span_id' from spans")
 
@@ -841,7 +860,13 @@ class Agent:
             elif received_traces:
                 # Create a new snapshot for the data received
                 with open(trace_snap_file, mode="w") as f:
-                    f.write(trace_snapshot.generate_snapshot(received_traces=received_traces, removed=span_removes))
+                    f.write(
+                        trace_snapshot.generate_snapshot(
+                            received_traces=received_traces,
+                            removed=span_removes,
+                            attribute_regex_replaces=attribute_regex_replaces,
+                        )
+                    )
                 log.info("wrote new trace snapshot to %r", os.path.abspath(trace_snap_file))
 
             # Get all stats buckets from the payloads since we don't care about the other fields (hostname, env, etc)
@@ -1115,6 +1140,7 @@ def make_app(
     pool_trace_check_failures: bool,
     disable_error_responses: bool,
     snapshot_removed_attrs: List[str],
+    snapshot_regex_placeholders: Dict[str, str],
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
@@ -1190,6 +1216,7 @@ def make_app(
     app["pool_trace_check_failures"] = pool_trace_check_failures
     app["disable_error_responses"] = disable_error_responses
     app["snapshot_removed_attrs"] = snapshot_removed_attrs
+    app["snapshot_regex_placeholders"] = snapshot_regex_placeholders
     return app
 
 
@@ -1238,6 +1265,14 @@ def main(args: Optional[List[str]] = None) -> None:
             "Comma-separated values of span attributes to remove. "
             "meta/metrics attributes can be removed by prefixing the key "
             "with meta. or metrics."
+        ),
+    )
+    parser.add_argument(
+        "--snapshot-regex-placeholders",
+        type=_parse_map,
+        default=os.environ.get("SNAPSHOT_REGEX_PLACEHOLDERS", ""),
+        help=(
+            "Comma-separated list of placeholder:regex tuples where to remove the matching regexes with the placeholder."
         ),
     )
     parser.add_argument(
@@ -1341,6 +1376,7 @@ def main(args: Optional[List[str]] = None) -> None:
         pool_trace_check_failures=parsed_args.pool_trace_check_failures,
         disable_error_responses=parsed_args.disable_error_responses,
         snapshot_removed_attrs=parsed_args.snapshot_removed_attrs,
+        snapshot_regex_placeholders=parsed_args.snapshot_regex_placeholders,
     )
 
     web.run_app(app, sock=apm_sock, port=parsed_args.port)

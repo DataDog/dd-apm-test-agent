@@ -3,6 +3,7 @@ import json
 import logging
 import operator
 import pprint
+from re import Pattern
 import textwrap
 from typing import Any
 from typing import Dict
@@ -459,7 +460,22 @@ def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
     return d  # type: ignore
 
 
-def _snapshot_trace_str(trace: Trace, removed: Optional[List[str]] = None) -> str:
+def _walk_span_attributes_with_regex_replaces(
+    dictionary: Dict[str, Any], attribute_regex_replaces: Dict[str, Pattern[str]]
+) -> None:
+    for key, val in dictionary.items():
+        if isinstance(val, str):
+            for placeholder, pattern in attribute_regex_replaces.items():
+                dictionary[key] = pattern.sub(placeholder, dictionary[key])
+        elif isinstance(val, Dict):
+            _walk_span_attributes_with_regex_replaces(val, attribute_regex_replaces)
+        elif isinstance(val, List):
+            for v in val:
+                if isinstance(v, Dict):
+                    _walk_span_attributes_with_regex_replaces(v, attribute_regex_replaces)
+
+
+def _snapshot_trace_str(trace: Trace, removed: List[str], attribute_regex_replaces: Dict[str, Pattern[str]]) -> str:
     cmap = child_map(trace)
     stack: List[Tuple[int, Span]] = [(0, root_span(trace))]
     s = "[\n"
@@ -467,32 +483,34 @@ def _snapshot_trace_str(trace: Trace, removed: Optional[List[str]] = None) -> st
         prefix, span = stack.pop(0)
 
         # Remove any keys that are not needed for comparison
-        if removed:
-            for key in removed:
-                if key.startswith("meta."):
-                    span["meta"].pop(key[5:], None)
-                elif key.startswith("metrics."):
-                    span["metrics"].pop(key[8:], None)
-                elif key.startswith("span_links.attributes."):
-                    if "span_links" in span:
-                        for link in span["span_links"]:
-                            if "attributes" in link:
-                                link["attributes"].pop(key[22:], None)
-                elif key.startswith("span_links."):
-                    if "span_links" in span:
-                        for link in span["span_links"]:
-                            link.pop(key[11:], None)  # type: ignore
-                elif key.startswith("span_events.attributes."):
-                    if "span_events" in span:
-                        for event in span["span_events"]:
-                            if "attributes" in event:
-                                event["attributes"].pop(key[23:], None)
-                elif key.startswith("span_events."):
-                    if "span_events" in span:
-                        for event in span["span_events"]:
-                            event.pop(key[12:], None)  # type: ignore
-                else:
-                    span.pop(key, None)  # type: ignore
+        for key in removed:
+            if key.startswith("meta."):
+                span["meta"].pop(key[5:], None)
+            elif key.startswith("metrics."):
+                span["metrics"].pop(key[8:], None)
+            elif key.startswith("span_links.attributes."):
+                if "span_links" in span:
+                    for link in span["span_links"]:
+                        if "attributes" in link:
+                            link["attributes"].pop(key[22:], None)
+            elif key.startswith("span_links."):
+                if "span_links" in span:
+                    for link in span["span_links"]:
+                        link.pop(key[11:], None)  # type: ignore
+            elif key.startswith("span_events.attributes."):
+                if "span_events" in span:
+                    for event in span["span_events"]:
+                        if "attributes" in event:
+                            event["attributes"].pop(key[23:], None)
+            elif key.startswith("span_events."):
+                if "span_events" in span:
+                    for event in span["span_events"]:
+                        event.pop(key[12:], None)  # type: ignore
+            else:
+                span.pop(key, None)  # type: ignore
+
+        if attribute_regex_replaces:  # only walk if we actually have something to replace
+            _walk_span_attributes_with_regex_replaces(span, attribute_regex_replaces)  # type: ignore
 
         for i, child in enumerate(reversed(cmap[span["span_id"]])):
             if i == 0:
@@ -507,15 +525,19 @@ def _snapshot_trace_str(trace: Trace, removed: Optional[List[str]] = None) -> st
     return s
 
 
-def _snapshot_json(traces: List[Trace], removed: Optional[List[str]] = None) -> str:
+def _snapshot_json(traces: List[Trace], removed: List[str], attribute_regex_replaces: Dict[str, Pattern[str]]) -> str:
     s = "["
     for t in traces:
-        s += _snapshot_trace_str(t, removed)
+        s += _snapshot_trace_str(t, removed, attribute_regex_replaces)
         if t != traces[-1]:
             s += ",\n"
     s += "]\n"
     return s
 
 
-def generate_snapshot(received_traces: List[Trace], removed: Optional[List[str]] = None) -> str:
-    return _snapshot_json(_normalize_traces(received_traces), removed)
+def generate_snapshot(
+    received_traces: List[Trace],
+    removed: Optional[List[str]] = None,
+    attribute_regex_replaces: Optional[Dict[str, Pattern[str]]] = None,
+) -> str:
+    return _snapshot_json(_normalize_traces(received_traces), removed or [], attribute_regex_replaces or {})
