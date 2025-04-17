@@ -468,3 +468,4 @@ async def test_evp_proxy_v2_api_intake_llmobs_v2_eval_metric(agent):
     resp = await agent.get("/test/session/requests")
     assert resp.status == 200
     reqs = await resp.json()
+    assert len(reqs) == 1
