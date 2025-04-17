@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add `/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric` and `/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric` endpoints to collect requests.
