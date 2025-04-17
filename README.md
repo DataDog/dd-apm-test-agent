@@ -185,6 +185,8 @@ metrics incorrectly placed within the meta field, or other type errors related t
 that are not relevant to the test case. **Note that removing `span_id` is not permitted to allow span 
 ordering to be maintained.**
 
+- `SNAPSHOT_REGEX_PLACEHOLDERS` [`""`]: The regex expressions to replace by a placeholder. Expressed as a comma separated `key:value` list. Specifying `ba[rz]:placeholder` will change any occurrence of `bar` or `baz` to `{placeholder}`: `foobarbazqux` -> `foo{placeholder}{placeholder}qux`. This is in particular useful to strip path prefixes or other infrastructure dependent identifiers.
+
 - `DD_POOL_TRACE_CHECK_FAILURES` [`false`]: Set to `"true"` to pool Trace Check failures that occured within Test-Agent memory. These failures can be queried later using the `/test/trace_check/failures` endpoint. Can also be set using the `--pool-trace-check-failures=true` option.
 
 - `DD_DISABLE_ERROR_RESPONSES` [`false`]: Set to `"true"` to disable Test-Agent `<Response 400>` when a Trace Check fails, instead sending a valid `<Response 200>`. Recommended for use with the `DD_POOL_TRACE_CHECK_FAILURES` env variable. Can also be set using the `--disable-error-responses=true` option.

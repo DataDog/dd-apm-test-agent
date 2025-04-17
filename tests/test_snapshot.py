@@ -477,6 +477,31 @@ async def test_removed_attributes_metrics(agent, tmp_path, snapshot_removed_attr
         assert "process_id" not in span[0]
 
 
+@pytest.mark.parametrize("snapshot_regex_placeholders", [{"addr": "localhost:8080", "path": "^/.*"}])
+async def test_with_regex_placeholders(agent, tmp_path, snapshot_removed_attrs, do_reference_v04_http_trace):
+    resp = await do_reference_v04_http_trace(token="test_case")
+    assert resp.status == 200
+
+    custom_dir = tmp_path / "custom"
+    custom_dir.mkdir()
+    custom_file_name = custom_dir / "custom_snapshot"
+    custom_file = custom_dir / "custom_snapshot.json"
+
+    resp = await agent.get(
+        "/test/session/snapshot", params={"test_session_token": "test_case", "file": str(custom_file_name)}
+    )
+    assert resp.status == 200, await resp.text()
+
+    assert os.path.exists(custom_file), custom_file
+    with open(custom_file, mode="r") as f:  # Check that the removed attributes are not present in the span
+        file_content = "".join(f.readlines())
+        assert file_content != ""
+        span = json.loads(file_content)
+        assert "http.request" == span[0][0]["name"]
+        assert "{path}" == span[0][0]["resource"]
+        assert "http://{addr}/users" == span[0][0]["meta"]["http.url"]
+
+
 ONE_SPAN_TRACE_NO_START = random_trace(1, remove_keys=["start"])
 TWO_SPAN_TRACE_NO_START = random_trace(2, remove_keys=["start"])
 FIVE_SPAN_TRACE_NO_START = random_trace(5, remove_keys=["start"])

@@ -91,6 +91,11 @@ def snapshot_removed_attrs() -> Generator[Set[str], None, None]:
 
 
 @pytest.fixture
+def snapshot_regex_placeholders() -> Generator[Dict[str, str], None, None]:
+    yield dict()
+
+
+@pytest.fixture
 async def agent_app(
     aiohttp_server,
     agent_enabled_checks,
@@ -104,6 +109,7 @@ async def agent_app(
     pool_trace_check_failures,
     disable_error_responses,
     snapshot_removed_attrs,
+    snapshot_regex_placeholders,
 ):
     app = await aiohttp_server(
         make_app(
@@ -118,6 +124,7 @@ async def agent_app(
             pool_trace_check_failures,
             disable_error_responses,
             snapshot_removed_attrs,
+            snapshot_regex_placeholders,
         )
     )
     yield app
