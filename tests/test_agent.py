@@ -449,3 +449,22 @@ async def test_evp_proxy_v2_api_v2_llmobs(agent):
     assert resp.status == 200
     reqs = await resp.json()
     assert len(reqs) == 1
+
+
+async def test_evp_proxy_v2_api_intake_llmobs_v1_eval_metric(agent):
+    resp = await agent.post("/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric", data='{"key": "value"}')
+    assert resp.status == 200, await resp.text()
+
+    resp = await agent.get("/test/session/requests")
+    assert resp.status == 200
+    reqs = await resp.json()
+    assert len(reqs) == 1
+
+
+async def test_evp_proxy_v2_api_intake_llmobs_v2_eval_metric(agent):
+    resp = await agent.post("/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric", data='{"key": "value"}')
+    assert resp.status == 200, await resp.text()
+
+    resp = await agent.get("/test/session/requests")
+    assert resp.status == 200
+    reqs = await resp.json()
