@@ -510,7 +510,7 @@ def _snapshot_trace_str(trace: Trace, removed: List[str], attribute_regex_replac
                 span.pop(key, None)  # type: ignore
 
         if attribute_regex_replaces:  # only walk if we actually have something to replace
-            _walk_span_attributes_with_regex_replaces(span, attribute_regex_replaces)  # type: ignore
+            _walk_span_attributes_with_regex_replaces(typing.cast(Dict[str, Any], span), attribute_regex_replaces)
 
         for i, child in enumerate(reversed(cmap[span["span_id"]])):
             if i == 0:
