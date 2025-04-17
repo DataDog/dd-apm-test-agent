@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Add a SNAPSHOT_REGEX_PLACEHOLDERS option to allow infrastructure independent
+    snapshots.
