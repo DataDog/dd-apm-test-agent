@@ -98,7 +98,7 @@ def _parse_map(s: str) -> Dict[str, str]:
     >>> _parse_map("a:b,b:c,c:d")
     {'a': 'b', 'b': 'c', 'c': 'd'}
     """
-    return dict([s.strip().split(":", 2) for s in s.split(",") if s.strip()])
+    return dict([s.strip().split(":", 1) for s in s.split(",") if s.strip()])
 
 
 def _session_token(request: Request) -> Optional[str]:
