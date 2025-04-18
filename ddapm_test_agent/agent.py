@@ -811,7 +811,7 @@ class Agent:
             (f"{{{key}}}", re.compile(regex))
             for (key, regex) in (default_attribute_regex_replaces | regex_overrides).items()
         )
-        log.info("using regex placeholders %r", span_removes)
+        log.info("using regex placeholders %r", attribute_regex_replaces)
 
         if "span_id" in span_removes:
             raise AssertionError("Cannot remove 'span_id' from spans")
@@ -856,6 +856,7 @@ class Agent:
                     expected_traces=raw_snapshot,
                     received_traces=received_traces,
                     ignored=span_ignores,
+                    attribute_regex_replaces=attribute_regex_replaces,
                 )
             elif received_traces:
                 # Create a new snapshot for the data received
