@@ -243,6 +243,8 @@ class Agent:
             "/v0.1/pipeline_stats",
             "/tracer_flare/v1",
             "/evp_proxy/v2/api/v2/llmobs",
+            "/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric",
+            "/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric",
         ]
 
         # Note that sessions are not cleared at any point since we don't know
@@ -627,6 +629,9 @@ class Agent:
     async def handle_evp_proxy_v2_api_v2_llmobs(self, request: Request) -> web.Response:
         return web.HTTPOk()
 
+    async def handle_evp_proxy_v2_llmobs_eval_metric(self, request: Request) -> web.Response:
+        return web.HTTPOk()
+
     async def handle_put_tested_integrations(self, request: Request) -> web.Response:
         # we need to store the request manually since this is not a real DD agent endpoint
         await self._store_request(request)
@@ -938,6 +943,7 @@ class Agent:
                 self.handle_v07_remoteconfig,
                 self.handle_v1_tracer_flare,
                 self.handle_evp_proxy_v2_api_v2_llmobs,
+                self.handle_evp_proxy_v2_llmobs_eval_metric,
             ):
                 continue
             resp.append(
@@ -1171,6 +1177,8 @@ def make_app(
             web.post("/profiling/v1/input", agent.handle_v1_profiling),
             web.post("/tracer_flare/v1", agent.handle_v1_tracer_flare),
             web.post("/evp_proxy/v2/api/v2/llmobs", agent.handle_evp_proxy_v2_api_v2_llmobs),
+            web.post("/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric", agent.handle_evp_proxy_v2_llmobs_eval_metric),
+            web.post("/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric", agent.handle_evp_proxy_v2_llmobs_eval_metric),
             web.get("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
