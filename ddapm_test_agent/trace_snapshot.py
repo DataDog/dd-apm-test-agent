@@ -84,7 +84,22 @@ def _trace_similarity(t1: Trace, t2: Trace) -> int:
     return score
 
 
-def _normalize_traces(traces: List[Trace]) -> List[Trace]:
+def _walk_span_attributes_with_regex_replaces(
+    dictionary: Dict[str, Any], attribute_regex_replaces: Dict[str, Pattern[str]]
+) -> None:
+    for key, val in dictionary.items():
+        if isinstance(val, str):
+            for placeholder, pattern in attribute_regex_replaces.items():
+                dictionary[key] = pattern.sub(placeholder, dictionary[key])
+        elif isinstance(val, Dict):
+            _walk_span_attributes_with_regex_replaces(val, attribute_regex_replaces)
+        elif isinstance(val, List):
+            for v in val:
+                if isinstance(v, Dict):
+                    _walk_span_attributes_with_regex_replaces(v, attribute_regex_replaces)
+
+
+def _normalize_traces(traces: List[Trace], attribute_regex_replaces: Dict[str, Pattern[str]]) -> List[Trace]:
     normed_traces = []
     trace_id_map: Dict[TraceId, Tuple[int, Dict[SpanId, int]]] = {}
 
@@ -114,6 +129,9 @@ def _normalize_traces(traces: List[Trace]) -> List[Trace]:
             if "metrics" not in span:
                 span["metrics"] = {}
             span_id += 1
+
+            if attribute_regex_replaces:  # only walk if we actually have something to replace
+                _walk_span_attributes_with_regex_replaces(cast(Dict[str, Any], span), attribute_regex_replaces)
 
         normed_traces.append(normed_trace)
 
@@ -401,9 +419,14 @@ class SnapshotCheck(Check):
         pass
 
 
-def snapshot(expected_traces: List[Trace], received_traces: List[Trace], ignored: List[str]) -> None:
-    normed_expected = _normalize_traces(expected_traces)
-    normed_received = _normalize_traces(received_traces)
+def snapshot(
+    expected_traces: List[Trace],
+    received_traces: List[Trace],
+    ignored: List[str],
+    attribute_regex_replaces: Dict[str, Pattern[str]],
+) -> None:
+    normed_expected = _normalize_traces(expected_traces, {})
+    normed_received = _normalize_traces(received_traces, attribute_regex_replaces)
     with CheckTrace.add_frame(
         f"compare of {len(normed_expected)} expected trace(s) to {len(normed_received)} received trace(s)"
     ):
@@ -460,22 +483,7 @@ def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
     return d  # type: ignore
 
 
-def _walk_span_attributes_with_regex_replaces(
-    dictionary: Dict[str, Any], attribute_regex_replaces: Dict[str, Pattern[str]]
-) -> None:
-    for key, val in dictionary.items():
-        if isinstance(val, str):
-            for placeholder, pattern in attribute_regex_replaces.items():
-                dictionary[key] = pattern.sub(placeholder, dictionary[key])
-        elif isinstance(val, Dict):
-            _walk_span_attributes_with_regex_replaces(val, attribute_regex_replaces)
-        elif isinstance(val, List):
-            for v in val:
-                if isinstance(v, Dict):
-                    _walk_span_attributes_with_regex_replaces(v, attribute_regex_replaces)
-
-
-def _snapshot_trace_str(trace: Trace, removed: List[str], attribute_regex_replaces: Dict[str, Pattern[str]]) -> str:
+def _snapshot_trace_str(trace: Trace, removed: List[str]) -> str:
     cmap = child_map(trace)
     stack: List[Tuple[int, Span]] = [(0, root_span(trace))]
     s = "[\n"
@@ -509,9 +517,6 @@ def _snapshot_trace_str(trace: Trace, removed: List[str], attribute_regex_replac
             else:
                 span.pop(key, None)  # type: ignore
 
-        if attribute_regex_replaces:  # only walk if we actually have something to replace
-            _walk_span_attributes_with_regex_replaces(cast(Dict[str, Any], span), attribute_regex_replaces)
-
         for i, child in enumerate(reversed(cmap[span["span_id"]])):
             if i == 0:
                 stack.insert(0, (prefix + 3, child))
@@ -525,10 +530,10 @@ def _snapshot_trace_str(trace: Trace, removed: List[str], attribute_regex_replac
     return s
 
 
-def _snapshot_json(traces: List[Trace], removed: List[str], attribute_regex_replaces: Dict[str, Pattern[str]]) -> str:
+def _snapshot_json(traces: List[Trace], removed: List[str]) -> str:
     s = "["
     for t in traces:
-        s += _snapshot_trace_str(t, removed, attribute_regex_replaces)
+        s += _snapshot_trace_str(t, removed)
         if t != traces[-1]:
             s += ",\n"
     s += "]\n"
@@ -540,4 +545,4 @@ def generate_snapshot(
     removed: Optional[List[str]] = None,
     attribute_regex_replaces: Optional[Dict[str, Pattern[str]]] = None,
 ) -> str:
-    return _snapshot_json(_normalize_traces(received_traces), removed or [], attribute_regex_replaces or {})
+    return _snapshot_json(_normalize_traces(received_traces, attribute_regex_replaces or {}), removed or [])
