@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Actually make the SNAPSHOT_REGEX_PLACEHOLDERS feature also work during comparison, and not only generation.
