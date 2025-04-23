@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Adds `/evp_proxy/v2/` as one of the endpoints listed from the `/info` endpoint.

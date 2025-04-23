@@ -708,6 +708,7 @@ class Agent:
                     "/telemetry/proxy/",
                     "/v0.7/config",
                     "/tracer_flare/v1",
+                    "/evp_proxy/v2/",
                 ],
                 "feature_flags": [],
                 "config": {},

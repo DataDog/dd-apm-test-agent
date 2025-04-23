@@ -91,6 +91,7 @@ async def test_info(agent):
             "/telemetry/proxy/",
             "/v0.7/config",
             "/tracer_flare/v1",
+            "/evp_proxy/v2/",
         ],
         "peer_tags": [
             "db.name",
