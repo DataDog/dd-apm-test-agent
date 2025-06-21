@@ -1364,7 +1364,7 @@ def main(args: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--snapshot-server-cassettes-directory",
         type=str,
-        default=default_snapshot_server_cassettes_directory(),
+        default=os.environ.get("SNAPSHOT_SERVER_CASSETTES_DIRECTORY", default_snapshot_server_cassettes_directory()),
         help="Directory to read and store snapshot server cassettes.",
     )
     parsed_args = parser.parse_args(args=args)
