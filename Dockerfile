@@ -8,6 +8,8 @@ ENV SNAPSHOT_DIR=/snapshots
 
 RUN apt update && apt install -y git curl
 
+ADD snapshot-server-cassettes ./snapshot-server-cassettes
+
 RUN mkdir -p /src
 WORKDIR /src
 # Add only necessary files to speed up development builds

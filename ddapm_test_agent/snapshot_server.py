@@ -5,7 +5,6 @@ import os
 import json
 import re
 
-from aiohttp import web
 from aiohttp.web import Request, Response
 
 PROVIDER_BASE_URLS = {
@@ -47,9 +46,10 @@ def normalize_multipart_body(body: bytes) -> str:
 
 
 def get_vcr(subdirectory: str):
-    current_dir = os.path.dirname(os.path.abspath(__file__))
+    cassette_dir = os.path.join("/snapshot-server-cassettes", subdirectory)
+    
     return vcr.VCR(
-        cassette_library_dir=os.path.join(current_dir, "snapshot-server-cassettes", subdirectory),
+        cassette_library_dir=cassette_dir,
         record_mode="once",
         match_on=["path", "method"],
         filter_headers=["authorization", "OpenAI-Organization", "api-key", "x-api-key"],
@@ -65,13 +65,12 @@ def generate_cassette_name(path: str, method: str, body: bytes) -> str:
 
     request_details = f"{path}:{method}:{json.dumps(parsed_body, sort_keys=True)}"
     hash_object = hashlib.sha256(request_details.encode())
-
     hash_hex = hash_object.hexdigest()[:8]
-
     safe_path = "".join(c if c.isalnum() or c in ".-" else "_" for c in path)
     return f"{safe_path}_{method.lower()}_{hash_hex}"
 
-def forward_request(request: Request) -> Response:
+
+async def forward_request(request: Request) -> Response:
     path = request.match_info["path"]
 
     parts = path.split("/", 1)
@@ -84,24 +83,30 @@ def forward_request(request: Request) -> Response:
 
     target_url = f"{PROVIDER_BASE_URLS[provider]}/{remaining_path}"
 
-    headers = {key: value for key, value in request.headers if key != "Host"}
+    headers = {key: value for key, value in request.headers.items() if key != "Host"}
 
-    cassette_name = generate_cassette_name(path, request.method, request.get_data())
+    body_bytes = await request.read()
+    cassette_name = generate_cassette_name(path, request.method, body_bytes)
     with get_vcr(provider).use_cassette(f"{cassette_name}.yaml"):
         oai_response = requests.request(
             method=request.method,
             url=target_url,
             headers=headers,
-            data=request.get_data(),
+            data=body_bytes,
             cookies=request.cookies,
             allow_redirects=False,
             stream=True,
         )
 
+    # Extract content type without charset
+    content_type = oai_response.headers.get("content-type", "")
+    if ";" in content_type:
+        content_type = content_type.split(";")[0].strip()
+
     response = Response(
-        oai_response.iter_content(chunk_size=10 * 1024),
+        body=oai_response.content,
         status=oai_response.status_code,
-        content_type=oai_response.headers.get("content-type"),
+        content_type=content_type,
     )
 
     for key, value in oai_response.headers.items():
