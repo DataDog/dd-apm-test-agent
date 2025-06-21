@@ -1,0 +1,125 @@
+interactions:
+- request:
+    body: '{"messages":[{"role":"user","content":"Bob is a student at Stanford University.
+      He is studying computer science."}],"model":"gpt-3.5-turbo","stream":false,"tool_choice":"auto","tools":[{"type":"function","function":{"name":"extract_student_info","description":"Get
+      the student information from the body of the input text","parameters":{"type":"object","properties":{"name":{"type":"string","description":"Name
+      of the person"},"major":{"type":"string","description":"Major subject."},"school":{"type":"string","description":"The
+      university name."}}}}}]}'
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '552'
+      Content-Type:
+      - application/json
+      Traceparent:
+      - 00-6847547c00000000281d7605cddcbdc7-aa8f932fe4acc6b3-01
+      Tracestate:
+      - dd=p:aa8f932fe4acc6b3;s:1;t.dm:-0;t.llmobs_parent_id:8788226582755531436;t.llmobs_trace_id:138610078185286082070215265757392070847;t.tid:6847547c00000000
+      User-Agent:
+      - OpenAI/Python 1.59.6
+      X-Datadog-Parent-Id:
+      - '12290203742026647219'
+      X-Datadog-Sampling-Priority:
+      - '1'
+      X-Datadog-Tags:
+      - _dd.p.llmobs_parent_id=8788226582755531436,_dd.p.llmobs_trace_id=138610078185286082070215265757392070847,_dd.p.dm=-0,_dd.p.tid=6847547c00000000
+      X-Datadog-Trace-Id:
+      - '2890596303142436295'
+      X-Stainless-Arch:
+      - arm64
+      X-Stainless-Async:
+      - 'false'
+      X-Stainless-Lang:
+      - python
+      X-Stainless-Os:
+      - Linux
+      X-Stainless-Package-Version:
+      - 1.59.6
+      X-Stainless-Retry-Count:
+      - '0'
+      X-Stainless-Runtime:
+      - CPython
+      X-Stainless-Runtime-Version:
+      - 3.12.10
+    method: POST
+    uri: https://api.openai.com/v1/chat/completions
+  response:
+    body:
+      string: "{\n  \"id\": \"chatcmpl-BgeUvJRUe7Mmr58yrapjIbw3JE6eC\",\n  \"object\":
+        \"chat.completion\",\n  \"created\": 1749505149,\n  \"model\": \"gpt-3.5-turbo-0125\",\n
+        \ \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\":
+        \"assistant\",\n        \"content\": null,\n        \"tool_calls\": [\n          {\n
+        \           \"id\": \"call_uHmJT3YAliFdqzXpRWGo4w0f\",\n            \"type\":
+        \"function\",\n            \"function\": {\n              \"name\": \"extract_student_info\",\n
+        \             \"arguments\": \"{\\\"name\\\":\\\"Bob\\\",\\\"major\\\":\\\"computer
+        science\\\",\\\"school\\\":\\\"Stanford University\\\"}\"\n            }\n
+        \         }\n        ],\n        \"refusal\": null,\n        \"annotations\":
+        []\n      },\n      \"logprobs\": null,\n      \"finish_reason\": \"tool_calls\"\n
+        \   }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 89,\n    \"completion_tokens\":
+        26,\n    \"total_tokens\": 115,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\":
+        0,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\":
+        {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\":
+        0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\":
+        \"default\",\n  \"system_fingerprint\": null\n}\n"
+    headers:
+      CF-RAY:
+      - 94d3c7ad6cb728a4-IAD
+      Connection:
+      - keep-alive
+      Content-Encoding:
+      - gzip
+      Content-Type:
+      - application/json
+      Date:
+      - Mon, 09 Jun 2025 21:39:09 GMT
+      Server:
+      - cloudflare
+      Set-Cookie:
+      - __cf_bm=VynvzcSMy.qsk6V8JOD2Vff8_HTh9I.QIC0QUDcOp38-1749505149-1.0.1.1-twaNfWEUAS1EGHCD.aZhm6BUhReJJRmNG2BSryWc8B703.fMJDJA.blE7JHtUDcxpTz4gDAOZ1JP.kqerlMGEIiAD89RnU8swG_wfHOrYR0;
+        path=/; expires=Mon, 09-Jun-25 22:09:09 GMT; domain=.api.openai.com; HttpOnly;
+        Secure; SameSite=None
+      - _cfuvid=mBnfV4tmxCBZz4K9EXyMYNkNnsOAZjoJI_FK6vnupcc-1749505149562-0.0.1.1-604800000;
+        path=/; domain=.api.openai.com; HttpOnly; Secure; SameSite=None
+      Transfer-Encoding:
+      - chunked
+      X-Content-Type-Options:
+      - nosniff
+      access-control-expose-headers:
+      - X-Request-ID
+      alt-svc:
+      - h3=":443"; ma=86400
+      cf-cache-status:
+      - DYNAMIC
+      openai-organization:
+      - datadog-staging
+      openai-processing-ms:
+      - '416'
+      openai-version:
+      - '2020-10-01'
+      strict-transport-security:
+      - max-age=31536000; includeSubDomains; preload
+      x-envoy-upstream-service-time:
+      - '421'
+      x-ratelimit-limit-requests:
+      - '10000'
+      x-ratelimit-limit-tokens:
+      - '50000000'
+      x-ratelimit-remaining-requests:
+      - '9999'
+      x-ratelimit-remaining-tokens:
+      - '49999979'
+      x-ratelimit-reset-requests:
+      - 6ms
+      x-ratelimit-reset-tokens:
+      - 0s
+      x-request-id:
+      - req_abe7dee9b50a0bbdc368ec0de578da32
+    status:
+      code: 200
+      message: OK
+version: 1

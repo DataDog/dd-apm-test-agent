@@ -1,0 +1,121 @@
+interactions:
+- request:
+    body: '{"model":"gpt-3.5-turbo-instruct","prompt":"Why is Evan Li such a slacker?","max_tokens":35,"temperature":0.5}'
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '110'
+      Content-Type:
+      - application/json
+      Traceparent:
+      - 00-6847546900000000576815cad34056d2-2a738386e9824b8b-01
+      Tracestate:
+      - dd=p:2a738386e9824b8b;s:1;t.dm:-0;t.llmobs_parent_id:6398494466118693837;t.llmobs_trace_id:138610076679950994294445436489166550263;t.tid:6847546900000000
+      User-Agent:
+      - OpenAI/Python 1.59.6
+      X-Datadog-Parent-Id:
+      - '3058933187381185419'
+      X-Datadog-Sampling-Priority:
+      - '1'
+      X-Datadog-Tags:
+      - _dd.p.llmobs_parent_id=6398494466118693837,_dd.p.llmobs_trace_id=138610076679950994294445436489166550263,_dd.p.dm=-0,_dd.p.tid=6847546900000000
+      X-Datadog-Trace-Id:
+      - '6298308039749424850'
+      X-Stainless-Arch:
+      - arm64
+      X-Stainless-Async:
+      - 'false'
+      X-Stainless-Lang:
+      - python
+      X-Stainless-Os:
+      - Linux
+      X-Stainless-Package-Version:
+      - 1.59.6
+      X-Stainless-Retry-Count:
+      - '0'
+      X-Stainless-Runtime:
+      - CPython
+      X-Stainless-Runtime-Version:
+      - 3.12.10
+    method: POST
+    uri: https://api.openai.com/v1/completions
+  response:
+    body:
+      string: "{\n  \"id\": \"cmpl-BgeUbX3HVMe98QWh4DuTC8Wg4vslK\",\n  \"object\":
+        \"text_completion\",\n  \"created\": 1749505129,\n  \"model\": \"gpt-3.5-turbo-instruct:20230824-v2\",\n
+        \ \"choices\": [\n    {\n      \"text\": \"\\nIt is not fair or accurate to
+        label someone as a \\\"slacker\\\" without knowing the full context of their
+        behavior and circumstances. It is important to avoid making assumptions or\",\n
+        \     \"index\": 0,\n      \"logprobs\": null,\n      \"finish_reason\": \"length\"\n
+        \   }\n  ],\n  \"usage\": {\n    \"prompt_tokens\": 9,\n    \"completion_tokens\":
+        35,\n    \"total_tokens\": 44\n  }\n}\n"
+    headers:
+      CF-RAY:
+      - 94d3c732cccb597a-IAD
+      Cache-Control:
+      - no-cache, must-revalidate
+      Connection:
+      - keep-alive
+      Content-Encoding:
+      - gzip
+      Content-Type:
+      - application/json
+      Date:
+      - Mon, 09 Jun 2025 21:38:50 GMT
+      Server:
+      - cloudflare
+      Set-Cookie:
+      - __cf_bm=xZqDm8r484gw2wkiigz1IickxBvULpN82qpCjGw.PiE-1749505130-1.0.1.1-VWW3NN3IhuuhD.53v7QYx6bddXS5JZcyq3quJCsYcApmM0d0HtN68LBjkJU2NrPgdmnqN76HjVs2F9RAS10Pp.j3Bbpte2cOmohg5Xqo1nY;
+        path=/; expires=Mon, 09-Jun-25 22:08:50 GMT; domain=.api.openai.com; HttpOnly;
+        Secure; SameSite=None
+      - _cfuvid=OaGBpR1gJXV.0NhjgRjAFPj_iSlCqvoHXYHXdg4OSu8-1749505130101-0.0.1.1-604800000;
+        path=/; domain=.api.openai.com; HttpOnly; Secure; SameSite=None
+      Transfer-Encoding:
+      - chunked
+      X-Content-Type-Options:
+      - nosniff
+      access-control-allow-origin:
+      - '*'
+      access-control-expose-headers:
+      - X-Request-ID
+      alt-svc:
+      - h3=":443"; ma=86400
+      cf-cache-status:
+      - DYNAMIC
+      openai-model:
+      - gpt-3.5-turbo-instruct:20230824-v2
+      openai-organization:
+      - datadog-staging
+      openai-processing-ms:
+      - '637'
+      openai-version:
+      - '2020-10-01'
+      strict-transport-security:
+      - max-age=31536000; includeSubDomains; preload
+      via:
+      - envoy-router-5456784889-hv8ln
+      x-envoy-upstream-service-time:
+      - '642'
+      x-ratelimit-limit-requests:
+      - '3500'
+      x-ratelimit-limit-tokens:
+      - '90000'
+      x-ratelimit-remaining-requests:
+      - '3499'
+      x-ratelimit-remaining-tokens:
+      - '89992'
+      x-ratelimit-reset-requests:
+      - 17ms
+      x-ratelimit-reset-tokens:
+      - 5ms
+      x-request-id:
+      - req_1675e9d7968d0c38275f68ada2028423
+    status:
+      code: 200
+      message: OK
+version: 1

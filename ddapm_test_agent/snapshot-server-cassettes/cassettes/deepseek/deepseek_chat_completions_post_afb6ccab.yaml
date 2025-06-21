@@ -1,0 +1,80 @@
+interactions:
+- request:
+    body: "{\n  \"model\": \"deepseek-chat\",\n  \"messages\": [\n    {\n      \"role\":
+      \"system\",\n      \"content\": \"You are a helpful assistant.\"\n    },\n    {\n
+      \     \"role\": \"user\",\n      \"content\": \"Hello, OpenAI!\"\n    }\n  ],\n
+      \ \"temperature\": 0.5,\n  \"stream\": false,\n  \"max_tokens\": 100,\n  \"n\":
+      1,\n  \"user\": \"dd-trace-test\"\n}"
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip,deflate
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '303'
+      Content-Type:
+      - application/json
+      User-Agent:
+      - OpenAI/JS 4.0.0
+      X-Stainless-Arch:
+      - arm64
+      X-Stainless-Lang:
+      - js
+      X-Stainless-Os:
+      - MacOS
+      X-Stainless-Package-Version:
+      - 4.0.0
+      X-Stainless-Runtime:
+      - node
+      X-Stainless-Runtime-Version:
+      - v22.13.1
+    method: POST
+    uri: https://api.deepseek.com/chat/completions
+  response:
+    body:
+      string: "{\n  \"id\": \"chatcmpl-BkZxQcJvaxbyldxLmrNffCobBnd84\",\n  \"object\":
+        \"chat.completion\",\n  \"created\": 1750441008,\n  \"model\": \"gpt-4o-2024-08-06\",\n
+        \ \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\":
+        \"assistant\",\n        \"content\": \"Hello! How can I assist you today?\",\n
+        \       \"refusal\": null,\n        \"annotations\": []\n      },\n      \"logprobs\":
+        null,\n      \"finish_reason\": \"stop\"\n    }\n  ],\n  \"usage\": {\n    \"prompt_tokens\":
+        21,\n    \"completion_tokens\": 9,\n    \"total_tokens\": 30,\n    \"prompt_tokens_details\":
+        {\n      \"cached_tokens\": 0,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\":
+        {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\":
+        0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\":
+        \"default\",\n  \"system_fingerprint\": \"fp_07871e2ad8\"\n}\n"
+    headers:
+      CF-RAY:
+      - 952d93a97f810f6f-EWR
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '111'
+      Content-Type:
+      - application/json
+      Date:
+      - Fri, 20 Jun 2025 19:12:17 GMT
+      Server:
+      - cloudflare
+      Set-Cookie:
+      - __cf_bm=OVJpDC4uunjsiV8_fYewKdBcNb7Lh25RKaoIltEW3kI-1750446737-1.0.1.1-lRGs1fPN.cl7rWoNdw0jH0rMPmx3S8uA1jM71WtdVfi62cHgK9IXbg.AxCYHXFsIIHd01lpXSGIZV5p5pkHPhfKhPhwhXOOPtDvCY0bNVDg;
+        path=/; expires=Fri, 20-Jun-25 19:42:17 GMT; domain=.deepseek.com; HttpOnly;
+        Secure; SameSite=None
+      Strict-Transport-Security:
+      - max-age=31536000; includeSubDomains; preload
+      X-Content-Type-Options:
+      - nosniff
+      access-control-allow-credentials:
+      - 'true'
+      cf-cache-status:
+      - DYNAMIC
+      vary:
+      - origin, access-control-request-method, access-control-request-headers
+      x-ds-trace-id:
+      - 40ea0f5519c26ab95e6ffaf4badd4c3a
+    status:
+      code: 200
+      message: Payment Required
+version: 1
