@@ -35,7 +35,7 @@ interactions:
   response:
     body:
       string: "{\n  \"id\": \"chatcmpl-BkZxQcJvaxbyldxLmrNffCobBnd84\",\n  \"object\":
-        \"chat.completion\",\n  \"created\": 1750441008,\n  \"model\": \"gpt-4o-2024-08-06\",\n
+        \"chat.completion\",\n  \"created\": 1750441008,\n  \"model\": \"deepseek-chat\",\n
         \ \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\":
         \"assistant\",\n        \"content\": \"Hello! How can I assist you today?\",\n
         \       \"refusal\": null,\n        \"annotations\": []\n      },\n      \"logprobs\":
@@ -76,5 +76,4 @@ interactions:
       - 40ea0f5519c26ab95e6ffaf4badd4c3a
     status:
       code: 200
-      message: Payment Required
 version: 1
