@@ -76,4 +76,5 @@ interactions:
       - 40ea0f5519c26ab95e6ffaf4badd4c3a
     status:
       code: 200
+      message: OK
 version: 1
