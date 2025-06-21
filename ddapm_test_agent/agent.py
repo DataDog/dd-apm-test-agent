@@ -63,6 +63,7 @@ from .tracerflare import TracerFlareEvent
 from .tracerflare import v1_decode as v1_tracerflare_decode
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
+from .snapshot_server import forward_request
 
 
 class NoSuchSessionException(Exception):
@@ -1202,6 +1203,7 @@ def make_app(
             web.get("/test/trace_check/summary", agent.get_trace_check_summary),
             web.get("/test/integrations/tested_versions", agent.handle_get_tested_integrations),
             web.post("/test/settings", agent.handle_settings),
+            web.route("*", "/snapshot-server/{path:.*}", forward_request),
         ]
     )
     checks = Checks(
