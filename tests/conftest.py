@@ -96,6 +96,11 @@ def snapshot_regex_placeholders() -> Generator[Dict[str, str], None, None]:
 
 
 @pytest.fixture
+def snapshot_server_cassettes_directory() -> Generator[str, None, None]:
+    yield "/snapshot-server-cassettes"
+
+
+@pytest.fixture
 async def agent_app(
     aiohttp_server,
     agent_enabled_checks,
@@ -110,6 +115,7 @@ async def agent_app(
     disable_error_responses,
     snapshot_removed_attrs,
     snapshot_regex_placeholders,
+    snapshot_server_cassettes_directory,
 ):
     app = await aiohttp_server(
         make_app(
@@ -125,6 +131,7 @@ async def agent_app(
             disable_error_responses,
             snapshot_removed_attrs,
             snapshot_regex_placeholders,
+            snapshot_server_cassettes_directory,
         )
     )
     yield app
