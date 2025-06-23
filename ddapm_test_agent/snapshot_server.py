@@ -77,11 +77,11 @@ async def proxy_request(request: Request, snapshot_server_cassettes_directory: s
 
     parts = path.split("/", 1)
     if len(parts) != 2:
-        return Response("Invalid path format. Expected /{provider}/...", status=400)
+        return Response(body="Invalid path format. Expected /{provider}/...", status=400)
 
     provider, remaining_path = parts
     if provider not in PROVIDER_BASE_URLS:
-        return Response(f"Unsupported provider: {provider}", status=400)
+        return Response(body=f"Unsupported provider: {provider}", status=400)
 
     target_url = f"{PROVIDER_BASE_URLS[provider]}/{remaining_path}"
 
@@ -95,7 +95,7 @@ async def proxy_request(request: Request, snapshot_server_cassettes_directory: s
             url=target_url,
             headers=headers,
             data=body_bytes,
-            cookies=request.cookies,
+            cookies=dict(request.cookies),
             allow_redirects=False,
             stream=True,
         )
