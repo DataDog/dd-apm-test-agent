@@ -1,11 +1,13 @@
-import requests
-import vcr
 import hashlib
-import os
 import json
+import os
 import re
 
-from aiohttp.web import Request, Response
+from aiohttp.web import Request
+from aiohttp.web import Response
+import requests
+import vcr
+
 
 PROVIDER_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
@@ -47,7 +49,7 @@ def normalize_multipart_body(body: bytes) -> str:
 
 def get_vcr(subdirectory: str, snapshot_server_cassettes_directory: str) -> vcr.VCR:
     cassette_dir = os.path.join(snapshot_server_cassettes_directory, subdirectory)
-    
+
     return vcr.VCR(
         cassette_library_dir=cassette_dir,
         record_mode="once",

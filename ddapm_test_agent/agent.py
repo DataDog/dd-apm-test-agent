@@ -45,6 +45,7 @@ from .checks import Checks
 from .checks import start_trace
 from .integration import Integration
 from .remoteconfig import RemoteConfigServer
+from .snapshot_server import proxy_request
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -63,7 +64,6 @@ from .tracerflare import TracerFlareEvent
 from .tracerflare import v1_decode as v1_tracerflare_decode
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
-from .snapshot_server import proxy_request
 
 
 class NoSuchSessionException(Exception):
@@ -215,8 +215,8 @@ def default_value_trace_results_summary():
 
 def default_snapshot_server_cassettes_directory():
     """Return the default directory for snapshot server cassettes.
-    
-    Returns "/snapshot-server-cassettes" if running in Docker, 
+
+    Returns "/snapshot-server-cassettes" if running in Docker,
     else "$PWD/snapshot-server-cassettes".
     """
     if os.path.exists("/.dockerenv") or os.environ.get("DOCKER_CONTAINER") == "true":
@@ -1216,7 +1216,11 @@ def make_app(
             web.get("/test/trace_check/summary", agent.get_trace_check_summary),
             web.get("/test/integrations/tested_versions", agent.handle_get_tested_integrations),
             web.post("/test/settings", agent.handle_settings),
-            web.route("*", "/snapshot-server/{path:.*}", lambda request: proxy_request(request, snapshot_server_cassettes_directory)),
+            web.route(
+                "*",
+                "/snapshot-server/{path:.*}",
+                lambda request: proxy_request(request, snapshot_server_cassettes_directory),
+            ),
         ]
     )
     checks = Checks(
