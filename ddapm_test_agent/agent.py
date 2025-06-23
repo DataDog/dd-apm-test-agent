@@ -221,8 +221,7 @@ def default_snapshot_server_cassettes_directory():
     """
     if os.path.exists("/.dockerenv") or os.environ.get("DOCKER_CONTAINER") == "true":
         return "/snapshot-server-cassettes"
-    else:
-        return os.path.join(os.getcwd(), "snapshot-server-cassettes")
+    return os.path.join(os.getcwd(), "snapshot-server-cassettes")
 
 
 @dataclass
