@@ -47,8 +47,8 @@ def normalize_multipart_body(body: bytes) -> str:
             return f"[binary_data_{hex_digest}]"
 
 
-def get_vcr(subdirectory: str, snapshot_server_cassettes_directory: str) -> vcr.VCR:
-    cassette_dir = os.path.join(snapshot_server_cassettes_directory, subdirectory)
+def get_vcr(subdirectory: str, vcr_cassettes_directory: str) -> vcr.VCR:
+    cassette_dir = os.path.join(vcr_cassettes_directory, subdirectory)
 
     return vcr.VCR(
         cassette_library_dir=cassette_dir,
@@ -72,7 +72,7 @@ def generate_cassette_name(path: str, method: str, body: bytes) -> str:
     return f"{safe_path}_{method.lower()}_{hash_hex}"
 
 
-async def proxy_request(request: Request, snapshot_server_cassettes_directory: str) -> Response:
+async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Response:
     path = request.match_info["path"]
 
     parts = path.split("/", 1)
@@ -89,7 +89,7 @@ async def proxy_request(request: Request, snapshot_server_cassettes_directory: s
 
     body_bytes = await request.read()
     cassette_name = generate_cassette_name(path, request.method, body_bytes)
-    with get_vcr(provider, snapshot_server_cassettes_directory).use_cassette(f"{cassette_name}.yaml"):
+    with get_vcr(provider, vcr_cassettes_directory).use_cassette(f"{cassette_name}.yaml"):
         oai_response = requests.request(
             method=request.method,
             url=target_url,

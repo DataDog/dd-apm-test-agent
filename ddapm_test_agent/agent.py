@@ -45,7 +45,7 @@ from .checks import Checks
 from .checks import start_trace
 from .integration import Integration
 from .remoteconfig import RemoteConfigServer
-from .snapshot_server import proxy_request
+from .vcr_proxy import proxy_request
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -211,17 +211,6 @@ def default_value_trace_results_summary():
         "Failed_Checks": 0,
         "Skipped_Checks": 0,
     }
-
-
-def default_snapshot_server_cassettes_directory():
-    """Return the default directory for snapshot server cassettes.
-
-    Returns "/snapshot-server-cassettes" if running in Docker,
-    else "$PWD/snapshot-server-cassettes".
-    """
-    if os.path.exists("/.dockerenv") or os.environ.get("DOCKER_CONTAINER") == "true":
-        return "/snapshot-server-cassettes"
-    return os.path.join(os.getcwd(), "snapshot-server-cassettes")
 
 
 @dataclass
@@ -1161,7 +1150,7 @@ def make_app(
     disable_error_responses: bool,
     snapshot_removed_attrs: List[str],
     snapshot_regex_placeholders: Dict[str, str],
-    snapshot_server_cassettes_directory: str,
+    vcr_cassettes_directory: str,
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
@@ -1217,8 +1206,8 @@ def make_app(
             web.post("/test/settings", agent.handle_settings),
             web.route(
                 "*",
-                "/snapshot-server/{path:.*}",
-                lambda request: proxy_request(request, snapshot_server_cassettes_directory),
+                "/vcr/{path:.*}",
+                lambda request: proxy_request(request, vcr_cassettes_directory),
             ),
         ]
     )
@@ -1245,7 +1234,7 @@ def make_app(
     app["disable_error_responses"] = disable_error_responses
     app["snapshot_removed_attrs"] = snapshot_removed_attrs
     app["snapshot_regex_placeholders"] = snapshot_regex_placeholders
-    app["snapshot_server_cassettes_directory"] = snapshot_server_cassettes_directory
+    app["vcr_cassettes_directory"] = vcr_cassettes_directory
     return app
 
 
@@ -1365,10 +1354,12 @@ def main(args: Optional[List[str]] = None) -> None:
         help=("Will change the test agent to send [200: Ok] responses instead of error responses back to the tracer."),
     )
     parser.add_argument(
-        "--snapshot-server-cassettes-directory",
+        "--vcr-cassettes-directory",
         type=str,
-        default=os.environ.get("SNAPSHOT_SERVER_CASSETTES_DIRECTORY", default_snapshot_server_cassettes_directory()),
-        help="Directory to read and store snapshot server cassettes.",
+        default=os.environ.get(
+            "VCR_CASSETTES_DIRECTORY", os.path.join(os.getcwd(), "vcr-cassettes")
+        ),
+        help="Directory to read and store third party API cassettes.",
     )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
@@ -1412,7 +1403,7 @@ def main(args: Optional[List[str]] = None) -> None:
         disable_error_responses=parsed_args.disable_error_responses,
         snapshot_removed_attrs=parsed_args.snapshot_removed_attrs,
         snapshot_regex_placeholders=parsed_args.snapshot_regex_placeholders,
-        snapshot_server_cassettes_directory=parsed_args.snapshot_server_cassettes_directory,
+        vcr_cassettes_directory=parsed_args.vcr_cassettes_directory,
     )
 
     web.run_app(app, sock=apm_sock, port=parsed_args.port)
