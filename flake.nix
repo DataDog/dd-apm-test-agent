@@ -57,6 +57,7 @@
               ddsketch
               requests
               yarl
+              vcrpy
             ];
             nativeBuildInputs = with python.pkgs; [
               setuptools
