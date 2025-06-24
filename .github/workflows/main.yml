@@ -33,3 +33,25 @@ jobs:
         run: pip install .[testing]
       - run: |
           riot run -p --pass-env ${{ matrix.python-version}} test
+  cassettes-size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check VCR cassettes size
+        run: |
+          CASSETTES_SIZE=$(du -sb vcr-cassettes/ 2>/dev/null | cut -f1 || echo "0")
+          
+          MAX_SIZE=2097152
+          
+          echo "VCR cassettes size: ${CASSETTES_SIZE} bytes ($((CASSETTES_SIZE / 1024 / 1024))MB)"
+          echo "Maximum allowed size: ${MAX_SIZE} bytes (2MB)"
+          
+          if [ "$CASSETTES_SIZE" -gt "$MAX_SIZE" ]; then
+            echo "❌ VCR cassettes directory is larger than 2MB!"
+            echo "Current size: $((CASSETTES_SIZE / 1024 / 1024))MB"
+            echo "Please review and clean up large cassette files."
+            exit 1
+          else
+            echo "✅ VCR cassettes directory size is within limits"
+          fi
+    
