@@ -35,6 +35,7 @@ setup(
         "requests",
         "typing_extensions",
         "yarl",
+        "vcrpy",
     ],
     tests_require=testing_deps,
     setup_requires=["setuptools_scm"],

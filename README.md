@@ -127,6 +127,44 @@ The traces are normalized and output in JSON to a file. The following transforma
 - The span meta and metrics maps if empty are excluded.
 
 
+### Recording 3rd party API requests
+
+The test agent can be configured to proxy requests to select provider API endpoints, capturing real requests to 
+the server and recording them to play back for future use. Currently, only OpenAI, Azure OpenAI, and DeepSeek are supported.
+
+These cassettes are recorded by default in the `vcr-cassettes` directory. However, this can be changed with the `--vcr-cassettes-directory` command-line option, or `VCR_CASSETTES_DIRECTORY` environment variable.
+
+The cassettes are matched based on the path, method, and body of the request. To mount a cassette directory when running the test agent in a Docker container, run the container with
+
+    docker run --rm\
+            -p 8126:8126\
+            -v $PWD/vcr-cassettes:/vcr-cassettes
+            ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
+
+Optionally specifying whatever mounted path is used for the cassettes directory. The test agent comes with a default set of cassettes for OpenAI, Azure OpenAI, and DeepSeek.
+
+#### Usage in clients
+
+To use this feature in your client, you can use the `/vcr/{provider}` endpoint to proxy requests to the provider API.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:9126/vcr/openai")
+```
+
+#### Adding new providers
+
+To add a new provider, add a supported provider in the `PROVIDER_BASE_URLS` dictionary in `ddapm_test_agent/vcr_proxy.py`, and change your tests or use case to use the new provider in the base url:
+
+```python
+base_url = "http://127.0.0.1:9126/vcr/{new_provider}"
+```
+
+And pass in a valid API key (if needed) in the way that provider expects.
+
+To redact api keys, modify the `filter_headers` list in the `get_vcr` function in `ddapm_test_agent/vcr_proxy.py`. This can be confirmed by viewing cassettes in the `vcr-cassettes` directory (or the otherwise specified directory), and verifying that any new cassettes do not contain the api key.
+
 ## Configuration
 
 The test agent can be configured via command-line options or via environment variables.

@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Provider snapshot server: Introduces a provider snapshot server that can be used to record and play back provider API requests. The first unique request is forwarded to the provider API, and the response is recorded to a cassette that can be played back later in the session, or at any time if persisted to the test agent.

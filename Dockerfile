@@ -8,6 +8,9 @@ ENV SNAPSHOT_DIR=/snapshots
 
 RUN apt update && apt install -y git curl
 
+ADD vcr-cassettes ./vcr-cassettes
+ENV VCR_CASSETTES_DIRECTORY=/vcr-cassettes
+
 RUN mkdir -p /src
 WORKDIR /src
 # Add only necessary files to speed up development builds
