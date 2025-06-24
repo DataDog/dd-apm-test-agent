@@ -45,7 +45,6 @@ from .checks import Checks
 from .checks import start_trace
 from .integration import Integration
 from .remoteconfig import RemoteConfigServer
-from .vcr_proxy import proxy_request
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -64,6 +63,7 @@ from .tracerflare import TracerFlareEvent
 from .tracerflare import v1_decode as v1_tracerflare_decode
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
+from .vcr_proxy import proxy_request
 
 
 class NoSuchSessionException(Exception):
@@ -1356,9 +1356,7 @@ def main(args: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--vcr-cassettes-directory",
         type=str,
-        default=os.environ.get(
-            "VCR_CASSETTES_DIRECTORY", os.path.join(os.getcwd(), "vcr-cassettes")
-        ),
+        default=os.environ.get("VCR_CASSETTES_DIRECTORY", os.path.join(os.getcwd(), "vcr-cassettes")),
         help="Directory to read and store third party API cassettes.",
     )
     parsed_args = parser.parse_args(args=args)
