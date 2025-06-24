@@ -1,0 +1,82 @@
+interactions:
+- request:
+    body: '{"model":"gpt-3.5-turbo-instruct","messages":[{"role":"system","content":"You
+      are a helpful assistant."},{"role":"user","content":"Hello, OpenAI!"}],"temperature":0.5,"stream":false,"max_tokens":100,"n":1,"user":"dd-trace-test"}'
+    headers:
+      Accept:
+      - application/json, text/plain, */*
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '228'
+      Content-Type:
+      - application/json
+      User-Agent:
+      - OpenAI/NodeJS/3.3.0
+    method: POST
+    uri: https://api.openai.com/v1/chat/completions
+  response:
+    body:
+      string: "{\n  \"error\": {\n    \"message\": \"This is not a chat model and
+        thus not supported in the v1/chat/completions endpoint. Did you mean to use
+        v1/completions?\",\n    \"type\": \"invalid_request_error\",\n    \"param\":
+        \"model\",\n    \"code\": null\n  }\n}"
+    headers:
+      CF-RAY:
+      - 952d64efa8ae0f4b-EWR
+      Connection:
+      - keep-alive
+      Content-Encoding:
+      - gzip
+      Content-Type:
+      - application/json
+      Date:
+      - Fri, 20 Jun 2025 18:40:23 GMT
+      Server:
+      - cloudflare
+      Set-Cookie:
+      - __cf_bm=fBNcGUfek2z2W4oYr_OiBzbWupBkMn6yJDTUEsVK83g-1750444823-1.0.1.1-er3MbB1om9ZTEex6ZgPA2aY_f4pw5ZfHZsBE7NArGzLIJiHEMCYHYLidsoWkdvtjvnygkxTi9qpppP50rgvXOF2iwlqjS.lBpyCuYdCdICE;
+        path=/; expires=Fri, 20-Jun-25 19:10:23 GMT; domain=.api.openai.com; HttpOnly;
+        Secure; SameSite=None
+      - _cfuvid=5HDHMd8Uhua8g6XUU8tLL86azHv_b5POVNA0rm7.nPY-1750444823058-0.0.1.1-604800000;
+        path=/; domain=.api.openai.com; HttpOnly; Secure; SameSite=None
+      Transfer-Encoding:
+      - chunked
+      X-Content-Type-Options:
+      - nosniff
+      access-control-expose-headers:
+      - X-Request-ID
+      alt-svc:
+      - h3=":443"; ma=86400
+      cf-cache-status:
+      - DYNAMIC
+      openai-organization:
+      - datadog-staging
+      openai-processing-ms:
+      - '6'
+      openai-version:
+      - '2020-10-01'
+      strict-transport-security:
+      - max-age=31536000; includeSubDomains; preload
+      x-envoy-upstream-service-time:
+      - '8'
+      x-ratelimit-limit-requests:
+      - '3500'
+      x-ratelimit-limit-tokens:
+      - '90000'
+      x-ratelimit-remaining-requests:
+      - '3499'
+      x-ratelimit-remaining-tokens:
+      - '89985'
+      x-ratelimit-reset-requests:
+      - 17ms
+      x-ratelimit-reset-tokens:
+      - 9ms
+      x-request-id:
+      - req_1ec17d77b9aae56ba87a06300b83c29c
+    status:
+      code: 404
+      message: Not Found
+version: 1
