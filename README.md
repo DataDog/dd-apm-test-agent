@@ -127,18 +127,18 @@ The traces are normalized and output in JSON to a file. The following transforma
 - The span meta and metrics maps if empty are excluded.
 
 
-### Proxying provider API requests
+### Recording 3rd party API requests
 
 The test agent can be configured to proxy requests to select provider API endpoints, capturing real requests to 
 the server and recording them to play back for future use. Currently, only OpenAI, Azure OpenAI, and DeepSeek are supported.
 
-These cassettes are recorded by default in the `snapshot-server-cassettes` directory. However, this can be changed with the `--snapshot-server-cassettes-directory` command-line option, or `SNAPSHOT_SERVER_CASSETTES_DIRECTORY` environment variable.
+These cassettes are recorded by default in the `vcr-cassettes` directory. However, this can be changed with the `--vcr-cassettes-directory` command-line option, or `VCR_CASSETTES_DIRECTORY` environment variable.
 
 The cassettes are matched based on the path, method, and body of the request. To mount a cassette directory when running the test agent in a Docker container, run the container with
 
     docker run --rm\
             -p 8126:8126\
-            -v $PWD/snapshot-server-cassettes:/snapshot-server-cassettes
+            -v $PWD/vcr-cassettes:/vcr-cassettes
             ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
 
 Optionally specifying whatever mounted path is used for the cassettes directory. The test agent comes with a default set of cassettes for OpenAI, Azure OpenAI, and DeepSeek.
