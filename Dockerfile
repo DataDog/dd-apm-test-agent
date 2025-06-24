@@ -8,7 +8,8 @@ ENV SNAPSHOT_DIR=/snapshots
 
 RUN apt update && apt install -y git curl
 
-ADD snapshot-server-cassettes ./snapshot-server-cassettes
+ADD vcr-cassettes ./vcr-cassettes
+ENV VCR_CASSETTES_DIRECTORY=/vcr-cassettes
 
 RUN mkdir -p /src
 WORKDIR /src
