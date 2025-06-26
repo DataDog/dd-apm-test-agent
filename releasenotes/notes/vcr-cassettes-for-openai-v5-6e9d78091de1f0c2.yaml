@@ -1,4 +1,4 @@
 ---
-features:
+fixes:
   - |
-    Provider VCR: Adds normalization support for a different form data boundary format used by the Node.js runtime. Additionally, adds cassettes using this support.
+    Provider VCR: Fixes normalization support for a different form data boundary format used by the Node.js runtime.
