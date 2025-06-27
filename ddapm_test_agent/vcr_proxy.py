@@ -21,6 +21,10 @@ NORMALIZERS = [
         r"--form-data-boundary-[^\r\n]+",
         "--form-data-boundary-normalized",
     ),  # openai file types
+    (
+        r"------formdata-undici-[^\r\n]+",
+        "--form-data-boundary-normalized",
+    ),  # openai file types for undici (node.js)
 ]
 
 
