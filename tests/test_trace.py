@@ -66,7 +66,9 @@ def test_trace_chunk():
                                     "attributes": {
                                         "b": {
                                             "type": 4,
-                                            "array_value": [{"type": 2, "int_value": 2}, {"type": 2, "int_value": 3}],
+                                            "array_value": {
+                                                "values": [{"type": 2, "int_value": 2}, {"type": 2, "int_value": 3}],
+                                            },
                                         }
                                     },
                                 }
@@ -148,10 +150,12 @@ def test_decode_v04(content_type, payload):
                                     "attributes": {
                                         "b": {
                                             "type": 4,
-                                            "array_value": [
-                                                {"type": 2, "int_value": 2},
-                                                {"type": 0, "string_value": "3"},
-                                            ],
+                                            "array_value": {
+                                                "values": [
+                                                    {"type": 2, "int_value": 2},
+                                                    {"type": 0, "string_value": "3"},
+                                                ],
+                                            },
                                         }
                                     },
                                 }

@@ -261,9 +261,12 @@ def verify_span(d: Any) -> Span:
                             ), f"Expected 'double_value' to be of type: 'float', got: {type(attr['double_value'])}"
                         elif attr["type"] == 4:
                             assert isinstance(
-                                attr["array_value"], list
-                            ), f"Expected 'array_value' to be of type: 'list', got: {type(attr['array_value'])}"
-                            array = attr["array_value"]
+                                attr["array_value"], dict
+                            ), f"Expected 'array_value' to be of type: 'dict', got: {type(attr['array_value'])}"
+                            assert (
+                                len(attr["array_value"]) == 1 and attr["array_value"].get("values") is not None
+                            ), f"Expected 'array_value' to contain exactly one key values, got keys: {' ,'.join(attr['array_value'].keys())}"
+                            array = attr["array_value"]["values"]
                             if array:
                                 first_type = array[0]["type"]
                                 i = None
@@ -433,10 +436,10 @@ def copy_span_events(s: SpanEvent) -> SpanEvent:
         # Copy arrays inside attributes
         for k, v in attributes.items():
             if isinstance(v, dict) and v["type"] == "array_value":
-                array = v["array_value"]
+                array = v["array_value"]["values"]
 
                 value = v.copy()
-                value["array_value"] = array.copy()
+                value["array_value"] = {"values": array.copy()}
 
                 attributes[k] = value
         copy["attributes"] = attributes
@@ -543,17 +546,17 @@ def add_span_event(
             elif isinstance(v, float):
                 new_attributes[k] = {"type": 3, "double_value": v}
             elif isinstance(v, list):
-                array_value: List[Dict[str, Any]] = []
+                array_value: Dict[str, List[Dict[str, Any]]] = {"values": []}
                 new_attributes[k] = {"type": 4, "array_value": array_value}
                 for i in v:
                     if isinstance(i, str):
-                        array_value.append({"type": 0, "string_value": i})
+                        array_value["values"].append({"type": 0, "string_value": i})
                     elif isinstance(i, bool):
-                        array_value.append({"type": 1, "bool_value": i})
+                        array_value["values"].append({"type": 1, "bool_value": i})
                     elif isinstance(i, int):
-                        array_value.append({"type": 2, "int_value": i})
+                        array_value["values"].append({"type": 2, "int_value": i})
                     elif isinstance(i, float):
-                        array_value.append({"type": 3, "double_value": i})
+                        array_value["values"].append({"type": 3, "double_value": i})
                     else:
                         raise ValueError(f"Unsupported span event attribute type {type(i)} for: {k}={v}")
             else:

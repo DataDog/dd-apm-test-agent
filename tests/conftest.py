@@ -180,7 +180,9 @@ def v04_reference_http_trace_payload_data_raw() -> List[Trace]:
                                 "string": {"type": 0, "string_value": "foo"},
                                 "array": {
                                     "type": 4,
-                                    "array_value": [{"type": 2, "int_value": 1}, {"type": 2, "int_value": 2}],
+                                    "array_value": {
+                                        "values": [{"type": 2, "int_value": 1}, {"type": 2, "int_value": 2}],
+                                    },
                                 },
                             },
                         },
