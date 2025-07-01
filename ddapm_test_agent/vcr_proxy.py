@@ -13,6 +13,7 @@ PROVIDER_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
     "azure-openai": "https://dd.openai.azure.com/",
     "deepseek": "https://api.deepseek.com/",
+    "anthropic": "https://api.anthropic.com/",
 }
 
 NORMALIZERS = [
@@ -20,6 +21,10 @@ NORMALIZERS = [
         r"--form-data-boundary-[^\r\n]+",
         "--form-data-boundary-normalized",
     ),  # openai file types
+    (
+        r"------formdata-undici-[^\r\n]+",
+        "--form-data-boundary-normalized",
+    ),  # openai file types for undici (node.js)
 ]
 
 
