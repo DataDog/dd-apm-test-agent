@@ -1,0 +1,279 @@
+interactions:
+- request:
+    body: '{"input":"hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello hello hello hello hello hello hello
+      hello hello hello hello hello hello hello  count from 1 to 3","max_output_tokens":100,"model":"gpt-4o","stream":true,"temperature":0.1}'
+    headers:
+      ? !!python/object/new:multidict._multidict.istr
+      - Accept
+      : - application/json
+      ? !!python/object/new:multidict._multidict.istr
+      - Accept-Encoding
+      : - gzip, deflate
+      ? !!python/object/new:multidict._multidict.istr
+      - Connection
+      : - keep-alive
+      Content-Length:
+      - '9103'
+      ? !!python/object/new:multidict._multidict.istr
+      - Content-Type
+      : - application/json
+      ? !!python/object/new:multidict._multidict.istr
+      - User-Agent
+      : - OpenAI/Python 1.91.0
+      X-Stainless-Arch:
+      - arm64
+      X-Stainless-Async:
+      - 'false'
+      X-Stainless-Lang:
+      - python
+      X-Stainless-OS:
+      - MacOS
+      X-Stainless-Package-Version:
+      - 1.91.0
+      X-Stainless-Runtime:
+      - CPython
+      X-Stainless-Runtime-Version:
+      - 3.10.13
+      x-stainless-read-timeout:
+      - '600'
+      x-stainless-retry-count:
+      - '0'
+    method: POST
+    uri: https://api.openai.com/v1/responses
+  response:
+    body:
+      string: 'event: response.created
+
+        data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_68659e7d3e4081929b0ac6fcbbad6eac01db15ac569cbd45","object":"response","created_at":1751490173,"status":"in_progress","background":false,"error":null,"incomplete_details":null,"instructions":null,"max_output_tokens":100,"max_tool_calls":null,"model":"gpt-4o-2024-08-06","output":[],"parallel_tool_calls":true,"previous_response_id":null,"reasoning":{"effort":null,"summary":null},"service_tier":"auto","store":false,"temperature":0.1,"text":{"format":{"type":"text"}},"tool_choice":"auto","tools":[],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}}}
+
+
+        event: response.in_progress
+
+        data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"resp_68659e7d3e4081929b0ac6fcbbad6eac01db15ac569cbd45","object":"response","created_at":1751490173,"status":"in_progress","background":false,"error":null,"incomplete_details":null,"instructions":null,"max_output_tokens":100,"max_tool_calls":null,"model":"gpt-4o-2024-08-06","output":[],"parallel_tool_calls":true,"previous_response_id":null,"reasoning":{"effort":null,"summary":null},"service_tier":"auto","store":false,"temperature":0.1,"text":{"format":{"type":"text"}},"tool_choice":"auto","tools":[],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}}}
+
+
+        event: response.output_item.added
+
+        data: {"type":"response.output_item.added","sequence_number":2,"output_index":0,"item":{"id":"msg_68659e7d9158819294f1972497bfb5ff01db15ac569cbd45","type":"message","status":"in_progress","content":[],"role":"assistant"}}
+
+
+        event: response.content_part.added
+
+        data: {"type":"response.content_part.added","sequence_number":3,"item_id":"msg_68659e7d9158819294f1972497bfb5ff01db15ac569cbd45","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}
+
+
+        event: response.output_text.delta
+
+        data: {"type":"response.output_text.delta","sequence_number":4,"item_id":"msg_68659e7d9158819294f1972497bfb5ff01db15ac569cbd45","output_index":0,"content_index":0,"delta":"1","logprobs":[]}
+
+
+        event: response.output_text.delta
+
+        data: {"type":"response.output_text.delta","sequence_number":5,"item_id":"msg_68659e7d9158819294f1972497bfb5ff01db15ac569cbd45","output_index":0,"content_index":0,"delta":",","logprobs":[]}
+
+
+        event: response.output_text.delta
+
+        data: {"type":"response.output_text.delta","sequence_number":6,"item_id":"msg_68659e7d9158819294f1972497bfb5ff01db15ac569cbd45","output_index":0,"content_index":0,"delta":"
+        ","logprobs":[]}
+
+
+        event: response.output_text.delta
+
+        data: {"type":"response.output_text.delta","sequence_number":7,"item_id":"msg_68659e7d9158819294f1972497bfb5ff01db15ac569cbd45","output_index":0,"content_index":0,"delta":"2","logprobs":[]}
+
+
+        event: response.output_text.delta
+
+        data: {"type":"response.output_text.delta","sequence_number":8,"item_id":"msg_68659e7d9158819294f1972497bfb5ff01db15ac569cbd45","output_index":0,"content_index":0,"delta":",","logprobs":[]}
+
+
+        event: response.output_text.delta
+
+        data: {"type":"response.output_text.delta","sequence_number":9,"item_id":"msg_68659e7d9158819294f1972497bfb5ff01db15ac569cbd45","output_index":0,"content_index":0,"delta":"
+        ","logprobs":[]}
+
+
+        event: response.output_text.delta
+
+        data: {"type":"response.output_text.delta","sequence_number":10,"item_id":"msg_68659e7d9158819294f1972497bfb5ff01db15ac569cbd45","output_index":0,"content_index":0,"delta":"3","logprobs":[]}
+
+
+        event: response.output_text.done
+
+        data: {"type":"response.output_text.done","sequence_number":11,"item_id":"msg_68659e7d9158819294f1972497bfb5ff01db15ac569cbd45","output_index":0,"content_index":0,"text":"1,
+        2, 3","logprobs":[]}
+
+
+        event: response.content_part.done
+
+        data: {"type":"response.content_part.done","sequence_number":12,"item_id":"msg_68659e7d9158819294f1972497bfb5ff01db15ac569cbd45","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":"1,
+        2, 3"}}
+
+
+        event: response.output_item.done
+
+        data: {"type":"response.output_item.done","sequence_number":13,"output_index":0,"item":{"id":"msg_68659e7d9158819294f1972497bfb5ff01db15ac569cbd45","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"1,
+        2, 3"}],"role":"assistant"}}
+
+
+        event: response.completed
+
+        data: {"type":"response.completed","sequence_number":14,"response":{"id":"resp_68659e7d3e4081929b0ac6fcbbad6eac01db15ac569cbd45","object":"response","created_at":1751490173,"status":"completed","background":false,"error":null,"incomplete_details":null,"instructions":null,"max_output_tokens":100,"max_tool_calls":null,"model":"gpt-4o-2024-08-06","output":[{"id":"msg_68659e7d9158819294f1972497bfb5ff01db15ac569cbd45","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"1,
+        2, 3"}],"role":"assistant"}],"parallel_tool_calls":true,"previous_response_id":null,"reasoning":{"effort":null,"summary":null},"service_tier":"default","store":false,"temperature":0.1,"text":{"format":{"type":"text"}},"tool_choice":"auto","tools":[],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":{"input_tokens":1515,"input_tokens_details":{"cached_tokens":0},"output_tokens":8,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":1523},"user":null,"metadata":{}}}
+
+
+        '
+    headers:
+      CF-RAY:
+      - 9591162e8d5bf5f8-EWR
+      Connection:
+      - keep-alive
+      Content-Type:
+      - text/event-stream; charset=utf-8
+      Date:
+      - Wed, 02 Jul 2025 21:02:53 GMT
+      Server:
+      - cloudflare
+      Set-Cookie:
+      - __cf_bm=ZHcFVpSpUUeIhJnNBsi0kFHCEnNEbwYY2Rcc4NKu.LU-1751490173-1.0.1.1-ZJnujKeWUMi5WuFGdBvTM9t9GMv2Pu44lRyqO3pgQvKAU3pdCePUq.yEtoPVty0U00oaZbiJgH2Y4jN8e_g57rIuY.iGdOAm6TDNTi1OZsY;
+        path=/; expires=Wed, 02-Jul-25 21:32:53 GMT; domain=.api.openai.com; HttpOnly;
+        Secure; SameSite=None
+      - _cfuvid=7OXPNiVnkmpLmndyFvhus8XxF7KShr2eLnb4hsUhTTg-1751490173281-0.0.1.1-604800000;
+        path=/; domain=.api.openai.com; HttpOnly; Secure; SameSite=None
+      Transfer-Encoding:
+      - chunked
+      X-Content-Type-Options:
+      - nosniff
+      alt-svc:
+      - h3=":443"; ma=86400
+      cf-cache-status:
+      - DYNAMIC
+      openai-organization:
+      - datadog-staging
+      openai-processing-ms:
+      - '32'
+      openai-version:
+      - '2020-10-01'
+      strict-transport-security:
+      - max-age=31536000; includeSubDomains; preload
+      x-request-id:
+      - req_869045471ab4f57d4f71a4c2b230c8a0
+    status:
+      code: 200
+      message: OK
+version: 1
