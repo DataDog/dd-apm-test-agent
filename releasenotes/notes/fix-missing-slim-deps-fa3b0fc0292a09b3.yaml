@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Ensures ``runc`` and ``containerd`` are installed in the docker image.

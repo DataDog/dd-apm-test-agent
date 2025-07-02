@@ -1,26 +1,24 @@
 FROM python:3.12-slim
 
+WORKDIR /src
 EXPOSE 8126
 
 ENV SNAPSHOT_CI=1
 ENV LOG_LEVEL=INFO
 ENV SNAPSHOT_DIR=/snapshots
-
-RUN apt update && apt install -y git curl
-
-ADD vcr-cassettes ./vcr-cassettes
 ENV VCR_CASSETTES_DIRECTORY=/vcr-cassettes
 
-RUN mkdir -p /src
-WORKDIR /src
+RUN apt update && \
+    apt install -y --no-install-recommends git curl runc containerd && \
+    rm -rf /var/lib/apt/lists/*
+
+ADD vcr-cassettes /vcr-cassettes
+
 # Add only necessary files to speed up development builds
 ADD README.md setup.py test_deps.txt ./
 ADD ddapm_test_agent ./ddapm_test_agent
 ADD .git ./.git
-RUN pip install /src
-
-# Cleanup
-RUN apt remove -y git
-RUN rm -rf /var/lib/apt/lists/* /root/.cache/pip /tmp/* /var/tmp/* /src
+RUN pip install /src && \
+    rm -rf /root/.cache/pip
 
 CMD ["ddapm-test-agent"]
