@@ -1,0 +1,4 @@
+---
+other:
+  - |
+    Add OpenAI vcr cassettes for responses api prompt caching, responses api streaming prompt caching, and chat completions with tool calls.
