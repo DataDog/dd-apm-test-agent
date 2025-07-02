@@ -1,0 +1,125 @@
+interactions:
+- request:
+    body: '{"messages": [{"role": "user", "content": "\n    David Nguyen is a sophomore
+      majoring in computer science at Stanford University and has a GPA of 3.8.\n    David
+      is an active member of the university''s Chess Club and the South Asian Student
+      Association.\n    He hopes to pursue a career in software engineering after
+      graduating.\n    "}], "model": "gpt-3.5-turbo", "tools": [{"type": "function",
+      "function": {"name": "extract_student_info", "description": "Get the student
+      information from the body of the input text", "parameters": {"type": "object",
+      "properties": {"name": {"type": "string", "description": "Name of the person"},
+      "major": {"type": "string", "description": "Major subject."}, "school": {"type":
+      "string", "description": "The university name."}, "grades": {"type": "integer",
+      "description": "GPA of the student."}, "clubs": {"type": "array", "description":
+      "School clubs for extracurricular activities. ", "items": {"type": "string",
+      "description": "Name of School Club"}}}}}}], "user": "ddtrace-test"}'
+    headers:
+      ? !!python/object/new:multidict._multidict.istr
+      - Accept
+      : - application/json
+      ? !!python/object/new:multidict._multidict.istr
+      - Accept-Encoding
+      : - gzip, deflate
+      ? !!python/object/new:multidict._multidict.istr
+      - Connection
+      : - keep-alive
+      Content-Length:
+      - '1019'
+      ? !!python/object/new:multidict._multidict.istr
+      - Content-Type
+      : - application/json
+      ? !!python/object/new:multidict._multidict.istr
+      - User-Agent
+      : - OpenAI/Python 1.30.1
+      X-Stainless-Arch:
+      - arm64
+      X-Stainless-Async:
+      - 'false'
+      X-Stainless-Lang:
+      - python
+      X-Stainless-OS:
+      - MacOS
+      X-Stainless-Package-Version:
+      - 1.30.1
+      X-Stainless-Runtime:
+      - CPython
+      X-Stainless-Runtime-Version:
+      - 3.10.13
+    method: POST
+    uri: https://api.openai.com/v1/chat/completions
+  response:
+    body:
+      string: "{\n  \"id\": \"chatcmpl-BoxWCjmDlewUb2qBJa9OZuE7LzBAr\",\n  \"object\":
+        \"chat.completion\",\n  \"created\": 1751484888,\n  \"model\": \"gpt-3.5-turbo-0125\",\n
+        \ \"choices\": [\n    {\n      \"index\": 0,\n      \"message\": {\n        \"role\":
+        \"assistant\",\n        \"content\": null,\n        \"tool_calls\": [\n          {\n
+        \           \"id\": \"call_AX6wGDrtP0zqy2121BVX6bcy\",\n            \"type\":
+        \"function\",\n            \"function\": {\n              \"name\": \"extract_student_info\",\n
+        \             \"arguments\": \"{\\\"name\\\":\\\"David Nguyen\\\",\\\"major\\\":\\\"Computer
+        Science\\\",\\\"school\\\":\\\"Stanford University\\\",\\\"grades\\\":3.8,\\\"clubs\\\":[\\\"Chess
+        Club\\\",\\\"South Asian Student Association\\\"]}\"\n            }\n          }\n
+        \       ],\n        \"refusal\": null,\n        \"annotations\": []\n      },\n
+        \     \"logprobs\": null,\n      \"finish_reason\": \"tool_calls\"\n    }\n
+        \ ],\n  \"usage\": {\n    \"prompt_tokens\": 166,\n    \"completion_tokens\":
+        43,\n    \"total_tokens\": 209,\n    \"prompt_tokens_details\": {\n      \"cached_tokens\":
+        0,\n      \"audio_tokens\": 0\n    },\n    \"completion_tokens_details\":
+        {\n      \"reasoning_tokens\": 0,\n      \"audio_tokens\": 0,\n      \"accepted_prediction_tokens\":
+        0,\n      \"rejected_prediction_tokens\": 0\n    }\n  },\n  \"service_tier\":
+        \"default\",\n  \"system_fingerprint\": null\n}\n"
+    headers:
+      CF-RAY:
+      - 959095254900ddb6-EWR
+      Connection:
+      - keep-alive
+      Content-Encoding:
+      - gzip
+      Content-Type:
+      - application/json
+      Date:
+      - Wed, 02 Jul 2025 19:34:49 GMT
+      Server:
+      - cloudflare
+      Set-Cookie:
+      - __cf_bm=kGWIveGgZM9P_vDdNSqWJ5z38dtLy8ODIcgnfNitcjA-1751484889-1.0.1.1-I_8mYv9YvKimJio4OJe9tZxFIa75uuZckI5URNB0orGrf8ni5EnwOTOCnHs_KXc9Hn4q9mLW9GKlHDTajBSM4RgZHsY_m20CwA1jHDShN6c;
+        path=/; expires=Wed, 02-Jul-25 20:04:49 GMT; domain=.api.openai.com; HttpOnly;
+        Secure; SameSite=None
+      - _cfuvid=hWEbYpUUTKwG6DnSAFyZOeq1jvddTjufJcE.uOuYHh4-1751484889167-0.0.1.1-604800000;
+        path=/; domain=.api.openai.com; HttpOnly; Secure; SameSite=None
+      Transfer-Encoding:
+      - chunked
+      X-Content-Type-Options:
+      - nosniff
+      access-control-expose-headers:
+      - X-Request-ID
+      alt-svc:
+      - h3=":443"; ma=86400
+      cf-cache-status:
+      - DYNAMIC
+      openai-organization:
+      - datadog-staging
+      openai-processing-ms:
+      - '1026'
+      openai-version:
+      - '2020-10-01'
+      strict-transport-security:
+      - max-age=31536000; includeSubDomains; preload
+      x-envoy-upstream-service-time:
+      - '1031'
+      x-ratelimit-limit-requests:
+      - '10000'
+      x-ratelimit-limit-tokens:
+      - '50000000'
+      x-ratelimit-remaining-requests:
+      - '9999'
+      x-ratelimit-remaining-tokens:
+      - '49999925'
+      x-ratelimit-reset-requests:
+      - 6ms
+      x-ratelimit-reset-tokens:
+      - 0s
+      x-request-id:
+      - req_28132c14abf430b2a760d62b7d93d08f
+    status:
+      code: 200
+      message: OK
+version: 1
