@@ -14,6 +14,7 @@ PROVIDER_BASE_URLS = {
     "azure-openai": "https://dd.openai.azure.com/",
     "deepseek": "https://api.deepseek.com/",
     "anthropic": "https://api.anthropic.com/",
+    "datadog": "https://api.datadoghq.com/",
 }
 
 NORMALIZERS = [
@@ -59,7 +60,14 @@ def get_vcr(subdirectory: str, vcr_cassettes_directory: str) -> vcr.VCR:
         cassette_library_dir=cassette_dir,
         record_mode="once",
         match_on=["path", "method"],
-        filter_headers=["authorization", "OpenAI-Organization", "api-key", "x-api-key"],
+        filter_headers=[
+            "authorization",
+            "OpenAI-Organization",
+            "api-key",
+            "x-api-key",
+            "dd-api-key",
+            "dd-application-key",
+        ],
     )
 
 
