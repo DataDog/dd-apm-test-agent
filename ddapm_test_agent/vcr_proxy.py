@@ -79,6 +79,8 @@ def generate_cassette_name(path: str, method: str, body: bytes) -> str:
 
 async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Response:
     path = request.match_info["path"]
+    if request.query_string:
+        path = path + "?" + request.query_string
 
     parts = path.split("/", 1)
     if len(parts) != 2:
