@@ -70,7 +70,7 @@ from .vcr_proxy import proxy_request
 class NoSuchSessionException(Exception):
     pass
 
-initialize(statsd_host="localhost", statsd_port=8125)
+initialize(statsd_host="ddagent", statsd_port=8125)
 
 _Handler = Callable[[Request], Awaitable[web.Response]]
 
