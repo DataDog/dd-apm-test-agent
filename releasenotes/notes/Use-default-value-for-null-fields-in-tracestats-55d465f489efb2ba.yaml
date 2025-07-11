@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Use default value for null fields in tracestats. This aligns with the trace agent behaviors.
