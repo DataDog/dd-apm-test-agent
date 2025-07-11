@@ -1,5 +1,4 @@
 from typing import List
-from typing import Optional
 from typing import TypedDict
 
 from ddsketch import DDSketch
@@ -13,8 +12,8 @@ import msgpack
 class StatsAggr(TypedDict):
     Name: str
     Resource: str
-    Service: Optional[str]
-    Type: Optional[str]
+    Service: str
+    Type: str
     HTTPStatusCode: int
     Synthetics: bool
     Hits: int
@@ -32,9 +31,9 @@ class StatsBucket(TypedDict):
 
 
 class v06StatsPayload(TypedDict):
-    Hostname: Optional[str]
-    Env: Optional[str]
-    Version: Optional[str]
+    Hostname: str
+    Env: str
+    Version: str
     Stats: List[StatsBucket]
 
 
@@ -47,9 +46,9 @@ def decode_v06(data: bytes) -> v06StatsPayload:
             stat = StatsAggr(
                 Name=raw_stats["Name"],
                 Resource=raw_stats["Resource"],
-                Service=raw_stats.get("Service"),
-                Type=raw_stats.get("Type"),
-                HTTPStatusCode=raw_stats.get("HTTPStatusCode"),
+                Service=raw_stats.get("Service") or "",
+                Type=raw_stats.get("Type") or "",
+                HTTPStatusCode=raw_stats.get("HTTPStatusCode") or 0,
                 Synthetics=raw_stats["Synthetics"],
                 Hits=raw_stats["Hits"],
                 TopLevelHits=raw_stats["TopLevelHits"],
@@ -68,8 +67,8 @@ def decode_v06(data: bytes) -> v06StatsPayload:
         stats_buckets.append(bucket)
 
     return v06StatsPayload(
-        Hostname=payload.get("Hostname"),
-        Env=payload.get("Env"),
-        Version=payload.get("Version"),
+        Hostname=payload.get("Hostname", ""),
+        Env=payload.get("Env", ""),
+        Version=payload.get("Version", ""),
         Stats=stats_buckets,
     )
