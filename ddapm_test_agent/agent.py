@@ -5,6 +5,7 @@ from collections import OrderedDict
 from collections import defaultdict
 from dataclasses import dataclass
 from dataclasses import field
+from datadog import initialize, statsd
 import json
 import logging
 import os
@@ -69,6 +70,7 @@ from .vcr_proxy import proxy_request
 class NoSuchSessionException(Exception):
     pass
 
+initialize(statsd_host="localhost", statsd_port=8125)
 
 _Handler = Callable[[Request], Awaitable[web.Response]]
 
@@ -498,6 +500,14 @@ class Agent:
                     req["tracer_version"] = data.get("tracer_version", None)
                     req["tracer_language"] = data.get("tracer_language", None)
                     integration_requests.append(req)
+
+                    statsd.increment('apm.integrations.supported_version', 1, tags=[
+                        'integration_version:{}'.format(req["integration"].integration_version),
+                        'integration_name:{}'.format(req["integration"].integration_name),
+                        'tracer_version:{}'.format(req["tracer_version"]),
+                        'language_name:{}'.format(req["tracer_language"]),
+                        'dependency_name:{}'.format(req["integration"].dependency_name)
+                    ])
                 elif include_sent_integrations:
                     integration_requests.append(req)
             # check if integration data was provided in the trace request instead
@@ -526,6 +536,14 @@ class Agent:
                     elif req.headers.get("datadog-meta-lang", None):
                         req["tracer_language"] = req.headers.get("datadog-meta-lang")
                     integration_requests.append(req)
+
+                    statsd.increment('apm.integrations.supported_version', 1, tags=[
+                        'integration_version:{}'.format(req["integration"].integration_version),
+                        'integration_name:{}'.format(req["integration"].integration_name),
+                        'tracer_version:{}'.format(req["tracer_version"]),
+                        'language_name:{}'.format(req["tracer_language"]),
+                        'dependency_name:{}'.format(req["integration"].dependency_name)
+                    ])
                 elif include_sent_integrations:
                     integration_requests.append(req)
         return integration_requests
@@ -635,6 +653,10 @@ class Agent:
 
     async def handle_put_tested_integrations(self, request: Request) -> web.Response:
         # we need to store the request manually since this is not a real DD agent endpoint
+
+        log.info("handle_put_tested_integrations")
+        log.info(request)
+
         await self._store_request(request)
         return web.HTTPOk()
 
@@ -645,6 +667,9 @@ class Agent:
         seen_integrations = set()
         req_headers = {}
         token = _session_token(request)
+
+        log.info("handle_get_tested_integrations")
+        log.info(request)
 
         # get all requests associated with an integration
         reqs = await self._integration_requests_by_session(token=token, include_sent_integrations=True)
@@ -674,6 +699,16 @@ class Agent:
                 )
                 # update seen integrations to skip this specific integration and version next loop from another request
                 seen_integrations.add(f"{integration.integration_name}@{integration.integration_version}")
+
+                # create a custom datadog dogstatsd metric for the integration version, tracer version, integration name, and dependency name
+                statsd.increment('apm.integrations.supported_version', 1, tags=[
+                    'integration_version:{}'.format(integration.integration_version),
+                    'integration_name:{}'.format(integration.integration_name),
+                    'tracer_version:{}'.format(req["tracer_version"]),
+                    'language_name:{}'.format(req["tracer_language"]),
+                    'dependency_name:{}'.format(integration.dependency_name)
+                ])
+
                 # given that we will mainly see one integration per call, set a header for the calling lib to know the
                 # integration name
                 req_headers["file-name"] = integration.integration_name

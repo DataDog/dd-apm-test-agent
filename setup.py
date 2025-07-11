@@ -30,8 +30,10 @@ setup(
     python_requires=">=3.8",
     install_requires=[
         "aiohttp",
+        "datadog",
         "ddsketch[serialization]",
         "msgpack",
+        "statsd",
         "requests",
         "typing_extensions",
         "yarl",
