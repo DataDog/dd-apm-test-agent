@@ -2,3 +2,6 @@
 features:
   - |
     Use default value for null fields in tracestats. This aligns with the trace agent behaviors.
+upgrade:
+  - |
+    BREAKING CHANGE: Test snapshots must be updated as field comparisons on stats payload will fail between "" and None values.
