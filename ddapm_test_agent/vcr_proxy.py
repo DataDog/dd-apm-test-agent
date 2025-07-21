@@ -9,9 +9,10 @@ from aiohttp.web import Response
 import requests
 import vcr
 
+
 def url_path_join(base_url: str, path: str) -> str:
     """Join a base URL with a path, handling slashes automatically."""
-    return urljoin(base_url.rstrip('/') + '/', path.lstrip('/'))
+    return urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
 
 
 PROVIDER_BASE_URLS = {
@@ -20,7 +21,7 @@ PROVIDER_BASE_URLS = {
     "deepseek": "https://api.deepseek.com/",
     "anthropic": "https://api.anthropic.com/",
     "datadog": "https://api.datadoghq.com/",
-    "genai": "https://generativelanguage.googleapis.com/"
+    "genai": "https://generativelanguage.googleapis.com/",
 }
 
 NORMALIZERS = [
