@@ -65,7 +65,7 @@ jobs:
         }
         $DOCKER_IMAGE_NAME = "ddapm-test-agent"
         $DOCKER_IMAGE_NAME = "ghcr.io/${{ github.repository }}/${DOCKER_IMAGE_NAME}".ToLower()
-        $DOCKER_IMAGE_NAME_WITH_TAG = "${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}-windows".ToLower()
+        $DOCKER_IMAGE_NAME_WITH_TAG = "${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}".ToLower()
         Write-Host "Using image name '$DOCKER_IMAGE_NAME_WITH_TAG'"
         "image_name=$DOCKER_IMAGE_NAME_WITH_TAG" >> $env:GITHUB_OUTPUT
 
