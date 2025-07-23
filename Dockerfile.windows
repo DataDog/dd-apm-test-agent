@@ -1,0 +1,27 @@
+# escape=`
+FROM python:3.13-windowsservercore
+
+WORKDIR /src
+EXPOSE 8126
+
+ENV SNAPSHOT_CI=1
+ENV LOG_LEVEL=INFO
+ENV SNAPSHOT_DIR=C:\snapshots
+ENV VCR_CASSETTES_DIRECTORY=C:\vcr-cassettes
+
+# Create directories
+RUN powershell -Command `
+    New-Item -ItemType Directory -Force -Path C:\snapshots; `
+    New-Item -ItemType Directory -Force -Path C:\vcr-cassettes
+
+ADD vcr-cassettes C:\vcr-cassettes
+
+# Add only necessary files to speed up development builds
+ADD README.md setup.py test_deps.txt ./
+ADD ddapm_test_agent ./ddapm_test_agent
+ADD .git ./.git
+
+RUN pip install /src && `
+    powershell -Command "Remove-Item -Path $env:LOCALAPPDATA\pip\Cache -Recurse -Force -ErrorAction SilentlyContinue"
+
+CMD ["ddapm-test-agent"]
