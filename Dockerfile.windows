@@ -21,7 +21,7 @@ ADD README.md setup.py test_deps.txt ./
 ADD ddapm_test_agent ./ddapm_test_agent
 ADD .git ./.git
 
-RUN pip install /src && `
-    powershell -Command "Remove-Item -Path $env:LOCALAPPDATA\pip\Cache -Recurse -Force -ErrorAction SilentlyContinue"
+RUN pip install /src
+RUN powershell -Command "Remove-Item -Path $env:LOCALAPPDATA\pip\Cache -Recurse -Force -ErrorAction SilentlyContinue"
 
 CMD ["ddapm-test-agent"]
