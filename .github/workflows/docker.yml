@@ -54,13 +54,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Docker Buildx
-      id: buildx
-      uses: docker/setup-buildx-action@v2
-
-    - name: Available platforms
-      run: echo ${{ steps.buildx.outputs.platforms }}
-
     - name: Set Docker Image Tag
       id: set_names
       shell: pwsh
@@ -80,10 +73,9 @@ jobs:
       run: docker login -u publisher -p ${{ secrets.GITHUB_TOKEN }} ghcr.io
 
     - name: Docker Build
-      uses: docker/build-push-action@v3
-      with:
-        push: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/') }}
-        tags: ${{ steps.set_names.outputs.image_name }}
-        platforms: "windows/amd64"
-        context: .
-        file: ./Dockerfile.windows
+      shell: pwsh
+      run: |
+        docker build -t ${{ steps.set_names.outputs.image_name }} -f ./Dockerfile.windows .
+        if ("${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/') }}" -eq "true") {
+          docker push ${{ steps.set_names.outputs.image_name }}
+        }
