@@ -10,12 +10,13 @@ ENV SNAPSHOT_DIR=C:\snapshots
 ENV VCR_CASSETTES_DIRECTORY=C:\vcr-cassettes
 
 # Install git (required for setuptools_scm)
-RUN powershell -Command `
+RUN powershell -Command " `
     $ProgressPreference = 'SilentlyContinue'; `
     Invoke-WebRequest -Uri 'https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/MinGit-2.47.1-64-bit.zip' -OutFile 'mingit.zip'; `
     Expand-Archive -Path 'mingit.zip' -DestinationPath 'C:\git'; `
     Remove-Item 'mingit.zip'; `
-    [Environment]::SetEnvironmentVariable('PATH', $env:PATH + ';C:\git\cmd', [EnvironmentVariableTarget]::Machine)
+    [Environment]::SetEnvironmentVariable('PATH', $env:PATH + ';C:\git\cmd', [EnvironmentVariableTarget]::Machine) `
+    "
 
 # Create directories
 RUN powershell -Command `
