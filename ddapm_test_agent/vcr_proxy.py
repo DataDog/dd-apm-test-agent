@@ -42,7 +42,7 @@ async def start_vcr_test(request: Request) -> Response:
     Note: this currently only works for non-concurrent tests.
     """
     try:
-        request_body: dict = await request.json()
+        request_body: dict[str, str] = await request.json()
     except json.JSONDecodeError:
         return Response(body="Invalid JSON", status=400)
 
