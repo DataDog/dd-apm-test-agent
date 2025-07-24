@@ -1156,7 +1156,7 @@ def make_app(
 ) -> web.Application:
     async def handle_vcr_proxy(request: Request) -> web.Response:
         return await proxy_request(request, vcr_cassettes_directory)
-    
+
     agent = Agent()
     app = web.Application(
         client_max_size=int(100e6),  # 100MB - arbitrary
