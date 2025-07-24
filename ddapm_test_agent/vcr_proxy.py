@@ -3,6 +3,7 @@ import json
 import os
 import re
 
+from aiohttp import web
 from aiohttp.web import Request
 from aiohttp.web import Response
 import requests
@@ -27,6 +28,39 @@ NORMALIZERS = [
         "--form-data-boundary-normalized",
     ),  # openai file types for undici (node.js)
 ]
+
+current_vcr_test = None  # singleton, concurrent tests with vcr usage not supported
+
+
+def _file_safe_string(s: str) -> str:
+    return "".join(c if c.isalnum() or c in ".-" else "_" for c in s)
+
+
+async def start_vcr_test(request: Request) -> Response:
+    """
+    Save the requested test name as context for any incoming proxy requests.
+    Note: this currently only works for non-concurrent tests.
+    """
+    try:
+        request_body: dict = await request.json()
+    except json.JSONDecodeError:
+        return Response(body="Invalid JSON", status=400)
+
+    global current_vcr_test
+    requested_test_name = request_body.get("test_name")
+    if not requested_test_name:
+        return Response(body="test_name is required", status=400)
+
+    current_vcr_test = _file_safe_string(requested_test_name)
+
+    return web.HTTPOk()
+
+
+def stop_vcr_test(request: Request) -> Response:
+    global current_vcr_test
+    current_vcr_test = None
+
+    return web.HTTPOk()
 
 
 def normalize_multipart_body(body: bytes) -> str:
@@ -81,8 +115,12 @@ def generate_cassette_name(path: str, method: str, body: bytes) -> str:
     request_details = f"{path}:{method}:{json.dumps(parsed_body, sort_keys=True)}"
     hash_object = hashlib.sha256(request_details.encode())
     hash_hex = hash_object.hexdigest()[:8]
-    safe_path = "".join(c if c.isalnum() or c in ".-" else "_" for c in path)
-    return f"{safe_path}_{method.lower()}_{hash_hex}"
+    safe_path = _file_safe_string(path)
+    return (
+        f"{safe_path}_{method.lower()}_{hash_hex}_{current_vcr_test}"
+        if current_vcr_test
+        else f"{safe_path}_{method.lower()}_{hash_hex}"
+    )
 
 
 async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Response:

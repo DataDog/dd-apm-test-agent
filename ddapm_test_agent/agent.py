@@ -64,6 +64,8 @@ from .tracerflare import v1_decode as v1_tracerflare_decode
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 from .vcr_proxy import proxy_request
+from .vcr_proxy import start_vcr_test
+from .vcr_proxy import stop_vcr_test
 
 
 class NoSuchSessionException(Exception):
@@ -1204,6 +1206,8 @@ def make_app(
             web.get("/test/trace_check/summary", agent.get_trace_check_summary),
             web.get("/test/integrations/tested_versions", agent.handle_get_tested_integrations),
             web.post("/test/settings", agent.handle_settings),
+            web.post("/vcr/test/start", start_vcr_test),
+            web.post("/vcr/test/stop", stop_vcr_test),
             web.route(
                 "*",
                 "/vcr/{path:.*}",
