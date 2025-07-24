@@ -1154,9 +1154,6 @@ def make_app(
     snapshot_regex_placeholders: Dict[str, str],
     vcr_cassettes_directory: str,
 ) -> web.Application:
-    async def handle_vcr_proxy(request: Request) -> web.Response:
-        return await proxy_request(request, vcr_cassettes_directory)
-
     agent = Agent()
     app = web.Application(
         client_max_size=int(100e6),  # 100MB - arbitrary
@@ -1214,7 +1211,7 @@ def make_app(
             web.route(
                 "*",
                 "/vcr/{path:.*}",
-                handle_vcr_proxy,
+                lambda request: proxy_request(request, vcr_cassettes_directory),
             ),
         ]
     )

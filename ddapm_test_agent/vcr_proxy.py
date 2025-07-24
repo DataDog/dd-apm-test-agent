@@ -56,7 +56,7 @@ async def start_vcr_test(request: Request) -> Response:
     return web.HTTPOk()
 
 
-def stop_vcr_test(request: Request) -> Response:
+async def stop_vcr_test(request: Request) -> Response:
     global current_vcr_test
     current_vcr_test = None
 
