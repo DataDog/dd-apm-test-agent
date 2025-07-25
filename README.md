@@ -153,6 +153,32 @@ from openai import OpenAI
 client = OpenAI(base_url="http://127.0.0.1:9126/vcr/openai")
 ```
 
+#### Recording test names as part of VCR cassette names
+The test agent has two endpoints to configure a context around which any VCR cassettes recorded have a suffix of a given test name. To use this, you can hit the
+- `/vcr/test/start` with a `test_name` body field to set the test name
+- `/vcr/test/stop` to clear the test name
+
+This is useful for recording cassettes for a specific test case to easily associate cassettes with that test.
+
+Usage example:
+
+```python
+@pytest.mark.fixture
+def with_vcr_test_name(request):
+  with requests.post("http://127.0.0.1:9126/vcr/test/start", json={"test_name": request.node.name}):
+    yield
+  requests.post("http://127.0.0.1:9126/vcr/test/stop")
+
+@pytest.mark.fixture
+def openai_with_custom_url(with_vcr_test_name):
+  client = OpenAI(base_url="http://127.0.0.1:9126/vcr/openai")
+  yield client
+
+def test_openai_with_custom_url(openai_with_custom_url):
+  """This test will generate/use a cassette name something similar to `openai_chat_completions_post_abcd1234_test_openai_with_custom_url`"""
+  ...
+```
+
 #### Adding new providers
 
 To add a new provider, add a supported provider in the `PROVIDER_BASE_URLS` dictionary in `ddapm_test_agent/vcr_proxy.py`, and change your tests or use case to use the new provider in the base url:
