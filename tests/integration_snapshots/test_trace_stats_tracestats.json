@@ -6,8 +6,8 @@
       {
         "Name": "http.request",
         "Resource": "/users/view",
-        "Service": null,
-        "Type": null,
+        "Service": "",
+        "Type": "",
         "HTTPStatusCode": 0,
         "Synthetics": false,
         "Hits": 5,
