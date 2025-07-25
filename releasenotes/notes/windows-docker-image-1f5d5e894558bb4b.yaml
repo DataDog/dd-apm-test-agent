@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add Windows container support to Docker images.
