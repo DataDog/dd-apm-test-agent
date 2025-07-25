@@ -1118,6 +1118,12 @@ class Agent:
                 request["vcr_cassette_suffix"] = vcr_cassette_suffix
         return await handler(request)
 
+    async def check_vcr_proxy_suffix(self, request: Request) -> web.Response:
+        """Verify that the middleware has set the VCR proxy suffix"""
+        if self.vcr_cassette_suffix is None:
+            return web.HTTPBadRequest(body="VCR proxy suffix not set, please specify `test_name` in the request body")
+        return web.HTTPOk()
+
     async def unset_vcr_proxy_suffix(self, request: Request) -> web.Response:
         """Unset the VCR proxy suffix for the request."""
         self.vcr_cassette_suffix = None
@@ -1233,7 +1239,7 @@ def make_app(
             web.get("/test/trace_check/summary", agent.get_trace_check_summary),
             web.get("/test/integrations/tested_versions", agent.handle_get_tested_integrations),
             web.post("/test/settings", agent.handle_settings),
-            web.post("/vcr/test/start", lambda request: web.HTTPOk()),
+            web.post("/vcr/test/start", agent.check_vcr_proxy_suffix),
             web.post("/vcr/test/stop", agent.unset_vcr_proxy_suffix),
             web.route(
                 "*",
