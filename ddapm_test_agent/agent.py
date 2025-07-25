@@ -1109,7 +1109,7 @@ class Agent:
     @middleware
     async def vcr_proxy_suffix_middleware(self, request: Request, handler: _Handler) -> web.Response:
         """Set the VCR proxy suffix for the request."""
-        if request.path.startswith("/vcr"):
+        if not request.path.startswith("/vcr"):
             return await handler(request)
 
         if self.vcr_cassette_suffix is not None:
