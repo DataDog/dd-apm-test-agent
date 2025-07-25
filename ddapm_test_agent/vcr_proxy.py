@@ -3,6 +3,7 @@ import json
 import os
 import re
 from typing import Optional
+from urllib.parse import urljoin
 
 from aiohttp import web
 from aiohttp.web import Request
@@ -11,12 +12,18 @@ import requests
 import vcr
 
 
+def url_path_join(base_url: str, path: str) -> str:
+    """Join a base URL with a path, handling slashes automatically."""
+    return urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+
+
 PROVIDER_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
     "azure-openai": "https://dd.openai.azure.com/",
     "deepseek": "https://api.deepseek.com/",
     "anthropic": "https://api.anthropic.com/",
     "datadog": "https://api.datadoghq.com/",
+    "genai": "https://generativelanguage.googleapis.com/",
 }
 
 NORMALIZERS = [
@@ -90,7 +97,7 @@ def generate_cassette_name(path: str, method: str, body: bytes, vcr_cassette_suf
     safe_path = _file_safe_string(path)
 
     safe_vcr_cassette_suffix = _file_safe_string(vcr_cassette_suffix) if vcr_cassette_suffix else None
-    
+
     return (
         f"{safe_path}_{method.lower()}_{hash_hex}_{safe_vcr_cassette_suffix}"
         if safe_vcr_cassette_suffix
@@ -111,7 +118,7 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
     if provider not in PROVIDER_BASE_URLS:
         return Response(body=f"Unsupported provider: {provider}", status=400)
 
-    target_url = f"{PROVIDER_BASE_URLS[provider]}/{remaining_path}"
+    target_url = url_path_join(PROVIDER_BASE_URLS[provider], remaining_path)
 
     headers = {key: value for key, value in request.headers.items() if key != "Host"}
 
