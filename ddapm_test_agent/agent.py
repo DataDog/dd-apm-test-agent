@@ -64,8 +64,6 @@ from .tracerflare import v1_decode as v1_tracerflare_decode
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 from .vcr_proxy import proxy_request
-from .vcr_proxy import start_vcr_test
-from .vcr_proxy import stop_vcr_test
 
 
 class NoSuchSessionException(Exception):
@@ -113,6 +111,15 @@ def _session_token(request: Request) -> Optional[str]:
     else:
         token = None
     return token
+
+
+async def _vcr_proxy_cassette_suffix(request: Request) -> Optional[str]:
+    try:
+        request_body: dict[str, str] = await request.json()
+        requested_test_name = request_body.get("test_name")
+        return requested_test_name
+    except json.JSONDecodeError:
+        return None
 
 
 @middleware
@@ -255,6 +262,8 @@ class Agent:
         self._sessions: DefaultDict[Optional[str], _AgentSession] = defaultdict(
             lambda: _AgentSession(sample_rate_by_service_env={})
         )
+
+        self.vcr_cassette_suffix = None
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -1098,6 +1107,23 @@ class Agent:
             return endpoint_response
 
     @middleware
+    async def vcr_proxy_suffix_middleware(self, request: Request, handler: _Handler) -> web.Response:
+        """Set the VCR proxy suffix for the request."""
+        if self.vcr_cassette_suffix is not None:
+            request["vcr_cassette_suffix"] = self.vcr_cassette_suffix
+        else:
+            vcr_cassette_suffix = await _vcr_proxy_cassette_suffix(request)
+            if vcr_cassette_suffix:
+                self.vcr_cassette_suffix = vcr_cassette_suffix
+                request["vcr_cassette_suffix"] = vcr_cassette_suffix
+        return await handler(request)
+
+    async def unset_vcr_proxy_suffix(self, request: Request) -> web.Response:
+        """Unset the VCR proxy suffix for the request."""
+        self.vcr_cassette_suffix = None
+        return web.HTTPOk()
+
+    @middleware
     async def check_failure_middleware(self, request: Request, handler: _Handler) -> web.Response:
         """Convert any failed checks into an HttpException."""
         trace = start_trace("request %r" % request)
@@ -1163,6 +1189,7 @@ def make_app(
             agent.store_request_middleware,  # type: ignore
             agent.request_forwarder_middleware,  # type: ignore
             session_token_middleware,  # type: ignore
+            agent.vcr_proxy_suffix_middleware,  # type: ignore
         ],
     )
     app.add_routes(
@@ -1206,8 +1233,8 @@ def make_app(
             web.get("/test/trace_check/summary", agent.get_trace_check_summary),
             web.get("/test/integrations/tested_versions", agent.handle_get_tested_integrations),
             web.post("/test/settings", agent.handle_settings),
-            web.post("/vcr/test/start", start_vcr_test),
-            web.post("/vcr/test/stop", stop_vcr_test),
+            web.post("/vcr/test/start", lambda request: web.HTTPOk()),
+            web.post("/vcr/test/stop", agent.unset_vcr_proxy_suffix),
             web.route(
                 "*",
                 "/vcr/{path:.*}",

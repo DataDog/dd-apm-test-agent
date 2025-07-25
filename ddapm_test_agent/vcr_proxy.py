@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+from typing import Optional
 
 from aiohttp import web
 from aiohttp.web import Request
@@ -29,38 +30,9 @@ NORMALIZERS = [
     ),  # openai file types for undici (node.js)
 ]
 
-current_vcr_test = None  # singleton, concurrent tests with vcr usage not supported
-
 
 def _file_safe_string(s: str) -> str:
     return "".join(c if c.isalnum() or c in ".-" else "_" for c in s)
-
-
-async def start_vcr_test(request: Request) -> Response:
-    """
-    Save the requested test name as context for any incoming proxy requests.
-    Note: this currently only works for non-concurrent tests.
-    """
-    try:
-        request_body: dict[str, str] = await request.json()
-    except json.JSONDecodeError:
-        return Response(body="Invalid JSON", status=400)
-
-    global current_vcr_test
-    requested_test_name = request_body.get("test_name")
-    if not requested_test_name:
-        return Response(body="test_name is required", status=400)
-
-    current_vcr_test = _file_safe_string(requested_test_name)
-
-    return web.HTTPOk()
-
-
-async def stop_vcr_test(request: Request) -> Response:
-    global current_vcr_test
-    current_vcr_test = None
-
-    return web.HTTPOk()
 
 
 def normalize_multipart_body(body: bytes) -> str:
@@ -105,7 +77,7 @@ def get_vcr(subdirectory: str, vcr_cassettes_directory: str) -> vcr.VCR:
     )
 
 
-def generate_cassette_name(path: str, method: str, body: bytes) -> str:
+def generate_cassette_name(path: str, method: str, body: bytes, vcr_cassette_suffix: Optional[str]) -> str:
     decoded_body = normalize_multipart_body(body) if body else ""
     try:
         parsed_body = json.loads(decoded_body) if decoded_body else {}
@@ -116,9 +88,12 @@ def generate_cassette_name(path: str, method: str, body: bytes) -> str:
     hash_object = hashlib.sha256(request_details.encode())
     hash_hex = hash_object.hexdigest()[:8]
     safe_path = _file_safe_string(path)
+
+    safe_vcr_cassette_suffix = _file_safe_string(vcr_cassette_suffix) if vcr_cassette_suffix else None
+    
     return (
-        f"{safe_path}_{method.lower()}_{hash_hex}_{current_vcr_test}"
-        if current_vcr_test
+        f"{safe_path}_{method.lower()}_{hash_hex}_{safe_vcr_cassette_suffix}"
+        if safe_vcr_cassette_suffix
         else f"{safe_path}_{method.lower()}_{hash_hex}"
     )
 
@@ -141,7 +116,10 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
     headers = {key: value for key, value in request.headers.items() if key != "Host"}
 
     body_bytes = await request.read()
-    cassette_name = generate_cassette_name(path, request.method, body_bytes)
+
+    vcr_cassette_suffix = request["vcr_cassette_suffix"]
+
+    cassette_name = generate_cassette_name(path, request.method, body_bytes, vcr_cassette_suffix)
     with get_vcr(provider, vcr_cassettes_directory).use_cassette(f"{cassette_name}.yaml"):
         oai_response = requests.request(
             method=request.method,
