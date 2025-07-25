@@ -263,7 +263,7 @@ class Agent:
             lambda: _AgentSession(sample_rate_by_service_env={})
         )
 
-        self.vcr_cassette_suffix = None
+        self.vcr_cassette_suffix: Optional[str] = None
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
