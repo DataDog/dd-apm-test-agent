@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    vcr: fixes a bug where the vcr cassette would cause unnecessary 400s from proxied providers.
