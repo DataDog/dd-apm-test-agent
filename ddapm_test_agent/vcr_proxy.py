@@ -123,7 +123,7 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
 
     body_bytes = await request.read()
 
-    vcr_cassette_suffix = request["vcr_cassette_suffix"]
+    vcr_cassette_suffix = request.pop("vcr_cassette_suffix", None)
 
     cassette_name = generate_cassette_name(path, request.method, body_bytes, vcr_cassette_suffix)
     with get_vcr(provider, vcr_cassettes_directory).use_cassette(f"{cassette_name}.yaml"):
