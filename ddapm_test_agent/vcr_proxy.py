@@ -79,6 +79,7 @@ def get_vcr(subdirectory: str, vcr_cassettes_directory: str) -> vcr.VCR:
             "x-api-key",
             "dd-api-key",
             "dd-application-key",
+            "x-goog-api-key",
         ],
     )
 

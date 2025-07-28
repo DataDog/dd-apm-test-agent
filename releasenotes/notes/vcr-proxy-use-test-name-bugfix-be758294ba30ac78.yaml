@@ -2,3 +2,5 @@
 fixes:
   - |
     vcr: fixes a bug where the vcr cassette would cause unnecessary 400s from proxied providers.
+  - |
+    vcr: fixes a bug where google genai client keys would not be omitted from generated vcr cassettes.
