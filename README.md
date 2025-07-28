@@ -18,7 +18,7 @@ See the [Development](#development) section for how to get the test agent runnin
 ## Installation
 
 The test agent can be installed using [nix](https://docs.determinate.systems/getting-started/):
-    
+
     nix profile install github:datadog/dd-apm-test-agent#ddapm-test-agent
     # nix profile upgrade ddapm-test-agent # to upgrade
 
@@ -50,7 +50,7 @@ or a specific branch:
 
 ### Trace invariant checks
 
-Many checks are provided by the test agent which will verify trace data. 
+Many checks are provided by the test agent which will verify trace data.
 All checks are enabled by default and can be manually disabled.
 
 See the [configuration](#configuration) section for the options.
@@ -86,19 +86,19 @@ INFO:ddapm_test_agent.agent:end of payload -------------------------------------
 
 ### Proxy
 
-The test agent provides proxying to the Datadog agent. 
+The test agent provides proxying to the Datadog agent.
 This is enabled by passing the agent url to the test agent either via the `--agent-url` command-line argument or by the `DD_TRACE_AGENT_URL` or `DD_AGENT_URL` environment variables.
 
 When proxying is enabled, the response from the Datadog agent will be returned instead of one from the test agent.
 
-At the trace-level, proxying can also be disabled by including the `X-Datadog-Agent-Proxy-Disabled` header with a value of `true`. This will disable proxying after a trace 
+At the trace-level, proxying can also be disabled by including the `X-Datadog-Agent-Proxy-Disabled` header with a value of `true`. This will disable proxying after a trace
 is handled, regardless of whether an agent URL is set.
 
 
 ### Snapshot testing
 
 The test agent provides a form of [characterization testing](https://en.wikipedia.org/wiki/Characterization_test) which
-we refer to as snapshotting. 
+we refer to as snapshotting.
 This allows library maintainers to ensure that traces don't change unexpectedly when making unrelated changes.
 
 This can be used to write integration tests by having test cases use the tracer to emit traces which are collected by the test agent and compared against reference traces stored previously.
@@ -129,7 +129,7 @@ The traces are normalized and output in JSON to a file. The following transforma
 
 ### Recording 3rd party API requests
 
-The test agent can be configured to proxy requests to select provider API endpoints, capturing real requests to 
+The test agent can be configured to proxy requests to select provider API endpoints, capturing real requests to
 the server and recording them to play back for future use. Currently, only OpenAI, Azure OpenAI, and DeepSeek are supported.
 
 These cassettes are recorded by default in the `vcr-cassettes` directory. However, this can be changed with the `--vcr-cassettes-directory` command-line option, or `VCR_CASSETTES_DIRECTORY` environment variable.
@@ -245,8 +245,8 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
 - `DD_SUPPRESS_TRACE_PARSE_ERRORS` [`false`]: Set to `"true"` to disable span parse errors when decoding handled traces. When disabled, errors will not be thrown for
 metrics incorrectly placed within the meta field, or other type errors related to span tag formatting/types. Can also be set using the `--suppress-trace-parse-errors=true` option.
 
-- `SNAPSHOT_REMOVED_ATTRS` [`""`]: The attributes to remove from spans in snapshots. This is useful for removing attributes 
-that are not relevant to the test case. **Note that removing `span_id` is not permitted to allow span 
+- `SNAPSHOT_REMOVED_ATTRS` [`""`]: The attributes to remove from spans in snapshots. This is useful for removing attributes
+that are not relevant to the test case. **Note that removing `span_id` is not permitted to allow span
 ordering to be maintained.**
 
 - `SNAPSHOT_REGEX_PLACEHOLDERS` [`""`]: The regex expressions to replace by a placeholder. Expressed as a comma separated `key:value` list. Specifying `ba[rz]:placeholder` will change any occurrence of `bar` or `baz` to `{placeholder}`: `foobarbazqux` -> `foo{placeholder}{placeholder}qux`. This is in particular useful to strip path prefixes or other infrastructure dependent identifiers.
@@ -386,11 +386,11 @@ Create a Remote Config payload to retrieve in endpoint `/v0.7/config`
 #### [optional] `X-Datadog-Test-Session-Token`
 
 ```
-curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"roots": ["eyJ....fX0="], "targets": "ey...19", "target_files": [{"path": "datadog/2/ASM_DATA/blocked_users/config", "raw": "eyJydWxlc19kYXRhIjogW119"}], "client_configs": ["datadog/2/ASM_DATA/blocked_users/config"]}'
+curl -X POST 'http://0.0.0.0:8126/test/session/responses/config' -d '{"roots": ["eyJ....fX0="], "targets": "ey...19", "target_files": [{"path": "datadog/2/ASM_DATA/blocked_users/config", "raw": "eyJydWxlc19kYXRhIjogW119"}], "client_configs": ["datadog/2/ASM_DATA/blocked_users/config"]}'
 ```
 
 ### /test/session/responses/config/path (POST)
-Due to Remote Config payload being quite complicated, this endpoint works like `/test/session/responses/config (POST)` 
+Due to Remote Config payload being quite complicated, this endpoint works like `/test/session/responses/config (POST)`
 but you should send a path and a message and this endpoint builds the Remote Config payload.
 
 The keys of the JSON body are `path` and `msg`
@@ -404,9 +404,9 @@ curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"path
 
 
 ### /test/trace_check/failures (GET)
-Get Trace Check failures that occured. If a token is included, trace failures for only that session token are returned unless used in conjuction with `return_all`, which can be used to return all failures regardless of inputted token.  This method returns a `<Response 200>` if no Trace Check failures are being returned and a `<Response 400>` if Trace Check failures are being returned. Trace Check failures are returned as a content type of text, with failure messages concatenated in the response body. Optionally, set the `use_json` query string parameter to `true` to return Trace Check failures as a JSON response in the following format: 
+Get Trace Check failures that occured. If a token is included, trace failures for only that session token are returned unless used in conjuction with `return_all`, which can be used to return all failures regardless of inputted token.  This method returns a `<Response 200>` if no Trace Check failures are being returned and a `<Response 400>` if Trace Check failures are being returned. Trace Check failures are returned as a content type of text, with failure messages concatenated in the response body. Optionally, set the `use_json` query string parameter to `true` to return Trace Check failures as a JSON response in the following format:
 ```
-response = { 
+response = {
   "<FAILING_CHECK_NAME>" : ["<FAILURE_MESSAGE_1>", "<FAILURE_MESSAGE_2>"]
 }
 ```
@@ -434,9 +434,9 @@ curl -X GET 'http://0.0.0.0:8126/test/trace_check/clear'
 ```
 
 ### /test/trace_check/summary (GET)
-Get Trace Check summary results. If a token is included, returns summary results only for Trace Checks run during the session.  The `return_all` optional query string parameter can be used to return all trace check results (regardless of inputted session token). The method returns Trace Check results in the following JSON format: 
+Get Trace Check summary results. If a token is included, returns summary results only for Trace Checks run during the session.  The `return_all` optional query string parameter can be used to return all trace check results (regardless of inputted session token). The method returns Trace Check results in the following JSON format:
 ```
-summary = { 
+summary = {
   "trace_content_length" : {
     "Passed_Checks": 10,
     "Failed_Checks": 0,
@@ -465,7 +465,7 @@ curl -X PUT 'http://0.0.0.0:8126/test/session/integrations' -d '{"integration_na
 ```
 
 ### /test/integrations/tested_versions (GET)
-Return a csv list of all tested integrations received by the agent. The format of returned data will be: 
+Return a csv list of all tested integrations received by the agent. The format of returned data will be:
 `tracer_language,tracer_version,integration_name,integration_version,dependency_name`.
 
 #### [optional] `?test_session_token=`
