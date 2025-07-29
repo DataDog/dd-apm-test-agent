@@ -215,6 +215,38 @@ def default_value_trace_results_summary():
     }
 
 
+def normalize_version(version_string: Optional[str]) -> Optional[int]:
+    """
+    Converts a semantic version string to a comparable integer.
+    This allows for mathematical operations and comparisons on version numbers.
+    The function supports versions of the form X.Y.Z.
+    Each component is assumed to be less than 4096 (12 bits).
+    The resulting integer is major * 2^24 + minor * 2^12 + patch.
+    """
+    if not version_string:
+        return None
+
+    # Remove any suffixes like -beta, -rc1, etc.
+    version_string = version_string.split("-")[0]
+
+    parts = version_string.split(".")
+    try:
+        major = int(parts[0]) if len(parts) > 0 else 0
+        minor = int(parts[1]) if len(parts) > 1 else 0
+        patch = int(parts[2]) if len(parts) > 2 else 0
+
+        if major >= 4096 or minor >= 4096 or patch >= 4096:
+            log.warning("Version component out of range (>= 4096) in '%s', cannot normalize.", version_string)
+            return None
+
+        # Using bit shifting to create a single integer.
+        # Major: 12 bits, Minor: 12 bits, Patch: 12 bits
+        return (major << 24) + (minor << 12) + patch
+    except ValueError:
+        log.warning("Could not parse version string component in '%s'", version_string)
+        return None
+
+
 @dataclass
 class _AgentSession:
     """Maintain Agent state across requests."""
@@ -501,13 +533,17 @@ class Agent:
                     req["tracer_language"] = data.get("tracer_language", None)
                     integration_requests.append(req)
 
-                    statsd.increment('apm.integrations.supported_version', 1, tags=[
-                        'integration_version:{}'.format(req["integration"].integration_version),
-                        'integration_name:{}'.format(req["integration"].integration_name),
-                        'tracer_version:{}'.format(req["tracer_version"]),
-                        'language_name:{}'.format(req["tracer_language"]),
-                        'dependency_name:{}'.format(req["integration"].dependency_name)
-                    ])
+                    tags = [
+                        "integration_version:{}".format(req["integration"].integration_version),
+                        "integration_name:{}".format(req["integration"].integration_name),
+                        "tracer_version:{}".format(req["tracer_version"]),
+                        "language_name:{}".format(req["tracer_language"]),
+                        "dependency_name:{}".format(req["integration"].dependency_name),
+                    ]
+                    statsd.increment("apm.integrations.supported_version", 1, tags=tags)
+                    normalized_version = normalize_version(req["integration"].integration_version)
+                    if normalized_version is not None:
+                        statsd.gauge("apm.integrations.integration_version", normalized_version, tags=tags)
                 elif include_sent_integrations:
                     integration_requests.append(req)
             # check if integration data was provided in the trace request instead
@@ -537,13 +573,17 @@ class Agent:
                         req["tracer_language"] = req.headers.get("datadog-meta-lang")
                     integration_requests.append(req)
 
-                    statsd.increment('apm.integrations.supported_version', 1, tags=[
-                        'integration_version:{}'.format(req["integration"].integration_version),
-                        'integration_name:{}'.format(req["integration"].integration_name),
-                        'tracer_version:{}'.format(req["tracer_version"]),
-                        'language_name:{}'.format(req["tracer_language"]),
-                        'dependency_name:{}'.format(req["integration"].dependency_name)
-                    ])
+                    tags = [
+                        "integration_version:{}".format(req["integration"].integration_version),
+                        "integration_name:{}".format(req["integration"].integration_name),
+                        "tracer_version:{}".format(req["tracer_version"]),
+                        "language_name:{}".format(req["tracer_language"]),
+                        "dependency_name:{}".format(req["integration"].dependency_name),
+                    ]
+                    statsd.increment("apm.integrations.supported_version", 1, tags=tags)
+                    normalized_version = normalize_version(req["integration"].integration_version)
+                    if normalized_version is not None:
+                        statsd.gauge("apm.integrations.integration_version", normalized_version, tags=tags)
                 elif include_sent_integrations:
                     integration_requests.append(req)
         return integration_requests
@@ -701,13 +741,17 @@ class Agent:
                 seen_integrations.add(f"{integration.integration_name}@{integration.integration_version}")
 
                 # create a custom datadog dogstatsd metric for the integration version, tracer version, integration name, and dependency name
-                statsd.increment('apm.integrations.supported_version', 1, tags=[
-                    'integration_version:{}'.format(integration.integration_version),
-                    'integration_name:{}'.format(integration.integration_name),
-                    'tracer_version:{}'.format(req["tracer_version"]),
-                    'language_name:{}'.format(req["tracer_language"]),
-                    'dependency_name:{}'.format(integration.dependency_name)
-                ])
+                tags = [
+                    "integration_version:{}".format(integration.integration_version),
+                    "integration_name:{}".format(integration.integration_name),
+                    "tracer_version:{}".format(req["tracer_version"]),
+                    "language_name:{}".format(req["tracer_language"]),
+                    "dependency_name:{}".format(integration.dependency_name),
+                ]
+                statsd.increment("apm.integrations.supported_version", 1, tags=tags)
+                normalized_version = normalize_version(integration.integration_version)
+                if normalized_version is not None:
+                    statsd.gauge("apm.integrations.integration_version", normalized_version, tags=tags)
 
                 # given that we will mainly see one integration per call, set a header for the calling lib to know the
                 # integration name
