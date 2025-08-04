@@ -61,9 +61,9 @@ jobs:
       shell: pwsh
       run: |
         if ("${{ startsWith(github.ref, 'refs/tags/') }}" -eq "true") {
-          $DOCKER_IMAGE_TAG = "${{ github.ref }}".Replace("refs/tags/", "")
+          $DOCKER_IMAGE_TAG = "${{ github.ref }}".Replace("refs/tags/", "") + "-windows"
         } else {
-          $DOCKER_IMAGE_TAG = "latest"
+          $DOCKER_IMAGE_TAG = "latest-windows"
         }
         $DOCKER_IMAGE_NAME = "ddapm-test-agent"
         $DOCKER_IMAGE_NAME = "ghcr.io/${{ github.repository }}/${DOCKER_IMAGE_NAME}".ToLower()
