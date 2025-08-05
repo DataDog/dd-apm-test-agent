@@ -113,7 +113,7 @@ def _session_token(request: Request) -> Optional[str]:
     return token
 
 
-async def _vcr_proxy_cassette_suffix(request: Request) -> Optional[str]:
+async def _vcr_proxy_cassette_prefix(request: Request) -> Optional[str]:
     try:
         request_body: dict[str, str] = await request.json()
         requested_test_name = request_body.get("test_name")
@@ -263,7 +263,7 @@ class Agent:
             lambda: _AgentSession(sample_rate_by_service_env={})
         )
 
-        self.vcr_cassette_suffix: Optional[str] = None
+        self.vcr_cassette_prefix: Optional[str] = None
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -1112,24 +1112,24 @@ class Agent:
         if not request.path.startswith("/vcr"):
             return await handler(request)
 
-        if self.vcr_cassette_suffix is not None:
-            request["vcr_cassette_suffix"] = self.vcr_cassette_suffix
+        if self.vcr_cassette_prefix is not None:
+            request["vcr_cassette_prefix"] = self.vcr_cassette_prefix
         else:
-            vcr_cassette_suffix = await _vcr_proxy_cassette_suffix(request)
-            if vcr_cassette_suffix:
-                self.vcr_cassette_suffix = vcr_cassette_suffix
-                request["vcr_cassette_suffix"] = vcr_cassette_suffix
+            vcr_cassette_prefix = await _vcr_proxy_cassette_prefix(request)
+            if vcr_cassette_prefix:
+                self.vcr_cassette_prefix = vcr_cassette_prefix
+                request["vcr_cassette_prefix"] = vcr_cassette_prefix
         return await handler(request)
 
     async def check_vcr_proxy_suffix(self, request: Request) -> web.Response:
         """Verify that the middleware has set the VCR proxy suffix"""
-        if self.vcr_cassette_suffix is None:
+        if self.vcr_cassette_prefix is None:
             return web.HTTPBadRequest(body="VCR proxy suffix not set, please specify `test_name` in the request body")
         return web.HTTPOk()
 
     async def unset_vcr_proxy_suffix(self, request: Request) -> web.Response:
         """Unset the VCR proxy suffix for the request."""
-        self.vcr_cassette_suffix = None
+        self.vcr_cassette_prefix = None
         return web.HTTPOk()
 
     @middleware
