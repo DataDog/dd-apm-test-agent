@@ -1,10 +1,11 @@
+import msgpack
 import json
 import os
 import signal
 import subprocess
 import time
 
-from ddapm_test_agent.trace import trace_id
+from ddapm_test_agent.trace import decode_v1, trace_id
 
 
 async def test_trace(
@@ -470,3 +471,35 @@ async def test_evp_proxy_v2_api_intake_llmobs_v2_eval_metric(agent):
     assert resp.status == 200
     reqs = await resp.json()
     assert len(reqs) == 1
+
+
+async def test_trace_v1(
+    agent,
+    v04_reference_http_trace_payload_headers,
+    v1_reference_http_trace_payload_data,
+):
+    resp = await agent.put(
+        "/v1/traces",
+        headers=v04_reference_http_trace_payload_headers,
+        data=v1_reference_http_trace_payload_data,
+    )
+    assert resp.status == 200, await resp.text()
+
+
+async def test_trace_v1_basic():
+    data = msgpack.packb({2: "hello",11: [{4: [
+        {1: "my-service", 2: "span-name", 3: 1, 4: 1234, 5: 5555, 6: 987, 7: 150, 8: True, 9: ["foo", 1, "bar", "fooNum", 3, 3.14]}
+    ]}]})
+    result = decode_v1(data)
+    assert len(result) == 1
+    assert len(result[0]) == 1
+    assert result[0][0]["service"] == "my-service"
+    assert result[0][0]["name"] == "span-name"
+    assert result[0][0]["resource"] == "hello"
+    assert result[0][0]["span_id"] == 1234
+    assert result[0][0]["parent_id"] == 5555
+    assert result[0][0]["start"] == 987
+    assert result[0][0]["duration"] == 150
+    assert result[0][0]["error"] == 1
+    assert result[0][0]["meta"] == {"foo": "bar"}
+    assert result[0][0]["metrics"] == {"fooNum": 3.14}

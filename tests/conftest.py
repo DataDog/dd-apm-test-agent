@@ -144,6 +144,28 @@ async def agent(agent_app, aiohttp_client, loop):
 
 
 @pytest.fixture
+def v1_reference_http_trace_payload_data() -> bytes:
+    data = msgpack.packb(
+        {
+            1: 0, # Priority
+            6: bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01]), # Trace ID 128 bits
+            4: [{ # Span
+                1: "my-service",
+                2: "span-name",
+                3: "GET /res",
+                4: 12345678,
+                9: [
+                    "foo", 1, "bar",
+                    "foo2", 1, 5,
+                    "some-num", 4, 42,
+                ]
+            }],
+        }
+    )
+    return data
+
+
+@pytest.fixture
 def v04_reference_http_trace_payload_data_raw() -> List[Trace]:
     data = [
         [

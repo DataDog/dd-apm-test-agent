@@ -701,6 +701,119 @@ def decode_v07(data: bytes) -> v04TracePayload:
     payload = msgpack.unpackb(data)
     return _verify_v07_payload(payload)
 
+def decode_v1(data: bytes) -> v04TracePayload:
+    """Decode a v1 trace payload.
+     TODO docs
+    """
+    payload = msgpack.unpackb(data, strict_map_key=False)
+    return _convert_v1_payload(payload)
+
+def _get_and_add_string(string_table: List[str], value: Union[int, str]) -> str:
+    if isinstance(value, str):
+        string_table.append(value)
+        return value
+    elif isinstance(value, int):
+        return string_table[value]
+
+def _convert_v1_payload(data: Any) -> v04TracePayload:
+    if not isinstance(data, dict):
+        raise TypeError("Trace payload must be a map, got type %r." % type(data))
+    
+    string_table: List[str] = [""] # 0 is reserved for empty string
+    
+    v04Payload: List[List[Span]] = []
+    
+    for k, v in data.items():
+        if k == 1:
+            raise TypeError("Message pack representation of v1 trace payload must stream strings")
+        elif k > 1 and k < 10: # All keys from 2-9 are strings, for now we can just build the string table TODO assert on these?
+            if isinstance(v, str):
+                string_table.append(v)
+        elif k == 11:
+            if not isinstance(v, list):
+                raise TypeError("Trace payload 'chunks' (11) must be a list.")
+            for chunk in v:
+                v04Payload.append(_convert_v1_chunk(chunk, string_table))
+        else:
+            raise TypeError("Unknown key %r in v1 trace payload" % k)
+    return cast(v04TracePayload, v04Payload)
+
+
+def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
+    if not isinstance(chunk, dict):
+        raise TypeError("Chunk must be a map.")
+    if 4 not in chunk:
+        raise TypeError("Chunk must contain a 'spans'(4) key.")
+    if not isinstance(chunk[4], list):
+        raise TypeError("Chunk 'spans'(4) must be a list.")
+    spans: List[Span] = []
+    for span in chunk[4]:
+        converted_span = _convert_v1_span(span, string_table)
+        # TODO: bring chunk level attributes trace_id in
+        spans.append(converted_span)
+    return spans
+
+def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
+    if not isinstance(span, dict):
+        raise TypeError("Span must be a map.")
+    v4Span = Span()
+    for k, v in span.items():
+        if k == 1:
+            v4Span["service"] = _get_and_add_string(string_table, v)
+        elif k == 2:
+            v4Span["name"] = _get_and_add_string(string_table, v)
+        elif k == 3:
+            v4Span["resource"] = _get_and_add_string(string_table, v)
+        elif k == 4:
+            v4Span["span_id"] = v
+        elif k == 5:
+            v4Span["parent_id"] = v
+        elif k == 6:
+            v4Span["start"] = v
+        elif k == 7:
+            v4Span["duration"] = v
+        elif k == 8:
+            if not isinstance(v, bool):
+                raise TypeError("Error must be a boolean, got type %r." % type(v))
+            v4Span["error"] = 1 if v else 0
+        elif k == 9: # Attributes
+            if not isinstance(v, list):
+                raise TypeError("Attributes must be a list, got type %r." % type(v))
+            meta: Dict[str, str] = {}
+            metrics: Dict[str, MetricType] = {}
+            _convert_v1_attributes(v, meta, metrics, string_table)
+            v4Span["meta"] = meta
+            v4Span["metrics"] = metrics
+    return v4Span
+
+
+def _convert_v1_attributes(attr: Any, meta: Dict[str, str], metrics: Dict[str, MetricType], string_table: List[str]) -> None:
+    if not isinstance(attr, list):
+        raise TypeError("Attribute must be a list, got type %r." % type(attr))
+    if len(attr) % 3 != 0:
+        raise TypeError("Attribute list must have a multiple of 3 elements, got %r." % len(attr))
+    for i in range(0, len(attr), 3):
+        key = _get_and_add_string(string_table, attr[i])
+        value_type = attr[i + 1]
+        value = attr[i + 2]
+        if value_type == 1: # String
+            meta[key] = _get_and_add_string(string_table, value)
+        elif value_type == 2: # Bool
+            # Treat v1 boolean attributes as metrics with a value of 1 or 0
+            metrics[key] = 1 if value else 0
+        elif value_type == 3: # Double
+            metrics[key] = value
+        elif value_type == 4: # Int
+            metrics[key] = value
+        elif value_type == 5: # Bytes
+            raise NotImplementedError("Bytes values are not supported yet.")
+        elif value_type == 6: # Array
+            raise NotImplementedError("Array of strings values are not supported yet.")
+        elif value_type == 7: # Key Value list
+            raise NotImplementedError("Key value list values are not supported yet.")
+        else:
+            raise TypeError("Unknown attribute value type %r." % value_type)
+
 
 def _verify_v07_payload(data: Any) -> v04TracePayload:
     if not isinstance(data, dict):
