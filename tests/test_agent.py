@@ -479,7 +479,7 @@ async def test_trace_v1(
     v1_reference_http_trace_payload_data,
 ):
     resp = await agent.put(
-        "/v1/traces",
+        "/v1.0/traces",
         headers=v04_reference_http_trace_payload_headers,
         data=v1_reference_http_trace_payload_data,
     )
@@ -489,7 +489,7 @@ async def test_trace_v1(
 async def test_trace_v1_basic():
     data = msgpack.packb({2: "hello",11: [{4: [
         {1: "my-service", 2: "span-name", 3: 1, 4: 1234, 5: 5555, 6: 987, 7: 150, 8: True, 9: ["foo", 1, "bar", "fooNum", 3, 3.14],
-        10: "span-type", 13: "some-env", 14: "my-version", 15: "my-component", 16: 1}
+         10: "span-type", 13: "some-env", 14: "my-version", 15: "my-component", 16: 1}
     ]}]})
     result = decode_v1(data)
     assert len(result) == 1
