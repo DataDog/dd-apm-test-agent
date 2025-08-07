@@ -701,12 +701,14 @@ def decode_v07(data: bytes) -> v04TracePayload:
     payload = msgpack.unpackb(data)
     return _verify_v07_payload(payload)
 
+
 def decode_v1(data: bytes) -> v04TracePayload:
     """Decode a v1 trace payload.
      TODO docs
     """
     payload = msgpack.unpackb(data, strict_map_key=False)
     return _convert_v1_payload(payload)
+
 
 def _get_and_add_string(string_table: List[str], value: Union[int, str]) -> str:
     if isinstance(value, str):
@@ -715,18 +717,19 @@ def _get_and_add_string(string_table: List[str], value: Union[int, str]) -> str:
     elif isinstance(value, int):
         return string_table[value]
 
+
 def _convert_v1_payload(data: Any) -> v04TracePayload:
     if not isinstance(data, dict):
         raise TypeError("Trace payload must be a map, got type %r." % type(data))
-    
-    string_table: List[str] = [""] # 0 is reserved for empty string
-    
+
+    string_table: List[str] = [""]  # 0 is reserved for empty string
+
     v04Payload: List[List[Span]] = []
-    
+
     for k, v in data.items():
         if k == 1:
             raise TypeError("Message pack representation of v1 trace payload must stream strings")
-        elif k > 1 and k < 10: # All keys from 2-9 are strings, for now we can just build the string table TODO assert on these?
+        elif k > 1 and k < 10:  # All keys from 2-9 are strings, for now we can just build the string table TODO assert on these?
             if isinstance(v, str):
                 string_table.append(v)
         elif k == 11:
@@ -753,10 +756,12 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
         spans.append(converted_span)
     return spans
 
+
 def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
     if not isinstance(span, dict):
         raise TypeError("Span must be a map.")
     v4Span = Span()
+    env, version, component, spanKind = "", "", "", ""
     for k, v in span.items():
         if k == 1:
             v4Span["service"] = _get_and_add_string(string_table, v)
@@ -776,7 +781,7 @@ def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
             if not isinstance(v, bool):
                 raise TypeError("Error must be a boolean, got type %r." % type(v))
             v4Span["error"] = 1 if v else 0
-        elif k == 9: # Attributes
+        elif k == 9:  # Attributes
             if not isinstance(v, list):
                 raise TypeError("Attributes must be a list, got type %r." % type(v))
             meta: Dict[str, str] = {}
@@ -784,6 +789,41 @@ def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
             _convert_v1_attributes(v, meta, metrics, string_table)
             v4Span["meta"] = meta
             v4Span["metrics"] = metrics
+        elif k == 10:
+            v4Span["type"] = _get_and_add_string(string_table, v)
+        elif k == 11:
+            raise NotImplementedError("Span links are not supported yet.")
+        elif k == 12:
+            raise NotImplementedError("Span events are not supported yet.")
+        elif k == 13:
+            env = _get_and_add_string(string_table, v)
+        elif k == 14:
+            version = _get_and_add_string(string_table, v)
+        elif k == 15:
+            component = _get_and_add_string(string_table, v)
+        elif k == 16:
+            if not isinstance(v, int):
+                raise TypeError("Span kind must be an integer, got type %r." % type(v))
+            if v == 1:
+                spanKind = "internal"
+            elif v == 2:
+                spanKind = "server"
+            elif v == 3:
+                spanKind = "client"
+            elif v == 4:
+                spanKind = "producer"
+            elif v == 5:
+                spanKind = "consumer"
+            else:
+                raise TypeError("Unknown span kind %r." % v)
+    if env != "":
+        v4Span["meta"]["env"] = env
+    if version != "":
+        v4Span["meta"]["version"] = version
+    if component != "":
+        v4Span["meta"]["component"] = component
+    if spanKind != "":
+        v4Span["meta"]["span.kind"] = spanKind
     return v4Span
 
 
@@ -796,20 +836,20 @@ def _convert_v1_attributes(attr: Any, meta: Dict[str, str], metrics: Dict[str, M
         key = _get_and_add_string(string_table, attr[i])
         value_type = attr[i + 1]
         value = attr[i + 2]
-        if value_type == 1: # String
+        if value_type == 1:  # String
             meta[key] = _get_and_add_string(string_table, value)
-        elif value_type == 2: # Bool
+        elif value_type == 2:  # Bool
             # Treat v1 boolean attributes as metrics with a value of 1 or 0
             metrics[key] = 1 if value else 0
-        elif value_type == 3: # Double
+        elif value_type == 3:  # Double
             metrics[key] = value
-        elif value_type == 4: # Int
+        elif value_type == 4:  # Int
             metrics[key] = value
-        elif value_type == 5: # Bytes
+        elif value_type == 5:  # Bytes
             raise NotImplementedError("Bytes values are not supported yet.")
-        elif value_type == 6: # Array
+        elif value_type == 6:  # Array
             raise NotImplementedError("Array of strings values are not supported yet.")
-        elif value_type == 7: # Key Value list
+        elif value_type == 7:  # Key Value list
             raise NotImplementedError("Key value list values are not supported yet.")
         else:
             raise TypeError("Unknown attribute value type %r." % value_type)

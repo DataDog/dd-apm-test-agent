@@ -488,7 +488,8 @@ async def test_trace_v1(
 
 async def test_trace_v1_basic():
     data = msgpack.packb({2: "hello",11: [{4: [
-        {1: "my-service", 2: "span-name", 3: 1, 4: 1234, 5: 5555, 6: 987, 7: 150, 8: True, 9: ["foo", 1, "bar", "fooNum", 3, 3.14]}
+        {1: "my-service", 2: "span-name", 3: 1, 4: 1234, 5: 5555, 6: 987, 7: 150, 8: True, 9: ["foo", 1, "bar", "fooNum", 3, 3.14],
+        10: "span-type", 13: "some-env", 14: "my-version", 15: "my-component", 16: 1}
     ]}]})
     result = decode_v1(data)
     assert len(result) == 1
@@ -501,5 +502,6 @@ async def test_trace_v1_basic():
     assert result[0][0]["start"] == 987
     assert result[0][0]["duration"] == 150
     assert result[0][0]["error"] == 1
-    assert result[0][0]["meta"] == {"foo": "bar"}
+    assert result[0][0]["meta"] == {"foo": "bar", "env": "some-env", "version": "my-version", "component": "my-component", "span.kind": "internal"}
     assert result[0][0]["metrics"] == {"fooNum": 3.14}
+    assert result[0][0]["type"] == "span-type"
