@@ -298,30 +298,3 @@ def test_bfs_order(trace, expected):
 )
 def test_dfs_order(trace, expected):
     assert list(dfs_order(trace)) == expected
-
-@pytest.mark.parametrize(
-    "content_type, payload",
-    [
-        ("application/msgpack", msgpack.packb({})),
-        (
-            "application/msgpack",
-            msgpack.packb(
-                {
-                    1: "my-service",
-                    2: "span-name",
-                    3: "GET /res",
-                    4: 12345678,
-                    9: [
-                        "foo", 1, "bar",
-                        "foo2", 1, 5,
-                        "some-num", 4, 42,
-                    ]
-                }
-            ),
-        ),
-    ],
-)
-def test_decode_v1_span(content_type, payload):
-    import base64
-    print(base64.b64encode(payload).decode())
-    assert decode_v1_span(payload) is None

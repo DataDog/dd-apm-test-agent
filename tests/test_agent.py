@@ -485,8 +485,11 @@ async def test_trace_v1(
     )
     assert resp.status == 200, await resp.text()
 
+    result_resp = await agent.get("/test/traces", params={"trace_ids": str(tid)})
+
 
 async def test_trace_v1_basic():
+    #TODO: Add trace id so we can find and verify the trace id
     data = msgpack.packb({2: "hello",11: [{4: [
         {1: "my-service", 2: "span-name", 3: 1, 4: 1234, 5: 5555, 6: 987, 7: 150, 8: True, 9: ["foo", 1, "bar", "fooNum", 3, 3.14],
          10: "span-type", 13: "some-env", 14: "my-version", 15: "my-component", 16: 1}
