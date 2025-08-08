@@ -549,3 +549,24 @@ async def test_trace_v1_span_event():
         "event-key3": {"type": 3, "double_value": 3.14},
         "event-key4": {"type": 2, "int_value": 123},
     }
+
+
+async def test_trace_v1_span_links():
+    data = msgpack.packb(
+        {11: [{
+            4: [{1: "my-service", 2: "span-name", 3: 1, 4: 1234, 5: 5555, 6: 987, 7: 150,
+                    10: "span-type", 13: "some-env", 14: "my-version", 15: "my-component", 16: 1,
+                    11: [{1: bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x56, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xe4]), 2: 1234,
+                          3: ["some-key", 1, "potato", "some-key2", 2, True, "some-key3", 3, 3.14, "some-key4", 4, 123]}]}],
+            6: bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xe3]),
+            7: "-4",
+        }]})
+    result = decode_v1(data)
+    assert len(result) == 1
+    assert len(result[0]) == 1
+    assert result[0][0]["service"] == "my-service"
+    assert len(result[0][0]["span_links"]) == 1
+    assert result[0][0]["span_links"][0]["trace_id"] == 8676
+    assert result[0][0]["span_links"][0]["trace_id_high"] == 86
+    assert result[0][0]["span_links"][0]["span_id"] == 1234
+    assert result[0][0]["span_links"][0]["attributes"] == {"some-key": "potato", "some-key2": "true", "some-key3": "3.14", "some-key4": "123"}

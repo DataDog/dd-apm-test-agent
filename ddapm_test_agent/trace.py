@@ -719,6 +719,7 @@ def _get_and_add_string(string_table: List[str], value: Union[int, str]) -> str:
             raise ValueError(f"Value {value} is out of range for string table of length {len(string_table)}")
         return string_table[value]
 
+
 def _convert_v1_payload(data: Any) -> v04TracePayload:
     if not isinstance(data, dict):
         raise TypeError("Trace payload must be a map, got type %r." % type(data))
@@ -833,7 +834,13 @@ def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
         elif k == 10:
             v4Span["type"] = _get_and_add_string(string_table, v)
         elif k == 11:
-            raise NotImplementedError("Span links are not supported yet.")
+            if not isinstance(v, list):
+                raise TypeError("Span links must be a list, got type %r." % type(v))
+            links: List[SpanLink] = []
+            for raw_link in v:
+                link = _convert_v1_span_link(raw_link, string_table)
+                links.append(link)
+            v4Span["span_links"] = links
         elif k == 12:
             if not isinstance(v, list):
                 raise TypeError("Span events must be a list, got type %r." % type(v))
@@ -886,12 +893,74 @@ def _convert_v1_span_event(event: Any, string_table: List[str]) -> SpanEvent:
         elif k == 2:
             v4Event["name"] = _get_and_add_string(string_table, v)
         elif k == 3:
-            v4Event["attributes"] = _convert_v1_span_event_attribute(v, string_table)
+            v4Event["attributes"] = _convert_v1_span_event_attributes(v, string_table)
         else:
             raise TypeError("Unknown key %r in v1 span event" % k)
     return v4Event
 
-def _convert_v1_span_event_attribute(attr: Any, string_table: List[str]) -> Dict[str, Dict[str, Any]]:
+
+def _convert_v1_span_link(link: Any, string_table: List[str]) -> SpanLink:
+    if not isinstance(link, dict):
+        raise TypeError("Span link must be a map, got type %r." % type(link))
+    v4Link = SpanLink()
+    for k, v in link.items():
+        if k == 1:
+            if len(v) != 16:
+                raise TypeError("Trace ID must be 16 bytes, got %r." % len(v))
+            # trace_id is a 128 bit integer in a bytes array, so we need to get the last 64 bits
+            v4Link["trace_id"] = int.from_bytes(v[8:], "big")
+            v4Link["trace_id_high"] = int.from_bytes(v[:8], "big")
+        elif k == 2:
+            v4Link["span_id"] = v
+        elif k == 3:
+            v4Link["attributes"] = _convert_v1_span_link_attributes(v, string_table)
+        elif k == 4:
+            raise NotImplementedError("Span link tracestate is not supported yet.")
+        elif k == 5:
+            raise NotImplementedError("Span link flags are not supported yet.")
+        else:
+            raise TypeError("Unknown key %r in v1 span link" % k)
+    return v4Link
+
+
+def _convert_v1_span_link_attributes(attr: Any, string_table: List[str]) -> Dict[str, str]:
+    """
+    Convert a v1 span link attributes to a v4 span link attributes. Unfortunately we need multiple implementations that 
+    convert "attributes" as the v0.4 representation of attributes is different between span links and span events.
+    """
+    if not isinstance(attr, list):
+        raise TypeError("Attribute must be a list, got type %r." % type(attr))
+    if len(attr) % 3 != 0:
+        raise TypeError("Attribute list must have a multiple of 3 elements, got %r." % len(attr))
+    v4_attributes: Dict[str, str] = {}
+    for i in range(0, len(attr), 3):
+        key = _get_and_add_string(string_table, attr[i])
+        value_type = attr[i + 1]
+        value = attr[i + 2]
+        if value_type == 1:  # String
+            v4_attributes[key] = _get_and_add_string(string_table, value)
+        elif value_type == 2:  # Bool
+            v4_attributes[key] = "true" if value else "false"
+        elif value_type == 3:  # Double
+            v4_attributes[key] = str(value)
+        elif value_type == 4:  # Int
+            v4_attributes[key] = str(value)
+        elif value_type == 5:  # Bytes
+            raise NotImplementedError("Bytes values are not supported yet.")
+        elif value_type == 6:  # Array
+            raise NotImplementedError("Array of values are not supported yet.")
+        elif value_type == 7:  # Key Value list
+            raise NotImplementedError("Key value list values are not supported yet.")
+        else:
+            raise TypeError("Unknown attribute value type %r." % value_type)
+    return v4_attributes
+
+
+def _convert_v1_span_event_attributes(attr: Any, string_table: List[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Convert a v1 span event attributes to a v4 span event attributes. Unfortunately we need multiple implementations that 
+    convert "attributes" as the v0.4 representation of attributes is different between span links and span events.
+    """
     if not isinstance(attr, list):
         raise TypeError("Attribute must be a list, got type %r." % type(attr))
     if len(attr) % 3 != 0:
@@ -912,7 +981,7 @@ def _convert_v1_span_event_attribute(attr: Any, string_table: List[str]) -> Dict
             v4_attr_value["type"] = 3
             v4_attr_value["double_value"] = value
         elif value_type == 4:  # Int
-            v4_attr_value["type"] = 2 # Yes the constants are different here
+            v4_attr_value["type"] = 2  # Yes the constants are different here
             v4_attr_value["int_value"] = value
         elif value_type == 5:  # Bytes
             raise NotImplementedError("Bytes values are not supported yet.")
@@ -924,6 +993,7 @@ def _convert_v1_span_event_attribute(attr: Any, string_table: List[str]) -> Dict
             raise TypeError("Unknown attribute value type %r." % value_type)
         attributes[key] = v4_attr_value
     return attributes
+
 
 def _convert_v1_attributes(attr: Any, meta: Dict[str, str], metrics: Dict[str, MetricType], string_table: List[str]) -> None:
     if not isinstance(attr, list):
