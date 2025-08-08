@@ -149,7 +149,7 @@ def v1_reference_http_trace_payload_data() -> bytes:
         {11: [
             {  # chunk
                 1: 0,  # Priority
-                6: bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01]),  # Trace ID 128 bits
+                6: bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xe3]),  # Trace ID 128 bits (85, 8675)
                 4: [{  # Span
                     1: "my-service",
                     2: "span-name",

@@ -485,15 +485,28 @@ async def test_trace_v1(
     )
     assert resp.status == 200, await resp.text()
 
-    result_resp = await agent.get("/test/traces", params={"trace_ids": str(tid)})
+    result_resp = await agent.get("/test/traces", params={"trace_ids": str(8675)})
+
+    assert result_resp.status == 200
+    result = json.loads(await result_resp.text())
+    assert len(result) == 1
+    assert len(result[0]) == 1, result
+    assert result[0][0]["trace_id"] == 8675
+    assert result[0][0]["_dd.p.tid"] == 85
+    assert result[0][0]["service"] == "my-service"
 
 
 async def test_trace_v1_basic():
-    #TODO: Add trace id so we can find and verify the trace id
-    data = msgpack.packb({2: "hello",11: [{4: [
-        {1: "my-service", 2: "span-name", 3: 1, 4: 1234, 5: 5555, 6: 987, 7: 150, 8: True, 9: ["foo", 1, "bar", "fooNum", 3, 3.14],
-         10: "span-type", 13: "some-env", 14: "my-version", 15: "my-component", 16: 1}
-    ]}]})
+    data = msgpack.packb(
+        {2: "hello",
+         11: [{1: 1,
+               2: "rum",
+               3: ["some-global", 1, "cool-value"],
+               4: [{1: "my-service", 2: "span-name", 3: 1, 4: 1234, 5: 5555, 6: 987, 7: 150, 8: True, 9: ["foo", 1, "bar", "fooNum", 3, 3.14],
+                    10: "span-type", 13: "some-env", 14: "my-version", 15: "my-component", 16: 1}],
+               6: bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xe3]),
+               7: "-4",
+               }]})
     result = decode_v1(data)
     assert len(result) == 1
     assert len(result[0]) == 1
@@ -505,6 +518,11 @@ async def test_trace_v1_basic():
     assert result[0][0]["start"] == 987
     assert result[0][0]["duration"] == 150
     assert result[0][0]["error"] == 1
-    assert result[0][0]["meta"] == {"foo": "bar", "env": "some-env", "version": "my-version", "component": "my-component", "span.kind": "internal"}
+    assert result[0][0]["meta"] == {"foo": "bar", "env": "some-env", "version": "my-version", "component": "my-component", "span.kind": "internal", "some-global": "cool-value"}
     assert result[0][0]["metrics"] == {"fooNum": 3.14}
     assert result[0][0]["type"] == "span-type"
+    assert result[0][0]["trace_id"] == 8675
+    assert result[0][0]["_dd.p.tid"] == 85
+    assert result[0][0]["_dd.p.dm"] == "-4"
+    assert result[0][0]["_dd.origin"] == "rum"
+    assert result[0][0]["_sampling_priority_v1"] == 1

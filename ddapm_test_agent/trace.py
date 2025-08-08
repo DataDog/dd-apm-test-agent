@@ -745,15 +745,55 @@ def _convert_v1_payload(data: Any) -> v04TracePayload:
 def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
     if not isinstance(chunk, dict):
         raise TypeError("Chunk must be a map.")
-    if 4 not in chunk:
-        raise TypeError("Chunk must contain a 'spans'(4) key.")
-    if not isinstance(chunk[4], list):
-        raise TypeError("Chunk 'spans'(4) must be a list.")
-    spans: List[Span] = []
-    for span in chunk[4]:
-        converted_span = _convert_v1_span(span, string_table)
-        # TODO: bring chunk level attributes trace_id in
-        spans.append(converted_span)
+
+    priority, origin, decision_maker = "", "", ""
+    trace_id, trace_id_high = 0, 0
+    meta: Dict[str, str] = {}
+    metrics: Dict[str, MetricType] = {}
+    for k, v in chunk.items():
+        if k == 1:
+            priority = v
+        elif k == 2:
+            origin = _get_and_add_string(string_table, v)
+        elif k == 3:
+            if not isinstance(v, list):
+                raise TypeError("Chunk Attributes must be a list, got type %r." % type(v))
+            _convert_v1_attributes(v, meta, metrics, string_table)
+        elif k == 4:
+            if not isinstance(v, list):
+                raise TypeError("Chunk 'spans'(4) must be a list.")
+            spans: List[Span] = []
+            for span in v:
+                converted_span = _convert_v1_span(span, string_table)
+                spans.append(converted_span)
+        # We explicitly ignore the 5th key, which is the droppedTrace flag (unset by tracers)
+        elif k == 5:
+            pass
+        elif k == 6:
+            if len(v) != 16:
+                raise TypeError("Trace ID must be 16 bytes, got %r." % len(v))
+            # trace_id is a 128 bit integer in a bytes array, so we need to get the last 64 bits
+            trace_id = int.from_bytes(v[8:], "big")
+            trace_id_high = int.from_bytes(v[:8], "big")
+        elif k == 7:
+            decision_maker = _get_and_add_string(string_table, v)
+        else:
+            raise TypeError("Unknown key %r in v1 trace chunk" % k)
+
+    if len(spans) == 0:
+        raise TypeError("Chunk must contain at least one span.")
+
+    # TODO: bring chunk level attributes trace_id, priority, origin, decision_maker in
+    for span in spans:
+        span["trace_id"] = trace_id
+        span["_dd.p.tid"] = trace_id_high
+        span["_dd.p.dm"] = decision_maker
+        span["_dd.origin"] = origin
+        span["_sampling_priority_v1"] = priority
+        for k, v in meta.items():
+            span["meta"][k] = v
+        for k, v in metrics.items():
+            span["metrics"][k] = v
     return spans
 
 

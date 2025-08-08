@@ -430,6 +430,8 @@ class Agent:
             return self._decode_v05_traces(req)
         elif req.match_info.handler == self.handle_v07_traces:
             return self._decode_v07_traces(req)
+        elif req.match_info.handler == self.handle_v1_traces:
+            return self._decode_v1_traces(req)
         return []
 
     async def _traces_by_session(self, token: Optional[str]) -> List[Trace]:
