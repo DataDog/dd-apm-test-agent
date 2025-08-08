@@ -526,3 +526,26 @@ async def test_trace_v1_basic():
     assert result[0][0]["_dd.p.dm"] == "-4"
     assert result[0][0]["_dd.origin"] == "rum"
     assert result[0][0]["_sampling_priority_v1"] == 1
+
+
+async def test_trace_v1_span_event():
+    data = msgpack.packb(
+        {11: [{
+            4: [{1: "my-service", 2: "span-name", 3: 1, 4: 1234, 5: 5555, 6: 987, 7: 150,
+                    10: "span-type", 13: "some-env", 14: "my-version", 15: "my-component", 16: 1,
+                    12: [{1: 9876, 2: "event-name", 3: ["event-key", 1, "event-value", "event-key2", 2, True, "event-key3", 3, 3.14, "event-key4", 4, 123]}]}],
+            6: bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xe3]),
+            7: "-4",
+        }]})
+    result = decode_v1(data)
+    assert len(result) == 1
+    assert len(result[0]) == 1
+    assert result[0][0]["service"] == "my-service"
+    assert len(result[0][0]["span_events"]) == 1
+    assert result[0][0]["span_events"][0]["name"] == "event-name"
+    assert result[0][0]["span_events"][0]["attributes"] == {
+        "event-key": {"type": 0, "string_value": "event-value"},
+        "event-key2": {"type": 1, "bool_value": True},
+        "event-key3": {"type": 3, "double_value": 3.14},
+        "event-key4": {"type": 2, "int_value": 123},
+    }

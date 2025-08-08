@@ -835,7 +835,13 @@ def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
         elif k == 11:
             raise NotImplementedError("Span links are not supported yet.")
         elif k == 12:
-            raise NotImplementedError("Span events are not supported yet.")
+            if not isinstance(v, list):
+                raise TypeError("Span events must be a list, got type %r." % type(v))
+            events: List[SpanEvent] = []
+            for raw_event in v:
+                event = _convert_v1_span_event(raw_event, string_table)
+                events.append(event)
+            v4Span["span_events"] = events
         elif k == 13:
             env = _get_and_add_string(string_table, v)
         elif k == 14:
@@ -857,6 +863,8 @@ def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
                 spanKind = "consumer"
             else:
                 raise TypeError("Unknown span kind %r." % v)
+    if "meta" not in v4Span or v4Span["meta"] is None:
+        v4Span["meta"] = {}
     if env != "":
         v4Span["meta"]["env"] = env
     if version != "":
@@ -867,6 +875,55 @@ def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
         v4Span["meta"]["span.kind"] = spanKind
     return v4Span
 
+
+def _convert_v1_span_event(event: Any, string_table: List[str]) -> SpanEvent:
+    if not isinstance(event, dict):
+        raise TypeError("Span event must be a map, got type %r." % type(event))
+    v4Event = SpanEvent()
+    for k, v in event.items():
+        if k == 1:
+            v4Event["time_unix_nano"] = v
+        elif k == 2:
+            v4Event["name"] = _get_and_add_string(string_table, v)
+        elif k == 3:
+            v4Event["attributes"] = _convert_v1_span_event_attribute(v, string_table)
+        else:
+            raise TypeError("Unknown key %r in v1 span event" % k)
+    return v4Event
+
+def _convert_v1_span_event_attribute(attr: Any, string_table: List[str]) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(attr, list):
+        raise TypeError("Attribute must be a list, got type %r." % type(attr))
+    if len(attr) % 3 != 0:
+        raise TypeError("Attribute list must have a multiple of 3 elements, got %r." % len(attr))
+    attributes: Dict[str, Dict[str, Any]] = {}
+    for i in range(0, len(attr), 3):
+        v4_attr_value: Dict[str, Any] = {}
+        key = _get_and_add_string(string_table, attr[i])
+        value_type = attr[i + 1]
+        value = attr[i + 2]
+        if value_type == 1:  # String
+            v4_attr_value["type"] = 0
+            v4_attr_value["string_value"] = _get_and_add_string(string_table, value)
+        elif value_type == 2:  # Bool
+            v4_attr_value["type"] = 1
+            v4_attr_value["bool_value"] = value
+        elif value_type == 3:  # Double
+            v4_attr_value["type"] = 3
+            v4_attr_value["double_value"] = value
+        elif value_type == 4:  # Int
+            v4_attr_value["type"] = 2 # Yes the constants are different here
+            v4_attr_value["int_value"] = value
+        elif value_type == 5:  # Bytes
+            raise NotImplementedError("Bytes values are not supported yet.")
+        elif value_type == 6:  # Array
+            raise NotImplementedError("Array of strings values are not supported yet.")
+        elif value_type == 7:  # Key Value list
+            raise NotImplementedError("Key value list values are not supported yet.")
+        else:
+            raise TypeError("Unknown attribute value type %r." % value_type)
+        attributes[key] = v4_attr_value
+    return attributes
 
 def _convert_v1_attributes(attr: Any, meta: Dict[str, str], metrics: Dict[str, MetricType], string_table: List[str]) -> None:
     if not isinstance(attr, list):
