@@ -715,8 +715,9 @@ def _get_and_add_string(string_table: List[str], value: Union[int, str]) -> str:
         string_table.append(value)
         return value
     elif isinstance(value, int):
+        if value >= len(string_table) or value < 0:
+            raise ValueError(f"Value {value} is out of range for string table of length {len(string_table)}")
         return string_table[value]
-
 
 def _convert_v1_payload(data: Any) -> v04TracePayload:
     if not isinstance(data, dict):
