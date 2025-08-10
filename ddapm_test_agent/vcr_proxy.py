@@ -1,23 +1,25 @@
-import asyncio
-import base64
 import hashlib
 import hmac
 import json
-import logging
 import os
 import re
+from typing import Any
+from typing import Dict
+from typing import List
 from typing import Optional
-from urllib.parse import urlparse, parse_qs, urljoin
+from urllib.parse import parse_qs
+from urllib.parse import urljoin
+from urllib.parse import urlparse
 
 from aiohttp.web import Request
 from aiohttp.web import Response
 import requests
 import vcr
 
-log = logging.getLogger(__name__)
 
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
+
 
 def url_path_join(base_url: str, path: str) -> str:
     """Join a base URL with a path, handling slashes automatically."""
@@ -33,6 +35,22 @@ PROVIDER_BASE_URLS = {
     "genai": "https://generativelanguage.googleapis.com/",
     "bedrock-runtime": f"https://bedrock-runtime.{AWS_REGION}.amazonaws.com",
 }
+
+CASSETTE_FILTER_HEADERS = [
+    "authorization",
+    "OpenAI-Organization",
+    "api-key",
+    "x-api-key",
+    "dd-api-key",
+    "dd-application-key",
+    "x-goog-api-key",
+    "x-amz-security-token",
+    "x-amz-content-sha256",
+    "x-amz-date",
+    "x-amz-user-agent",
+    "amz-sdk-invocation-id",
+    "amz-sdk-request",
+]
 
 NORMALIZERS = [
     (
@@ -74,39 +92,43 @@ def normalize_multipart_body(body: bytes) -> str:
             return f"[binary_data_{hex_digest}]"
 
 
-def parse_authorization_header(auth_header: str) -> dict:
+def parse_authorization_header(auth_header: str) -> Dict[str, str]:
     """Parse AWS Authorization header to extract components"""
     if not auth_header.startswith("AWS4-HMAC-SHA256 "):
         return {}
-    
-    auth_parts = auth_header[len("AWS4-HMAC-SHA256 "):].split(",")
+
+    auth_parts = auth_header[len("AWS4-HMAC-SHA256 ") :].split(",")
     parsed = {}
-    
+
     for part in auth_parts:
         key, value = part.split("=", 1)
         parsed[key.strip()] = value.strip()
-    
+
     return parsed
+
 
 def sign(key: bytes, msg: str) -> bytes:
     return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
 
+
 def get_signing_key(secret_key: str, date: str, region: str, service: str) -> bytes:
     """Generate AWS signing key"""
-    
+
     k_date = sign(f"AWS4{secret_key}".encode("utf-8"), date)
     k_region = sign(k_date, region)
     k_service = sign(k_region, service)
     k_signing = sign(k_service, "aws4_request")
-    
+
     return k_signing
 
 
-def create_canonical_request(method: str, path: str, query_params: str, headers: dict, signed_headers: list, payload_hash: str) -> str:
+def create_canonical_request(
+    method: str, path: str, query_params: str, headers: Dict[str, Any], signed_headers: List[str], payload_hash: str
+) -> str:
     """Create canonical request for AWS signature calculation"""
     # Canonical URI
     canonical_uri = path if path else "/"
-    
+
     # Canonical query string
     canonical_query = ""
     if query_params:
@@ -116,10 +138,10 @@ def create_canonical_request(method: str, path: str, query_params: str, headers:
             for value in sorted(parsed_query[key]):
                 sorted_params.append(f"{key}={value}")
         canonical_query = "&".join(sorted_params)
-    
+
     # Create case-insensitive header lookup
     headers_lower = {k.lower(): v for k, v in headers.items()}
-    
+
     # Canonical headers - must be sorted and in exact format
     canonical_headers = ""
     for header in sorted(signed_headers):
@@ -127,12 +149,14 @@ def create_canonical_request(method: str, path: str, query_params: str, headers:
         header_value = headers_lower.get(header_lower, "")
         # AWS expects exact format: "header-name:header-value\n"
         canonical_headers += f"{header_lower}:{header_value.strip()}\n"
-    
+
     # Signed headers - must be sorted and lowercase
     signed_headers_str = ";".join(h.lower() for h in sorted(signed_headers))
-    
-    canonical_request = f"{method}\n{canonical_uri}\n{canonical_query}\n{canonical_headers}\n{signed_headers_str}\n{payload_hash}"
-    
+
+    canonical_request = (
+        f"{method}\n{canonical_uri}\n{canonical_query}\n{canonical_headers}\n{signed_headers_str}\n{payload_hash}"
+    )
+
     return canonical_request
 
 
@@ -143,21 +167,7 @@ def get_vcr(subdirectory: str, vcr_cassettes_directory: str) -> vcr.VCR:
         cassette_library_dir=cassette_dir,
         record_mode="once",
         match_on=["path", "method"],
-        filter_headers=[
-            "authorization",
-            "OpenAI-Organization",
-            "api-key",
-            "x-api-key",
-            "dd-api-key",
-            "dd-application-key",
-            "x-goog-api-key",
-            "x-amz-security-token",
-            "x-amz-content-sha256",
-            "x-amz-date",
-            "x-amz-user-agent",
-            "amz-sdk-invocation-id",
-            "amz-sdk-request",
-        ],
+        filter_headers=CASSETTE_FILTER_HEADERS,
     )
 
 
@@ -198,7 +208,7 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
     target_url = url_path_join(PROVIDER_BASE_URLS[provider], remaining_path)
 
     headers = {key: value for key, value in request.headers.items() if key != "Host"}
-    
+
     # Read body bytes once for all requests
     body_bytes = await request.read()
 
@@ -208,46 +218,46 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
     if provider == "bedrock-runtime":
         auth_header = request.headers.get("Authorization", "")
         x_amz_security_token = request.headers.get("x-amz-security-token", "")
-        
+
         if not auth_header.startswith("AWS4-HMAC-SHA256"):
             return Response(body="Missing AWS4-HMAC-SHA256 authorization header", status=400)
-        
+
         if not x_amz_security_token:
             return Response(body="Missing x-amz-security-token header", status=400)
-        
+
         # Parse authorization header
         auth_parts = parse_authorization_header(auth_header)
         credential = auth_parts.get("Credential", "")
         signed_headers = auth_parts.get("SignedHeaders", "").split(";")
-        
+
         # Extract access key from credential
         cred_parts = credential.split("/")
         if len(cred_parts) < 1:
             return Response(body="Invalid credential format in authorization header", status=400)
-        
+
         aws_access_key = cred_parts[0]
-        
+
         # Parse target URL and update headers
         parsed_url = urlparse(target_url)
         headers = dict(request.headers)
         headers["Host"] = parsed_url.netloc
-        
+
         # Get required headers for signature calculation
         x_amz_date = headers.get("x-amz-date", "")
         x_amz_content_sha256 = headers.get("x-amz-content-sha256", "")
-        
+
         if not x_amz_date:
             return Response(body="Missing x-amz-date header", status=400)
-        
+
         # Get the secret access key from environment variable
         secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
         if not secret_key:
             return Response(body="AWS_SECRET_ACCESS_KEY environment variable not set", status=500)
-        
+
         date = x_amz_date[:8]  # YYYYMMDD format
         region = AWS_REGION
         service = "bedrock"
-        
+
         # Create canonical request
         canonical_request = create_canonical_request(
             method=request.method,
@@ -255,20 +265,22 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
             query_params=parsed_url.query,
             headers=headers,
             signed_headers=signed_headers,
-            payload_hash=x_amz_content_sha256
+            payload_hash=x_amz_content_sha256,
         )
-        
+
         # Create string to sign
         string_to_sign = f"AWS4-HMAC-SHA256\n{x_amz_date}\n{date}/{region}/{service}/aws4_request\n{hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()}"
-        
+
         # Calculate signature
         signing_key = get_signing_key(secret_key, date, region, service)
-        signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
-        
+        signature = hmac.new(signing_key, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+
         # Update authorization header with new signature
         signed_headers_str = ";".join(signed_headers)
         new_credential = f"{aws_access_key}/{date}/{region}/{service}/aws4_request"
-        headers["Authorization"] = f"AWS4-HMAC-SHA256 Credential={new_credential},SignedHeaders={signed_headers_str},Signature={signature}"
+        headers["Authorization"] = (
+            f"AWS4-HMAC-SHA256 Credential={new_credential},SignedHeaders={signed_headers_str},Signature={signature}"
+        )
 
     cassette_name = generate_cassette_name(path, request.method, body_bytes, vcr_cassette_prefix)
     with get_vcr(provider, vcr_cassettes_directory).use_cassette(f"{cassette_name}.yaml"):
