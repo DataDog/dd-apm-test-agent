@@ -118,7 +118,7 @@ async def _vcr_proxy_cassette_prefix(request: Request) -> Optional[str]:
         request_body: dict[str, str] = await request.json()
         requested_test_name = request_body.get("test_name")
         return requested_test_name
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
 
 

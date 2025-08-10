@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    vcr: fixes an issue where the vcr cassette name middleware would not properly ignore decoding errors for request bodies that were not associated with then ``/vcr/test/start`` path.
