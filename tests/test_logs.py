@@ -80,7 +80,7 @@ def span_id():
 
 @pytest.fixture
 def otlp_logs(service_name, environment, version, host_name, log_message, trace_id, span_id):
-    """Serialized OTLP logs protobuf payload."""
+    """Serialize OTLP logs protobuf payload."""
     # Create resource attributes
     resource = Resource()
     resource.attributes.extend(
@@ -135,9 +135,16 @@ async def otlp_http_agent(agent_app, aiohttp_client):
 #
 #
 # @pytest.fixture
-# async def otlp_grpc_agent(agent_app, otlp_grpc_client):
+# async def otlp_grpc_agent(agent_app):
 #     """Test client for OTLP GRPC server that forwards to HTTP."""
 #     # Return GRPC client for testing GRPC→HTTP forwarding
+#     pass
+
+
+# Future: GRPC support
+# @pytest.fixture
+# def otlp_grpc_url(testagent_url):
+#     """URL for OTLP GRPC logs endpoint."""
 #     pass
 
 
@@ -150,22 +157,8 @@ def otlp_http_url(testagent_url):
 
 @pytest.fixture
 def otlp_http_client(otlp_http_url):
-    """TestAgentClient for OTLP HTTP logs endpoint."""
+    """Test Agent client for retreiving logs from the OTLP HTTP endpoint."""
     return TestAgentClient(otlp_http_url)
-
-
-# Future: GRPC support
-# @pytest.fixture
-# def otlp_grpc_url(testagent_url):
-#     """URL for OTLP GRPC logs endpoint."""
-#     parsed_url = urlparse(testagent_url)
-#     return f"{parsed_url.scheme}://{parsed_url.hostname}:{OTLP_GRPC_PORT}"
-#
-#
-# @pytest.fixture
-# def otlp_grpc_client(otlp_grpc_url):
-#     """TestAgentClient for OTLP GRPC logs endpoint."""
-#     return TestAgentClient(otlp_grpc_url)
 
 
 async def test_logs_endpoint_basic_http(otlp_http_agent, otlp_logs):

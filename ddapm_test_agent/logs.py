@@ -8,9 +8,7 @@ from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsSer
 
 
 def decode_logs_request(request_body: bytes) -> Dict[str, Any]:
-    """
-    Decode the protobuf request body into an ExportLogsServiceRequest object.
-    """
+    """Decode the protobuf request body into an ExportLogsServiceRequest object."""
     export_request = ExportLogsServiceRequest()
     export_request.ParseFromString(request_body)
     # Convert to dict for JSON serialization and easier handling
