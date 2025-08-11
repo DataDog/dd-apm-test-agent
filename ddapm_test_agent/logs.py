@@ -1,7 +1,7 @@
 """OTLP Logs handling for the test agent."""
 
-import logging
 import json
+import logging
 from typing import Any
 from typing import Dict
 
