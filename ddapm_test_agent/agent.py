@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import atexit
 import base64
 from collections import OrderedDict
@@ -45,6 +46,7 @@ from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
 from .integration import Integration
+from .logs import decode_logs_request
 from .remoteconfig import RemoteConfigServer
 from .trace import Span
 from .trace import Trace
@@ -64,7 +66,6 @@ from .tracerflare import TracerFlareEvent
 from .tracerflare import v1_decode as v1_tracerflare_decode
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
-from .logs import decode_logs_request
 from .vcr_proxy import proxy_request
 
 
@@ -257,7 +258,6 @@ class Agent:
             "/evp_proxy/v2/api/v2/llmobs",
             "/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric",
             "/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric",
-            "/v1/logs",
         ]
 
         # Note that sessions are not cleared at any point since we don't know
@@ -609,7 +609,7 @@ class Agent:
         for resource_log in logs_data.get("resource_logs", []):
             for scope_log in resource_log.get("scope_logs", []):
                 total_log_records += len(scope_log.get("log_records", []))
-        
+
         log.info(
             "received /v1/logs payload with %r resource log(s) containing %r log record(s)",
             num_resource_logs,
@@ -1215,6 +1215,35 @@ class Agent:
         return response
 
 
+def make_otlp_app(agent: Agent) -> web.Application:
+    """Create a separate application for OTLP endpoints using the shared agent instance."""
+
+    @middleware
+    async def otlp_store_request_middleware(request: Request, handler: _Handler) -> web.Response:
+        # Always store requests for OTLP endpoints
+        await agent._store_request(request)
+        return await handler(request)
+
+    app = web.Application(
+        middlewares=[
+            otlp_store_request_middleware,  # type: ignore
+            session_token_middleware,  # type: ignore
+        ],
+    )
+
+    # Add only OTLP endpoints
+    app.add_routes(
+        [
+            web.post("/v1/logs", agent.handle_v1_logs),
+            web.get("/test/session/logs", agent.handle_session_logs),
+            web.get("/test/session/clear", agent.handle_session_clear),
+            web.get("/test/session/start", agent.handle_session_start),
+        ]
+    )
+
+    return app
+
+
 def make_app(
     enabled_checks: List[str],
     log_span_fmt: str,
@@ -1261,7 +1290,6 @@ def make_app(
             web.post("/evp_proxy/v2/api/v2/llmobs", agent.handle_evp_proxy_v2_api_v2_llmobs),
             web.post("/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric", agent.handle_evp_proxy_v2_llmobs_eval_metric),
             web.post("/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric", agent.handle_evp_proxy_v2_llmobs_eval_metric),
-            web.post("/v1/logs", agent.handle_v1_logs),
             web.get("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
@@ -1270,7 +1298,6 @@ def make_app(
             web.get("/test/session/apmtelemetry", agent.handle_session_apmtelemetry),
             web.get("/test/session/tracerflares", agent.handle_session_tracerflares),
             web.get("/test/session/stats", agent.handle_session_tracestats),
-            web.get("/test/session/logs", agent.handle_session_logs),
             web.get("/test/session/requests", agent.handle_session_requests),
             web.post("/test/session/responses/config", agent.handle_v07_remoteconfig_create),
             web.post("/test/session/responses/config/path", agent.handle_v07_remoteconfig_path_create),
@@ -1305,6 +1332,7 @@ def make_app(
         ],
         enabled=enabled_checks,
     )
+    app["agent"] = agent
     app["checks"] = checks
     app["snapshot_dir"] = snapshot_dir
     app["snapshot_ci_mode"] = snapshot_ci_mode
@@ -1336,6 +1364,12 @@ def main(args: Optional[List[str]] = None) -> None:
         help="Print version info and exit.",
     )
     parser.add_argument("-p", "--port", type=int, default=int(os.environ.get("PORT", 8126)))
+    parser.add_argument(
+        "--otlp-port",
+        type=int,
+        default=int(os.environ.get("OTLP_PORT", 4318)),
+        help="Port to listen for OTLP requests (default: 4318)",
+    )
     parser.add_argument(
         "--snapshot-dir",
         type=str,
@@ -1487,7 +1521,46 @@ def main(args: Optional[List[str]] = None) -> None:
         vcr_cassettes_directory=parsed_args.vcr_cassettes_directory,
     )
 
-    web.run_app(app, sock=apm_sock, port=parsed_args.port)
+    # Get the shared agent instance from the main app
+    agent = app["agent"]
+    otlp_app = make_otlp_app(agent)
+
+    async def run_servers():
+        """Run both APM and OTLP servers concurrently."""
+        # Create runners for both apps
+        apm_runner = web.AppRunner(app)
+        await apm_runner.setup()
+
+        otlp_runner = web.AppRunner(otlp_app)
+        await otlp_runner.setup()
+
+        # Create sites for both apps
+        if apm_sock:
+            apm_site = web.UnixSite(apm_runner, apm_sock)
+        else:
+            apm_site = web.TCPSite(apm_runner, port=parsed_args.port)
+
+        otlp_site = web.TCPSite(otlp_runner, port=parsed_args.otlp_port)
+
+        # Start both servers
+        await apm_site.start()
+        await otlp_site.start()
+
+        print(f"======== Running APM server on port {parsed_args.port} ========")
+        print(f"======== Running OTLP server on port {parsed_args.otlp_port} ========")
+        print("(Press CTRL+C to quit)")
+
+        try:
+            # Keep the servers running
+            await asyncio.Event().wait()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            await apm_runner.cleanup()
+            await otlp_runner.cleanup()
+
+    # Run the servers
+    asyncio.run(run_servers())
 
 
 if __name__ == "__main__":

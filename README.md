@@ -26,13 +26,14 @@ The test agent can be installed from PyPI:
 
     pip install ddapm-test-agent
 
-    ddapm-test-agent --port=8126
+    ddapm-test-agent --port=8126 --otlp-port=4318
 
 or from Docker:
 
     # Run the test agent and mount the snapshot directory
     docker run --rm\
             -p 8126:8126\
+            -p 4318:4318\
             -e SNAPSHOT_CI=0\
             -v $PWD/tests/snapshots:/snapshots\
             ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
@@ -491,6 +492,8 @@ Mimics the pipeline_stats endpoint of the agent, but always returns OK, and logs
 ### /v1/logs
 
 Accepts OpenTelemetry Protocol (OTLP) v1.7.0 logs in protobuf format. This endpoint validates and decodes OTLP logs payloads for testing OpenTelemetry logs exporters and libraries.
+
+**Note:** OTLP logs are served on a separate port (default: 4318) from the main APM endpoints (default: 8126). Use `--otlp-port` to configure the OTLP port.
 
 The endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and stores the decoded logs for retrieval via the `/test/session/logs` endpoint.
 
