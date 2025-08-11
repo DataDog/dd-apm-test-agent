@@ -502,7 +502,7 @@ The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-prot
 OTLP logs can also be sent via GRPC using the OpenTelemetry `LogsService.Export` method. The GRPC server implements the standard OTLP logs service interface and forwards all requests to the HTTP server, ensuring consistent processing and session management.
 
 **Note:** OTLP logs are served on separate ports from the main APM endpoints (default: 8126):
-- **HTTP**: Port 4318 (default) - Use `--otlp-port` to configure
+- **HTTP**: Port 4318 (default) - Use `--otlp-http-port` to configure
 - **GRPC**: Port 4317 (planned) - Use `--otlp-grpc-port` to configure
 
 Both protocols store decoded logs for retrieval via the `/test/session/logs` HTTP endpoint.
