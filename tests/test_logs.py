@@ -345,7 +345,16 @@ async def test_logs_endpoint_invalid_content_type(otlp_http_agent, otlp_logs):
 
 async def test_logs_endpoint_invalid_json(otlp_http_agent):
     """POST /v1/logs rejects malformed JSON."""
+    # Test malformed JSON syntax
     resp = await otlp_http_agent.post("/v1/logs", headers=JSON_HEADERS, data=b'{"invalid": json}')
+    assert resp.status == 400
+
+    # Test JSON array (should be object)
+    resp = await otlp_http_agent.post("/v1/logs", headers=JSON_HEADERS, data=b'["not", "an", "object"]')
+    assert resp.status == 400
+
+    # Test JSON primitive (should be object)
+    resp = await otlp_http_agent.post("/v1/logs", headers=JSON_HEADERS, data=b'"just a string"')
     assert resp.status == 400
 
 

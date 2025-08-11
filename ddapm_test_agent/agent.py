@@ -586,9 +586,11 @@ class Agent:
         content_type = request.headers.get("Content-Type", "").lower().strip()
         if content_type == "application/json":
             try:
-                return json.loads(raw_data)
+                return json.loads(raw_data)  # type: ignore
             except json.JSONDecodeError:
-                raise web.HTTPBadRequest(text=f"Invalid JSON in request body: {raw_data}")
+                raise web.HTTPBadRequest(
+                    text=f"Invalid JSON in request body: {raw_data.decode('utf-8', errors='ignore')}"
+                )
         elif content_type == "application/x-protobuf":
             return decode_logs_request(raw_data)
         else:
