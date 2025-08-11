@@ -12,6 +12,7 @@ import pprint
 import re
 import socket
 import sys
+from typing import Any
 from typing import Awaitable
 from typing import Callable
 from typing import DefaultDict
@@ -63,6 +64,7 @@ from .tracerflare import TracerFlareEvent
 from .tracerflare import v1_decode as v1_tracerflare_decode
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
+from .logs import decode_logs_request
 from .vcr_proxy import proxy_request
 
 
@@ -255,6 +257,7 @@ class Agent:
             "/evp_proxy/v2/api/v2/llmobs",
             "/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric",
             "/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric",
+            "/v1/logs",
         ]
 
         # Note that sessions are not cleared at any point since we don't know
@@ -486,6 +489,20 @@ class Agent:
                 stats.append(s)
         return stats
 
+    async def _logs_by_session(self, token: Optional[str]) -> List[Dict[str, Any]]:
+        """Return the logs that belong to the given session token.
+
+        If token is None or if the token was used to manually start a session
+        with /session-start then return all logs that were sent since the last
+        /session-start request was made.
+        """
+        logs: List[Dict[str, Any]] = []
+        for req in self._requests_by_session(token):
+            if req.match_info.handler == self.handle_v1_logs:
+                logs_data = self._decode_v1_logs(req)
+                logs.append(logs_data)
+        return logs
+
     async def _integration_requests_by_session(
         self,
         token: Optional[str],
@@ -558,6 +575,10 @@ class Agent:
         raw_data = self._request_data(request)
         return tracestats_decode_v06(raw_data)
 
+    def _decode_v1_logs(self, request: Request) -> Dict[str, Any]:
+        raw_data = self._request_data(request)
+        return decode_logs_request(raw_data)
+
     async def handle_v04_traces(self, request: Request) -> web.Response:
         return await self._handle_traces(request, version="v0.4")
 
@@ -579,6 +600,21 @@ class Agent:
 
     async def handle_v01_pipelinestats(self, request: Request) -> web.Response:
         log.info("received /v0.1/pipeline_stats payload")
+        return web.HTTPOk()
+
+    async def handle_v1_logs(self, request: Request) -> web.Response:
+        logs_data = self._decode_v1_logs(request)
+        num_resource_logs = len(logs_data.get("resource_logs", []))
+        total_log_records = 0
+        for resource_log in logs_data.get("resource_logs", []):
+            for scope_log in resource_log.get("scope_logs", []):
+                total_log_records += len(scope_log.get("log_records", []))
+        
+        log.info(
+            "received /v1/logs payload with %r resource log(s) containing %r log record(s)",
+            num_resource_logs,
+            total_log_records,
+        )
         return web.HTTPOk()
 
     async def handle_v07_remoteconfig(self, request: Request) -> web.Response:
@@ -941,6 +977,11 @@ class Agent:
         stats = await self._tracestats_by_session(token)
         return web.json_response(stats)
 
+    async def handle_session_logs(self, request: Request) -> web.Response:
+        token = request["session_token"]
+        logs = await self._logs_by_session(token)
+        return web.json_response(logs)
+
     async def handle_session_requests(self, request: Request) -> web.Response:
         token = request["session_token"]
         resp = []
@@ -1220,6 +1261,7 @@ def make_app(
             web.post("/evp_proxy/v2/api/v2/llmobs", agent.handle_evp_proxy_v2_api_v2_llmobs),
             web.post("/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric", agent.handle_evp_proxy_v2_llmobs_eval_metric),
             web.post("/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric", agent.handle_evp_proxy_v2_llmobs_eval_metric),
+            web.post("/v1/logs", agent.handle_v1_logs),
             web.get("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
@@ -1228,6 +1270,7 @@ def make_app(
             web.get("/test/session/apmtelemetry", agent.handle_session_apmtelemetry),
             web.get("/test/session/tracerflares", agent.handle_session_tracerflares),
             web.get("/test/session/stats", agent.handle_session_tracestats),
+            web.get("/test/session/logs", agent.handle_session_logs),
             web.get("/test/session/requests", agent.handle_session_requests),
             web.post("/test/session/responses/config", agent.handle_v07_remoteconfig_create),
             web.post("/test/session/responses/config/path", agent.handle_v07_remoteconfig_path_create),

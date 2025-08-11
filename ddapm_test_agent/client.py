@@ -47,6 +47,12 @@ class TestAgentClient:
             self.clear()
         return cast(List[Any], resp.json())
 
+    def logs(self, clear: bool = False, **kwargs: Any) -> List[Any]:
+        resp = self._session.get(self._url("/test/session/logs"), **kwargs)
+        if clear:
+            self.clear()
+        return cast(List[Any], resp.json())
+
     def clear(self, **kwargs: Any) -> None:
         self._session.get(self._url("/test/session/clear"), **kwargs)
 

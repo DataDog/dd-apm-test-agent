@@ -37,6 +37,9 @@ setup(
         "typing_extensions",
         "yarl",
         "vcrpy",
+        # ddtrace libraries officially support opentelemetry-proto 1.7.0
+        "opentelemetry-proto==1.7.0",
+        "protobuf>=3.19.0",
     ],
     tests_require=testing_deps,
     setup_requires=["setuptools_scm"],

@@ -379,6 +379,15 @@ Return stats that have been received by the agent for the given session token.
 
 Stats are returned as a JSON list of the stats payloads received.
 
+### /test/session/logs
+
+Return OpenTelemetry logs that have been received by the agent for the given session token.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+Logs are returned as a JSON list of the OTLP logs payloads received. The logs are in the standard OpenTelemetry Protocol (OTLP) v1.7.0 format, decoded from protobuf into JSON.
+
 ### /test/session/responses/config (POST)
 Create a Remote Config payload to retrieve in endpoint `/v0.7/config`
 
@@ -478,6 +487,12 @@ curl -X GET 'http://0.0.0.0:8126/test/integrations/tested_versions'
 ### /v0.1/pipeline_stats
 
 Mimics the pipeline_stats endpoint of the agent, but always returns OK, and logs a line everytime it's called.
+
+### /v1/logs
+
+Accepts OpenTelemetry Protocol (OTLP) v1.7.0 logs in protobuf format. This endpoint validates and decodes OTLP logs payloads for testing OpenTelemetry logs exporters and libraries.
+
+The endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and stores the decoded logs for retrieval via the `/test/session/logs` endpoint.
 
 ### /tracer_flare/v1
 
