@@ -584,17 +584,10 @@ class Agent:
     def _decode_v1_logs(self, request: Request) -> Dict[str, Any]:
         raw_data = self._request_data(request)
         content_type = request.headers.get("Content-Type", "").lower().strip()
-        if content_type == "application/json":
-            try:
-                return json.loads(raw_data)  # type: ignore
-            except json.JSONDecodeError:
-                raise web.HTTPBadRequest(
-                    text=f"Invalid JSON in request body: {raw_data.decode('utf-8', errors='ignore')}"
-                )
-        elif content_type == "application/x-protobuf":
-            return decode_logs_request(raw_data)
-        else:
-            raise web.HTTPBadRequest(text="Content-Type must be application/x-protobuf or application/json")
+        try:
+            return decode_logs_request(raw_data, content_type)
+        except Exception as e:
+            raise web.HTTPBadRequest(text=str(e))
 
     async def handle_v04_traces(self, request: Request) -> web.Response:
         return await self._handle_traces(request, version="v0.4")
