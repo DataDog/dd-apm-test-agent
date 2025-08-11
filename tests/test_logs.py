@@ -22,18 +22,29 @@ OTLP_GRPC_PORT = 4317  # Future: GRPC support
 
 def _find_service_name_in_resource(resource_logs, expected_service_name):
     """Check if service.name matches expected value in resource attributes."""
+    if not resource_logs or not resource_logs[0].get("resource"):
+        return False
+
     resource = resource_logs[0]["resource"]
-    for attr in resource["attributes"]:
-        if attr["key"] == "service.name" and attr["value"]["string_value"] == expected_service_name:
+    for attr in resource.get("attributes", []):
+        if attr.get("key") == "service.name" and attr.get("value", {}).get("string_value") == expected_service_name:
             return True
     return False
 
 
 def _get_log_body(resource_logs):
     """Extract log message body from resource logs."""
+    if (
+        not resource_logs
+        or not resource_logs[0].get("scope_logs")
+        or not resource_logs[0]["scope_logs"][0].get("log_records")
+        or not resource_logs[0]["scope_logs"][0]["log_records"][0].get("body")
+    ):
+        return None
+
     scope_logs = resource_logs[0]["scope_logs"]
     log_records = scope_logs[0]["log_records"]
-    return log_records[0]["body"]["string_value"]
+    return log_records[0]["body"].get("string_value")
 
 
 @pytest.fixture
@@ -157,7 +168,7 @@ def otlp_http_url(testagent_url):
 
 @pytest.fixture
 def otlp_http_client(otlp_http_url):
-    """Test Agent client for retreiving logs from the OTLP HTTP endpoint."""
+    """Test Agent client for retrieving logs from the OTLP HTTP endpoint."""
     return TestAgentClient(otlp_http_url)
 
 

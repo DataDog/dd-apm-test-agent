@@ -3,7 +3,7 @@
   nixConfig.bash-prompt-prefix = "\[ddapm-test-agent\] ";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/24.11";
 
     flake-utils.url = "github:numtide/flake-utils";
 
@@ -58,7 +58,11 @@
               requests
               yarl
               vcrpy
-            ];
+              # OpenTelemetry dependencies for OTLP logs support
+              protobuf
+            ] ++ (pkgs.lib.optionals (pkgs.lib.hasAttr "opentelemetry-proto" python.pkgs) [
+              python.pkgs.opentelemetry-proto
+            ]);
             nativeBuildInputs = with python.pkgs; [
               setuptools
               setuptools_scm

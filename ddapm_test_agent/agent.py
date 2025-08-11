@@ -69,6 +69,12 @@ from .tracestats import v06StatsPayload
 from .vcr_proxy import proxy_request
 
 
+# Default ports
+DEFAULT_APM_PORT = 8126
+DEFAULT_OTLP_HTTP_PORT = 4318
+DEFAULT_OTLP_GRPC_PORT = 4317
+
+
 class NoSuchSessionException(Exception):
     pass
 
@@ -603,6 +609,10 @@ class Agent:
         return web.HTTPOk()
 
     async def handle_v1_logs(self, request: Request) -> web.Response:
+        content_type = request.headers.get("Content-Type", "").lower().strip()
+        if content_type != "application/x-protobuf":
+            raise web.HTTPBadRequest(text="Content-Type must be application/x-protobuf")
+
         logs_data = self._decode_v1_logs(request)
         num_resource_logs = len(logs_data.get("resource_logs", []))
         total_log_records = 0
@@ -1245,7 +1255,7 @@ def make_otlp_http_app(agent: Agent) -> web.Application:
 
 
 # Future: GRPC support
-def make_otlp_grpc_server(agent: Agent, http_port: int):
+def make_otlp_grpc_server(agent: Agent, http_port: int) -> None:
     """Create a separate GRPC server for OTLP endpoints that forwards to HTTP server."""
     # TODO: Implement GRPC server for OTLP logs that forwards to HTTP
     #
@@ -1543,6 +1553,14 @@ def main(args: Optional[List[str]] = None) -> None:
         vcr_cassettes_directory=parsed_args.vcr_cassettes_directory,
     )
 
+    # Validate port configuration
+    if parsed_args.port == parsed_args.otlp_http_port:
+        raise ValueError("APM and OTLP HTTP ports cannot be the same")
+    if parsed_args.port == parsed_args.otlp_grpc_port:
+        raise ValueError("APM and OTLP GRPC ports cannot be the same")
+    if parsed_args.otlp_http_port == parsed_args.otlp_grpc_port:
+        raise ValueError("OTLP HTTP and GRPC ports cannot be the same")
+
     # Get the shared agent instance from the main app
     agent = app["agent"]
     otlp_http_app = make_otlp_http_app(agent)
@@ -1571,9 +1589,8 @@ def main(args: Optional[List[str]] = None) -> None:
 
         otlp_http_site = web.TCPSite(otlp_http_runner, port=parsed_args.otlp_http_port)
 
-        # Start both servers
-        await apm_site.start()
-        await otlp_http_site.start()
+        # Start both servers concurrently
+        await asyncio.gather(apm_site.start(), otlp_http_site.start())
 
         print(f"======== Running APM server on port {parsed_args.port} ========")
         print(f"======== Running OTLP HTTP server on port {parsed_args.otlp_http_port} ========")
