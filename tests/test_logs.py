@@ -16,6 +16,7 @@ from ddapm_test_agent.client import TestAgentClient
 
 # Constants
 PROTOBUF_HEADERS = {"Content-Type": "application/x-protobuf"}
+JSON_HEADERS = {"Content-Type": "application/json"}
 OTLP_HTTP_PORT = 4318
 OTLP_GRPC_PORT = 4317  # Future: GRPC support
 
@@ -123,6 +124,36 @@ def otlp_logs(service_name, environment, version, host_name, log_message, trace_
     export_request.resource_logs.append(resource_logs)
 
     return export_request.SerializeToString()
+
+
+@pytest.fixture
+def otlp_logs_json(service_name, environment, version, host_name, log_message, trace_id, span_id):
+    """JSON representation of OTLP logs payload."""
+    return {
+        "resource_logs": [
+            {
+                "resource": {
+                    "attributes": [
+                        {"key": "service.name", "value": {"string_value": service_name}},
+                        {"key": "deployment.environment", "value": {"string_value": environment}},
+                        {"key": "service.version", "value": {"string_value": version}},
+                        {"key": "host.name", "value": {"string_value": host_name}},
+                    ]
+                },
+                "scope_logs": [
+                    {
+                        "log_records": [
+                            {
+                                "body": {"string_value": log_message},
+                                "trace_id": trace_id.hex() if trace_id else "",
+                                "span_id": span_id.hex() if span_id else "",
+                            }
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
 
 
 @pytest.fixture
@@ -275,6 +306,47 @@ async def test_multiple_logs_sessions_http(otlp_http_agent, otlp_logs):
     assert resp.status == 200
     logs = await resp.json()
     assert len(logs) == 1  # Only the log from the current session
+
+
+async def test_logs_endpoint_json_http(otlp_http_agent, otlp_logs_json, service_name):
+    """POST /v1/logs accepts JSON logs and returns 200."""
+    import json
+
+    resp = await otlp_http_agent.post("/v1/logs", headers=JSON_HEADERS, data=json.dumps(otlp_logs_json))
+    assert resp.status == 200
+
+    # Verify logs were stored
+    resp = await otlp_http_agent.get("/test/session/logs")
+    assert resp.status == 200
+    logs = await resp.json()
+    assert len(logs) == 1
+
+    # Verify service.name is set in resource attributes
+    resource_logs = logs[0]["resource_logs"]
+    assert _find_service_name_in_resource(
+        resource_logs, service_name
+    ), f"service.name should be set to '{service_name}' in resource attributes"
+
+
+async def test_logs_endpoint_invalid_content_type(otlp_http_agent, otlp_logs):
+    """POST /v1/logs rejects invalid content types."""
+    # Test with XML content type (unsupported)
+    resp = await otlp_http_agent.post("/v1/logs", headers={"Content-Type": "application/xml"}, data=otlp_logs)
+    assert resp.status == 400
+
+    # Test with plain text content type (unsupported)
+    resp = await otlp_http_agent.post("/v1/logs", headers={"Content-Type": "text/plain"}, data=b"some plain text")
+    assert resp.status == 400
+
+    # Test with no content type header
+    resp = await otlp_http_agent.post("/v1/logs", data=otlp_logs)
+    assert resp.status == 400
+
+
+async def test_logs_endpoint_invalid_json(otlp_http_agent):
+    """POST /v1/logs rejects malformed JSON."""
+    resp = await otlp_http_agent.post("/v1/logs", headers=JSON_HEADERS, data=b'{"invalid": json}')
+    assert resp.status == 400
 
 
 # Future: GRPC support tests

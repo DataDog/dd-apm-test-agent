@@ -583,7 +583,16 @@ class Agent:
 
     def _decode_v1_logs(self, request: Request) -> Dict[str, Any]:
         raw_data = self._request_data(request)
-        return decode_logs_request(raw_data)
+        content_type = request.headers.get("Content-Type", "").lower().strip()
+        if content_type == "application/json":
+            try:
+                return json.loads(raw_data)
+            except json.JSONDecodeError:
+                raise web.HTTPBadRequest(text=f"Invalid JSON in request body: {raw_data}")
+        elif content_type == "application/x-protobuf":
+            return decode_logs_request(raw_data)
+        else:
+            raise web.HTTPBadRequest(text="Content-Type must be application/x-protobuf or application/json")
 
     async def handle_v04_traces(self, request: Request) -> web.Response:
         return await self._handle_traces(request, version="v0.4")
@@ -609,17 +618,13 @@ class Agent:
         return web.HTTPOk()
 
     async def handle_v1_logs(self, request: Request) -> web.Response:
-        content_type = request.headers.get("Content-Type", "").lower().strip()
-        if content_type != "application/x-protobuf":
-            raise web.HTTPBadRequest(text="Content-Type must be application/x-protobuf")
-
         logs_data = self._decode_v1_logs(request)
         num_resource_logs = len(logs_data.get("resource_logs", []))
-        total_log_records = 0
-        for resource_log in logs_data.get("resource_logs", []):
-            for scope_log in resource_log.get("scope_logs", []):
-                total_log_records += len(scope_log.get("log_records", []))
-
+        total_log_records = sum(
+            len(scope_log.get("log_records", []))
+            for resource_log in logs_data.get("resource_logs", [])
+            for scope_log in resource_log.get("scope_logs", [])
+        )
         log.info(
             "received /v1/logs payload with %r resource log(s) containing %r log record(s)",
             num_resource_logs,
