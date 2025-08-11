@@ -26,7 +26,8 @@ The test agent can be installed from PyPI:
 
     pip install ddapm-test-agent
 
-    ddapm-test-agent --port=8126 --otlp-port=4318
+    # HTTP on port 8126, OTLP HTTP on port 4318, OTLP GRPC on port 4317 (planned)
+    ddapm-test-agent --port=8126 --otlp-port=4318 --otlp-grpc-port=4317
 
 or from Docker:
 
@@ -34,6 +35,7 @@ or from Docker:
     docker run --rm\
             -p 8126:8126\
             -p 4318:4318\
+            -p 4317:4317\
             -e SNAPSHOT_CI=0\
             -v $PWD/tests/snapshots:/snapshots\
             ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
@@ -489,13 +491,28 @@ curl -X GET 'http://0.0.0.0:8126/test/integrations/tested_versions'
 
 Mimics the pipeline_stats endpoint of the agent, but always returns OK, and logs a line everytime it's called.
 
-### /v1/logs
+### /v1/logs (HTTP)
 
-Accepts OpenTelemetry Protocol (OTLP) v1.7.0 logs in protobuf format. This endpoint validates and decodes OTLP logs payloads for testing OpenTelemetry logs exporters and libraries.
+Accepts OpenTelemetry Protocol (OTLP) v1.7.0 logs in protobuf format via HTTP. This endpoint validates and decodes OTLP logs payloads for testing OpenTelemetry logs exporters and libraries.
 
-**Note:** OTLP logs are served on a separate port (default: 4318) from the main APM endpoints (default: 8126). Use `--otlp-port` to configure the OTLP port.
+The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and stores the decoded logs for retrieval via the `/test/session/logs` endpoint.
 
-The endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and stores the decoded logs for retrieval via the `/test/session/logs` endpoint.
+### OTLP Logs via GRPC (Planned)
+
+OTLP logs can also be sent via GRPC using the OpenTelemetry `LogsService.Export` method. The GRPC server implements the standard OTLP logs service interface and forwards all requests to the HTTP server, ensuring consistent processing and session management.
+
+**Note:** OTLP logs are served on separate ports from the main APM endpoints (default: 8126):
+- **HTTP**: Port 4318 (default) - Use `--otlp-port` to configure
+- **GRPC**: Port 4317 (planned) - Use `--otlp-grpc-port` to configure
+
+Both protocols store decoded logs for retrieval via the `/test/session/logs` HTTP endpoint.
+
+GRPC Client → GRPC Server → HTTP POST → HTTP Server → Agent Storage
+                    ↓                                      ↓
+            (forwards protobuf)                    (session management)
+                    ↓                                      ↓
+                   HTTP                              Retrievable via
+                Response                          /test/session/logs
 
 ### /tracer_flare/v1
 
