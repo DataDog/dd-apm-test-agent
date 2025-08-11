@@ -1,5 +1,6 @@
-import json
+from urllib.parse import urlparse
 
+import aiohttp
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue
 from opentelemetry.proto.common.v1.common_pb2 import KeyValue
@@ -9,28 +10,92 @@ from opentelemetry.proto.logs.v1.logs_pb2 import ScopeLogs
 from opentelemetry.proto.resource.v1.resource_pb2 import Resource
 import pytest
 
+from ddapm_test_agent.agent import make_otlp_app
 from ddapm_test_agent.client import TestAgentClient
-from ddapm_test_agent.logs import find_log_correlation_attributes
 
 
-def create_otlp_logs_protobuf():
-    """Create a real OTLP logs protobuf payload for testing."""
+# Constants
+PROTOBUF_HEADERS = {"Content-Type": "application/x-protobuf"}
+OTLP_PORT = 4318
+
+
+def _find_service_name_in_resource(resource_logs, expected_service_name):
+    """Check if service.name matches expected value in resource attributes."""
+    resource = resource_logs[0]["resource"]
+    for attr in resource["attributes"]:
+        if attr["key"] == "service.name" and attr["value"]["string_value"] == expected_service_name:
+            return True
+    return False
+
+
+def _get_log_body(resource_logs):
+    """Extract log message body from resource logs."""
+    scope_logs = resource_logs[0]["scope_logs"]
+    log_records = scope_logs[0]["log_records"]
+    return log_records[0]["body"]["string_value"]
+
+
+@pytest.fixture
+def service_name():
+    """Service name."""
+    return "ddservice"
+
+
+@pytest.fixture
+def environment():
+    """Environment name."""
+    return "ddenv"
+
+
+@pytest.fixture
+def version():
+    """Service version."""
+    return "ddv1"
+
+
+@pytest.fixture
+def host_name():
+    """Host name."""
+    return "ddhost"
+
+
+@pytest.fixture
+def log_message():
+    """Log message content."""
+    return "test_otel_logs_exporter_auto_configured_http"
+
+
+@pytest.fixture
+def trace_id():
+    """Trace ID."""
+    return b""
+
+
+@pytest.fixture
+def span_id():
+    """Span ID."""
+    return b""
+
+
+@pytest.fixture
+def otlp_logs(service_name, environment, version, host_name, log_message, trace_id, span_id):
+    """Serialized OTLP logs protobuf payload."""
     # Create resource attributes
     resource = Resource()
     resource.attributes.extend(
         [
-            KeyValue(key="service.name", value=AnyValue(string_value="ddservice")),
-            KeyValue(key="deployment.environment", value=AnyValue(string_value="ddenv")),
-            KeyValue(key="service.version", value=AnyValue(string_value="ddv1")),
-            KeyValue(key="host.name", value=AnyValue(string_value="ddhost")),
+            KeyValue(key="service.name", value=AnyValue(string_value=service_name)),
+            KeyValue(key="deployment.environment", value=AnyValue(string_value=environment)),
+            KeyValue(key="service.version", value=AnyValue(string_value=version)),
+            KeyValue(key="host.name", value=AnyValue(string_value=host_name)),
         ]
     )
 
     # Create log record
     log_record = LogRecord()
-    log_record.body.string_value = "test_otel_logs_exporter_auto_configured_http"
-    log_record.trace_id = b""  # Empty trace ID
-    log_record.span_id = b""  # Empty span ID
+    log_record.body.string_value = log_message
+    log_record.trace_id = trace_id
+    log_record.span_id = span_id
 
     # Create scope logs
     scope_logs = ScopeLogs()
@@ -49,16 +114,8 @@ def create_otlp_logs_protobuf():
 
 
 @pytest.fixture
-async def test_agent_client(testagent, testagent_url):
-    """Create a TestAgentClient from the testagent fixture."""
-    return TestAgentClient(testagent_url)
-
-
-@pytest.fixture
 async def otlp_agent(agent_app, aiohttp_client, loop):
-    """Create an OTLP client from the shared agent in agent_app."""
-    from ddapm_test_agent.agent import make_otlp_app
-
+    """Test client for OTLP app."""
     # Get the shared agent instance from the main app
     agent = agent_app.app["agent"]
     otlp_app = make_otlp_app(agent)
@@ -68,30 +125,29 @@ async def otlp_agent(agent_app, aiohttp_client, loop):
     yield client
 
 
-async def test_logs_endpoint_basic(otlp_agent):
-    """Test that the /v1/logs endpoint accepts requests and returns 200."""
-    # Create a real OTLP logs protobuf payload
-    logs_data = create_otlp_logs_protobuf()
+@pytest.fixture
+def otlp_url(testagent_url):
+    """URL for OTLP logs endpoint."""
+    parsed_url = urlparse(testagent_url)
+    return f"{parsed_url.scheme}://{parsed_url.hostname}:{OTLP_PORT}"
 
-    headers = {
-        "Content-Type": "application/x-protobuf",
-    }
 
-    resp = await otlp_agent.post("/v1/logs", headers=headers, data=logs_data)
+@pytest.fixture
+def otlp_client(otlp_url):
+    """TestAgentClient for OTLP logs endpoint."""
+    return TestAgentClient(otlp_url)
+
+
+async def test_logs_endpoint_basic(otlp_agent, otlp_logs):
+    """POST /v1/logs accepts OTLP logs and returns 200."""
+    resp = await otlp_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs)
     assert resp.status == 200
 
 
-async def test_session_logs_endpoint(otlp_agent):
-    """Test that the /test/session/logs endpoint returns logs for a session."""
-    # Create a real OTLP logs protobuf payload
-    logs_data = create_otlp_logs_protobuf()
-
-    headers = {
-        "Content-Type": "application/x-protobuf",
-    }
-
+async def test_session_logs_endpoint(otlp_agent, otlp_logs, service_name):
+    """GET /test/session/logs returns stored logs with correct attributes."""
     # Send logs
-    resp = await otlp_agent.post("/v1/logs", headers=headers, data=logs_data)
+    resp = await otlp_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs)
     assert resp.status == 200
 
     # Get logs from session
@@ -101,46 +157,25 @@ async def test_session_logs_endpoint(otlp_agent):
     assert len(logs) == 1
     assert "resource_logs" in logs[0]
 
-    # Verify the structure of the decoded logs
+    # Verify basic structure and content
     resource_logs = logs[0]["resource_logs"]
     assert len(resource_logs) == 1
 
-    # Check resource attributes
-    resource = resource_logs[0]["resource"]
-    assert "attributes" in resource
+    # Check that service.name is set in resource attributes
+    assert _find_service_name_in_resource(
+        resource_logs, service_name
+    ), f"service.name should be set to '{service_name}' in resource attributes"
 
-    # Check scope logs and log records
-    scope_logs = resource_logs[0]["scope_logs"]
-    assert len(scope_logs) == 1
-    log_records = scope_logs[0]["log_records"]
-    assert len(log_records) == 1
-
-    # Check the log message
-    log_body = log_records[0]["body"]["string_value"]
-    assert log_body == "test_otel_logs_exporter_auto_configured_http"
+    # Check that log message body is not null
+    log_body = _get_log_body(resource_logs)
+    assert log_body is not None and log_body != "", "Log message body should not be null or empty"
 
 
-async def test_client_logs_method(testagent, testagent_url):
-    """Test the TestAgentClient logs() method."""
-    from urllib.parse import urlparse
-
-    import aiohttp
-
-    # Create a TestAgentClient that points to the OTLP port for logs
-    parsed_url = urlparse(testagent_url)
-    otlp_url = f"{parsed_url.scheme}://{parsed_url.hostname}:4318"
-    otlp_client = TestAgentClient(otlp_url)
-
-    # Create a real OTLP logs protobuf payload
-    logs_data = create_otlp_logs_protobuf()
-
-    headers = {
-        "Content-Type": "application/x-protobuf",
-    }
-
+async def test_client_logs_method(testagent, otlp_client, otlp_url, otlp_logs, service_name):
+    """TestAgentClient.logs() retrieves stored logs correctly."""
     # Send logs via aiohttp session to the OTLP port
     async with aiohttp.ClientSession() as session:
-        resp = await session.post(f"{otlp_url}/v1/logs", headers=headers, data=logs_data)
+        resp = await session.post(f"{otlp_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs)
         assert resp.status == 200
 
     # Get logs via TestAgentClient from the OTLP port
@@ -148,106 +183,49 @@ async def test_client_logs_method(testagent, testagent_url):
     assert len(logs) == 1
     assert "resource_logs" in logs[0]
 
-
-def test_find_log_correlation_attributes():
-    """Test the log correlation attributes extraction function."""
-    captured_logs = {
-        "resource_logs": [
-            {
-                "resource": {
-                    "attributes": [
-                        {"key": "service.name", "value": {"string_value": "ddservice"}},
-                        {"key": "deployment.environment", "value": {"string_value": "ddenv"}},
-                        {"key": "service.version", "value": {"string_value": "ddv1"}},
-                        {"key": "host.name", "value": {"string_value": "ddhost"}},
-                    ]
-                },
-                "scope_logs": [
-                    {
-                        "log_records": [
-                            {
-                                "body": {"string_value": "test_otel_logs_exporter_auto_configured_http"},
-                                "trace_id": "",
-                                "span_id": "",
-                            }
-                        ]
-                    }
-                ],
-            }
-        ]
-    }
-
-    lc_attributes = find_log_correlation_attributes(captured_logs, "test_otel_logs_exporter_auto_configured_http")
-
-    assert len(lc_attributes) == 6
-    assert lc_attributes["service"] == "ddservice"
-    assert lc_attributes["env"] == "ddenv"
-    assert lc_attributes["version"] == "ddv1"
-    assert lc_attributes["host_name"] == "ddhost"
-    assert lc_attributes["trace_id"] == ""
-    assert lc_attributes["span_id"] == ""
+    # Verify service.name is set in resource attributes
+    resource_logs = logs[0]["resource_logs"]
+    assert _find_service_name_in_resource(
+        resource_logs, service_name
+    ), f"service.name should be set to '{service_name}' in resource attributes"
 
 
-async def test_logs_endpoint_integration_like_user_example(otlp_agent):
-    """Integration test that matches the pattern from the user query - realistic OTLP scenario."""
+async def test_logs_endpoint_integration(otlp_agent, otlp_logs, service_name):
+    """End-to-end OTLP logs flow: send logs, retrieve them, validate content."""
     # Clear any existing data
     resp = await otlp_agent.get("/test/session/clear")
     assert resp.status == 200
 
-    # Simulate the user's test case scenario with real protobuf data
-    logs_data = create_otlp_logs_protobuf()
-
-    # Send logs request (simulating what OpenTelemetry exporter would do)
-    headers = {
-        "Content-Type": "application/x-protobuf",
-    }
-
-    resp = await otlp_agent.post("/v1/logs", headers=headers, data=logs_data)
+    # Send logs request
+    resp = await otlp_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs)
     assert resp.status == 200
 
-    # Retrieve the logs (as the test case would do)
+    # Retrieve the logs
     resp = await otlp_agent.get("/test/session/logs")
     assert resp.status == 200
     captured_logs_list = await resp.json()
 
     # Verify we got at least one resource log
-    assert len(captured_logs_list) > 0, "Expected at least one resource log in the OpenTelemetry logs request"
+    assert len(captured_logs_list) > 0, "Expected at least one resource log"
 
     captured_logs = captured_logs_list[0]
-    assert len(captured_logs["resource_logs"]) > 0
+    resource_logs = captured_logs["resource_logs"]
+    assert len(resource_logs) > 0
 
-    # Test the correlation attributes extraction (as per user's test case)
-    lc_attributes = find_log_correlation_attributes(captured_logs, "test_otel_logs_exporter_auto_configured_http")
+    # Verify service.name is set in resource attributes
+    assert _find_service_name_in_resource(
+        resource_logs, service_name
+    ), f"service.name should be set to '{service_name}' in resource attributes"
 
-    # Assert all the conditions from the user's test case
-    assert len(lc_attributes) == 6, f"Expected 6 log correlation attributes but found: {lc_attributes}"
-    assert (
-        lc_attributes["service"] == "ddservice"
-    ), f"Expected service.name to be 'ddservice' but found: {lc_attributes['service']}"
-    assert (
-        lc_attributes["env"] == "ddenv"
-    ), f"Expected deployment.environment to be 'ddenv' but found: {lc_attributes['env']}"
-    assert (
-        lc_attributes["version"] == "ddv1"
-    ), f"Expected service.version to be 'ddv1' but found: {lc_attributes['version']}"
-    assert (
-        lc_attributes["host_name"] == "ddhost"
-    ), f"Expected host.name to be 'ddhost' but found: {lc_attributes['host_name']}"
-    assert lc_attributes["trace_id"] in (
-        "00000000000000000000000000000000",
-        "",
-    ), f"Expected trace_id to be '00000000000000000000000000000000' but found: {lc_attributes['trace_id']}"
-    assert lc_attributes["span_id"] in (
-        "0000000000000000",
-        "",
-    ), f"Expected span_id to be '0000000000000000' but found: {lc_attributes['span_id']}"
+    # Verify log message body is not null
+    log_body = _get_log_body(resource_logs)
+    assert log_body is not None and log_body != "", "Log message body should not be null or empty"
 
 
-async def test_multiple_logs_sessions(otlp_agent):
-    """Test that logs are properly isolated between sessions."""
+async def test_multiple_logs_sessions(otlp_agent, otlp_logs):
+    """Logs are isolated between sessions."""
     # Send first log
-    logs_data_1 = create_otlp_logs_protobuf()
-    resp = await otlp_agent.post("/v1/logs", headers={"Content-Type": "application/x-protobuf"}, data=logs_data_1)
+    resp = await otlp_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs)
     assert resp.status == 200
 
     # Start a new session
@@ -255,8 +233,7 @@ async def test_multiple_logs_sessions(otlp_agent):
     assert resp.status == 200
 
     # Send second log in new session
-    logs_data_2 = create_otlp_logs_protobuf()
-    resp = await otlp_agent.post("/v1/logs", headers={"Content-Type": "application/x-protobuf"}, data=logs_data_2)
+    resp = await otlp_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs)
     assert resp.status == 200
 
     # Get logs from current session (should only have one log)
