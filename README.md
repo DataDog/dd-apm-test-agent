@@ -27,7 +27,7 @@ The test agent can be installed from PyPI:
     pip install ddapm-test-agent
 
     # HTTP on port 8126, OTLP HTTP on port 4318, OTLP GRPC on port 4317 (planned)
-    ddapm-test-agent --port=8126 --otlp-port=4318 --otlp-grpc-port=4317
+    ddapm-test-agent --port=8126 --otlp-port-http=4318 --otlp-grpc-port=4317
 
 or from Docker:
 

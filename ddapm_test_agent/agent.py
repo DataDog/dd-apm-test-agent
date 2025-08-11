@@ -1215,7 +1215,7 @@ class Agent:
         return response
 
 
-def make_otlp_app(agent: Agent) -> web.Application:
+def make_otlp_http_app(agent: Agent) -> web.Application:
     """Create a separate HTTP application for OTLP endpoints using the shared agent instance."""
 
     @middleware
@@ -1381,7 +1381,7 @@ def main(args: Optional[List[str]] = None) -> None:
     )
     parser.add_argument("-p", "--port", type=int, default=int(os.environ.get("PORT", 8126)))
     parser.add_argument(
-        "--otlp-port",
+        "--otlp-http-port",
         type=int,
         default=int(os.environ.get("OTLP_HTTP_PORT", 4318)),
         help="Port to listen for OTLP HTTP requests (default: 4318)",
@@ -1545,8 +1545,8 @@ def main(args: Optional[List[str]] = None) -> None:
 
     # Get the shared agent instance from the main app
     agent = app["agent"]
-    otlp_http_app = make_otlp_app(agent)
-    # otlp_grpc_server = make_otlp_grpc_server(agent, parsed_args.otlp_port)
+    otlp_http_app = make_otlp_http_app(agent)
+    # otlp_grpc_server = make_otlp_grpc_server(agent, parsed_args.otlp_http_port)
 
     async def run_servers():
         """Run APM and OTLP HTTP servers concurrently."""
@@ -1569,14 +1569,14 @@ def main(args: Optional[List[str]] = None) -> None:
         else:
             apm_site = web.TCPSite(apm_runner, port=parsed_args.port)
 
-        otlp_http_site = web.TCPSite(otlp_http_runner, port=parsed_args.otlp_port)
+        otlp_http_site = web.TCPSite(otlp_http_runner, port=parsed_args.otlp_http_port)
 
         # Start both servers
         await apm_site.start()
         await otlp_http_site.start()
 
         print(f"======== Running APM server on port {parsed_args.port} ========")
-        print(f"======== Running OTLP HTTP server on port {parsed_args.otlp_port} ========")
+        print(f"======== Running OTLP HTTP server on port {parsed_args.otlp_http_port} ========")
         # Future: GRPC support
         # print(f"======== Running OTLP GRPC server on port {parsed_args.otlp_grpc_port} ========")
         print("(Press CTRL+C to quit)")

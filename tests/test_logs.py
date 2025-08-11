@@ -10,7 +10,7 @@ from opentelemetry.proto.logs.v1.logs_pb2 import ScopeLogs
 from opentelemetry.proto.resource.v1.resource_pb2 import Resource
 import pytest
 
-from ddapm_test_agent.agent import make_otlp_app
+from ddapm_test_agent.agent import make_otlp_http_app
 from ddapm_test_agent.client import TestAgentClient
 
 
@@ -119,7 +119,7 @@ async def otlp_http_agent(agent_app, aiohttp_client):
     """Test client for OTLP HTTP app."""
     # Get the shared agent instance from the main app
     agent = agent_app.app["agent"]
-    otlp_http_app = make_otlp_app(agent)
+    otlp_http_app = make_otlp_http_app(agent)
 
     # Create a client for the OTLP HTTP app
     client = await aiohttp_client(otlp_http_app)
