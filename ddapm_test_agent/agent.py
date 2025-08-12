@@ -31,17 +31,10 @@ from urllib.parse import urlunparse
 from aiohttp import ClientResponse
 from aiohttp import ClientSession
 from aiohttp import web
-from aiohttp.web import HTTPException
 from aiohttp.web import Request
 from aiohttp.web import middleware
 from msgpack.exceptions import ExtraData as MsgPackExtraDataException
 from multidict import CIMultiDict
-import grpc
-from grpc import aio as grpc_aio
-from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
-from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceResponse
-from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import LogsServiceServicer
-from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import add_LogsServiceServicer_to_server
 
 from . import _get_version
 from . import trace_snapshot
@@ -53,8 +46,11 @@ from .checks import Checks
 from .checks import start_trace
 from .integration import Integration
 from .logs import decode_logs_request
+from .otlp import handle_exception_middleware
+from .otlp import make_otlp_grpc_server_async
+from .otlp import make_otlp_http_app
+from .otlp import session_token_middleware
 from .remoteconfig import RemoteConfigServer
-
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -73,92 +69,23 @@ from .tracerflare import TracerFlareEvent
 from .tracerflare import v1_decode as v1_tracerflare_decode
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
+from .utils import Handler as _Handler
+from .utils import parse_csv as _parse_csv
+from .utils import parse_map as _parse_map
+from .utils import session_token as _session_token
 from .vcr_proxy import proxy_request
+from .vcr_proxy import vcr_proxy_cassette_prefix as _vcr_proxy_cassette_prefix
 
 
 # Default ports
 DEFAULT_APM_PORT = 8126
-DEFAULT_OTLP_HTTP_PORT = 4318
-DEFAULT_OTLP_GRPC_PORT = 4317
 
 
 class NoSuchSessionException(Exception):
     pass
 
 
-_Handler = Callable[[Request], Awaitable[web.Response]]
-
-
 log = logging.getLogger(__name__)
-
-
-def _parse_csv(s: str) -> List[str]:
-    """Return the values of a csv string.
-
-    >>> _parse_csv("a,b,c")
-    ['a', 'b', 'c']
-    >>> _parse_csv(" a, b ,c ")
-    ['a', 'b', 'c']
-    >>> _parse_csv(" a,b,c ")
-    ['a', 'b', 'c']
-    >>> _parse_csv(" a,")
-    ['a']
-    >>> _parse_csv("a, ")
-    ['a']
-    """
-    return [s.strip() for s in s.split(",") if s.strip() != ""]
-
-
-def _parse_map(s: str) -> Dict[str, str]:
-    """Return the values of a csv string.
-
-    >>> _parse_map("a:b,b:c,c:d")
-    {'a': 'b', 'b': 'c', 'c': 'd'}
-    """
-    return dict([s.strip().split(":", 1) for s in s.split(",") if s.strip()])
-
-
-def _session_token(request: Request) -> Optional[str]:
-    token: Optional[str]
-    if "X-Datadog-Test-Session-Token" in request.headers:
-        token = request.headers["X-Datadog-Test-Session-Token"]
-    elif "test_session_token" in request.url.query:
-        token = request.url.query.get("test_session_token")
-    else:
-        token = None
-    return token
-
-
-async def _vcr_proxy_cassette_prefix(request: Request) -> Optional[str]:
-    try:
-        request_body: dict[str, str] = await request.json()
-        requested_test_name = request_body.get("test_name")
-        return requested_test_name
-    except json.JSONDecodeError:
-        return None
-
-
-@middleware
-async def session_token_middleware(request: Request, handler: _Handler) -> web.Response:
-    """Extract session token from the request and store it in the request.
-
-    The token is retrieved from the headers or params of the request.
-    """
-    token = _session_token(request)
-    request["session_token"] = token
-    return await handler(request)
-
-
-@middleware
-async def handle_exception_middleware(request: Request, handler: _Handler) -> web.Response:
-    """Turn exceptions into 400s with the reason from the exception."""
-    try:
-        response = await handler(request)
-        return response
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise web.HTTPBadRequest(reason=str(e))
 
 
 async def _forward_request(
@@ -1233,91 +1160,6 @@ class Agent:
         return response
 
 
-def make_otlp_http_app(agent: Agent) -> web.Application:
-    """Create a separate HTTP application for OTLP endpoints using the shared agent instance."""
-
-    @middleware
-    async def otlp_store_request_middleware(request: Request, handler: _Handler) -> web.Response:
-        # Always store requests for OTLP endpoints
-        await agent._store_request(request)
-        return await handler(request)
-
-    app = web.Application(
-        middlewares=[
-            otlp_store_request_middleware,  # type: ignore
-            session_token_middleware,  # type: ignore
-        ],
-    )
-
-    # Add only OTLP HTTP endpoints
-    app.add_routes(
-        [
-            web.post("/v1/logs", agent.handle_v1_logs),
-            web.get("/test/session/requests", agent.handle_session_requests),
-            web.get("/test/session/logs", agent.handle_session_logs),
-            web.get("/test/session/clear", agent.handle_session_clear),
-            web.get("/test/session/start", agent.handle_session_start),
-        ]
-    )
-
-    return app
-
-
-async def make_otlp_grpc_server_async(agent: Agent, http_port: int, grpc_port: int) -> Any:
-    """Create and start a separate GRPC server for OTLP endpoints that forwards to HTTP server."""
-    # Define the servicer class only when GRPC is available
-    server = grpc_aio.server()
-
-    # Add the OTLP logs servicer
-    logs_servicer = OTLPLogsServicer(http_port)
-    add_LogsServiceServicer_to_server(logs_servicer, server)
-
-    # Setup and start the server
-    listen_addr = f"[::]:{grpc_port}"
-    server.add_insecure_port(listen_addr)
-    await server.start()
-
-    return server
-
-class OTLPLogsServicer(LogsServiceServicer):
-    """GRPC servicer that forwards OTLP logs to HTTP server."""
-
-    def __init__(self, http_port: int):
-        self.http_port = http_port
-
-    async def Export(
-        self, request: ExportLogsServiceRequest, context: grpc_aio.ServicerContext
-    ) -> ExportLogsServiceResponse:
-        """Export logs by forwarding to HTTP server."""
-        try:
-            # Serialize the GRPC request to protobuf bytes
-            protobuf_data = request.SerializeToString()
-
-            # Extract session token from GRPC metadata
-            headers = {"Content-Type": "application/x-protobuf"}
-            metadata = dict(context.invocation_metadata())
-            if "session-token" in metadata:
-                headers["Session-Token"] = metadata["session-token"]
-
-            # Forward to HTTP server
-            async with ClientSession() as session:
-                async with session.post(
-                    f"http://localhost:{self.http_port}/v1/logs", headers=headers, data=protobuf_data
-                ) as resp:
-                    if resp.status == 200:
-                        # Success - return empty response
-                        return ExportLogsServiceResponse()
-                    else:
-                        # HTTP error - map to GRPC status
-                        if resp.status == 400:
-                            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid request")
-                        else:
-                            await context.abort(grpc.StatusCode.INTERNAL, f"HTTP {resp.status}")
-
-        except Exception as e:
-            await context.abort(grpc.StatusCode.INTERNAL, f"Forward failed: {str(e)}")
-
-
 def make_app(
     enabled_checks: List[str],
     log_span_fmt: str,
@@ -1640,8 +1482,7 @@ def main(args: Optional[List[str]] = None) -> None:
 
         print(f"======== Running APM server on port {parsed_args.port} ========")
         print(f"======== Running OTLP HTTP server on port {parsed_args.otlp_http_port} ========")
-        if otlp_grpc_server is not None:
-            print(f"======== Running OTLP GRPC server on port {parsed_args.otlp_grpc_port} ========")
+        print(f"======== Running OTLP GRPC server on port {parsed_args.otlp_grpc_port} ========")
         print("(Press CTRL+C to quit)")
 
         try:
@@ -1652,8 +1493,7 @@ def main(args: Optional[List[str]] = None) -> None:
         finally:
             await apm_runner.cleanup()
             await otlp_http_runner.cleanup()
-            if otlp_grpc_server is not None:
-                await otlp_grpc_server.stop(grace=5.0)
+            await otlp_grpc_server.stop(grace=5.0)
 
     # Run the servers
     asyncio.run(run_servers())
