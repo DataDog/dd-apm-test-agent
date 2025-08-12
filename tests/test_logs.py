@@ -15,8 +15,8 @@ from opentelemetry.proto.logs.v1.logs_pb2 import ScopeLogs
 from opentelemetry.proto.resource.v1.resource_pb2 import Resource
 import pytest
 
-from ddapm_test_agent.agent import make_otlp_http_app
 from ddapm_test_agent.agent import make_otlp_grpc_server_async
+from ddapm_test_agent.agent import make_otlp_http_app
 from ddapm_test_agent.client import TestOTLPClient
 
 
@@ -116,6 +116,7 @@ def otlp_logs_protobuf(service_name, environment, version, host_name, log_messag
 
     return export_request
 
+
 @pytest.fixture
 def otlp_logs_string(otlp_logs_protobuf):
     """Serialize OTLP logs protobuf payload."""
@@ -181,15 +182,14 @@ def otlp_client(otlp_http_url):
     yield client
     client.clear()
 
+
 @pytest.fixture
 async def otlp_grpc_agent(agent_app):
     """GRPC server fixture for testing."""
     # Get the shared agent instance from the main app
     agent = agent_app.app["agent"]
     # Create GRPC server that forwards to the HTTP server
-    server = await make_otlp_grpc_server_async(
-            agent, OTLP_HTTP_PORT, OTLP_GRPC_PORT
-        )
+    server = await make_otlp_grpc_server_async(agent, OTLP_HTTP_PORT, OTLP_GRPC_PORT)
 
     yield server
 
@@ -206,7 +206,6 @@ async def otlp_grpc_client():
     yield stub
 
     await channel.close()
-
 
 
 async def test_logs_endpoint_basic_http(otlp_http_agent, otlp_logs_string):
@@ -319,7 +318,9 @@ async def test_otlp_client_logs(testagent, otlp_client, otlp_http_url, otlp_logs
     assert resp[0]["url"] == f"{otlp_http_url}/v1/logs"
     assert resp[0]["headers"]["Content-Type"] == PROTOBUF_HEADERS["Content-Type"]
     decoded_body = base64.b64decode(resp[0]["body"])
-    assert decoded_body == otlp_logs_string, f"body: {resp[0]['body']} decoded: {decoded_body}, otlp_logs_string: {otlp_logs_string}"
+    assert (
+        decoded_body == otlp_logs_string
+    ), f"body: {resp[0]['body']} decoded: {decoded_body}, otlp_logs_string: {otlp_logs_string}"
 
     # Get logs via TestAgentClient from the OTLP HTTP port
     logs = otlp_client.logs()
@@ -445,7 +446,9 @@ async def test_logs_endpoint_basic_grpc(otlp_grpc_agent, otlp_grpc_client, otlp_
     assert response is not None
 
 
-async def test_session_logs_endpoint_grpc_forwarding(testagent, otlp_grpc_client, otlp_client, otlp_logs_protobuf, service_name, log_message, loop):
+async def test_session_logs_endpoint_grpc_forwarding(
+    testagent, otlp_grpc_client, otlp_client, otlp_logs_protobuf, service_name, log_message, loop
+):
     """Verify GRPC logs are forwarded to HTTP and retrievable via session endpoint."""
     # Send via GRPC
     response = await otlp_grpc_client.Export(otlp_logs_protobuf)

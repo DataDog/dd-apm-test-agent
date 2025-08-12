@@ -34,10 +34,10 @@ from aiohttp import web
 from aiohttp.web import HTTPException
 from aiohttp.web import Request
 from aiohttp.web import middleware
-from msgpack.exceptions import ExtraData as MsgPackExtraDataException
-from multidict import CIMultiDict
 import grpc
 from grpc import aio as grpc_aio
+from msgpack.exceptions import ExtraData as MsgPackExtraDataException
+from multidict import CIMultiDict
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceResponse
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import LogsServiceServicer
@@ -54,7 +54,6 @@ from .checks import start_trace
 from .integration import Integration
 from .logs import decode_logs_request
 from .remoteconfig import RemoteConfigServer
-
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -1279,6 +1278,7 @@ async def make_otlp_grpc_server_async(agent: Agent, http_port: int, grpc_port: i
 
     return server
 
+
 class OTLPLogsServicer(LogsServiceServicer):
     """GRPC servicer that forwards OTLP logs to HTTP server."""
 
@@ -1304,18 +1304,13 @@ class OTLPLogsServicer(LogsServiceServicer):
                 async with session.post(
                     f"http://localhost:{self.http_port}/v1/logs", headers=headers, data=protobuf_data
                 ) as resp:
-                    if resp.status == 200:
-                        # Success - return empty response
-                        return ExportLogsServiceResponse()
-                    else:
-                        # HTTP error - map to GRPC status
-                        if resp.status == 400:
-                            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid request")
-                        else:
-                            await context.abort(grpc.StatusCode.INTERNAL, f"HTTP {resp.status}")
-
+                    if resp.status >= 500:
+                        await context.abort(grpc.StatusCode.INTERNAL, f"HTTP {resp.status}")
+                    elif resp.status >= 400:
+                        await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid request")
         except Exception as e:
             await context.abort(grpc.StatusCode.INTERNAL, f"Forward failed: {str(e)}")
+        return ExportLogsServiceResponse()
 
 
 def make_app(
@@ -1640,8 +1635,7 @@ def main(args: Optional[List[str]] = None) -> None:
 
         print(f"======== Running APM server on port {parsed_args.port} ========")
         print(f"======== Running OTLP HTTP server on port {parsed_args.otlp_http_port} ========")
-        if otlp_grpc_server is not None:
-            print(f"======== Running OTLP GRPC server on port {parsed_args.otlp_grpc_port} ========")
+        print(f"======== Running OTLP GRPC server on port {parsed_args.otlp_grpc_port} ========")
         print("(Press CTRL+C to quit)")
 
         try:
@@ -1652,8 +1646,7 @@ def main(args: Optional[List[str]] = None) -> None:
         finally:
             await apm_runner.cleanup()
             await otlp_http_runner.cleanup()
-            if otlp_grpc_server is not None:
-                await otlp_grpc_server.stop(grace=5.0)
+            await otlp_grpc_server.stop(grace=5.0)
 
     # Run the servers
     asyncio.run(run_servers())
