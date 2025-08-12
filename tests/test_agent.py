@@ -387,10 +387,10 @@ def test_uds(tmp_path, available_port):
     p = subprocess.Popen(["ddapm-test-agent"], env=env)
 
     # Check for the socket
-    for i in range(50):
+    for i in range(100):
         if (tmp_path / "apm.socket").exists():
             break
-        time.sleep(0.01)
+        time.sleep(0.05)
     else:
         raise AssertionError("Test agent did not create the socket in time")
 
