@@ -2,6 +2,9 @@ import base64
 from urllib.parse import urlparse
 
 import aiohttp
+from aiohttp import web
+import grpc
+import grpc.aio as grpc_aio
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import LogsServiceStub
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue
@@ -13,17 +16,8 @@ from opentelemetry.proto.resource.v1.resource_pb2 import Resource
 import pytest
 
 from ddapm_test_agent.agent import make_otlp_http_app
-from ddapm_test_agent.agent import make_otlp_grpc_server
+from ddapm_test_agent.agent import make_otlp_grpc_server_async
 from ddapm_test_agent.client import TestOTLPClient
-
-
-# GRPC support fixtures
-try:
-    from grpc import aio as grpc_aio
-
-    GRPC_AVAILABLE = True
-except ImportError:
-    GRPC_AVAILABLE = False
 
 
 # Constants
@@ -188,36 +182,25 @@ def otlp_client(otlp_http_url):
     client.clear()
 
 @pytest.fixture
-async def otlp_grpc_server(agent_app):
+async def otlp_grpc_agent(agent_app):
     """GRPC server fixture for testing."""
-    if not GRPC_AVAILABLE:
-        pytest.skip("GRPC dependencies not available")
-
     # Get the shared agent instance from the main app
     agent = agent_app.app["agent"]
     # Create GRPC server that forwards to the HTTP server
-    server = make_otlp_grpc_server(agent, OTLP_HTTP_PORT)
+    server = await make_otlp_grpc_server_async(
+            agent, OTLP_HTTP_PORT, OTLP_GRPC_PORT
+        )
 
-    # Start server on a test port
-    listen_addr = "[::]:0"  # Let system choose available port
-    grpc_port = server.add_insecure_port(listen_addr)
-    await server.start()
-
-    yield server, grpc_port
+    yield server
 
     await server.stop(grace=5.0)
 
 
 @pytest.fixture
-async def otlp_grpc_client(otlp_grpc_server):
+async def otlp_grpc_client():
     """GRPC client for testing."""
-    if not GRPC_AVAILABLE:
-        pytest.skip("GRPC dependencies not available")
-
-    _, grpc_port = otlp_grpc_server
-
     # Create GRPC channel and stub
-    channel = grpc_aio.insecure_channel(f"localhost:{grpc_port}")
+    channel = grpc_aio.insecure_channel(f"localhost:{OTLP_GRPC_PORT}")
     stub = LogsServiceStub(channel)
 
     yield stub
@@ -454,8 +437,7 @@ async def test_logs_endpoint_invalid_json(otlp_http_agent):
     assert resp.status == 400
 
 
-@pytest.mark.skipif(not GRPC_AVAILABLE, reason="GRPC dependencies not available")
-async def test_logs_endpoint_basic_grpc(otlp_grpc_client, otlp_logs_protobuf):
+async def test_logs_endpoint_basic_grpc(otlp_grpc_agent, otlp_grpc_client, otlp_logs_protobuf, loop):
     """Export logs via GRPC and verify they're forwarded to HTTP server."""
     # Call the GRPC Export method
     response = await otlp_grpc_client.Export(otlp_logs_protobuf)
@@ -463,8 +445,7 @@ async def test_logs_endpoint_basic_grpc(otlp_grpc_client, otlp_logs_protobuf):
     assert response is not None
 
 
-@pytest.mark.skipif(not GRPC_AVAILABLE, reason="GRPC dependencies not available")
-async def test_session_logs_endpoint_grpc_forwarding(otlp_grpc_client, otlp_client, otlp_logs_protobuf, service_name, log_message):
+async def test_session_logs_endpoint_grpc_forwarding(testagent, otlp_grpc_client, otlp_client, otlp_logs_protobuf, service_name, log_message, loop):
     """Verify GRPC logs are forwarded to HTTP and retrievable via session endpoint."""
     # Send via GRPC
     response = await otlp_grpc_client.Export(otlp_logs_protobuf)
@@ -485,3 +466,57 @@ async def test_session_logs_endpoint_grpc_forwarding(otlp_grpc_client, otlp_clie
     log_records = scope_logs[0]["log_records"]
     assert len(log_records) == 1
     assert log_records[0]["body"].get("string_value") == log_message
+
+
+async def test_grpc_maps_http_400_to_invalid_argument(aiohttp_server, agent_app, available_port):
+    """GRPC forwarding maps HTTP 400 to GRPC INVALID_ARGUMENT."""
+    # Minimal HTTP app that always returns 400 for /v1/logs
+    async def bad_request_handler(_):
+        raise web.HTTPBadRequest(text="invalid")
+
+    http_app = web.Application()
+    http_app.router.add_post("/v1/logs", bad_request_handler)
+    http_server = await aiohttp_server(http_app)
+    http_port = http_server.port
+
+    # Start GRPC server forwarding to the above HTTP port on a free GRPC port
+    grpc_port = int(available_port)
+    agent = agent_app.app["agent"]
+    grpc_server = await make_otlp_grpc_server_async(agent, http_port=http_port, grpc_port=grpc_port)
+
+    try:
+        channel = grpc_aio.insecure_channel(f"localhost:{grpc_port}")
+        stub = LogsServiceStub(channel)
+        with pytest.raises(grpc.aio.AioRpcError) as excinfo:
+            await stub.Export(ExportLogsServiceRequest())
+        assert excinfo.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+    finally:
+        await channel.close()
+        await grpc_server.stop(grace=0)
+
+
+async def test_grpc_maps_http_500_to_internal(aiohttp_server, agent_app, available_port):
+    """GRPC forwarding maps HTTP 500 to GRPC INTERNAL."""
+    # Minimal HTTP app that returns 500 for /v1/logs
+    async def internal_error_handler(_):
+        raise web.HTTPInternalServerError(text="boom")
+
+    http_app = web.Application()
+    http_app.router.add_post("/v1/logs", internal_error_handler)
+    http_server = await aiohttp_server(http_app)
+    http_port = http_server.port
+
+    # Start GRPC server forwarding to the above HTTP port on a free GRPC port
+    grpc_port = int(available_port)
+    agent = agent_app.app["agent"]
+    grpc_server = await make_otlp_grpc_server_async(agent, http_port=http_port, grpc_port=grpc_port)
+
+    try:
+        channel = grpc_aio.insecure_channel(f"localhost:{grpc_port}")
+        stub = LogsServiceStub(channel)
+        with pytest.raises(grpc.aio.AioRpcError) as excinfo:
+            await stub.Export(ExportLogsServiceRequest())
+        assert excinfo.value.code() == grpc.StatusCode.INTERNAL
+    finally:
+        await channel.close()
+        await grpc_server.stop(grace=0)
