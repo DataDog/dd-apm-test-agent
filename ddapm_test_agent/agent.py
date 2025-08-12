@@ -48,6 +48,21 @@ from .checks import start_trace
 from .integration import Integration
 from .logs import decode_logs_request
 from .remoteconfig import RemoteConfigServer
+
+
+# GRPC imports for OTLP logs support
+try:
+    import grpc
+    from grpc import aio as grpc_aio
+    from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
+    from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceResponse
+    from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import LogsServiceServicer
+    from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import add_LogsServiceServicer_to_server
+
+    GRPC_AVAILABLE = True
+except ImportError:
+    GRPC_AVAILABLE = False
+
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
@@ -127,7 +142,7 @@ async def _vcr_proxy_cassette_prefix(request: Request) -> Optional[str]:
         request_body: dict[str, str] = await request.json()
         requested_test_name = request_body.get("test_name")
         return requested_test_name
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except json.JSONDecodeError:
         return None
 
 
@@ -1256,20 +1271,121 @@ def make_otlp_http_app(agent: Agent) -> web.Application:
     return app
 
 
-# Future: GRPC support
-def make_otlp_grpc_server(agent: Agent, http_port: int) -> None:
-    """Create a separate GRPC server for OTLP endpoints that forwards to HTTP server."""
-    # TODO: Implement GRPC server for OTLP logs that forwards to HTTP
-    #
-    # Implementation approach:
-    # 1. Create async GRPC server using grpc.aio
-    # 2. Implement LogsServiceServicer with Export method
-    # 3. Serialize GRPC request to protobuf bytes
-    # 4. Forward to HTTP server via aiohttp POST request
-    # 5. Extract session token from GRPC metadata and pass as HTTP header
-    # 6. Handle HTTP response and map to appropriate GRPC status
-    # 7. Return ExportLogsServiceResponse
-    pass
+async def make_otlp_grpc_server_async(agent: Agent, http_port: int, grpc_port: int) -> Any:
+    """Create and start a separate GRPC server for OTLP endpoints that forwards to HTTP server."""
+    if not GRPC_AVAILABLE:
+        log.warning(
+            "GRPC dependencies not available. GRPC server will not be started. Install grpcio and grpcio-tools for GRPC support."
+        )
+        return None
+
+    # Define the servicer class only when GRPC is available
+    class OTLPLogsServicer(LogsServiceServicer):
+        """GRPC servicer that forwards OTLP logs to HTTP server."""
+
+        def __init__(self, http_port: int):
+            self.http_port = http_port
+
+        async def Export(
+            self, request: ExportLogsServiceRequest, context: grpc_aio.ServicerContext
+        ) -> ExportLogsServiceResponse:
+            """Export logs by forwarding to HTTP server."""
+            try:
+                # Serialize the GRPC request to protobuf bytes
+                protobuf_data = request.SerializeToString()
+
+                # Extract session token from GRPC metadata
+                headers = {"Content-Type": "application/x-protobuf"}
+                metadata = dict(context.invocation_metadata())
+                if "session-token" in metadata:
+                    headers["Session-Token"] = metadata["session-token"]
+
+                # Forward to HTTP server
+                async with ClientSession() as session:
+                    async with session.post(
+                        f"http://localhost:{self.http_port}/v1/logs", headers=headers, data=protobuf_data
+                    ) as resp:
+                        if resp.status == 200:
+                            # Success - return empty response
+                            return ExportLogsServiceResponse()
+                        else:
+                            # HTTP error - map to GRPC status
+                            if resp.status == 400:
+                                await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid request")
+                            else:
+                                await context.abort(grpc.StatusCode.INTERNAL, f"HTTP {resp.status}")
+
+            except Exception as e:
+                await context.abort(grpc.StatusCode.INTERNAL, f"Forward failed: {str(e)}")
+
+    server = grpc_aio.server()
+
+    # Add the OTLP logs servicer
+    logs_servicer = OTLPLogsServicer(http_port)
+    add_LogsServiceServicer_to_server(logs_servicer, server)
+
+    # Setup and start the server
+    listen_addr = f"[::]:{grpc_port}"
+    server.add_insecure_port(listen_addr)
+    await server.start()
+
+    return server
+
+
+def make_otlp_grpc_server(agent: Agent, http_port: int) -> Any:
+    """Synchronous wrapper for GRPC server creation (for test compatibility)."""
+    if not GRPC_AVAILABLE:
+        log.warning(
+            "GRPC dependencies not available. GRPC server will not be started. Install grpcio and grpcio-tools for GRPC support."
+        )
+        return None
+
+    # Define the servicer class only when GRPC is available
+    class OTLPLogsServicer(LogsServiceServicer):
+        """GRPC servicer that forwards OTLP logs to HTTP server."""
+
+        def __init__(self, http_port: int):
+            self.http_port = http_port
+
+        async def Export(
+            self, request: ExportLogsServiceRequest, context: grpc_aio.ServicerContext
+        ) -> ExportLogsServiceResponse:
+            """Export logs by forwarding to HTTP server."""
+            try:
+                # Serialize the GRPC request to protobuf bytes
+                protobuf_data = request.SerializeToString()
+
+                # Extract session token from GRPC metadata
+                headers = {"Content-Type": "application/x-protobuf"}
+                metadata = dict(context.invocation_metadata())
+                if "session-token" in metadata:
+                    headers["Session-Token"] = metadata["session-token"]
+
+                # Forward to HTTP server
+                async with ClientSession() as session:
+                    async with session.post(
+                        f"http://localhost:{self.http_port}/v1/logs", headers=headers, data=protobuf_data
+                    ) as resp:
+                        if resp.status == 200:
+                            # Success - return empty response
+                            return ExportLogsServiceResponse()
+                        else:
+                            # HTTP error - map to GRPC status
+                            if resp.status == 400:
+                                await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid request")
+                            else:
+                                await context.abort(grpc.StatusCode.INTERNAL, f"HTTP {resp.status}")
+
+            except Exception as e:
+                await context.abort(grpc.StatusCode.INTERNAL, f"Forward failed: {str(e)}")
+
+    server = grpc_aio.server()
+
+    # Add the OTLP logs servicer
+    logs_servicer = OTLPLogsServicer(http_port)
+    add_LogsServiceServicer_to_server(logs_servicer, server)
+
+    return server
 
 
 def make_app(
@@ -1566,7 +1682,6 @@ def main(args: Optional[List[str]] = None) -> None:
     # Get the shared agent instance from the main app
     agent = app["agent"]
     otlp_http_app = make_otlp_http_app(agent)
-    # otlp_grpc_server = make_otlp_grpc_server(agent, parsed_args.otlp_http_port)
 
     async def run_servers():
         """Run APM and OTLP HTTP servers concurrently."""
@@ -1577,11 +1692,10 @@ def main(args: Optional[List[str]] = None) -> None:
         otlp_http_runner = web.AppRunner(otlp_http_app)
         await otlp_http_runner.setup()
 
-        # Future: GRPC support
-        # # Setup GRPC server separately (not using aiohttp runners)
-        # await otlp_grpc_server.start()
-        # listen_addr = f"[::]:{parsed_args.otlp_grpc_port}"
-        # otlp_grpc_server.add_insecure_port(listen_addr)
+        # Start GRPC server if available (async creation)
+        otlp_grpc_server = await make_otlp_grpc_server_async(
+            agent, parsed_args.otlp_http_port, parsed_args.otlp_grpc_port
+        )
 
         # Create sites for both apps
         if apm_sock:
@@ -1596,8 +1710,8 @@ def main(args: Optional[List[str]] = None) -> None:
 
         print(f"======== Running APM server on port {parsed_args.port} ========")
         print(f"======== Running OTLP HTTP server on port {parsed_args.otlp_http_port} ========")
-        # Future: GRPC support
-        # print(f"======== Running OTLP GRPC server on port {parsed_args.otlp_grpc_port} ========")
+        if otlp_grpc_server is not None:
+            print(f"======== Running OTLP GRPC server on port {parsed_args.otlp_grpc_port} ========")
         print("(Press CTRL+C to quit)")
 
         try:
@@ -1608,8 +1722,8 @@ def main(args: Optional[List[str]] = None) -> None:
         finally:
             await apm_runner.cleanup()
             await otlp_http_runner.cleanup()
-            # Future: GRPC support
-            # await otlp_grpc_server.stop(grace=5.0)
+            if otlp_grpc_server is not None:
+                await otlp_grpc_server.stop(grace=5.0)
 
     # Run the servers
     asyncio.run(run_servers())

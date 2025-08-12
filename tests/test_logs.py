@@ -3,6 +3,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
+from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import LogsServiceStub
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue
 from opentelemetry.proto.common.v1.common_pb2 import KeyValue
 from opentelemetry.proto.logs.v1.logs_pb2 import LogRecord
@@ -12,7 +13,17 @@ from opentelemetry.proto.resource.v1.resource_pb2 import Resource
 import pytest
 
 from ddapm_test_agent.agent import make_otlp_http_app
+from ddapm_test_agent.agent import make_otlp_grpc_server
 from ddapm_test_agent.client import TestOTLPClient
+
+
+# GRPC support fixtures
+try:
+    from grpc import aio as grpc_aio
+
+    GRPC_AVAILABLE = True
+except ImportError:
+    GRPC_AVAILABLE = False
 
 
 # Constants
@@ -77,7 +88,7 @@ def span_id():
 
 
 @pytest.fixture
-def otlp_logs(service_name, environment, version, host_name, log_message, trace_id, span_id):
+def otlp_logs_protobuf(service_name, environment, version, host_name, log_message, trace_id, span_id):
     """Serialize OTLP logs protobuf payload."""
     # Create resource attributes
     resource = Resource()
@@ -109,7 +120,12 @@ def otlp_logs(service_name, environment, version, host_name, log_message, trace_
     export_request = ExportLogsServiceRequest()
     export_request.resource_logs.append(resource_logs)
 
-    return export_request.SerializeToString()
+    return export_request
+
+@pytest.fixture
+def otlp_logs_string(otlp_logs_protobuf):
+    """Serialize OTLP logs protobuf payload."""
+    return otlp_logs_protobuf.SerializeToString()
 
 
 @pytest.fixture
@@ -154,28 +170,6 @@ async def otlp_http_agent(agent_app, aiohttp_client):
     yield client
 
 
-# Future: GRPC support fixtures
-# @pytest.fixture
-# async def otlp_grpc_client():
-#     """Test client for OTLP GRPC server."""
-#     # Create GRPC channel and LogsService stub for port 4317
-#     pass
-#
-#
-# @pytest.fixture
-# async def otlp_grpc_agent(agent_app):
-#     """Test client for OTLP GRPC server that forwards to HTTP."""
-#     # Return GRPC client for testing GRPC→HTTP forwarding
-#     pass
-
-
-# Future: GRPC support
-# @pytest.fixture
-# def otlp_grpc_url(testagent_url):
-#     """URL for OTLP GRPC logs endpoint."""
-#     pass
-
-
 @pytest.fixture
 def otlp_http_url(testagent_url):
     """URL for OTLP HTTP logs endpoint."""
@@ -187,12 +181,54 @@ def otlp_http_url(testagent_url):
 def otlp_client(otlp_http_url):
     """Test Agent client for retrieving logs from the OTLP HTTP endpoint."""
     parsed_url = urlparse(otlp_http_url)
-    return TestOTLPClient(parsed_url.hostname, parsed_url.port, parsed_url.scheme)
+    client = TestOTLPClient(parsed_url.hostname, parsed_url.port, parsed_url.scheme)
+    client.clear()
+    client.wait_to_start()
+    yield client
+    client.clear()
+
+@pytest.fixture
+async def otlp_grpc_server(agent_app):
+    """GRPC server fixture for testing."""
+    if not GRPC_AVAILABLE:
+        pytest.skip("GRPC dependencies not available")
+
+    # Get the shared agent instance from the main app
+    agent = agent_app.app["agent"]
+    # Create GRPC server that forwards to the HTTP server
+    server = make_otlp_grpc_server(agent, OTLP_HTTP_PORT)
+
+    # Start server on a test port
+    listen_addr = "[::]:0"  # Let system choose available port
+    grpc_port = server.add_insecure_port(listen_addr)
+    await server.start()
+
+    yield server, grpc_port
+
+    await server.stop(grace=5.0)
 
 
-async def test_logs_endpoint_basic_http(otlp_http_agent, otlp_logs):
+@pytest.fixture
+async def otlp_grpc_client(otlp_grpc_server):
+    """GRPC client for testing."""
+    if not GRPC_AVAILABLE:
+        pytest.skip("GRPC dependencies not available")
+
+    _, grpc_port = otlp_grpc_server
+
+    # Create GRPC channel and stub
+    channel = grpc_aio.insecure_channel(f"localhost:{grpc_port}")
+    stub = LogsServiceStub(channel)
+
+    yield stub
+
+    await channel.close()
+
+
+
+async def test_logs_endpoint_basic_http(otlp_http_agent, otlp_logs_string):
     """POST /v1/logs accepts OTLP logs over HTTP and returns 200."""
-    resp = await otlp_http_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs)
+    resp = await otlp_http_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
 
@@ -239,11 +275,11 @@ async def test_logs_endpoint_basic_http(otlp_http_agent, otlp_logs):
     ],
 )
 async def test_session_logs_endpoint_http(
-    otlp_http_agent, otlp_logs, service_name, environment, version, host_name, log_message, span_id, trace_id
+    otlp_http_agent, otlp_logs_string, service_name, environment, version, host_name, log_message, span_id, trace_id
 ):
     """GET /test/session/logs returns stored logs with correct attributes via HTTP."""
     # Send logs
-    resp = await otlp_http_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs)
+    resp = await otlp_http_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
     # Get logs from session
@@ -283,11 +319,11 @@ async def test_session_logs_endpoint_http(
     assert log_records[0].get("span_id") == expected_span_id
 
 
-async def test_otlp_client_logs(testagent, otlp_client, otlp_http_url, otlp_logs, service_name):
+async def test_otlp_client_logs(testagent, otlp_client, otlp_http_url, otlp_logs_string, service_name):
     """TestAgentClient.logs() retrieves stored logs correctly via HTTP."""
     # Send logs via aiohttp session to the OTLP HTTP port
     async with aiohttp.ClientSession() as session:
-        resp = await session.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs)
+        resp = await session.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
         assert resp.status == 200
 
     # Wait for logs to be received
@@ -300,7 +336,7 @@ async def test_otlp_client_logs(testagent, otlp_client, otlp_http_url, otlp_logs
     assert resp[0]["url"] == f"{otlp_http_url}/v1/logs"
     assert resp[0]["headers"]["Content-Type"] == PROTOBUF_HEADERS["Content-Type"]
     decoded_body = base64.b64decode(resp[0]["body"])
-    assert decoded_body == otlp_logs, f"body: {resp[0]['body']} decoded: {decoded_body}, otlp_logs: {otlp_logs}"
+    assert decoded_body == otlp_logs_string, f"body: {resp[0]['body']} decoded: {decoded_body}, otlp_logs_string: {otlp_logs_string}"
 
     # Get logs via TestAgentClient from the OTLP HTTP port
     logs = otlp_client.logs()
@@ -312,14 +348,14 @@ async def test_otlp_client_logs(testagent, otlp_client, otlp_http_url, otlp_logs
     assert len(logs) == 0
 
 
-async def test_logs_endpoint_integration_http(otlp_http_agent, otlp_logs, service_name, log_message):
+async def test_logs_endpoint_integration_http(otlp_http_agent, otlp_logs_string, service_name, log_message):
     """End-to-end OTLP logs flow via HTTP: send logs, retrieve them, validate content."""
     # Clear any existing data
     resp = await otlp_http_agent.get("/test/session/clear")
     assert resp.status == 200
 
     # Send logs request
-    resp = await otlp_http_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs)
+    resp = await otlp_http_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
     # Retrieve the logs
@@ -347,10 +383,10 @@ async def test_logs_endpoint_integration_http(otlp_http_agent, otlp_logs, servic
     assert log_records[0]["body"].get("string_value") == log_message
 
 
-async def test_multiple_logs_sessions_http(otlp_http_agent, otlp_logs):
+async def test_multiple_logs_sessions_http(otlp_http_agent, otlp_logs_string):
     """Logs are isolated between sessions via HTTP."""
     # Send first log
-    resp = await otlp_http_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs)
+    resp = await otlp_http_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
     # Start a new session
@@ -358,7 +394,7 @@ async def test_multiple_logs_sessions_http(otlp_http_agent, otlp_logs):
     assert resp.status == 200
 
     # Send second log in new session
-    resp = await otlp_http_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs)
+    resp = await otlp_http_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
     # Get logs from current session (should only have one log)
@@ -388,10 +424,10 @@ async def test_logs_endpoint_json_http(otlp_http_agent, otlp_logs_json, service_
     ), f"service.name should be set to '{service_name}' in resource attributes"
 
 
-async def test_logs_endpoint_invalid_content_type(otlp_http_agent, otlp_logs):
+async def test_logs_endpoint_invalid_content_type(otlp_http_agent, otlp_logs_string):
     """POST /v1/logs rejects invalid content types."""
     # Test with XML content type (unsupported)
-    resp = await otlp_http_agent.post("/v1/logs", headers={"Content-Type": "application/xml"}, data=otlp_logs)
+    resp = await otlp_http_agent.post("/v1/logs", headers={"Content-Type": "application/xml"}, data=otlp_logs_string)
     assert resp.status == 400
 
     # Test with plain text content type (unsupported)
@@ -399,7 +435,7 @@ async def test_logs_endpoint_invalid_content_type(otlp_http_agent, otlp_logs):
     assert resp.status == 400
 
     # Test with no content type header
-    resp = await otlp_http_agent.post("/v1/logs", data=otlp_logs)
+    resp = await otlp_http_agent.post("/v1/logs", data=otlp_logs_string)
     assert resp.status == 400
 
 
@@ -418,15 +454,34 @@ async def test_logs_endpoint_invalid_json(otlp_http_agent):
     assert resp.status == 400
 
 
-# Future: GRPC support tests
-# Future: GRPC support tests
-# async def test_logs_endpoint_basic_grpc(otlp_grpc_client, otlp_logs):
-#     """Export logs via GRPC and verify they're forwarded to HTTP server."""
-#     # Convert protobuf payload to GRPC request and call Export method
-#     pass
-#
-#
-# async def test_session_logs_endpoint_grpc_forwarding(otlp_grpc_client, otlp_http_agent, otlp_logs, service_name):
-#     """Verify GRPC logs are forwarded to HTTP and retrievable via session endpoint."""
-#     # Test end-to-end GRPC→HTTP→Session flow and verify data preservation
-#     pass
+@pytest.mark.skipif(not GRPC_AVAILABLE, reason="GRPC dependencies not available")
+async def test_logs_endpoint_basic_grpc(otlp_grpc_client, otlp_logs_protobuf):
+    """Export logs via GRPC and verify they're forwarded to HTTP server."""
+    # Call the GRPC Export method
+    response = await otlp_grpc_client.Export(otlp_logs_protobuf)
+    # Should return successful response
+    assert response is not None
+
+
+@pytest.mark.skipif(not GRPC_AVAILABLE, reason="GRPC dependencies not available")
+async def test_session_logs_endpoint_grpc_forwarding(otlp_grpc_client, otlp_client, otlp_logs_protobuf, service_name, log_message):
+    """Verify GRPC logs are forwarded to HTTP and retrievable via session endpoint."""
+    # Send via GRPC
+    response = await otlp_grpc_client.Export(otlp_logs_protobuf)
+    assert response is not None
+
+    # Verify logs are retrievable via HTTP session endpoint
+    logs = otlp_client.logs()
+
+    # Verify service.name is set in resource attributes
+    resource_logs = logs[0]["resource_logs"]
+    assert _find_service_name_in_resource(
+        resource_logs, service_name
+    ), f"service.name should be set to '{service_name}' in resource attributes"
+
+    # Verify log message body is not null
+    scope_logs = resource_logs[0].get("scope_logs", [])
+    assert len(scope_logs) == 1
+    log_records = scope_logs[0]["log_records"]
+    assert len(log_records) == 1
+    assert log_records[0]["body"].get("string_value") == log_message
