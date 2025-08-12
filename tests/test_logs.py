@@ -473,7 +473,6 @@ async def test_session_logs_endpoint_grpc_forwarding(
 
 async def test_grpc_maps_http_400_to_invalid_argument(aiohttp_server, agent_app, available_port):
     """GRPC forwarding maps HTTP 400 to GRPC INVALID_ARGUMENT."""
-
     # Minimal HTTP app that always returns 400 for /v1/logs
     async def bad_request_handler(_):
         raise web.HTTPBadRequest(text="invalid")
@@ -501,7 +500,6 @@ async def test_grpc_maps_http_400_to_invalid_argument(aiohttp_server, agent_app,
 
 async def test_grpc_maps_http_500_to_internal(aiohttp_server, agent_app, available_port):
     """GRPC forwarding maps HTTP 500 to GRPC INTERNAL."""
-
     # Minimal HTTP app that returns 500 for /v1/logs
     async def internal_error_handler(_):
         raise web.HTTPInternalServerError(text="boom")
