@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    otel: Adds OpenTelemetry Protocol (OTLP) v1.7.0 logs support via HTTP endpoint ``/v1/logs`` on port 4318.

@@ -3,7 +3,7 @@
   nixConfig.bash-prompt-prefix = "\[ddapm-test-agent\] ";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/24.11";
 
     flake-utils.url = "github:numtide/flake-utils";
 
@@ -58,6 +58,8 @@
               requests
               yarl
               vcrpy
+              protobuf
+              opentelemetry-proto
             ];
             nativeBuildInputs = with python.pkgs; [
               setuptools

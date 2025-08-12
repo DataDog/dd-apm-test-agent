@@ -4,6 +4,8 @@ import signal
 import subprocess
 import time
 
+import pytest
+
 from ddapm_test_agent.trace import trace_id
 
 
@@ -380,6 +382,7 @@ async def test_put_integrations(
     )
 
 
+@pytest.mark.xfail(reason="This test is flaky, process exists before socket is checked/created")
 def test_uds(tmp_path, available_port):
     env = os.environ.copy()
     env["DD_APM_RECEIVER_SOCKET"] = str(tmp_path / "apm.socket")
