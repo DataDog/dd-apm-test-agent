@@ -12,7 +12,7 @@ from opentelemetry.proto.resource.v1.resource_pb2 import Resource
 import pytest
 
 from ddapm_test_agent.agent import make_otlp_http_app
-from ddapm_test_agent.client import TestAgentClient
+from ddapm_test_agent.client import TestOTLPClient
 
 
 # Constants
@@ -184,9 +184,10 @@ def otlp_http_url(testagent_url):
 
 
 @pytest.fixture
-def otlp_http_client(otlp_http_url):
+def otlp_client(otlp_http_url):
     """Test Agent client for retrieving logs from the OTLP HTTP endpoint."""
-    return TestAgentClient(otlp_http_url)
+    parsed_url = urlparse(otlp_http_url)
+    return TestOTLPClient(parsed_url.hostname, parsed_url.port, parsed_url.scheme)
 
 
 async def test_logs_endpoint_basic_http(otlp_http_agent, otlp_logs):
@@ -282,23 +283,33 @@ async def test_session_logs_endpoint_http(
     assert log_records[0].get("span_id") == expected_span_id
 
 
-async def test_client_logs_method_http(testagent, otlp_http_client, otlp_http_url, otlp_logs, service_name):
+async def test_otlp_client_logs(testagent, otlp_client, otlp_http_url, otlp_logs, service_name):
     """TestAgentClient.logs() retrieves stored logs correctly via HTTP."""
     # Send logs via aiohttp session to the OTLP HTTP port
     async with aiohttp.ClientSession() as session:
         resp = await session.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs)
         assert resp.status == 200
 
+    # Wait for logs to be received
+    otlp_client.wait_for_num_logs(1)
+
+    # Get request from the OTLP HTTP port
+    resp = otlp_client.requests()
+    assert len(resp) == 1
+    assert resp[0]["method"] == "POST"
+    assert resp[0]["url"] == f"{otlp_http_url}/v1/logs"
+    assert resp[0]["headers"]["Content-Type"] == PROTOBUF_HEADERS["Content-Type"]
+    decoded_body = base64.b64decode(resp[0]["body"])
+    assert decoded_body == otlp_logs, f"body: {resp[0]['body']} decoded: {decoded_body}, otlp_logs: {otlp_logs}"
+
     # Get logs via TestAgentClient from the OTLP HTTP port
-    logs = otlp_http_client.logs()
+    logs = otlp_client.logs()
     assert len(logs) == 1
     assert "resource_logs" in logs[0]
 
-    # Verify service.name is set in resource attributes
-    resource_logs = logs[0]["resource_logs"]
-    assert _find_service_name_in_resource(
-        resource_logs, service_name
-    ), f"service.name should be set to '{service_name}' in resource attributes"
+    otlp_client.clear()
+    logs = otlp_client.logs()
+    assert len(logs) == 0
 
 
 async def test_logs_endpoint_integration_http(otlp_http_agent, otlp_logs, service_name, log_message):

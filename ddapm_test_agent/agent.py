@@ -1008,6 +1008,7 @@ class Agent:
                 self.handle_v1_tracer_flare,
                 self.handle_evp_proxy_v2_api_v2_llmobs,
                 self.handle_evp_proxy_v2_llmobs_eval_metric,
+                self.handle_v1_logs,
             ):
                 continue
             resp.append(
@@ -1245,6 +1246,7 @@ def make_otlp_http_app(agent: Agent) -> web.Application:
     app.add_routes(
         [
             web.post("/v1/logs", agent.handle_v1_logs),
+            web.get("/test/session/requests", agent.handle_session_requests),
             web.get("/test/session/logs", agent.handle_session_logs),
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/start", agent.handle_session_start),
