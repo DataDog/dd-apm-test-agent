@@ -26,8 +26,8 @@ The test agent can be installed from PyPI:
 
     pip install ddapm-test-agent
 
-    # HTTP on port 8126, OTLP HTTP on port 4318, OTLP GRPC on port 4317 (planned)
-    ddapm-test-agent --port=8126 --otlp-http-port=4318 --otlp-grpc-port=4317
+    # HTTP on port 8126, OTLP HTTP on port 4318, OTLP GRPC on port 4317
+ddapm-test-agent --port=8126 --otlp-http-port=4318 --otlp-grpc-port=4317
 
 or from Docker:
 
@@ -497,13 +497,13 @@ Accepts OpenTelemetry Protocol (OTLP) v1.7.0 logs in protobuf format via HTTP. T
 
 The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and stores the decoded logs for retrieval via the `/test/session/logs` endpoint.
 
-### OTLP Logs via GRPC (Planned)
+### OTLP Logs via GRPC
 
 OTLP logs can also be sent via GRPC using the OpenTelemetry `LogsService.Export` method. The GRPC server implements the standard OTLP logs service interface and forwards all requests to the HTTP server, ensuring consistent processing and session management.
 
 **Note:** OTLP logs are served on separate ports from the main APM endpoints (default: 8126):
 - **HTTP**: Port 4318 (default) - Use `--otlp-http-port` to configure
-- **GRPC**: Port 4317 (planned) - Use `--otlp-grpc-port` to configure
+- **GRPC**: Port 4317 (default) - Use `--otlp-grpc-port` to configure
 
 Both protocols store decoded logs for retrieval via the `/test/session/logs` HTTP endpoint.
 
