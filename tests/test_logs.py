@@ -184,19 +184,6 @@ def otlp_client(otlp_http_url):
 
 
 @pytest.fixture
-async def otlp_grpc_agent(agent_app):
-    """GRPC server fixture for testing."""
-    # Get the shared agent instance from the main app
-    agent = agent_app.app["agent"]
-    # Create GRPC server that forwards to the HTTP server
-    server = await make_otlp_grpc_server_async(agent, OTLP_HTTP_PORT, OTLP_GRPC_PORT)
-
-    yield server
-
-    await server.stop(grace=5.0)
-
-
-@pytest.fixture
 async def otlp_grpc_client():
     """GRPC client for testing."""
     # Create GRPC channel and stub
@@ -438,7 +425,7 @@ async def test_logs_endpoint_invalid_json(otlp_http_agent):
     assert resp.status == 400
 
 
-async def test_logs_endpoint_basic_grpc(otlp_grpc_agent, otlp_grpc_client, otlp_logs_protobuf, loop):
+async def test_logs_endpoint_basic_grpc(testagent, otlp_grpc_client, otlp_logs_protobuf, loop):
     """Export logs via GRPC and verify they're forwarded to HTTP server."""
     # Call the GRPC Export method
     response = await otlp_grpc_client.Export(otlp_logs_protobuf)
