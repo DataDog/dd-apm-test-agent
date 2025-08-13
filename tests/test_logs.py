@@ -16,7 +16,6 @@ from opentelemetry.proto.resource.v1.resource_pb2 import Resource
 import pytest
 
 from ddapm_test_agent.agent import make_otlp_grpc_server_async
-from ddapm_test_agent.agent import make_otlp_http_app
 from ddapm_test_agent.client import TestOTLPClient
 
 
@@ -154,18 +153,6 @@ def otlp_logs_json(service_name, environment, version, host_name, log_message, t
 
 
 @pytest.fixture
-async def otlp_http_agent(agent_app, aiohttp_client):
-    """Test client for OTLP HTTP app."""
-    # Get the shared agent instance from the main app
-    agent = agent_app.app["agent"]
-    otlp_http_app = make_otlp_http_app(agent)
-
-    # Create a client for the OTLP HTTP app
-    client = await aiohttp_client(otlp_http_app)
-    yield client
-
-
-@pytest.fixture
 def otlp_http_url(testagent_url):
     """URL for OTLP HTTP logs endpoint."""
     parsed_url = urlparse(testagent_url)
@@ -173,7 +160,7 @@ def otlp_http_url(testagent_url):
 
 
 @pytest.fixture
-def otlp_client(otlp_http_url):
+def otlp_test_client(otlp_http_url):
     """Test Agent client for retrieving logs from the OTLP HTTP endpoint."""
     parsed_url = urlparse(otlp_http_url)
     client = TestOTLPClient(parsed_url.hostname, parsed_url.port, parsed_url.scheme)
@@ -184,16 +171,8 @@ def otlp_client(otlp_http_url):
 
 
 @pytest.fixture
-async def otlp_grpc_agent(agent_app):
-    """GRPC server fixture for testing."""
-    # Get the shared agent instance from the main app
-    agent = agent_app.app["agent"]
-    # Create GRPC server that forwards to the HTTP server
-    server = await make_otlp_grpc_server_async(agent, OTLP_HTTP_PORT, OTLP_GRPC_PORT)
-
-    yield server
-
-    await server.stop(grace=5.0)
+async def otlp_http_client(otlp_http_url):
+    yield aiohttp.ClientSession(otlp_http_url)
 
 
 @pytest.fixture
@@ -208,9 +187,9 @@ async def otlp_grpc_client():
     await channel.close()
 
 
-async def test_logs_endpoint_basic_http(otlp_http_agent, otlp_logs_string):
+async def test_logs_endpoint_basic_http(testagent, otlp_http_client, otlp_logs_string):
     """POST /v1/logs accepts OTLP logs over HTTP and returns 200."""
-    resp = await otlp_http_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
+    resp = await otlp_http_client.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
 
@@ -257,15 +236,25 @@ async def test_logs_endpoint_basic_http(otlp_http_agent, otlp_logs_string):
     ],
 )
 async def test_session_logs_endpoint_http(
-    otlp_http_agent, otlp_logs_string, service_name, environment, version, host_name, log_message, span_id, trace_id
+    testagent,
+    otlp_http_client,
+    otlp_logs_string,
+    service_name,
+    environment,
+    version,
+    host_name,
+    log_message,
+    span_id,
+    trace_id,
+    loop,
 ):
     """GET /test/session/logs returns stored logs with correct attributes via HTTP."""
     # Send logs
-    resp = await otlp_http_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
+    resp = await otlp_http_client.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
     # Get logs from session
-    resp = await otlp_http_agent.get("/test/session/logs")
+    resp = await otlp_http_client.get("/test/session/logs")
     assert resp.status == 200
     logs = await resp.json()
     assert len(logs) == 1
@@ -301,18 +290,17 @@ async def test_session_logs_endpoint_http(
     assert log_records[0].get("span_id") == expected_span_id
 
 
-async def test_otlp_client_logs(testagent, otlp_client, otlp_http_url, otlp_logs_string, service_name):
+async def test_otlp_client_logs(testagent, otlp_http_client, otlp_test_client, otlp_http_url, otlp_logs_string, loop):
     """TestAgentClient.logs() retrieves stored logs correctly via HTTP."""
     # Send logs via aiohttp session to the OTLP HTTP port
-    async with aiohttp.ClientSession() as session:
-        resp = await session.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
-        assert resp.status == 200
+    resp = await otlp_http_client.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
+    assert resp.status == 200
 
     # Wait for logs to be received
-    otlp_client.wait_for_num_logs(1)
+    otlp_test_client.wait_for_num_logs(1)
 
     # Get request from the OTLP HTTP port
-    resp = otlp_client.requests()
+    resp = otlp_test_client.requests()
     assert len(resp) == 1
     assert resp[0]["method"] == "POST"
     assert resp[0]["url"] == f"{otlp_http_url}/v1/logs"
@@ -323,27 +311,29 @@ async def test_otlp_client_logs(testagent, otlp_client, otlp_http_url, otlp_logs
     ), f"body: {resp[0]['body']} decoded: {decoded_body}, otlp_logs_string: {otlp_logs_string}"
 
     # Get logs via TestAgentClient from the OTLP HTTP port
-    logs = otlp_client.logs()
+    logs = otlp_test_client.logs()
     assert len(logs) == 1
     assert "resource_logs" in logs[0]
 
-    otlp_client.clear()
-    logs = otlp_client.logs()
+    otlp_test_client.clear()
+    logs = otlp_test_client.logs()
     assert len(logs) == 0
 
 
-async def test_logs_endpoint_integration_http(otlp_http_agent, otlp_logs_string, service_name, log_message):
+async def test_logs_endpoint_integration_http(
+    testagent, otlp_http_client, otlp_logs_string, service_name, log_message, loop
+):
     """End-to-end OTLP logs flow via HTTP: send logs, retrieve them, validate content."""
     # Clear any existing data
-    resp = await otlp_http_agent.get("/test/session/clear")
+    resp = await otlp_http_client.get("/test/session/clear")
     assert resp.status == 200
 
     # Send logs request
-    resp = await otlp_http_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
+    resp = await otlp_http_client.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
     # Retrieve the logs
-    resp = await otlp_http_agent.get("/test/session/logs")
+    resp = await otlp_http_client.get("/test/session/logs")
     assert resp.status == 200
     captured_logs_list = await resp.json()
 
@@ -367,36 +357,36 @@ async def test_logs_endpoint_integration_http(otlp_http_agent, otlp_logs_string,
     assert log_records[0]["body"].get("string_value") == log_message
 
 
-async def test_multiple_logs_sessions_http(otlp_http_agent, otlp_logs_string):
+async def test_multiple_logs_sessions_http(testagent, otlp_http_client, otlp_logs_string, loop):
     """Logs are isolated between sessions via HTTP."""
     # Send first log
-    resp = await otlp_http_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
+    resp = await otlp_http_client.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
     # Start a new session
-    resp = await otlp_http_agent.get("/test/session/start")
+    resp = await otlp_http_client.get("/test/session/start")
     assert resp.status == 200
 
     # Send second log in new session
-    resp = await otlp_http_agent.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
+    resp = await otlp_http_client.post("/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
     # Get logs from current session (should only have one log)
-    resp = await otlp_http_agent.get("/test/session/logs")
+    resp = await otlp_http_client.get("/test/session/logs")
     assert resp.status == 200
     logs = await resp.json()
     assert len(logs) == 1  # Only the log from the current session
 
 
-async def test_logs_endpoint_json_http(otlp_http_agent, otlp_logs_json, service_name):
+async def test_logs_endpoint_json_http(testagent, otlp_http_client, otlp_logs_json, service_name, loop):
     """POST /v1/logs accepts JSON logs and returns 200."""
     import json
 
-    resp = await otlp_http_agent.post("/v1/logs", headers=JSON_HEADERS, data=json.dumps(otlp_logs_json))
+    resp = await otlp_http_client.post("/v1/logs", headers=JSON_HEADERS, data=json.dumps(otlp_logs_json))
     assert resp.status == 200
 
     # Verify logs were stored
-    resp = await otlp_http_agent.get("/test/session/logs")
+    resp = await otlp_http_client.get("/test/session/logs")
     assert resp.status == 200
     logs = await resp.json()
     assert len(logs) == 1
@@ -408,37 +398,37 @@ async def test_logs_endpoint_json_http(otlp_http_agent, otlp_logs_json, service_
     ), f"service.name should be set to '{service_name}' in resource attributes"
 
 
-async def test_logs_endpoint_invalid_content_type(otlp_http_agent, otlp_logs_string):
+async def test_logs_endpoint_invalid_content_type(testagent, otlp_http_client, otlp_logs_string, loop):
     """POST /v1/logs rejects invalid content types."""
     # Test with XML content type (unsupported)
-    resp = await otlp_http_agent.post("/v1/logs", headers={"Content-Type": "application/xml"}, data=otlp_logs_string)
+    resp = await otlp_http_client.post("/v1/logs", headers={"Content-Type": "application/xml"}, data=otlp_logs_string)
     assert resp.status == 400
 
     # Test with plain text content type (unsupported)
-    resp = await otlp_http_agent.post("/v1/logs", headers={"Content-Type": "text/plain"}, data=b"some plain text")
+    resp = await otlp_http_client.post("/v1/logs", headers={"Content-Type": "text/plain"}, data=b"some plain text")
     assert resp.status == 400
 
     # Test with no content type header
-    resp = await otlp_http_agent.post("/v1/logs", data=otlp_logs_string)
+    resp = await otlp_http_client.post("/v1/logs", data=otlp_logs_string)
     assert resp.status == 400
 
 
-async def test_logs_endpoint_invalid_json(otlp_http_agent):
+async def test_logs_endpoint_invalid_json(testagent, otlp_http_client, loop):
     """POST /v1/logs rejects malformed JSON."""
     # Test malformed JSON syntax
-    resp = await otlp_http_agent.post("/v1/logs", headers=JSON_HEADERS, data=b'{"invalid": json}')
+    resp = await otlp_http_client.post("/v1/logs", headers=JSON_HEADERS, data=b'{"invalid": json}')
     assert resp.status == 400
 
     # Test JSON array (should be object)
-    resp = await otlp_http_agent.post("/v1/logs", headers=JSON_HEADERS, data=b'["not", "an", "object"]')
+    resp = await otlp_http_client.post("/v1/logs", headers=JSON_HEADERS, data=b'["not", "an", "object"]')
     assert resp.status == 400
 
     # Test JSON primitive (should be object)
-    resp = await otlp_http_agent.post("/v1/logs", headers=JSON_HEADERS, data=b'"just a string"')
+    resp = await otlp_http_client.post("/v1/logs", headers=JSON_HEADERS, data=b'"just a string"')
     assert resp.status == 400
 
 
-async def test_logs_endpoint_basic_grpc(otlp_grpc_agent, otlp_http_agent, otlp_grpc_client, otlp_logs_protobuf, loop):
+async def test_logs_endpoint_basic_grpc(testagent, otlp_grpc_client, otlp_logs_protobuf, loop):
     """Export logs via GRPC and verify they're forwarded to HTTP server."""
     # Call the GRPC Export method
     response = await otlp_grpc_client.Export(otlp_logs_protobuf)
@@ -447,7 +437,7 @@ async def test_logs_endpoint_basic_grpc(otlp_grpc_agent, otlp_http_agent, otlp_g
 
 
 async def test_session_logs_endpoint_grpc_forwarding(
-    otlp_grpc_agent, otlp_http_agent, otlp_grpc_client, otlp_client, otlp_logs_protobuf, service_name, log_message, loop
+    testagent, otlp_grpc_client, otlp_test_client, otlp_logs_protobuf, service_name, log_message, loop
 ):
     """Verify GRPC logs are forwarded to HTTP and retrievable via session endpoint."""
     # Send via GRPC
@@ -455,7 +445,7 @@ async def test_session_logs_endpoint_grpc_forwarding(
     assert response is not None
 
     # Verify logs are retrievable via HTTP session endpoint
-    logs = otlp_client.logs()
+    logs = otlp_test_client.logs()
 
     # Verify service.name is set in resource attributes
     resource_logs = logs[0]["resource_logs"]
