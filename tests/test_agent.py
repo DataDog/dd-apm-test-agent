@@ -381,7 +381,7 @@ async def test_put_integrations(
     )
 
 
-def test_uds(tmp_path, available_port):
+async def test_uds(tmp_path, agent, available_port, loop):
     env = os.environ.copy()
     env["DD_APM_RECEIVER_SOCKET"] = str(tmp_path / "apm.socket")
     env["PORT"] = str(available_port)
@@ -395,6 +395,11 @@ def test_uds(tmp_path, available_port):
     socket_stat = (tmp_path / "apm.socket").stat()
     actual_perms = stat.S_IMODE(socket_stat.st_mode)
     assert actual_perms & 0o722 == 0o722
+
+    # Check that the test agent is running
+    await agent.put("/v0.4/traces", data=b"")
+    resp = await agent.get("/test/session/requests")
+    assert resp.status == 200, await resp.text()
 
     # Kill the process without atexit handlers
     os.kill(p.pid, signal.SIGKILL)
