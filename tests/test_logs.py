@@ -288,7 +288,7 @@ async def test_session_logs_endpoint_http(
     assert log_records[0].get("span_id") == expected_span_id
 
 
-async def test_otlp_client_logs(testagent, otlp_client, otlp_http_url, otlp_logs_string, service_name):
+async def test_otlp_client_logs(otlp_http_agent, otlp_client, otlp_http_url, otlp_logs_string, service_name):
     """TestAgentClient.logs() retrieves stored logs correctly via HTTP."""
     # Send logs via aiohttp session to the OTLP HTTP port
     async with aiohttp.ClientSession() as session:
@@ -425,7 +425,7 @@ async def test_logs_endpoint_invalid_json(otlp_http_agent):
     assert resp.status == 400
 
 
-async def test_logs_endpoint_basic_grpc(testagent, otlp_grpc_client, otlp_logs_protobuf, loop):
+async def test_logs_endpoint_basic_grpc(otlp_http_agent, otlp_grpc_client, otlp_logs_protobuf, loop):
     """Export logs via GRPC and verify they're forwarded to HTTP server."""
     # Call the GRPC Export method
     response = await otlp_grpc_client.Export(otlp_logs_protobuf)
@@ -434,7 +434,7 @@ async def test_logs_endpoint_basic_grpc(testagent, otlp_grpc_client, otlp_logs_p
 
 
 async def test_session_logs_endpoint_grpc_forwarding(
-    testagent, otlp_grpc_client, otlp_client, otlp_logs_protobuf, service_name, log_message, loop
+    otlp_http_agent, otlp_grpc_client, otlp_client, otlp_logs_protobuf, service_name, log_message, loop
 ):
     """Verify GRPC logs are forwarded to HTTP and retrievable via session endpoint."""
     # Send via GRPC
