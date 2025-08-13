@@ -1283,7 +1283,7 @@ class OTLPLogsServicer(LogsServiceServicer):
     """GRPC servicer that forwards OTLP logs to HTTP server."""
 
     def __init__(self, http_port: int):
-        self.http_port = http_port
+        self.http_url = f"http://127.0.0.1:{http_port}"
 
     async def Export(
         self, request: ExportLogsServiceRequest, context: grpc_aio.ServicerContext
@@ -1300,14 +1300,12 @@ class OTLPLogsServicer(LogsServiceServicer):
                 headers["Session-Token"] = metadata["session-token"]
 
             # Forward to HTTP server
-            async with ClientSession() as session:
-                async with session.post(
-                    f"http://127.0.0.1:{self.http_port}/v1/logs", headers=headers, data=protobuf_data
-                ) as resp:
+            async with ClientSession(self.http_url) as session:
+                async with session.post("/v1/logs", headers=headers, data=protobuf_data) as resp:
                     if resp.status >= 500:
                         await context.abort(grpc.StatusCode.INTERNAL, f"HTTP {resp.status}")
                     elif resp.status >= 400:
-                        await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid request")
+                        await context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"HTTP {resp.status}")
         except Exception as e:
             await context.abort(grpc.StatusCode.INTERNAL, f"Forward failed: {str(e)}")
         return ExportLogsServiceResponse()
