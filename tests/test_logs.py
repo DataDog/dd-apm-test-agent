@@ -40,6 +40,15 @@ def _find_service_name_in_resource(resource_logs, expected_service_name):
     return False
 
 
+async def _get_http_status_from_metadata(call):
+    """Extract HTTP status from GRPC trailing metadata."""
+    trailing_metadata = await call.trailing_metadata()
+    for key, value in trailing_metadata:
+        if key == "http-status":
+            return int(value)
+    return None
+
+
 @pytest.fixture
 def service_name():
     """Service name."""
@@ -405,10 +414,20 @@ async def test_logs_endpoint_invalid_json(testagent, otlp_http_url, loop):
 
 async def test_logs_endpoint_basic_grpc(testagent, otlp_grpc_client, otlp_logs_protobuf, loop):
     """Export logs via GRPC and verify they're forwarded to HTTP server."""
-    # Call the GRPC Export method
-    response = await otlp_grpc_client.Export(otlp_logs_protobuf)
+    # Call the GRPC Export method with metadata access
+    call = otlp_grpc_client.Export(otlp_logs_protobuf)
+    response = await call
+
     # Should return successful response
     assert response is not None
+
+    # Check that HTTP status was successful (200)
+    http_status = await _get_http_status_from_metadata(call)
+    assert http_status == 200, f"Expected HTTP 200, got {http_status}"
+
+    # For successful requests, partial_success should be empty/default
+    assert response.partial_success.rejected_log_records == 0
+    assert response.partial_success.error_message == ""
 
 
 async def test_session_logs_endpoint_grpc_forwarding(
@@ -416,8 +435,13 @@ async def test_session_logs_endpoint_grpc_forwarding(
 ):
     """Verify GRPC logs are forwarded to HTTP and retrievable via session endpoint."""
     # Send via GRPC
-    response = await otlp_grpc_client.Export(otlp_logs_protobuf)
+    call = otlp_grpc_client.Export(otlp_logs_protobuf)
+    response = await call
     assert response is not None
+
+    # Check that HTTP status was successful
+    http_status = await _get_http_status_from_metadata(call)
+    assert http_status == 200, f"Expected HTTP 200, got {http_status}"
 
     # Verify logs are retrievable via HTTP session endpoint
     logs = otlp_test_client.logs()
@@ -436,57 +460,107 @@ async def test_session_logs_endpoint_grpc_forwarding(
     assert log_records[0]["body"].get("string_value") == log_message
 
 
-async def test_grpc_maps_http_400_to_invalid_argument(aiohttp_server, agent_app, available_port):
-    """GRPC forwarding maps HTTP 400 to GRPC INVALID_ARGUMENT."""
-
-    # Minimal HTTP app that always returns 400 for /v1/logs
-    async def bad_request_handler(_):
-        raise web.HTTPBadRequest(text="invalid")
-
-    http_app = web.Application()
-    http_app.router.add_post("/v1/logs", bad_request_handler)
-    http_server = await aiohttp_server(http_app)
-    http_port = http_server.port
-
-    # Start GRPC server forwarding to the above HTTP port on a free GRPC port
+@pytest.fixture
+async def grpc_server_with_failure_type(agent_app, available_port, aiohttp_server, request):
+    """Consolidated GRPC server fixture that can handle different HTTP failure types."""
     grpc_port = int(available_port)
-    agent = agent_app.app["agent"]
-    grpc_server = await make_otlp_grpc_server_async(agent, http_port=http_port, grpc_port=grpc_port)
+    failure_type = getattr(request, "param", "connection_failure")
 
-    try:
-        channel = grpc_aio.insecure_channel(f"localhost:{grpc_port}")
-        stub = LogsServiceStub(channel)
-        with pytest.raises(grpc.aio.AioRpcError) as excinfo:
-            await stub.Export(ExportLogsServiceRequest())
-        assert excinfo.value.code() == grpc.StatusCode.INVALID_ARGUMENT
-    finally:
-        await channel.close()
-        await grpc_server.stop(grace=0)
+    # Create HTTP backend based on failure type
+    http_handlers = {
+        "http_400": lambda _: web.HTTPBadRequest(text="invalid"),
+        "http_500": lambda _: web.HTTPInternalServerError(text="boom"),
+    }
+
+    if failure_type == "connection_failure":
+        http_port = 99999  # Non-existent port
+    elif failure_type in http_handlers:
+        app = web.Application()
+        app.router.add_post("/v1/logs", http_handlers[failure_type])
+        http_server = await aiohttp_server(app)
+        http_port = http_server.port
+    else:
+        raise ValueError(f"Unknown failure_type: {failure_type}")
+
+    # Create GRPC server and client
+    grpc_server = await make_otlp_grpc_server_async(agent_app.app["agent"], http_port=http_port, grpc_port=grpc_port)
+    channel = grpc_aio.insecure_channel(f"localhost:{grpc_port}")
+    stub = LogsServiceStub(channel)
+
+    yield grpc_server, stub
+
+    await channel.close()
+    await grpc_server.stop(grace=0)
 
 
-async def test_grpc_maps_http_500_to_internal(aiohttp_server, agent_app, available_port):
-    """GRPC forwarding maps HTTP 500 to GRPC INTERNAL."""
+@pytest.mark.parametrize("grpc_server_with_failure_type", ["http_400"], indirect=True)
+async def test_grpc_maps_http_400_to_metadata(grpc_server_with_failure_type):
+    """GRPC forwarding preserves HTTP 400 status in trailing metadata and partial_success."""
 
-    # Minimal HTTP app that returns 500 for /v1/logs
-    async def internal_error_handler(_):
-        raise web.HTTPInternalServerError(text="boom")
+    _, stub = grpc_server_with_failure_type
 
-    http_app = web.Application()
-    http_app.router.add_post("/v1/logs", internal_error_handler)
-    http_server = await aiohttp_server(http_app)
-    http_port = http_server.port
+    call = stub.Export(ExportLogsServiceRequest())
+    response = await call
+    assert response is not None
 
-    # Start GRPC server forwarding to the above HTTP port on a free GRPC port
-    grpc_port = int(available_port)
-    agent = agent_app.app["agent"]
-    grpc_server = await make_otlp_grpc_server_async(agent, http_port=http_port, grpc_port=grpc_port)
+    # Check that HTTP 400 status is preserved in metadata
+    http_status = await _get_http_status_from_metadata(call)
+    assert http_status == 400, f"Expected HTTP 400, got {http_status}"
 
-    try:
-        channel = grpc_aio.insecure_channel(f"localhost:{grpc_port}")
-        stub = LogsServiceStub(channel)
-        with pytest.raises(grpc.aio.AioRpcError) as excinfo:
-            await stub.Export(ExportLogsServiceRequest())
-        assert excinfo.value.code() == grpc.StatusCode.INTERNAL
-    finally:
-        await channel.close()
-        await grpc_server.stop(grace=0)
+    # Check that partial_success field is set for HTTP errors
+    assert response.partial_success.rejected_log_records == 0  # Empty request
+    assert "HTTP 400" in response.partial_success.error_message
+
+
+@pytest.mark.parametrize("grpc_server_with_failure_type", ["http_500"], indirect=True)
+async def test_grpc_maps_http_500_to_metadata(grpc_server_with_failure_type):
+    """GRPC forwarding preserves HTTP 500 status in trailing metadata and partial_success."""
+
+    _, stub = grpc_server_with_failure_type
+
+    call = stub.Export(ExportLogsServiceRequest())
+    response = await call
+    assert response is not None
+
+    # Check that HTTP 500 status is preserved in metadata
+    http_status = await _get_http_status_from_metadata(call)
+    assert http_status == 500, f"Expected HTTP 500, got {http_status}"
+
+    # Check that partial_success field is set for HTTP errors
+    assert response.partial_success.rejected_log_records == 0  # Empty request
+    assert "HTTP 500" in response.partial_success.error_message
+
+
+@pytest.mark.parametrize("grpc_server_with_failure_type", ["connection_failure"], indirect=True)
+async def test_grpc_server_resilience_after_failure(grpc_server_with_failure_type, otlp_logs_protobuf):
+    """GRPC server should remain operational after processing failed requests."""
+
+    # Get the server and client from fixture
+    _, stub = grpc_server_with_failure_type
+
+    # First request should fail due to connection error, but server should handle it gracefully
+    call1 = stub.Export(otlp_logs_protobuf)
+    response1 = await call1
+    assert response1 is not None
+
+    # Check that the failure is properly reported in partial_success
+    assert response1.partial_success.rejected_log_records > 0
+    assert "Forward failed" in response1.partial_success.error_message
+
+    # Verify HTTP status indicates an error
+    http_status = await _get_http_status_from_metadata(call1)
+    assert http_status == 500  # Should be 500 due to connection failure
+
+    # Second request should also be handled gracefully (server is still responsive)
+    call2 = stub.Export(otlp_logs_protobuf)
+    response2 = await call2
+    assert response2 is not None
+
+    # Should get the same type of failure response
+    assert response2.partial_success.rejected_log_records > 0
+    assert "Forward failed" in response2.partial_success.error_message
+
+    # Third request with empty data should also be handled
+    call3 = stub.Export(ExportLogsServiceRequest())
+    response3 = await call3
+    assert response3 is not None

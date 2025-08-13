@@ -1290,25 +1290,30 @@ class OTLPLogsServicer(LogsServiceServicer):
     ) -> ExportLogsServiceResponse:
         """Export logs by forwarding to HTTP server."""
         try:
-            # Serialize the GRPC request to protobuf bytes
             protobuf_data = request.SerializeToString()
-
-            # Extract session token from GRPC metadata
             headers = {"Content-Type": "application/x-protobuf"}
             metadata = dict(context.invocation_metadata())
             if "session-token" in metadata:
                 headers["Session-Token"] = metadata["session-token"]
-
-            # Forward to HTTP server
+            # Forward to OTLP HTTP server
             async with ClientSession(self.http_url) as session:
                 async with session.post("/v1/logs", headers=headers, data=protobuf_data) as resp:
-                    if resp.status >= 500:
-                        await context.abort(grpc.StatusCode.INTERNAL, f"HTTP {resp.status}")
-                    elif resp.status >= 400:
-                        await context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"HTTP {resp.status}")
+                    context.set_trailing_metadata([("http-status", str(resp.status))])
+
+                    # Create response with partial_success field based on HTTP status
+                    response = ExportLogsServiceResponse()
+                    if resp.status >= 400:
+                        # Set partial failure information for HTTP errors
+                        response.partial_success.rejected_log_records = len(request.resource_logs)
+                        response.partial_success.error_message = f"HTTP {resp.status}: {await resp.text()}"
+
+                    return response
         except Exception as e:
-            await context.abort(grpc.StatusCode.INTERNAL, f"Forward failed: {str(e)}")
-        return ExportLogsServiceResponse()
+            context.set_trailing_metadata([("http-status", "500"), ("error", str(e))])
+            response = ExportLogsServiceResponse()
+            response.partial_success.rejected_log_records = len(request.resource_logs)
+            response.partial_success.error_message = f"Forward failed: {str(e)}"
+            return response
 
 
 def make_app(
