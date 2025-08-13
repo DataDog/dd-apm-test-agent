@@ -1564,10 +1564,6 @@ def main(args: Optional[List[str]] = None) -> None:
             os.unlink(parsed_args.trace_uds_socket)
         apm_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         apm_sock.bind(parsed_args.trace_uds_socket)
-        try:
-            os.chmod(parsed_args.trace_uds_socket, 0o722)
-        except OSError as e:
-            log.warning("could not set permissions on UDS socket %r due to %r", parsed_args.trace_uds_socket, str(e))
         atexit.register(lambda: os.unlink(parsed_args.trace_uds_socket))
 
     if parsed_args.trace_request_delay is not None:
@@ -1624,7 +1620,7 @@ def main(args: Optional[List[str]] = None) -> None:
 
         # Create sites for both apps
         if apm_sock:
-            apm_site = web.UnixSite(apm_runner, apm_sock)
+            apm_site = web.UnixSite(apm_runner, apm_sock.getsockname())
         else:
             apm_site = web.TCPSite(apm_runner, port=parsed_args.port)
 
@@ -1632,6 +1628,22 @@ def main(args: Optional[List[str]] = None) -> None:
 
         # Start both servers concurrently
         await asyncio.gather(apm_site.start(), otlp_http_site.start())
+
+        # Set socket permissions after server starts (aiohttp may override them)
+        if apm_sock:
+            try:
+                # Temporarily set umask to ensure exact permissions
+                old_umask = os.umask(0)
+                try:
+                    os.chmod(parsed_args.trace_uds_socket, 0o722)
+                finally:
+                    os.umask(old_umask)
+            except OSError as e:
+                log.warning(
+                    "could not set permissions on UDS socket %r after server start due to %r",
+                    parsed_args.trace_uds_socket,
+                    str(e),
+                )
 
         print(f"======== Running APM server on port {parsed_args.port} ========")
         print(f"======== Running OTLP HTTP server on port {parsed_args.otlp_http_port} ========")
