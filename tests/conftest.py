@@ -570,7 +570,7 @@ def testagent_port(available_port: str) -> str:
 
 @pytest.fixture
 def testagent_url(testagent_port: str) -> str:
-    return "http://localhost:%s" % testagent_port
+    return "http://127.0.0.1:%s" % testagent_port
 
 
 @pytest.fixture(scope="module")

@@ -177,17 +177,19 @@ def otlp_client(otlp_http_url):
     """Test Agent client for retrieving logs from the OTLP HTTP endpoint."""
     parsed_url = urlparse(otlp_http_url)
     client = TestOTLPClient(parsed_url.hostname, parsed_url.port, parsed_url.scheme)
-    client.clear()
-    client.wait_to_start()
-    yield client
-    client.clear()
+    try:
+        client.wait_to_start()
+        client.clear()
+        yield client
+    finally:
+        client.clear()
 
 
 @pytest.fixture
 async def otlp_grpc_client():
     """GRPC client for testing."""
     # Create GRPC channel and stub
-    channel = grpc_aio.insecure_channel(f"localhost:{OTLP_GRPC_PORT}")
+    channel = grpc_aio.insecure_channel(f"127.0.0.1:{OTLP_GRPC_PORT}")
     stub = LogsServiceStub(channel)
 
     yield stub
