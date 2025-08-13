@@ -1302,7 +1302,7 @@ class OTLPLogsServicer(LogsServiceServicer):
             # Forward to HTTP server
             async with ClientSession() as session:
                 async with session.post(
-                    f"http://localhost:{self.http_port}/v1/logs", headers=headers, data=protobuf_data
+                    f"http://127.0.0.1:{self.http_port}/v1/logs", headers=headers, data=protobuf_data
                 ) as resp:
                     if resp.status >= 500:
                         await context.abort(grpc.StatusCode.INTERNAL, f"HTTP {resp.status}")
