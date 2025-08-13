@@ -1,8 +1,10 @@
 import base64
+import json
 from urllib.parse import urlparse
 
 import aiohttp
 from aiohttp import web
+from google.protobuf.json_format import MessageToDict
 import grpc
 import grpc.aio as grpc_aio
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
@@ -123,33 +125,9 @@ def otlp_logs_string(otlp_logs_protobuf):
 
 
 @pytest.fixture
-def otlp_logs_json(service_name, environment, version, host_name, log_message, trace_id, span_id):
+def otlp_logs_json(otlp_logs_protobuf):
     """JSON representation of OTLP logs payload."""
-    return {
-        "resource_logs": [
-            {
-                "resource": {
-                    "attributes": [
-                        {"key": "service.name", "value": {"string_value": service_name}},
-                        {"key": "deployment.environment", "value": {"string_value": environment}},
-                        {"key": "service.version", "value": {"string_value": version}},
-                        {"key": "host.name", "value": {"string_value": host_name}},
-                    ]
-                },
-                "scope_logs": [
-                    {
-                        "log_records": [
-                            {
-                                "body": {"string_value": log_message},
-                                "trace_id": trace_id.hex() if trace_id else "",
-                                "span_id": span_id.hex() if span_id else "",
-                            }
-                        ]
-                    }
-                ],
-            }
-        ]
-    }
+    return json.dumps(MessageToDict(otlp_logs_protobuf, preserving_proto_field_name=True))
 
 
 @pytest.fixture
@@ -380,9 +358,7 @@ async def test_multiple_logs_sessions_http(testagent, otlp_http_client, otlp_log
 
 async def test_logs_endpoint_json_http(testagent, otlp_http_client, otlp_logs_json, service_name, loop):
     """POST /v1/logs accepts JSON logs and returns 200."""
-    import json
-
-    resp = await otlp_http_client.post("/v1/logs", headers=JSON_HEADERS, data=json.dumps(otlp_logs_json))
+    resp = await otlp_http_client.post("/v1/logs", headers=JSON_HEADERS, data=otlp_logs_json)
     assert resp.status == 200
 
     # Verify logs were stored
