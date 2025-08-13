@@ -177,12 +177,9 @@ def otlp_client(otlp_http_url):
     """Test Agent client for retrieving logs from the OTLP HTTP endpoint."""
     parsed_url = urlparse(otlp_http_url)
     client = TestOTLPClient(parsed_url.hostname, parsed_url.port, parsed_url.scheme)
-    try:
-        client.wait_to_start()
-        client.clear()
-        yield client
-    finally:
-        client.clear()
+    client.wait_to_start()
+    client.clear()
+    yield client
 
 
 @pytest.fixture
