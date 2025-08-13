@@ -1,10 +1,9 @@
 import json
 import os
 import signal
+import stat
 import subprocess
 import time
-
-import pytest
 
 from ddapm_test_agent.trace import trace_id
 
@@ -382,7 +381,6 @@ async def test_put_integrations(
     )
 
 
-@pytest.mark.xfail(reason="This test is flaky, process exists before socket is checked/created")
 def test_uds(tmp_path, available_port):
     env = os.environ.copy()
     env["DD_APM_RECEIVER_SOCKET"] = str(tmp_path / "apm.socket")
@@ -398,7 +396,9 @@ def test_uds(tmp_path, available_port):
         raise AssertionError("Test agent did not create the socket in time")
 
     # Check the permissions
-    assert (tmp_path / "apm.socket").stat().st_mode & 0o722 == 0o722
+    socket_stat = (tmp_path / "apm.socket").stat()
+    actual_perms = stat.S_IMODE(socket_stat.st_mode)
+    assert actual_perms & 0o722 == 0o722
 
     # Kill the process without atexit handlers
     os.kill(p.pid, signal.SIGKILL)
