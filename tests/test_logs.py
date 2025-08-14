@@ -17,6 +17,7 @@ import pytest
 
 from ddapm_test_agent.agent import DEFAULT_OTLP_GRPC_PORT
 from ddapm_test_agent.agent import DEFAULT_OTLP_HTTP_PORT
+from ddapm_test_agent.logs import LOGS_ENDPOINT
 from ddapm_test_agent.agent import make_otlp_grpc_server_async
 from ddapm_test_agent.client import TestOTLPClient
 
@@ -164,7 +165,7 @@ async def grpc_server_with_failure_type(agent_app, available_port, aiohttp_serve
         http_port = 99999  # Non-existent port
     elif failure_type in http_handlers:
         app = web.Application()
-        app.router.add_post("/v1/logs", http_handlers[failure_type])
+        app.router.add_post(LOGS_ENDPOINT, http_handlers[failure_type])
         http_server = await aiohttp_server(app)
         http_port = http_server.port
     else:
@@ -182,7 +183,7 @@ async def grpc_server_with_failure_type(agent_app, available_port, aiohttp_serve
 
 async def test_logs_endpoint_basic_http(testagent, otlp_http_url, otlp_logs_string, loop):
     """OTLP logs HTTP endpoint accepts protobuf data."""
-    resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
+    resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
 
@@ -242,7 +243,7 @@ async def test_session_logs_endpoint_http(
     loop,
 ):
     """Session endpoint returns logs with all attributes preserved."""
-    resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
+    resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
     resp = await testagent.get(f"{otlp_http_url}/test/session/logs")
@@ -280,7 +281,7 @@ async def test_session_logs_endpoint_http(
 
 async def test_otlp_client_logs(testagent, otlp_test_client, otlp_http_url, otlp_logs_string, loop):
     """OTLP test client correctly captures and retrieves logs."""
-    resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
+    resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
     otlp_test_client.wait_for_num_logs(1)
@@ -288,7 +289,7 @@ async def test_otlp_client_logs(testagent, otlp_test_client, otlp_http_url, otlp
     resp = otlp_test_client.requests()
     assert len(resp) == 1
     assert resp[0]["method"] == "POST"
-    assert resp[0]["url"] == f"{otlp_http_url}/v1/logs"
+    assert resp[0]["url"] == f"{otlp_http_url}{LOGS_ENDPOINT}"
     assert resp[0]["headers"]["Content-Type"] == PROTOBUF_HEADERS["Content-Type"]
     decoded_body = base64.b64decode(resp[0]["body"])
     assert (
@@ -311,7 +312,7 @@ async def test_logs_endpoint_integration_http(
     resp = await testagent.get(f"{otlp_http_url}/test/session/clear")
     assert resp.status == 200
 
-    resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
+    resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
     resp = await testagent.get(f"{otlp_http_url}/test/session/logs")
@@ -337,13 +338,13 @@ async def test_logs_endpoint_integration_http(
 
 async def test_multiple_logs_sessions_http(testagent, otlp_http_url, otlp_logs_string, loop):
     """Logs are isolated between sessions."""
-    resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
+    resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
     resp = await testagent.get(f"{otlp_http_url}/test/session/start")
     assert resp.status == 200
 
-    resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
+    resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
     resp = await testagent.get(f"{otlp_http_url}/test/session/logs")
@@ -354,7 +355,7 @@ async def test_multiple_logs_sessions_http(testagent, otlp_http_url, otlp_logs_s
 
 async def test_logs_endpoint_json_http(testagent, otlp_http_url, otlp_logs_json, service_name, loop):
     """OTLP logs HTTP endpoint accepts JSON data."""
-    resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=JSON_HEADERS, data=otlp_logs_json)
+    resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=JSON_HEADERS, data=otlp_logs_json)
     assert resp.status == 200
 
     resp = await testagent.get(f"{otlp_http_url}/test/session/logs")
@@ -371,28 +372,28 @@ async def test_logs_endpoint_json_http(testagent, otlp_http_url, otlp_logs_json,
 async def test_logs_endpoint_invalid_content_type(testagent, otlp_http_url, otlp_logs_string, loop):
     """Endpoint rejects invalid content types."""
     resp = await testagent.post(
-        f"{otlp_http_url}/v1/logs", headers={"Content-Type": "application/xml"}, data=otlp_logs_string
+        f"{otlp_http_url}{LOGS_ENDPOINT}", headers={"Content-Type": "application/xml"}, data=otlp_logs_string
     )
     assert resp.status == 400
 
     resp = await testagent.post(
-        f"{otlp_http_url}/v1/logs", headers={"Content-Type": "text/plain"}, data=b"some plain text"
+        f"{otlp_http_url}{LOGS_ENDPOINT}", headers={"Content-Type": "text/plain"}, data=b"some plain text"
     )
     assert resp.status == 400
 
-    resp = await testagent.post(f"{otlp_http_url}/v1/logs", data=otlp_logs_string)
+    resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", data=otlp_logs_string)
     assert resp.status == 400
 
 
 async def test_logs_endpoint_invalid_json(testagent, otlp_http_url, loop):
     """Endpoint rejects malformed JSON."""
-    resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=JSON_HEADERS, data=b'{"invalid": json}')
+    resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=JSON_HEADERS, data=b'{"invalid": json}')
     assert resp.status == 400
 
-    resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=JSON_HEADERS, data=b'["not", "an", "object"]')
+    resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=JSON_HEADERS, data=b'["not", "an", "object"]')
     assert resp.status == 400
 
-    resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=JSON_HEADERS, data=b'"just a string"')
+    resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=JSON_HEADERS, data=b'"just a string"')
     assert resp.status == 400
 
 
