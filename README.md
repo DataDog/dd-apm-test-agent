@@ -510,7 +510,7 @@ The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-prot
 
 Accepts OpenTelemetry Protocol (OTLP) v1.7.0 metrics in protobuf format via HTTP. This endpoint validates and decodes OTLP metrics payloads for testing OpenTelemetry metrics exporters and libraries.
 
-The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and stores the decoded metrics for retrieval via the `/test/session/metrics` endpoint.
+The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and `Content-Type: application/json` and stores the decoded metrics for retrieval via the `/test/session/metrics` endpoint.
 
 ### OTLP Logs and Metrics via GRPC
 
