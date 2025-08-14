@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    OTLP: Added GRPC server support for OTLP logs on port 4317 that forwards requests to the OTLP HTTP server for validation and storage.
+    This enables testing of applications that send OTLP logs via GRPC protocol.
