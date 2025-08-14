@@ -16,6 +16,9 @@ from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import LogsServ
 LOGS_ENDPOINT = "/v1/logs"
 
 
+LOGS_ENDPOINT = "/v1/logs"
+
+
 log = logging.getLogger(__name__)
 
 
