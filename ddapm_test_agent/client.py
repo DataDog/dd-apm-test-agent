@@ -142,7 +142,7 @@ class TestAgentClient(TestClient):
 
 
 class TestOTLPClient(TestClient):
-    def __init__(self, host: str = "localhost", http_port: int = 4318, scheme: str = "http"):
+    def __init__(self, host: str = "127.0.0.1", http_port: int = 4318, scheme: str = "http"):
         # OTLP grpc server will forward all requests to the http server
         # so we can use the same client to receive logs for both http and grpc endpoints
         super().__init__(f"{scheme}://{host}:{http_port}")
