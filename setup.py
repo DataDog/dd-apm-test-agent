@@ -41,6 +41,7 @@ setup(
         # which implements the v1.7.0 spec
         "opentelemetry-proto>1.33.0,<1.37.0",
         "protobuf>=3.19.0",
+        "grpcio>=1.66.2,<2.0",
     ],
     tests_require=testing_deps,
     setup_requires=["setuptools_scm"],

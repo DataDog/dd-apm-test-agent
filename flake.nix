@@ -60,6 +60,7 @@
               vcrpy
               protobuf
               opentelemetry-proto
+              grpcio
             ];
             nativeBuildInputs = with python.pkgs; [
               setuptools

@@ -381,24 +381,25 @@ async def test_put_integrations(
     )
 
 
-def test_uds(tmp_path, available_port):
+async def test_uds(tmp_path, agent, available_port, loop):
     env = os.environ.copy()
     env["DD_APM_RECEIVER_SOCKET"] = str(tmp_path / "apm.socket")
     env["PORT"] = str(available_port)
     p = subprocess.Popen(["ddapm-test-agent"], env=env)
 
-    # Check for the socket
-    for i in range(50):
-        if (tmp_path / "apm.socket").exists():
-            break
-        time.sleep(0.01)
-    else:
-        raise AssertionError("Test agent did not create the socket in time")
+    # Sleep for 1 second to give time for the testagent to start up
+    time.sleep(1)
+    assert (tmp_path / "apm.socket").exists(), "Test agent did not create the socket in time"
 
     # Check the permissions
     socket_stat = (tmp_path / "apm.socket").stat()
     actual_perms = stat.S_IMODE(socket_stat.st_mode)
     assert actual_perms & 0o722 == 0o722
+
+    # Check that the test agent is running
+    await agent.put("/v0.4/traces", data=b"")
+    resp = await agent.get("/test/session/requests")
+    assert resp.status == 200, await resp.text()
 
     # Kill the process without atexit handlers
     os.kill(p.pid, signal.SIGKILL)
