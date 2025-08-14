@@ -17,9 +17,9 @@ import pytest
 
 from ddapm_test_agent.agent import DEFAULT_OTLP_GRPC_PORT
 from ddapm_test_agent.agent import DEFAULT_OTLP_HTTP_PORT
-from ddapm_test_agent.logs import LOGS_ENDPOINT
 from ddapm_test_agent.agent import make_otlp_grpc_server_async
 from ddapm_test_agent.client import TestOTLPClient
+from ddapm_test_agent.logs import LOGS_ENDPOINT
 
 
 PROTOBUF_HEADERS = {"Content-Type": "application/x-protobuf"}
@@ -390,7 +390,9 @@ async def test_logs_endpoint_invalid_json(testagent, otlp_http_url, loop):
     resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=JSON_HEADERS, data=b'{"invalid": json}')
     assert resp.status == 400
 
-    resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=JSON_HEADERS, data=b'["not", "an", "object"]')
+    resp = await testagent.post(
+        f"{otlp_http_url}{LOGS_ENDPOINT}", headers=JSON_HEADERS, data=b'["not", "an", "object"]'
+    )
     assert resp.status == 400
 
     resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=JSON_HEADERS, data=b'"just a string"')
