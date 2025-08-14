@@ -34,7 +34,6 @@ from aiohttp import web
 from aiohttp.web import HTTPException
 from aiohttp.web import Request
 from aiohttp.web import middleware
-import grpc
 from grpc import aio as grpc_aio
 from msgpack.exceptions import ExtraData as MsgPackExtraDataException
 from multidict import CIMultiDict
@@ -1299,14 +1298,10 @@ class OTLPLogsServicer(LogsServiceServicer):
             async with ClientSession(self.http_url) as session:
                 async with session.post("/v1/logs", headers=headers, data=protobuf_data) as resp:
                     context.set_trailing_metadata([("http-status", str(resp.status))])
-
-                    # Create response with partial_success field based on HTTP status
                     response = ExportLogsServiceResponse()
                     if resp.status >= 400:
-                        # Set partial failure information for HTTP errors
                         response.partial_success.rejected_log_records = len(request.resource_logs)
                         response.partial_success.error_message = f"HTTP {resp.status}: {await resp.text()}"
-
                     return response
         except Exception as e:
             context.set_trailing_metadata([("http-status", "500"), ("error", str(e))])

@@ -2,10 +2,8 @@ import base64
 import json
 from urllib.parse import urlparse
 
-import aiohttp
 from aiohttp import web
 from google.protobuf.json_format import MessageToDict
-import grpc
 import grpc.aio as grpc_aio
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import LogsServiceStub
@@ -17,15 +15,14 @@ from opentelemetry.proto.logs.v1.logs_pb2 import ScopeLogs
 from opentelemetry.proto.resource.v1.resource_pb2 import Resource
 import pytest
 
+from ddapm_test_agent.agent import DEFAULT_OTLP_GRPC_PORT
+from ddapm_test_agent.agent import DEFAULT_OTLP_HTTP_PORT
 from ddapm_test_agent.agent import make_otlp_grpc_server_async
 from ddapm_test_agent.client import TestOTLPClient
 
 
-# Constants
 PROTOBUF_HEADERS = {"Content-Type": "application/x-protobuf"}
 JSON_HEADERS = {"Content-Type": "application/json"}
-OTLP_HTTP_PORT = 4318
-OTLP_GRPC_PORT = 4317  # Future: GRPC support
 
 
 def _find_service_name_in_resource(resource_logs, expected_service_name):
@@ -51,50 +48,42 @@ async def _get_http_status_from_metadata(call):
 
 @pytest.fixture
 def service_name():
-    """Service name."""
     return "ddservice"
 
 
 @pytest.fixture
 def environment():
-    """Environment name."""
     return "ddenv"
 
 
 @pytest.fixture
 def version():
-    """Service version."""
     return "ddv1"
 
 
 @pytest.fixture
 def host_name():
-    """Host name."""
     return "ddhost"
 
 
 @pytest.fixture
 def log_message():
-    """Log message content."""
     return "test_otel_logs_exporter_auto_configured_http"
 
 
 @pytest.fixture
 def trace_id():
-    """Trace ID."""
     return b""
 
 
 @pytest.fixture
 def span_id():
-    """Span ID."""
     return b""
 
 
 @pytest.fixture
 def otlp_logs_protobuf(service_name, environment, version, host_name, log_message, trace_id, span_id):
-    """Serialize OTLP logs protobuf payload."""
-    # Create resource attributes
+    """Complete OTLP logs export request with test data."""
     resource = Resource()
     resource.attributes.extend(
         [
@@ -105,22 +94,18 @@ def otlp_logs_protobuf(service_name, environment, version, host_name, log_messag
         ]
     )
 
-    # Create log record
     log_record = LogRecord()
     log_record.body.string_value = log_message
     log_record.trace_id = trace_id
     log_record.span_id = span_id
 
-    # Create scope logs
     scope_logs = ScopeLogs()
     scope_logs.log_records.append(log_record)
 
-    # Create resource logs
     resource_logs = ResourceLogs()
     resource_logs.resource.CopyFrom(resource)
     resource_logs.scope_logs.append(scope_logs)
 
-    # Create export request
     export_request = ExportLogsServiceRequest()
     export_request.resource_logs.append(resource_logs)
 
@@ -129,26 +114,23 @@ def otlp_logs_protobuf(service_name, environment, version, host_name, log_messag
 
 @pytest.fixture
 def otlp_logs_string(otlp_logs_protobuf):
-    """Serialize OTLP logs protobuf payload."""
     return otlp_logs_protobuf.SerializeToString()
 
 
 @pytest.fixture
 def otlp_logs_json(otlp_logs_protobuf):
-    """JSON representation of OTLP logs payload."""
     return json.dumps(MessageToDict(otlp_logs_protobuf, preserving_proto_field_name=True))
 
 
 @pytest.fixture
 def otlp_http_url(testagent_url):
-    """URL for OTLP HTTP logs endpoint."""
     parsed_url = urlparse(testagent_url)
-    return f"{parsed_url.scheme}://{parsed_url.hostname}:{OTLP_HTTP_PORT}"
+    return f"{parsed_url.scheme}://{parsed_url.hostname}:{DEFAULT_OTLP_HTTP_PORT}"
 
 
 @pytest.fixture
 def otlp_test_client(otlp_http_url):
-    """Test Agent client for retrieving logs from the OTLP HTTP endpoint."""
+    """OTLP client for retrieving stored logs and requests."""
     parsed_url = urlparse(otlp_http_url)
     client = TestOTLPClient(parsed_url.hostname, parsed_url.port, parsed_url.scheme)
     client.clear()
@@ -159,9 +141,7 @@ def otlp_test_client(otlp_http_url):
 
 @pytest.fixture
 async def otlp_grpc_client():
-    """GRPC client for testing."""
-    # Create GRPC channel and stub
-    channel = grpc_aio.insecure_channel(f"127.0.0.1:{OTLP_GRPC_PORT}")
+    channel = grpc_aio.insecure_channel(f"127.0.0.1:{DEFAULT_OTLP_GRPC_PORT}")
     stub = LogsServiceStub(channel)
 
     yield stub
@@ -169,8 +149,39 @@ async def otlp_grpc_client():
     await channel.close()
 
 
+@pytest.fixture
+async def grpc_server_with_failure_type(agent_app, available_port, aiohttp_server, request):
+    """GRPC server with configurable HTTP backend failure scenarios."""
+    grpc_port = int(available_port)
+    failure_type = getattr(request, "param", "connection_failure")
+
+    http_handlers = {
+        "http_400": lambda _: web.HTTPBadRequest(text="invalid"),
+        "http_500": lambda _: web.HTTPInternalServerError(text="boom"),
+    }
+
+    if failure_type == "connection_failure":
+        http_port = 99999  # Non-existent port
+    elif failure_type in http_handlers:
+        app = web.Application()
+        app.router.add_post("/v1/logs", http_handlers[failure_type])
+        http_server = await aiohttp_server(app)
+        http_port = http_server.port
+    else:
+        raise ValueError(f"Unknown failure_type: {failure_type}")
+
+    grpc_server = await make_otlp_grpc_server_async(agent_app.app["agent"], http_port=http_port, grpc_port=grpc_port)
+    channel = grpc_aio.insecure_channel(f"localhost:{grpc_port}")
+    stub = LogsServiceStub(channel)
+
+    yield grpc_server, stub
+
+    await channel.close()
+    await grpc_server.stop(grace=0)
+
+
 async def test_logs_endpoint_basic_http(testagent, otlp_http_url, otlp_logs_string, loop):
-    """POST /v1/logs accepts OTLP logs over HTTP and returns 200."""
+    """OTLP logs HTTP endpoint accepts protobuf data."""
     resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
@@ -230,28 +241,23 @@ async def test_session_logs_endpoint_http(
     trace_id,
     loop,
 ):
-    """GET /test/session/logs returns stored logs with correct attributes via HTTP."""
-    # Send logs
+    """Session endpoint returns logs with all attributes preserved."""
     resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
-    # Get logs from session
     resp = await testagent.get(f"{otlp_http_url}/test/session/logs")
     assert resp.status == 200
     logs = await resp.json()
     assert len(logs) == 1
     assert "resource_logs" in logs[0]
 
-    # Verify basic structure and content
     resource_logs = logs[0]["resource_logs"]
     assert len(resource_logs) == 1
 
-    # Check that service.name is set in resource attributes
     assert _find_service_name_in_resource(
         resource_logs, service_name
     ), f"service.name should be set to '{service_name}' in resource attributes"
 
-    # Check that log message body is not null
     assert len(resource_logs) == 1
     resource = resource_logs[0].get("resource", {})
     assert resource.get("attributes") == [
@@ -265,7 +271,7 @@ async def test_session_logs_endpoint_http(
     log_records = scope_logs[0]["log_records"]
     assert len(log_records) == 1
     assert log_records[0]["body"].get("string_value") == log_message
-    # trace_id and span_id are stored as hex strings in JSON
+    # trace_id and span_id are stored as base64 encoded strings in JSON
     expected_trace_id = base64.b64encode(trace_id).decode("ascii") if trace_id else None
     expected_span_id = base64.b64encode(span_id).decode("ascii") if span_id else None
     assert log_records[0].get("trace_id") == expected_trace_id
@@ -273,15 +279,12 @@ async def test_session_logs_endpoint_http(
 
 
 async def test_otlp_client_logs(testagent, otlp_test_client, otlp_http_url, otlp_logs_string, loop):
-    """TestAgentClient.logs() retrieves stored logs correctly via HTTP."""
-    # Send logs via aiohttp session to the OTLP HTTP port
+    """OTLP test client correctly captures and retrieves logs."""
     resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
-    # Wait for logs to be received
     otlp_test_client.wait_for_num_logs(1)
 
-    # Get request from the OTLP HTTP port
     resp = otlp_test_client.requests()
     assert len(resp) == 1
     assert resp[0]["method"] == "POST"
@@ -292,7 +295,6 @@ async def test_otlp_client_logs(testagent, otlp_test_client, otlp_http_url, otlp
         decoded_body == otlp_logs_string
     ), f"body: {resp[0]['body']} decoded: {decoded_body}, otlp_logs_string: {otlp_logs_string}"
 
-    # Get logs via TestAgentClient from the OTLP HTTP port
     logs = otlp_test_client.logs()
     assert len(logs) == 1
     assert "resource_logs" in logs[0]
@@ -305,33 +307,27 @@ async def test_otlp_client_logs(testagent, otlp_test_client, otlp_http_url, otlp
 async def test_logs_endpoint_integration_http(
     testagent, otlp_http_url, otlp_logs_string, service_name, log_message, loop
 ):
-    """End-to-end OTLP logs flow via HTTP: send logs, retrieve them, validate content."""
-    # Clear any existing data
+    """End-to-end OTLP logs flow validation."""
     resp = await testagent.get(f"{otlp_http_url}/test/session/clear")
     assert resp.status == 200
 
-    # Send logs request
     resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
-    # Retrieve the logs
     resp = await testagent.get(f"{otlp_http_url}/test/session/logs")
     assert resp.status == 200
     captured_logs_list = await resp.json()
 
-    # Verify we got at least one resource log
     assert len(captured_logs_list) > 0, "Expected at least one resource log"
 
     captured_logs = captured_logs_list[0]
     resource_logs = captured_logs["resource_logs"]
     assert len(resource_logs) > 0
 
-    # Verify service.name is set in resource attributes
     assert _find_service_name_in_resource(
         resource_logs, service_name
     ), f"service.name should be set to '{service_name}' in resource attributes"
 
-    # Verify log message body is not null
     scope_logs = resource_logs[0].get("scope_logs", [])
     assert len(scope_logs) == 1
     log_records = scope_logs[0]["log_records"]
@@ -340,20 +336,16 @@ async def test_logs_endpoint_integration_http(
 
 
 async def test_multiple_logs_sessions_http(testagent, otlp_http_url, otlp_logs_string, loop):
-    """Logs are isolated between sessions via HTTP."""
-    # Send first log
+    """Logs are isolated between sessions."""
     resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
-    # Start a new session
     resp = await testagent.get(f"{otlp_http_url}/test/session/start")
     assert resp.status == 200
 
-    # Send second log in new session
     resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
-    # Get logs from current session (should only have one log)
     resp = await testagent.get(f"{otlp_http_url}/test/session/logs")
     assert resp.status == 200
     logs = await resp.json()
@@ -361,17 +353,15 @@ async def test_multiple_logs_sessions_http(testagent, otlp_http_url, otlp_logs_s
 
 
 async def test_logs_endpoint_json_http(testagent, otlp_http_url, otlp_logs_json, service_name, loop):
-    """POST /v1/logs accepts JSON logs and returns 200."""
+    """OTLP logs HTTP endpoint accepts JSON data."""
     resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=JSON_HEADERS, data=otlp_logs_json)
     assert resp.status == 200
 
-    # Verify logs were stored
     resp = await testagent.get(f"{otlp_http_url}/test/session/logs")
     assert resp.status == 200
     logs = await resp.json()
     assert len(logs) == 1
 
-    # Verify service.name is set in resource attributes
     resource_logs = logs[0]["resource_logs"]
     assert _find_service_name_in_resource(
         resource_logs, service_name
@@ -379,53 +369,44 @@ async def test_logs_endpoint_json_http(testagent, otlp_http_url, otlp_logs_json,
 
 
 async def test_logs_endpoint_invalid_content_type(testagent, otlp_http_url, otlp_logs_string, loop):
-    """POST /v1/logs rejects invalid content types."""
-    # Test with XML content type (unsupported)
+    """Endpoint rejects invalid content types."""
     resp = await testagent.post(
         f"{otlp_http_url}/v1/logs", headers={"Content-Type": "application/xml"}, data=otlp_logs_string
     )
     assert resp.status == 400
 
-    # Test with plain text content type (unsupported)
     resp = await testagent.post(
         f"{otlp_http_url}/v1/logs", headers={"Content-Type": "text/plain"}, data=b"some plain text"
     )
     assert resp.status == 400
 
-    # Test with no content type header
     resp = await testagent.post(f"{otlp_http_url}/v1/logs", data=otlp_logs_string)
     assert resp.status == 400
 
 
 async def test_logs_endpoint_invalid_json(testagent, otlp_http_url, loop):
-    """POST /v1/logs rejects malformed JSON."""
-    # Test malformed JSON syntax
+    """Endpoint rejects malformed JSON."""
     resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=JSON_HEADERS, data=b'{"invalid": json}')
     assert resp.status == 400
 
-    # Test JSON array (should be object)
     resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=JSON_HEADERS, data=b'["not", "an", "object"]')
     assert resp.status == 400
 
-    # Test JSON primitive (should be object)
     resp = await testagent.post(f"{otlp_http_url}/v1/logs", headers=JSON_HEADERS, data=b'"just a string"')
     assert resp.status == 400
 
 
 async def test_logs_endpoint_basic_grpc(testagent, otlp_grpc_client, otlp_logs_protobuf, loop):
-    """Export logs via GRPC and verify they're forwarded to HTTP server."""
-    # Call the GRPC Export method with metadata access
+    """GRPC logs export with successful forwarding."""
     call = otlp_grpc_client.Export(otlp_logs_protobuf)
     response = await call
 
-    # Should return successful response
     assert response is not None
 
-    # Check that HTTP status was successful (200)
     http_status = await _get_http_status_from_metadata(call)
     assert http_status == 200, f"Expected HTTP 200, got {http_status}"
 
-    # For successful requests, partial_success should be empty/default
+    # For successful requests, partial_success should be empty
     assert response.partial_success.rejected_log_records == 0
     assert response.partial_success.error_message == ""
 
@@ -433,26 +414,21 @@ async def test_logs_endpoint_basic_grpc(testagent, otlp_grpc_client, otlp_logs_p
 async def test_session_logs_endpoint_grpc_forwarding(
     testagent, otlp_grpc_client, otlp_test_client, otlp_logs_protobuf, service_name, log_message, loop
 ):
-    """Verify GRPC logs are forwarded to HTTP and retrievable via session endpoint."""
-    # Send via GRPC
+    """GRPC logs forwarded to HTTP are retrievable via session endpoint."""
     call = otlp_grpc_client.Export(otlp_logs_protobuf)
     response = await call
     assert response is not None
 
-    # Check that HTTP status was successful
     http_status = await _get_http_status_from_metadata(call)
     assert http_status == 200, f"Expected HTTP 200, got {http_status}"
 
-    # Verify logs are retrievable via HTTP session endpoint
     logs = otlp_test_client.logs()
 
-    # Verify service.name is set in resource attributes
     resource_logs = logs[0]["resource_logs"]
     assert _find_service_name_in_resource(
         resource_logs, service_name
     ), f"service.name should be set to '{service_name}' in resource attributes"
 
-    # Verify log message body is not null
     scope_logs = resource_logs[0].get("scope_logs", [])
     assert len(scope_logs) == 1
     log_records = scope_logs[0]["log_records"]
@@ -460,42 +436,9 @@ async def test_session_logs_endpoint_grpc_forwarding(
     assert log_records[0]["body"].get("string_value") == log_message
 
 
-@pytest.fixture
-async def grpc_server_with_failure_type(agent_app, available_port, aiohttp_server, request):
-    """Consolidated GRPC server fixture that can handle different HTTP failure types."""
-    grpc_port = int(available_port)
-    failure_type = getattr(request, "param", "connection_failure")
-
-    # Create HTTP backend based on failure type
-    http_handlers = {
-        "http_400": lambda _: web.HTTPBadRequest(text="invalid"),
-        "http_500": lambda _: web.HTTPInternalServerError(text="boom"),
-    }
-
-    if failure_type == "connection_failure":
-        http_port = 99999  # Non-existent port
-    elif failure_type in http_handlers:
-        app = web.Application()
-        app.router.add_post("/v1/logs", http_handlers[failure_type])
-        http_server = await aiohttp_server(app)
-        http_port = http_server.port
-    else:
-        raise ValueError(f"Unknown failure_type: {failure_type}")
-
-    # Create GRPC server and client
-    grpc_server = await make_otlp_grpc_server_async(agent_app.app["agent"], http_port=http_port, grpc_port=grpc_port)
-    channel = grpc_aio.insecure_channel(f"localhost:{grpc_port}")
-    stub = LogsServiceStub(channel)
-
-    yield grpc_server, stub
-
-    await channel.close()
-    await grpc_server.stop(grace=0)
-
-
 @pytest.mark.parametrize("grpc_server_with_failure_type", ["http_400"], indirect=True)
 async def test_grpc_maps_http_400_to_metadata(grpc_server_with_failure_type):
-    """GRPC forwarding preserves HTTP 400 status in trailing metadata and partial_success."""
+    """GRPC forwarding preserves HTTP 400 status in metadata and partial_success."""
 
     _, stub = grpc_server_with_failure_type
 
@@ -503,18 +446,16 @@ async def test_grpc_maps_http_400_to_metadata(grpc_server_with_failure_type):
     response = await call
     assert response is not None
 
-    # Check that HTTP 400 status is preserved in metadata
     http_status = await _get_http_status_from_metadata(call)
     assert http_status == 400, f"Expected HTTP 400, got {http_status}"
 
-    # Check that partial_success field is set for HTTP errors
     assert response.partial_success.rejected_log_records == 0  # Empty request
     assert "HTTP 400" in response.partial_success.error_message
 
 
 @pytest.mark.parametrize("grpc_server_with_failure_type", ["http_500"], indirect=True)
 async def test_grpc_maps_http_500_to_metadata(grpc_server_with_failure_type):
-    """GRPC forwarding preserves HTTP 500 status in trailing metadata and partial_success."""
+    """GRPC forwarding preserves HTTP 500 status in metadata and partial_success."""
 
     _, stub = grpc_server_with_failure_type
 
@@ -522,45 +463,36 @@ async def test_grpc_maps_http_500_to_metadata(grpc_server_with_failure_type):
     response = await call
     assert response is not None
 
-    # Check that HTTP 500 status is preserved in metadata
     http_status = await _get_http_status_from_metadata(call)
     assert http_status == 500, f"Expected HTTP 500, got {http_status}"
 
-    # Check that partial_success field is set for HTTP errors
     assert response.partial_success.rejected_log_records == 0  # Empty request
     assert "HTTP 500" in response.partial_success.error_message
 
 
 @pytest.mark.parametrize("grpc_server_with_failure_type", ["connection_failure"], indirect=True)
 async def test_grpc_server_resilience_after_failure(grpc_server_with_failure_type, otlp_logs_protobuf):
-    """GRPC server should remain operational after processing failed requests."""
+    """GRPC server remains operational after processing failed requests."""
 
-    # Get the server and client from fixture
     _, stub = grpc_server_with_failure_type
 
-    # First request should fail due to connection error, but server should handle it gracefully
     call1 = stub.Export(otlp_logs_protobuf)
     response1 = await call1
     assert response1 is not None
 
-    # Check that the failure is properly reported in partial_success
     assert response1.partial_success.rejected_log_records > 0
     assert "Forward failed" in response1.partial_success.error_message
 
-    # Verify HTTP status indicates an error
     http_status = await _get_http_status_from_metadata(call1)
-    assert http_status == 500  # Should be 500 due to connection failure
+    assert http_status == 500  # Connection failure mapped to 500
 
-    # Second request should also be handled gracefully (server is still responsive)
     call2 = stub.Export(otlp_logs_protobuf)
     response2 = await call2
     assert response2 is not None
 
-    # Should get the same type of failure response
     assert response2.partial_success.rejected_log_records > 0
     assert "Forward failed" in response2.partial_success.error_message
 
-    # Third request with empty data should also be handled
     call3 = stub.Export(ExportLogsServiceRequest())
     response3 = await call3
     assert response3 is not None
