@@ -5,7 +5,6 @@ from pathlib import Path
 import random
 import socket
 import subprocess
-from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Dict
 from typing import Generator
@@ -592,7 +591,7 @@ def testagent_uds_socket_path(tmp_path):
 
 
 @pytest.fixture
-def test_agent_env(testagent_connection_type, testagent_uds_socket_path) -> Dict[str, str]:
+def test_agent_env(testagent_connection_type, testagent_uds_socket_path):
     env = os.environ.copy()
     if testagent_connection_type == "uds":
         env["DD_APM_RECEIVER_SOCKET"] = str(testagent_uds_socket_path)
@@ -601,13 +600,13 @@ def test_agent_env(testagent_connection_type, testagent_uds_socket_path) -> Dict
 
 @pytest.fixture
 async def testagent(
-    loop: asyncio.BaseEventLoop,
-    testagent_port: str,
-    testagent_snapshot_ci_mode: bool,
-    test_agent_env: Dict[str, str],
-    testagent_connection_type: str,
+    loop,
+    testagent_port,
+    testagent_snapshot_ci_mode,
+    test_agent_env,
+    testagent_connection_type,
     testagent_uds_socket_path,
-) -> AsyncGenerator[aiohttp.ClientSession, None]:
+):
     test_agent_env.update(
         {
             "PORT": testagent_port,
