@@ -38,6 +38,7 @@ from grpc import aio as grpc_aio
 from msgpack.exceptions import ExtraData as MsgPackExtraDataException
 from multidict import CIMultiDict
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import add_LogsServiceServicer_to_server
+from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import add_MetricsServiceServicer_to_server
 
 from . import _get_version
 from . import trace_snapshot
@@ -51,6 +52,9 @@ from .integration import Integration
 from .logs import LOGS_ENDPOINT
 from .logs import OTLPLogsGRPCServicer
 from .logs import decode_logs_request
+from .metrics import METRICS_ENDPOINT
+from .metrics import OTLPMetricsGRPCServicer
+from .metrics import decode_metrics_request
 from .remoteconfig import RemoteConfigServer
 from .trace import Span
 from .trace import Trace
@@ -513,6 +517,20 @@ class Agent:
                 logs.append(logs_data)
         return logs
 
+    async def _metrics_by_session(self, token: Optional[str]) -> List[Dict[str, Any]]:
+        """Return the metrics that belong to the given session token.
+
+        If token is None or if the token was used to manually start a session
+        with /session-start then return all metrics that were sent since the last
+        /session-start request was made.
+        """
+        metrics: List[Dict[str, Any]] = []
+        for req in self._requests_by_session(token):
+            if req.match_info.handler == self.handle_v1_metrics:
+                metrics_data = self._decode_v1_metrics(req)
+                metrics.append(metrics_data)
+        return metrics
+
     async def _integration_requests_by_session(
         self,
         token: Optional[str],
@@ -593,6 +611,14 @@ class Agent:
         except Exception as e:
             raise web.HTTPBadRequest(text=str(e))
 
+    def _decode_v1_metrics(self, request: Request) -> Dict[str, Any]:
+        raw_data = self._request_data(request)
+        content_type = request.headers.get("Content-Type", "").lower().strip()
+        try:
+            return decode_metrics_request(raw_data, content_type)
+        except Exception as e:
+            raise web.HTTPBadRequest(text=str(e))
+
     async def handle_v04_traces(self, request: Request) -> web.Response:
         return await self._handle_traces(request, version="v0.4")
 
@@ -628,6 +654,21 @@ class Agent:
             "received /v1/logs payload with %r resource log(s) containing %r log record(s)",
             num_resource_logs,
             total_log_records,
+        )
+        return web.HTTPOk()
+
+    async def handle_v1_metrics(self, request: Request) -> web.Response:
+        metrics_data = self._decode_v1_metrics(request)
+        num_resource_metrics = len(metrics_data.get("resource_metrics", []))
+        total_metrics = sum(
+            len(scope_metric.get("metrics", []))
+            for resource_metric in metrics_data.get("resource_metrics", [])
+            for scope_metric in resource_metric.get("scope_metrics", [])
+        )
+        log.info(
+            "received /v1/metrics payload with %r resource metric(s) containing %r metric(s)",
+            num_resource_metrics,
+            total_metrics,
         )
         return web.HTTPOk()
 
@@ -996,6 +1037,11 @@ class Agent:
         logs = await self._logs_by_session(token)
         return web.json_response(logs)
 
+    async def handle_session_metrics(self, request: Request) -> web.Response:
+        token = request["session_token"]
+        metrics = await self._metrics_by_session(token)
+        return web.json_response(metrics)
+
     async def handle_session_requests(self, request: Request) -> web.Response:
         token = request["session_token"]
         resp = []
@@ -1013,6 +1059,7 @@ class Agent:
                 self.handle_evp_proxy_v2_api_v2_llmobs,
                 self.handle_evp_proxy_v2_llmobs_eval_metric,
                 self.handle_v1_logs,
+                self.handle_v1_metrics,
             ):
                 continue
             resp.append(
@@ -1250,8 +1297,10 @@ def make_otlp_http_app(agent: Agent) -> web.Application:
     app.add_routes(
         [
             web.post(LOGS_ENDPOINT, agent.handle_v1_logs),
+            web.post(METRICS_ENDPOINT, agent.handle_v1_metrics),
             web.get("/test/session/requests", agent.handle_session_requests),
             web.get("/test/session/logs", agent.handle_session_logs),
+            web.get("/test/session/metrics", agent.handle_session_metrics),
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/start", agent.handle_session_start),
         ]
@@ -1268,6 +1317,10 @@ async def make_otlp_grpc_server_async(agent: Agent, http_port: int, grpc_port: i
     # Add the OTLP logs servicer
     logs_servicer = OTLPLogsGRPCServicer(http_port)
     add_LogsServiceServicer_to_server(logs_servicer, server)
+
+    # Add the OTLP metrics servicer
+    metrics_servicer = OTLPMetricsGRPCServicer(http_port)
+    add_MetricsServiceServicer_to_server(metrics_servicer, server)
 
     # Setup and start the server
     listen_addr = f"[::]:{grpc_port}"

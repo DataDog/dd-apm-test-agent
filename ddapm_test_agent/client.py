@@ -163,3 +163,20 @@ class TestOTLPClient(TestClient):
                 return logs
             time.sleep(0.1)
         raise ValueError("Number (%r) of logs not available from test agent, got %r" % (num, len(logs)))
+
+    def metrics(self, clear: bool = False, **kwargs: Any) -> List[Any]:
+        resp = self._session.get(self._url("/test/session/metrics"), **kwargs)
+        if clear:
+            self.clear()
+        return cast(List[Any], resp.json())
+
+    def wait_for_num_metrics(self, num: int, clear: bool = False, wait_loops: int = 30) -> List[Any]:
+        """Wait for `num` metrics to be received from the test agent."""
+        for _ in range(wait_loops):
+            metrics = self.metrics(clear=False)
+            if len(metrics) == num:
+                if clear:
+                    self.clear()
+                return metrics
+            time.sleep(0.1)
+        raise ValueError("Number (%r) of metrics not available from test agent, got %r" % (num, len(metrics)))

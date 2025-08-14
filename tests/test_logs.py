@@ -89,7 +89,7 @@ def otlp_logs_protobuf(service_name, environment, version, host_name, log_messag
     resource.attributes.extend(
         [
             KeyValue(key="service.name", value=AnyValue(string_value=service_name)),
-            KeyValue(key="deployment.environment", value=AnyValue(string_value=environment)),
+            KeyValue(key="deployment.environment.name", value=AnyValue(string_value=environment)),
             KeyValue(key="service.version", value=AnyValue(string_value=version)),
             KeyValue(key="host.name", value=AnyValue(string_value=host_name)),
         ]
@@ -263,7 +263,7 @@ async def test_session_logs_endpoint_http(
     resource = resource_logs[0].get("resource", {})
     assert resource.get("attributes") == [
         {"key": "service.name", "value": {"string_value": service_name}},
-        {"key": "deployment.environment", "value": {"string_value": environment}},
+        {"key": "deployment.environment.name", "value": {"string_value": environment}},
         {"key": "service.version", "value": {"string_value": version}},
         {"key": "host.name", "value": {"string_value": host_name}},
     ]
