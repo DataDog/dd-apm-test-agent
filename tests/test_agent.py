@@ -1,9 +1,11 @@
+import asyncio
 import json
 import os
 import signal
-import stat
 import subprocess
 import time
+
+import pytest
 
 from ddapm_test_agent.trace import trace_id
 
@@ -396,9 +398,7 @@ def test_uds(tmp_path, available_port):
         raise AssertionError("Test agent did not create the socket in time")
 
     # Check the permissions
-    socket_stat = (tmp_path / "apm.socket").stat()
-    actual_perms = stat.S_IMODE(socket_stat.st_mode)
-    assert actual_perms & 0o722 == 0o722
+    assert (tmp_path / "apm.socket").stat().st_mode & 0o722 == 0o722
 
     # Kill the process without atexit handlers
     os.kill(p.pid, signal.SIGKILL)
@@ -473,3 +473,31 @@ async def test_evp_proxy_v2_api_intake_llmobs_v2_eval_metric(agent):
     assert resp.status == 200
     reqs = await resp.json()
     assert len(reqs) == 1
+
+
+@pytest.fixture
+def testagent_connection_type():
+    return "uds"
+
+
+async def test_traces_via_uds(
+    testagent,
+    testagent_uds_socket_path,
+    v04_reference_http_trace_payload_headers,
+    v04_reference_http_trace_payload_data,
+    v04_reference_http_trace_payload_data_raw,
+):
+    """Test traces can be sent and received via UDS."""
+    assert testagent_uds_socket_path.exists(), f"UDS socket does not exist at {testagent_uds_socket_path}"
+
+    resp = await testagent.put(
+        "http://localhost/v0.4/traces",
+        headers=v04_reference_http_trace_payload_headers,
+        data=v04_reference_http_trace_payload_data,
+    )
+    assert resp.status == 200
+
+    resp = await testagent.get("http://localhost/test/traces")
+    assert resp.status == 200
+    received_traces = await resp.json()
+    assert received_traces == v04_reference_http_trace_payload_data_raw
