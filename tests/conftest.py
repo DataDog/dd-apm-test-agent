@@ -5,7 +5,6 @@ from pathlib import Path
 import random
 import socket
 import subprocess
-from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Dict
 from typing import Generator
@@ -582,25 +581,63 @@ def testagent_snapshot_ci_mode() -> bool:
 
 
 @pytest.fixture
-async def testagent(
-    loop: asyncio.BaseEventLoop, testagent_port: str, testagent_snapshot_ci_mode: bool
-) -> AsyncGenerator[aiohttp.ClientSession, None]:
+def testagent_connection_type():
+    return "http"
+
+
+@pytest.fixture
+def testagent_uds_socket_path(tmp_path):
+    return tmp_path / "apm.socket"
+
+
+@pytest.fixture
+def test_agent_env(testagent_connection_type, testagent_uds_socket_path):
     env = os.environ.copy()
-    env.update(
+    if testagent_connection_type == "uds":
+        env["DD_APM_RECEIVER_SOCKET"] = str(testagent_uds_socket_path)
+    return env
+
+
+@pytest.fixture
+async def testagent(
+    loop,
+    testagent_port,
+    testagent_snapshot_ci_mode,
+    test_agent_env,
+    testagent_connection_type,
+    testagent_uds_socket_path,
+):
+    test_agent_env.update(
         {
             "PORT": testagent_port,
             "SNAPSHOT_CI": "1" if testagent_snapshot_ci_mode else "0",
             "SNAPSHOT_DIR": os.path.join(os.path.dirname(__file__), "integration_snapshots"),
         }
     )
-    p = subprocess.Popen(["ddapm-test-agent"], env=env)
+    p = subprocess.Popen(["ddapm-test-agent"], env=test_agent_env)
 
-    # Wait for server to start
     try:
-        async with aiohttp.ClientSession() as session:
+        if testagent_connection_type == "uds":
+            import time
+
+            for i in range(100):
+                if testagent_uds_socket_path.exists():
+                    break
+                time.sleep(0.05)
+            else:
+                raise AssertionError("Test agent did not create UDS socket in time")
+
+            connector = aiohttp.UnixConnector(path=str(testagent_uds_socket_path))
+            session = aiohttp.ClientSession(connector=connector)
+            base_url = "http://localhost/"
+        else:
+            session = aiohttp.ClientSession()
+            base_url = f"http://localhost:{testagent_port}"
+
+        async with session:
             for _ in range(100):
                 try:
-                    r = await session.get(f"http://localhost:{testagent_port}")
+                    r = await session.get(base_url)
                 except (ClientConnectorError, ClientOSError):
                     pass
                 else:
@@ -608,7 +645,9 @@ async def testagent(
                         break
                 await asyncio.sleep(0.05)
             else:
-                assert 0
+                raise AssertionError("Test agent did not start in time")
+
             yield session
     finally:
         p.terminate()
+        p.wait()
