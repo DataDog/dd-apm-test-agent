@@ -6,6 +6,7 @@ from collections import OrderedDict
 from collections import defaultdict
 from dataclasses import dataclass
 from dataclasses import field
+import inspect
 import json
 import logging
 import os
@@ -13,65 +14,69 @@ import pprint
 import re
 import socket
 import sys
-from typing import Any
-from typing import Awaitable
-from typing import Callable
-from typing import DefaultDict
-from typing import Dict
-from typing import List
-from typing import Literal
-from typing import Mapping
-from typing import Optional
-from typing import Set
-from typing import Tuple
-from typing import cast
-from urllib.parse import urlparse
-from urllib.parse import urlunparse
+from typing import Any, Awaitable, Callable, DefaultDict, Dict, List, Literal, Mapping, Optional, Set, Tuple, cast
+from urllib.parse import urlparse, urlunparse
 
-from aiohttp import ClientResponse
-from aiohttp import ClientSession
-from aiohttp import web
-from aiohttp.web import HTTPException
-from aiohttp.web import Request
-from aiohttp.web import middleware
+from aiohttp import ClientResponse, ClientSession, web
+from aiohttp.web import HTTPException, Request, middleware
 from grpc import aio as grpc_aio
 from msgpack.exceptions import ExtraData as MsgPackExtraDataException
 from multidict import CIMultiDict
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import add_LogsServiceServicer_to_server
 
-from . import _get_version
-from . import trace_snapshot
-from . import tracestats_snapshot
-from .apmtelemetry import TelemetryEvent
-from .apmtelemetry import v2_decode_request as v2_apmtelemetry_decode_request
-from .checks import CheckTrace
-from .checks import Checks
-from .checks import start_trace
+from ddapm_test_agent import _get_version
+from . import trace_snapshot, tracestats_snapshot
+from .apmtelemetry import TelemetryEvent, v2_decode_request as v2_apmtelemetry_decode_request
+from .checks import CheckNotFound, CheckTrace, Checks, check_registry, start_trace
+from .db_checks import CheckDBMPropagation, CheckDBRequest
 from .integration import Integration
-from .logs import LOGS_ENDPOINT
-from .logs import OTLPLogsGRPCServicer
-from .logs import decode_logs_request
+from .logs import LOGS_ENDPOINT, OTLPLogsGRPCServicer, decode_logs_request
 from .remoteconfig import RemoteConfigServer
-from .trace import Span
-from .trace import Trace
-from .trace import TraceMap
-from .trace import decode_v04 as trace_decode_v04
-from .trace import decode_v05 as trace_decode_v05
-from .trace import decode_v07 as trace_decode_v07
-from .trace import pprint_trace
-from .trace import v04TracePayload
-from .trace_checks import CheckMetaTracerVersionHeader
-from .trace_checks import CheckTraceContentLength
-from .trace_checks import CheckTraceCountHeader
-from .trace_checks import CheckTraceDDService
-from .trace_checks import CheckTracePeerService
-from .trace_checks import CheckTraceStallAsync
-from .tracerflare import TracerFlareEvent
-from .tracerflare import v1_decode as v1_tracerflare_decode
-from .tracestats import decode_v06 as tracestats_decode_v06
-from .tracestats import v06StatsPayload
+from .trace import (
+    Span,
+    Trace,
+    TraceMap,
+    decode_v04 as trace_decode_v04,
+    decode_v05 as trace_decode_v05,
+    decode_v07 as trace_decode_v07,
+    pprint_trace,
+    v04TracePayload,
+)
+from .trace_checks import (
+    CheckMetaTracerVersionHeader,
+    CheckTraceContentLength,
+    CheckTraceCountHeader,
+    CheckTraceDDService,
+    CheckTracePeerService,
+    CheckTraceStallAsync,
+)
+from .tracerflare import TracerFlareEvent, v1_decode as v1_tracerflare_decode
+from .tracestats import decode_v06 as tracestats_decode_v06, v06StatsPayload
 from .vcr_proxy import proxy_request
+from .web import html_content, render_trace_html
+from .web_checks import CheckWebRequest
 
+# Register all default checks
+check_registry.register(CheckMetaTracerVersionHeader)
+check_registry.register(CheckTraceCountHeader)
+check_registry.register(CheckTraceContentLength)
+check_registry.register(CheckTraceStallAsync)
+check_registry.register(CheckTracePeerService)
+check_registry.register(CheckTraceDDService)
+check_registry.register(CheckWebRequest)
+check_registry.register(CheckDBRequest)
+check_registry.register(CheckDBMPropagation)
+
+
+class GlobalState:
+    def __init__(self):
+        self.trace_check_results_by_check = defaultdict(
+            lambda: defaultdict(
+                lambda: {"Passed_Checks": 0, "Failed_Checks": 0, "Skipped_Checks": 0, "passed_traces": [], "failed_traces": []}
+            )
+        )
+
+global_state = GlobalState()
 
 # Default ports
 DEFAULT_APM_PORT = 8126
@@ -84,7 +89,6 @@ class NoSuchSessionException(Exception):
 
 
 _Handler = Callable[[Request], Awaitable[web.Response]]
-
 
 log = logging.getLogger(__name__)
 
@@ -168,7 +172,6 @@ async def _forward_request(
             data=request_data,
         ) as resp:
             assert resp.status == 200, f"Request to agent unsuccessful, received [{resp.status}] response."
-
             if "text/plain" in resp.content_type:
                 response_data = await resp.text()
                 log.info("Response %r from agent:", response_data)
@@ -253,9 +256,8 @@ class Agent:
         self._requests: List[Request] = []
         self._rc_server = RemoteConfigServer()
         self._trace_failures: Dict[str, List[Tuple[CheckTrace, str]]] = defaultdict(default_value_trace_failures)
-        self._trace_check_results_by_check: Dict[str, Dict[str, Dict[str, int]]] = defaultdict(
-            default_value_trace_check_results_by_check
-        )
+        self._trace_check_results_by_check = global_state.trace_check_results_by_check
+        self.configurations: Dict[int, Dict[str, str]] = {}
         self._forward_endpoints: List[str] = [
             "/v0.4/traces",
             "/v0.5/traces",
@@ -304,7 +306,7 @@ class Agent:
             failures_by_token = self._trace_failures
             trace_failures = [value for sublist in failures_by_token.values() for value in sublist]
             self._trace_failures = defaultdict(default_value_trace_failures)
-            self._trace_check_results_by_check = defaultdict(default_value_trace_check_results_by_check)
+            self._trace_check_results_by_check = global_state.trace_check_results_by_check
         else:
             trace_failures = self._trace_failures[token]
             del self._trace_failures[token]
@@ -462,6 +464,69 @@ class Agent:
                         tracemap[trace_id] = []
                     tracemap[trace_id].append(span)
         return list(tracemap.values())
+
+    async def handle_get_checks(self, request: Request) -> web.Response:
+        """Return a list of all available checks."""
+        all_checks = check_registry.all()
+        enabled_checks = request.app["checks"].enabled
+        checks_data = [
+            {"name": check.name, "enabled": check.name in enabled_checks, "category": check.category, "team": check.team}
+            for check in all_checks
+        ]
+        return web.json_response(checks_data)
+
+    async def handle_enable_check(self, request: Request) -> web.Response:
+        """Enable a specific check."""
+        check_name = (await request.json())["check_name"]
+        request.app["checks"].enabled.append(check_name)
+        return web.HTTPOk()
+
+    async def handle_disable_check(self, request: Request) -> web.Response:
+        """Disable a specific check."""
+        check_name = request.match_info["check_name"]
+        try:
+            request.app["checks"].enabled.remove(check_name)
+        except ValueError:
+            pass  # Check was not enabled
+        return web.HTTPOk()
+
+    async def handle_get_check_source(self, request: Request) -> web.Response:
+        """Return the source code of a check."""
+        check_name = request.match_info["check_name"]
+        try:
+            check_class = check_registry.get(check_name)
+            source_code = inspect.getsource(check_class)
+            return web.json_response({"source_code": source_code})
+        except CheckNotFound:
+            return web.HTTPNotFound(text=f"Check '{check_name}' not found.")
+        except TypeError:
+            return web.HTTPInternalServerError(text=f"Could not get source for check '{check_name}'.")
+
+    async def handle_get_check_results(self, request: Request) -> web.Response:
+        """Return the results of the checks."""
+        results = {}
+        for check in check_registry.all():
+            results[check.name] = {
+                "description": check.description,
+                "category": check.category,
+                "team": check.team,
+                "Passed_Checks": 0,
+                "Failed_Checks": 0,
+                "Skipped_Checks": 0,
+                "passed_traces": [],
+                "failed_traces": [],
+            }
+        for session_results in self._trace_check_results_by_check.values():
+            for check_name, result in session_results.items():
+                if check_name not in results:
+                    log.warning("Check %r not in registry, but has results.", check_name)
+                    continue
+                results[check_name]["Passed_Checks"] += result["Passed_Checks"]
+                results[check_name]["Failed_Checks"] += result["Failed_Checks"]
+                results[check_name]["Skipped_Checks"] += result["Skipped_Checks"]
+                results[check_name]["passed_traces"].extend(result["passed_traces"])
+                results[check_name]["failed_traces"].extend(result["failed_traces"])
+        return web.json_response(results)
 
     async def _apmtelemetry_by_session(self, token: Optional[str]) -> List[TelemetryEvent]:
         """Return the telemetry events that belong to the given session token.
@@ -803,12 +868,44 @@ class Agent:
                     traces = self._decode_v05_traces(request)
                 elif version == "v0.7":
                     traces = self._decode_v07_traces(request)
+                request["traces"] = traces
                 log.info(
                     "received trace for token %r payload with %r trace chunks",
                     token,
                     len(traces),
                 )
                 for i, trace in enumerate(traces):
+                    if trace:
+                        trace_id = trace[0]["trace_id"]
+                        
+                        # Find the root span to extract trace-specific config
+                        root_span = next((s for s in trace if s.get("parent_id") in (None, 0)), trace[0])
+                        log.info(f"Trace {trace_id}: Identified root span: {pprint.pformat(root_span)}")
+                        
+                        trace_config = {}
+                        if "_dd.ci.test_config" in root_span.get("meta", {}):
+                            try:
+                                trace_config = json.loads(root_span["meta"]["_dd.ci.test_config"])
+                                log.info(f"Trace {trace_id}: Found config in root span meta: {trace_config}")
+                            except json.JSONDecodeError:
+                                log.warning(f"Could not decode _dd.ci.test_config for trace {trace_id}")
+                                trace_config = request.get("_dd_trace_env_variables", {})
+                        else:
+                            # Fallback to header-based config
+                            trace_config = request.get("_dd_trace_env_variables", {})
+
+                        env_config = {}
+                        header_config = {}
+                        for key, value in trace_config.items():
+                            if "API_KEY" not in key and "APP_KEY" not in key:
+                                env_config[key] = value
+                        for key, value in headers.items():
+                            lower_key = key.lower()
+                            if "api_key" not in lower_key and "app_key" not in lower_key:
+                                if lower_key.startswith("datadog-") or lower_key.startswith("x-datadog-"):
+                                    if lower_key != "x-datadog-trace-env-variables":
+                                        header_config[key] = value
+                        self.configurations[trace_id] = {"env": env_config, "headers": header_config}
                     try:
                         log.info(
                             "Chunk %d\n%s",
@@ -821,11 +918,18 @@ class Agent:
                     # perform peer service check on span
                     for span in trace:
                         await checks.check(
-                            "trace_peer_service", span=span, dd_config_env=request.get("_dd_trace_env_variables", {})
+                            "trace_peer_service", span=span, dd_config_env=trace_config
                         )
+                        if span.get("type") == "web":
+                            await checks.check("web_request", span=span)
+                        elif span.get("type") == "sql":
+                            await checks.check("db_request", span=span)
+                            await checks.check(
+                                "dbm_propagation", span=span, dd_config_env=trace_config
+                            )
 
                     await checks.check(
-                        "trace_dd_service", trace=trace, dd_config_env=request.get("_dd_trace_env_variables", {})
+                        "trace_dd_service", trace=trace, dd_config_env=trace_config
                     )
                 log.info("end of payload %s", "-" * 40)
 
@@ -1060,6 +1164,19 @@ class Agent:
             events = await self.apmtelemetry()
         return web.json_response(data=events)
 
+    async def handle_test_trace_id(self, request: Request) -> web.Response:
+        trace_id = int(request.match_info["trace_id"])
+        try:
+            spans = await self._trace_by_trace_id(trace_id)
+        except KeyError:
+            raise web.HTTPNotFound(text=f"Trace with ID {trace_id} not found.")
+
+        config = self.configurations.get(trace_id)
+        failing_tags_str = request.url.query.get("failing_tags", "")
+        failing_tags = failing_tags_str.split(",") if failing_tags_str else []
+
+        return web.Response(text=render_trace_html(spans, failing_tags, config), content_type="text/html")
+
     async def handle_v1_profiling(self, request: Request) -> web.Response:
         await request.read()
         self._requests.append(request)
@@ -1116,9 +1233,11 @@ class Agent:
 
         if "X-Datadog-Trace-Env-Variables" in headers:
             var_string = headers.pop("X-Datadog-Trace-Env-Variables")
-            env_vars = {
-                key.strip(): value.strip() for key, value in (pair.split("=") for pair in var_string.split(","))
-            }
+            env_vars = {}
+            for pair in var_string.split(","):
+                if "=" in pair:
+                    key, value = pair.split("=", 1)
+                    env_vars[key.strip()] = value.strip()
             log.debug("Found the following Datadog Trace Env Variables: " + str(env_vars))
             request["_dd_trace_env_variables"] = env_vars
 
@@ -1151,16 +1270,12 @@ class Agent:
         log.debug(f"Request Data: {data!r}")
 
         if agent_url and proxy_to_agent:
-            agent_response = await _prepare_and_send_request(data, request, headers)
+            try:
+                await _prepare_and_send_request(data, request, headers)
+            except Exception as e:
+                log.error(f"Failed to forward request to agent: {e}")
 
-        endpoint_response = await handler(request)
-
-        # return the agent response if this was sent to a trace endpoint
-        endpoint_path = request.path
-        if "traces" in endpoint_path and agent_url and proxy_to_agent:
-            return agent_response
-        else:
-            return endpoint_response
+        return await handler(request)
 
     @middleware
     async def vcr_proxy_suffix_middleware(self, request: Request, handler: _Handler) -> web.Response:
@@ -1188,6 +1303,14 @@ class Agent:
         self.vcr_cassette_prefix = None
         return web.HTTPOk()
 
+    async def handle_get_ui(self, request: Request) -> web.Response:
+        """Serve the web UI."""
+        return web.Response(text=html_content, content_type="text/html")
+
+    async def handle_get_db_ui(self, request: Request) -> web.Response:
+        """Serve the web UI."""
+        return web.Response(text=db_html_content, content_type="text/html")
+
     @middleware
     async def check_failure_middleware(self, request: Request, handler: _Handler) -> web.Response:
         """Convert any failed checks into an HttpException."""
@@ -1196,9 +1319,10 @@ class Agent:
             response = await handler(request)
         except AssertionError as e:
             token = request["session_token"]
-
+            traces = request.get("traces", [])
             # update trace_check results
-            trace.update_results(self._trace_check_results_by_check[token])
+            trace_ids = [t[0]["trace_id"] for t in traces if t]
+            trace.update_results(self._trace_check_results_by_check[token], trace_ids)
 
             # only save trace failures to memory if necessary
             msg = str(trace) + str(e)
@@ -1210,8 +1334,10 @@ class Agent:
             raise web.HTTPBadRequest(body=msg)
         else:
             token = request["session_token"]
+            traces = request.get("traces", [])
             # update trace_check results
-            trace.update_results(self._trace_check_results_by_check[token])
+            trace_ids = [t[0]["trace_id"] for t in traces if t]
+            trace.update_results(self._trace_check_results_by_check[token], trace_ids)
             if trace.has_fails():
                 # only save trace failures to memory if necessary
                 pool_failures = request.app["pool_trace_check_failures"]
@@ -1228,6 +1354,13 @@ class Agent:
                     return response
                 raise web.HTTPBadRequest(body=msg)
         return response
+
+    async def handle_clear_all_checks(self, request: Request) -> web.Response:
+        """Clear all trace check failures and results."""
+        self._trace_failures.clear()
+        self._trace_check_results_by_check.clear()
+        log.info("Cleared all trace check failures and results.")
+        return web.HTTPOk()
 
 
 def make_otlp_http_app(agent: Agent) -> web.Application:
@@ -1254,6 +1387,10 @@ def make_otlp_http_app(agent: Agent) -> web.Application:
             web.get("/test/session/logs", agent.handle_session_logs),
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/start", agent.handle_session_start),
+            web.get("/checks", agent.handle_get_checks),
+            web.post("/checks/enable", agent.handle_enable_check),
+            web.post("/checks/disable/{check_name}", agent.handle_disable_check),
+            web.get("/check-results", agent.handle_get_check_results),
         ]
     )
 
@@ -1324,10 +1461,12 @@ def make_app(
             web.post("/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric", agent.handle_evp_proxy_v2_llmobs_eval_metric),
             web.post("/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric", agent.handle_evp_proxy_v2_llmobs_eval_metric),
             web.get("/info", agent.handle_info),
+            web.get("/", agent.handle_get_ui),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/snapshot", agent.handle_snapshot),
             web.get("/test/session/traces", agent.handle_session_traces),
+            web.get("/test/trace/{trace_id}", agent.handle_test_trace_id),
             web.get("/test/session/apmtelemetry", agent.handle_session_apmtelemetry),
             web.get("/test/session/tracerflares", agent.handle_session_tracerflares),
             web.get("/test/session/stats", agent.handle_session_tracestats),
@@ -1338,6 +1477,7 @@ def make_app(
             web.put("/test/session/integrations", agent.handle_put_tested_integrations),
             web.get("/test/traces", agent.handle_test_traces),
             web.get("/test/apmtelemetry", agent.handle_test_apmtelemetry),
+            web.get("/test/session/clear-all-checks", agent.handle_clear_all_checks),
             # web.get("/test/benchmark", agent.handle_test_traces),
             web.get("/test/trace/analyze", agent.handle_trace_analyze),
             web.get("/test/trace_check/failures", agent.get_trace_check_failures),
@@ -1347,6 +1487,11 @@ def make_app(
             web.post("/test/settings", agent.handle_settings),
             web.post("/vcr/test/start", agent.check_vcr_proxy_suffix),
             web.post("/vcr/test/stop", agent.unset_vcr_proxy_suffix),
+            web.get("/checks", agent.handle_get_checks),
+            web.post("/checks/enable", agent.handle_enable_check),
+            web.post("/checks/disable/{check_name}", agent.handle_disable_check),
+            web.get("/check-results", agent.handle_get_check_results),
+            web.get("/checks/source/{check_name}", agent.handle_get_check_source),
             web.route(
                 "*",
                 "/vcr/{path:.*}",
@@ -1355,14 +1500,6 @@ def make_app(
         ]
     )
     checks = Checks(
-        checks=[
-            CheckMetaTracerVersionHeader,
-            CheckTraceCountHeader,
-            CheckTraceContentLength,
-            CheckTraceStallAsync,
-            CheckTracePeerService,
-            CheckTraceDDService,
-        ],
         enabled=enabled_checks,
     )
     app["agent"] = agent
@@ -1452,7 +1589,9 @@ def main(args: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--enabled-checks",
         type=List[str],
-        default=_parse_csv(os.environ.get("ENABLED_CHECKS", "")),
+        default=_parse_csv(
+            os.environ.get("ENABLED_CHECKS", ",".join([check.name for check in check_registry.all()]))
+        ),
         help=(
             "Comma-separated values of checks to enable. None are enabled "
             " by default. For the list of values see "

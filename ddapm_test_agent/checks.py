@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import contextvars
 import dataclasses
+import logging
 import textwrap
 from typing import Any
 from typing import Dict
@@ -10,8 +11,11 @@ from typing import List
 from typing import Tuple
 from typing import Type
 
+log = logging.getLogger(__name__)
+
 
 CHECK_TRACE: contextvars.ContextVar["CheckTrace"] = contextvars.ContextVar("check_trace")
+
 
 
 class CheckNotFound(IndexError):
@@ -40,18 +44,21 @@ class CheckTraceFrame:
                 return True
         return False
 
-    def update_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
+    def update_results(self, results: Dict[str, Dict[str, Any]], trace_ids: List[int]) -> Dict[str, Dict[str, Any]]:
         """Return as follows
-        output = { check.name: { "Passed_Checks": int, "Failed_Checks": int, "Skipped_Checks": int}}
+        output = { check.name: { "Passed_Checks": int, "Failed_Checks": int, "Skipped_Checks": int, "passed_traces": [], "failed_traces": []}}
 
         """
         for c in self._checks:
             if c.failed:
                 results[c.name]["Failed_Checks"] += 1
+                for trace_id in trace_ids:
+                    results[c.name]["failed_traces"].append({"id": trace_id, "reason": c.message})
             elif c.skipped:
                 results[c.name]["Skipped_Checks"] += 1
             else:
                 results[c.name]["Passed_Checks"] += 1
+                results[c.name]["passed_traces"].extend(trace_ids)
         return results
 
     def __repr__(self) -> str:
@@ -100,9 +107,9 @@ class CheckTrace:
     def has_fails(self) -> bool:
         return len([f for f in self.frames() if f.has_fails()]) > 0
 
-    def update_results(self, results: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
+    def update_results(self, results: Dict[str, Dict[str, Any]], trace_ids: List[int]) -> Dict[str, Dict[str, Any]]:
         for f in self.frames():
-            f.update_results(results)
+            f.update_results(results, trace_ids)
         return results
 
     def get_failures_by_check(self, failures_by_check: Dict[str, List[str]]) -> Dict[str, List[str]]:
@@ -118,7 +125,7 @@ class CheckTrace:
 
             for c in frame._checks:
                 if c.failed:
-                    check_s = f"{indent}❌ Check '{c.name}' failed: {c._msg}\n"
+                    check_s = f"{indent}❌ Check '{c.name}' failed: {c.message}\n"
                     if c.name in failures_by_check:
                         failures_by_check[c.name].append(frame_s + check_s)
                     else:
@@ -130,14 +137,17 @@ class CheckTrace:
         # TODO?: only include frames that have fails
         for frame, depth in self.frames_dfs():
             indent = " " * (depth + 2) if depth > 0 else ""
-            s += f"{indent}At {frame._name}:\n"
+            if frame._name == "headers":
+                s += f"{indent}At headers:\n"
+            else:
+                s += f"{indent}At {frame._name}:\n"
             for item in frame._items:
                 s += textwrap.indent(f"- {item}", prefix=f" {indent}")
                 s += "\n"
 
             for c in frame._checks:
                 if c.failed:
-                    s += f"{indent}❌ Check '{c.name}' failed: {c._msg}\n"
+                    s += f"{indent}❌ Check '{c.name}' failed: {c.message}\n"
         return s
 
 
@@ -150,10 +160,16 @@ class Check:
     with error messages returned to the test case.
     """
 
+    category: str = "General"
+    """Category of the check. This is used to group checks in the UI."""
+
+    team: str = "Core"
+    """Team that owns the check."""
+
     def __init__(self) -> None:
         self._failed: bool = False
         self._skipped: bool = False
-        self._msg: str = ""
+        self._msgs: List[str] = []
 
     @property
     def failed(self) -> bool:
@@ -163,45 +179,66 @@ class Check:
     def skipped(self) -> bool:
         return self._skipped
 
+    @property
+    def message(self) -> str:
+        return "; ".join(self._msgs)
+
     def fail(self, msg: str) -> None:
         self._failed = True
-        self._msg = msg
+        self._msgs.append(msg)
 
     def skip(self, msg: str) -> None:
         self._skipped = True
-        self._msg = msg
+        self._msgs.append(msg)
 
     def check(self, *args, **kwargs):
         """Perform any checking required for this Check.
 
         CheckFailures should be raised for any failing checks.
         """
-        raise NotImplementedError
+        pass
 
+
+class CheckRegistry:
+    def __init__(self) -> None:
+        self._checks: Dict[str, Type[Check]] = {}
+
+    def register(self, check: Type[Check]) -> None:
+        if check.name in self._checks:
+            raise ValueError(f"Check with name '{check.name}' is already registered.")
+        self._checks[check.name] = check
+
+    def unregister(self, name: str) -> None:
+        if name not in self._checks:
+            raise CheckNotFound(f"Check with name '{name}' not found.")
+        del self._checks[name]
+
+    def get(self, name: str) -> Type[Check]:
+        if name not in self._checks:
+            raise CheckNotFound(f"Check with name '{name}' not found.")
+        return self._checks[name]
+
+    def all(self) -> List[Type[Check]]:
+        return list(self._checks.values())
+
+
+check_registry = CheckRegistry()
 
 @dataclasses.dataclass()
 class Checks:
-    checks: List[Type[Check]] = dataclasses.field(init=True)
     enabled: List[str] = dataclasses.field(init=True)
 
     def _get_check(self, name: str) -> Type[Check]:
-        for c in self.checks:
-            if c.name == name:
-                return c
-        else:
-            raise CheckNotFound("Check for code %r not found" % name)
+        return check_registry.get(name)
 
     def is_enabled(self, name: str) -> bool:
-        check = self._get_check(name)
-        if check.name in self.enabled:
-            return True
-        return False
+        return name in self.enabled
 
     async def check(self, name: str, *args: Any, **kwargs: Any) -> None:
         """Find and run the check with the given ``name`` if it is enabled."""
-        check = self._get_check(name)()
-
         if self.is_enabled(name):
+            log.info("Running check: %r", name)
+            check = self._get_check(name)()
             # Register the check with the current trace
             CheckTrace.add_check(check)
 
