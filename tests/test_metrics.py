@@ -347,13 +347,11 @@ async def test_session_metrics_endpoint_grpc_forwarding(
     assert metrics_list[0]["name"] == metric_name
 
 
-@pytest.mark.parametrize("service_grpc_server_with_failure_type", [("http_400", "metrics")], indirect=True)
-async def test_grpc_maps_http_400_to_metadata(service_grpc_server_with_failure_type):
+@pytest.mark.parametrize("grpc_client_with_failure_type", [("http_400", "metrics")], indirect=True)
+async def test_grpc_maps_http_400_to_metadata(grpc_client_with_failure_type):
     """GRPC forwarding preserves HTTP 400 status in metadata and partial_success."""
 
-    _, stub = service_grpc_server_with_failure_type
-
-    call = stub.Export(ExportMetricsServiceRequest())
+    call = grpc_client_with_failure_type.Export(ExportMetricsServiceRequest())
     response = await call
     assert response is not None
 
@@ -364,13 +362,11 @@ async def test_grpc_maps_http_400_to_metadata(service_grpc_server_with_failure_t
     assert "HTTP 400" in response.partial_success.error_message
 
 
-@pytest.mark.parametrize("service_grpc_server_with_failure_type", [("http_500", "metrics")], indirect=True)
-async def test_grpc_maps_http_500_to_metadata(service_grpc_server_with_failure_type):
+@pytest.mark.parametrize("grpc_client_with_failure_type", [("http_500", "metrics")], indirect=True)
+async def test_grpc_maps_http_500_to_metadata(grpc_client_with_failure_type):
     """GRPC forwarding preserves HTTP 500 status in metadata and partial_success."""
 
-    _, stub = service_grpc_server_with_failure_type
-
-    call = stub.Export(ExportMetricsServiceRequest())
+    call = grpc_client_with_failure_type.Export(ExportMetricsServiceRequest())
     response = await call
     assert response is not None
 
@@ -381,13 +377,11 @@ async def test_grpc_maps_http_500_to_metadata(service_grpc_server_with_failure_t
     assert "HTTP 500" in response.partial_success.error_message
 
 
-@pytest.mark.parametrize("service_grpc_server_with_failure_type", [("connection_failure", "metrics")], indirect=True)
-async def test_grpc_server_resilience_after_failure(service_grpc_server_with_failure_type, otlp_metrics_protobuf):
+@pytest.mark.parametrize("grpc_client_with_failure_type", [("connection_failure", "metrics")], indirect=True)
+async def test_grpc_server_resilience_after_failure(grpc_client_with_failure_type, otlp_metrics_protobuf):
     """GRPC server remains operational after processing failed requests."""
 
-    _, stub = service_grpc_server_with_failure_type
-
-    call1 = stub.Export(otlp_metrics_protobuf)
+    call1 = grpc_client_with_failure_type.Export(otlp_metrics_protobuf)
     response1 = await call1
     assert response1 is not None
 
@@ -397,13 +391,13 @@ async def test_grpc_server_resilience_after_failure(service_grpc_server_with_fai
     http_status = await _get_http_status_from_metadata(call1)
     assert http_status == 500  # Connection failure mapped to 500
 
-    call2 = stub.Export(otlp_metrics_protobuf)
+    call2 = grpc_client_with_failure_type.Export(otlp_metrics_protobuf)
     response2 = await call2
     assert response2 is not None
 
     assert response2.partial_success.rejected_data_points > 0
     assert "Forward failed" in response2.partial_success.error_message
 
-    call3 = stub.Export(ExportMetricsServiceRequest())
+    call3 = grpc_client_with_failure_type.Export(ExportMetricsServiceRequest())
     response3 = await call3
     assert response3 is not None

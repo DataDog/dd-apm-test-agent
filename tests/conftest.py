@@ -758,14 +758,14 @@ async def otlp_metrics_grpc_client():
 
 
 @pytest.fixture
-async def grpc_server_with_failure_type(agent_app, available_port, aiohttp_server, request):
+async def grpc_client_with_failure_type(agent_app, available_port, aiohttp_server, request):
     """GRPC server with configurable HTTP backend failure scenarios for both logs and metrics."""
     grpc_port = int(available_port)
 
     # Require explicit tuple of (failure_type, service_type)
     param = getattr(request, "param")
     if not isinstance(param, tuple) or len(param) != 2:
-        raise ValueError("grpc_server_with_failure_type requires a tuple of (failure_type, service_type)")
+        raise ValueError("grpc_client_with_failure_type requires a tuple of (failure_type, service_type)")
 
     failure_type, service_type = param
     if service_type not in ["logs", "metrics"]:
@@ -798,54 +798,7 @@ async def grpc_server_with_failure_type(agent_app, available_port, aiohttp_serve
     else:
         raise ValueError(f"Unknown service_type: {service_type}")
 
-    yield grpc_server, stub
-
-    await channel.close()
-    await grpc_server.stop(grace=0)
-
-
-@pytest.fixture
-async def service_grpc_server_with_failure_type(agent_app, available_port, aiohttp_server, request):
-    """GRPC server with configurable HTTP backend failure scenarios for logs or metrics service."""
-    grpc_port = int(available_port)
-
-    # Require explicit tuple of (failure_type, service_type)
-    param = getattr(request, "param")
-    if not isinstance(param, tuple) or len(param) != 2:
-        raise ValueError("service_grpc_server_with_failure_type requires a tuple of (failure_type, service_type)")
-
-    failure_type, service_type = param
-    if service_type not in ["logs", "metrics"]:
-        raise ValueError(f"service_type must be 'logs' or 'metrics', got: {service_type}")
-
-    endpoint = LOGS_ENDPOINT if service_type == "logs" else METRICS_ENDPOINT
-
-    http_handlers = {
-        "http_400": lambda _: web.HTTPBadRequest(text="invalid"),
-        "http_500": lambda _: web.HTTPInternalServerError(text="boom"),
-    }
-
-    if failure_type == "connection_failure":
-        http_port = 99999  # Non-existent port
-    elif failure_type in http_handlers:
-        app = web.Application()
-        app.router.add_post(endpoint, http_handlers[failure_type])
-        http_server = await aiohttp_server(app)
-        http_port = http_server.port
-    else:
-        raise ValueError(f"Unknown failure_type: {failure_type}")
-
-    grpc_server = await make_otlp_grpc_server_async(agent_app.app["agent"], http_port=http_port, grpc_port=grpc_port)
-    channel = grpc_aio.insecure_channel(f"localhost:{grpc_port}")
-
-    if service_type == "logs":
-        stub = LogsServiceStub(channel)
-    elif service_type == "metrics":
-        stub = MetricsServiceStub(channel)
-    else:
-        raise ValueError(f"Unknown service_type: {service_type}")
-
-    yield grpc_server, stub
+    yield stub
 
     await channel.close()
     await grpc_server.stop(grace=0)
