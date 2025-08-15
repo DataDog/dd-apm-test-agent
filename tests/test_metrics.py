@@ -5,11 +5,19 @@ from google.protobuf.json_format import MessageToDict
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceRequest
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue
 from opentelemetry.proto.common.v1.common_pb2 import KeyValue
+from opentelemetry.proto.metrics.v1.metrics_pb2 import AggregationTemporality
+from opentelemetry.proto.metrics.v1.metrics_pb2 import ExponentialHistogram
+from opentelemetry.proto.metrics.v1.metrics_pb2 import ExponentialHistogramDataPoint
 from opentelemetry.proto.metrics.v1.metrics_pb2 import Gauge
+from opentelemetry.proto.metrics.v1.metrics_pb2 import Histogram
+from opentelemetry.proto.metrics.v1.metrics_pb2 import HistogramDataPoint
 from opentelemetry.proto.metrics.v1.metrics_pb2 import Metric
 from opentelemetry.proto.metrics.v1.metrics_pb2 import NumberDataPoint
 from opentelemetry.proto.metrics.v1.metrics_pb2 import ResourceMetrics
 from opentelemetry.proto.metrics.v1.metrics_pb2 import ScopeMetrics
+from opentelemetry.proto.metrics.v1.metrics_pb2 import Sum
+from opentelemetry.proto.metrics.v1.metrics_pb2 import Summary
+from opentelemetry.proto.metrics.v1.metrics_pb2 import SummaryDataPoint
 from opentelemetry.proto.resource.v1.resource_pb2 import Resource
 import pytest
 
@@ -30,8 +38,114 @@ def metric_value():
 
 
 @pytest.fixture
-def otlp_metrics_protobuf(service_name, environment, version, metric_name, metric_value):
-    """Complete OTLP metrics export request with test data."""
+def gauge_metric(metric_name, metric_value):
+    data_point = NumberDataPoint()
+    data_point.as_double = metric_value
+    data_point.time_unix_nano = 1609459200000000000
+
+    gauge = Gauge()
+    gauge.data_points.append(data_point)
+
+    metric = Metric()
+    metric.name = f"{metric_name}.gauge"
+    metric.description = f"Test {metric_name} gauge metric"
+    metric.unit = "1"
+    metric.gauge.CopyFrom(gauge)
+    return metric
+
+
+@pytest.fixture
+def sum_metric(metric_name, metric_value):
+    data_point = NumberDataPoint()
+    data_point.as_double = metric_value + 10
+    data_point.time_unix_nano = 1609459200000000000
+
+    sum_metric = Sum()
+    sum_metric.aggregation_temporality = AggregationTemporality.AGGREGATION_TEMPORALITY_CUMULATIVE
+    sum_metric.is_monotonic = True
+    sum_metric.data_points.append(data_point)
+
+    metric = Metric()
+    metric.name = f"{metric_name}.sum"
+    metric.description = f"Test {metric_name} sum metric"
+    metric.unit = "1"
+    metric.sum.CopyFrom(sum_metric)
+    return metric
+
+
+@pytest.fixture
+def histogram_metric(metric_name):
+    data_point = HistogramDataPoint()
+    data_point.count = 5
+    data_point.sum = 15.0
+    data_point.bucket_counts.extend([1, 2, 1, 1])
+    data_point.explicit_bounds.extend([0.0, 5.0, 10.0, 25.0])
+    data_point.time_unix_nano = 1609459200000000000
+
+    histogram = Histogram()
+    histogram.aggregation_temporality = AggregationTemporality.AGGREGATION_TEMPORALITY_CUMULATIVE
+    histogram.data_points.append(data_point)
+
+    metric = Metric()
+    metric.name = f"{metric_name}.histogram"
+    metric.description = f"Test {metric_name} histogram metric"
+    metric.unit = "ms"
+    metric.histogram.CopyFrom(histogram)
+    return metric
+
+
+@pytest.fixture
+def exponential_histogram_metric(metric_name):
+    data_point = ExponentialHistogramDataPoint()
+    data_point.count = 3
+    data_point.sum = 12.0
+    data_point.scale = 1
+    data_point.zero_count = 0
+    data_point.positive.offset = 0
+    data_point.positive.bucket_counts.extend([1, 1, 1])
+    data_point.time_unix_nano = 1609459200000000000
+
+    exp_histogram = ExponentialHistogram()
+    exp_histogram.aggregation_temporality = AggregationTemporality.AGGREGATION_TEMPORALITY_CUMULATIVE
+    exp_histogram.data_points.append(data_point)
+
+    metric = Metric()
+    metric.name = f"{metric_name}.exp_histogram"
+    metric.description = f"Test {metric_name} exponential histogram metric"
+    metric.unit = "bytes"
+    metric.exponential_histogram.CopyFrom(exp_histogram)
+    return metric
+
+
+@pytest.fixture
+def summary_metric(metric_name):
+    data_point = SummaryDataPoint()
+    data_point.count = 4
+    data_point.sum = 20.0
+    data_point.time_unix_nano = 1609459200000000000
+
+    summary = Summary()
+    summary.data_points.append(data_point)
+
+    metric = Metric()
+    metric.name = f"{metric_name}.summary"
+    metric.description = f"Test {metric_name} summary metric"
+    metric.unit = "s"
+    metric.summary.CopyFrom(summary)
+    return metric
+
+
+@pytest.fixture
+def otlp_metrics_protobuf(
+    service_name,
+    environment,
+    version,
+    gauge_metric,
+    sum_metric,
+    histogram_metric,
+    exponential_histogram_metric,
+    summary_metric,
+):
     resource = Resource()
     resource.attributes.extend(
         [
@@ -41,24 +155,16 @@ def otlp_metrics_protobuf(service_name, environment, version, metric_name, metri
         ]
     )
 
-    # Create a gauge metric data point
-    data_point = NumberDataPoint()
-    data_point.as_double = metric_value
-    data_point.time_unix_nano = 1609459200000000000
-
-    # Create gauge metric
-    gauge = Gauge()
-    gauge.data_points.append(data_point)
-
-    # Create metric
-    metric = Metric()
-    metric.name = metric_name
-    metric.description = "Test gauge metric"
-    metric.unit = "1"
-    metric.gauge.CopyFrom(gauge)
-
     scope_metrics = ScopeMetrics()
-    scope_metrics.metrics.append(metric)
+    scope_metrics.metrics.extend(
+        [
+            gauge_metric,
+            sum_metric,
+            histogram_metric,
+            exponential_histogram_metric,
+            summary_metric,
+        ]
+    )
 
     resource_metrics = ResourceMetrics()
     resource_metrics.resource.CopyFrom(resource)
@@ -81,7 +187,6 @@ def otlp_metrics_json(otlp_metrics_protobuf):
 
 
 async def test_metrics_endpoint_basic_http(testagent, otlp_http_url, otlp_metrics_string, loop):
-    """OTLP metrics HTTP endpoint accepts protobuf data."""
     resp = await testagent.post(
         f"{otlp_http_url}{METRICS_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_metrics_string
     )
@@ -148,13 +253,14 @@ async def test_session_metrics_endpoint_http(
     scope_metrics = resource_metrics[0].get("scope_metrics", [])
     assert len(scope_metrics) == 1
     metrics_list = scope_metrics[0]["metrics"]
-    assert len(metrics_list) == 1
-    assert metrics_list[0]["name"] == metric_name
-    assert metrics_list[0]["gauge"]["data_points"][0]["as_double"] == metric_value
+    assert len(metrics_list) == 5  # Now we have 5 metric types
+
+    # Find the gauge metric specifically
+    gauge_metric = next(m for m in metrics_list if m["name"] == f"{metric_name}.gauge")
+    assert gauge_metric["gauge"]["data_points"][0]["as_double"] == metric_value
 
 
 async def test_otlp_client_metrics(testagent, otlp_test_client, otlp_http_url, otlp_metrics_string, loop):
-    """OTLP test client correctly captures and retrieves metrics."""
     resp = await testagent.post(
         f"{otlp_http_url}{METRICS_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_metrics_string
     )
@@ -184,7 +290,6 @@ async def test_otlp_client_metrics(testagent, otlp_test_client, otlp_http_url, o
 async def test_metrics_endpoint_integration_http(
     testagent, otlp_http_url, otlp_metrics_string, service_name, environment, version, metric_name, loop
 ):
-    """End-to-end OTLP metrics flow validation."""
     resp = await testagent.get(f"{otlp_http_url}/test/session/clear")
     assert resp.status == 200
 
@@ -214,8 +319,18 @@ async def test_metrics_endpoint_integration_http(
     scope_metrics = resource_metrics[0].get("scope_metrics", [])
     assert len(scope_metrics) == 1
     metrics_list = scope_metrics[0]["metrics"]
-    assert len(metrics_list) == 1
-    assert metrics_list[0]["name"] == metric_name
+    assert len(metrics_list) == 5  # Now we have 5 metric types
+
+    # Verify all metric types are present
+    metric_names = [m["name"] for m in metrics_list]
+    expected_names = [
+        f"{metric_name}.gauge",
+        f"{metric_name}.sum",
+        f"{metric_name}.histogram",
+        f"{metric_name}.exp_histogram",
+        f"{metric_name}.summary",
+    ]
+    assert all(name in metric_names for name in expected_names)
 
 
 async def test_multiple_metrics_sessions_http(testagent, otlp_http_url, otlp_metrics_string, loop):
@@ -242,7 +357,6 @@ async def test_multiple_metrics_sessions_http(testagent, otlp_http_url, otlp_met
 async def test_metrics_endpoint_json_http(
     testagent, otlp_http_url, otlp_metrics_json, service_name, environment, version, loop
 ):
-    """OTLP metrics HTTP endpoint accepts JSON data."""
     resp = await testagent.post(f"{otlp_http_url}{METRICS_ENDPOINT}", headers=JSON_HEADERS, data=otlp_metrics_json)
     assert resp.status == 200
 
@@ -264,7 +378,6 @@ async def test_metrics_endpoint_json_http(
 
 
 async def test_metrics_endpoint_invalid_content_type(testagent, otlp_http_url, otlp_metrics_string, loop):
-    """Endpoint rejects invalid content types."""
     resp = await testagent.post(
         f"{otlp_http_url}{METRICS_ENDPOINT}", headers={"Content-Type": "application/xml"}, data=otlp_metrics_string
     )
@@ -280,7 +393,6 @@ async def test_metrics_endpoint_invalid_content_type(testagent, otlp_http_url, o
 
 
 async def test_metrics_endpoint_invalid_json(testagent, otlp_http_url, loop):
-    """Endpoint rejects malformed JSON."""
     resp = await testagent.post(f"{otlp_http_url}{METRICS_ENDPOINT}", headers=JSON_HEADERS, data=b'{"invalid": json}')
     assert resp.status == 400
 
@@ -294,7 +406,6 @@ async def test_metrics_endpoint_invalid_json(testagent, otlp_http_url, loop):
 
 
 async def test_metrics_endpoint_basic_grpc(testagent, otlp_metrics_grpc_client, otlp_metrics_protobuf, loop):
-    """GRPC metrics export with successful forwarding."""
     call = otlp_metrics_grpc_client.Export(otlp_metrics_protobuf)
     response = await call
 
@@ -319,7 +430,6 @@ async def test_session_metrics_endpoint_grpc_forwarding(
     metric_name,
     loop,
 ):
-    """GRPC metrics forwarded to HTTP are retrievable via session endpoint."""
     call = otlp_metrics_grpc_client.Export(otlp_metrics_protobuf)
     response = await call
     assert response is not None
@@ -343,8 +453,18 @@ async def test_session_metrics_endpoint_grpc_forwarding(
     scope_metrics = resource_metrics[0].get("scope_metrics", [])
     assert len(scope_metrics) == 1
     metrics_list = scope_metrics[0]["metrics"]
-    assert len(metrics_list) == 1
-    assert metrics_list[0]["name"] == metric_name
+    assert len(metrics_list) == 5  # Now we have 5 metric types
+
+    # Verify all metric types are present
+    metric_names = [m["name"] for m in metrics_list]
+    expected_names = [
+        f"{metric_name}.gauge",
+        f"{metric_name}.sum",
+        f"{metric_name}.histogram",
+        f"{metric_name}.exp_histogram",
+        f"{metric_name}.summary",
+    ]
+    assert all(name in metric_names for name in expected_names)
 
 
 @pytest.mark.parametrize("grpc_client_with_failure_type", [("http_400", "metrics")], indirect=True)
@@ -385,7 +505,7 @@ async def test_grpc_server_resilience_after_failure(grpc_client_with_failure_typ
     response1 = await call1
     assert response1 is not None
 
-    assert response1.partial_success.rejected_data_points > 0
+    assert response1.partial_success.rejected_data_points == 5  # 5 metrics with 1 data point each
     assert "Forward failed" in response1.partial_success.error_message
 
     http_status = await _get_http_status_from_metadata(call1)
@@ -395,7 +515,7 @@ async def test_grpc_server_resilience_after_failure(grpc_client_with_failure_typ
     response2 = await call2
     assert response2 is not None
 
-    assert response2.partial_success.rejected_data_points > 0
+    assert response2.partial_success.rejected_data_points == 5  # 5 metrics with 1 data point each
     assert "Forward failed" in response2.partial_success.error_message
 
     call3 = grpc_client_with_failure_type.Export(ExportMetricsServiceRequest())

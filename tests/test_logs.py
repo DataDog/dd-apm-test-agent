@@ -18,7 +18,6 @@ from tests.conftest import _get_http_status_from_metadata
 
 
 def _find_service_name_in_resource(resource_logs, expected_service_name):
-    """Check if service.name matches expected value in resource attributes."""
     if not resource_logs or not resource_logs[0].get("resource"):
         return False
 
@@ -46,7 +45,6 @@ def span_id():
 
 @pytest.fixture
 def otlp_logs_protobuf(service_name, environment, version, host_name, log_message, trace_id, span_id):
-    """Complete OTLP logs export request with test data."""
     resource = Resource()
     resource.attributes.extend(
         [
@@ -86,7 +84,6 @@ def otlp_logs_json(otlp_logs_protobuf):
 
 
 async def test_logs_endpoint_basic_http(testagent, otlp_http_url, otlp_logs_string, loop):
-    """OTLP logs HTTP endpoint accepts protobuf data."""
     resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
@@ -184,7 +181,6 @@ async def test_session_logs_endpoint_http(
 
 
 async def test_otlp_client_logs(testagent, otlp_test_client, otlp_http_url, otlp_logs_string, loop):
-    """OTLP test client correctly captures and retrieves logs."""
     resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
 
@@ -212,7 +208,6 @@ async def test_otlp_client_logs(testagent, otlp_test_client, otlp_http_url, otlp
 async def test_logs_endpoint_integration_http(
     testagent, otlp_http_url, otlp_logs_string, service_name, log_message, loop
 ):
-    """End-to-end OTLP logs flow validation."""
     resp = await testagent.get(f"{otlp_http_url}/test/session/clear")
     assert resp.status == 200
 
@@ -258,7 +253,6 @@ async def test_multiple_logs_sessions_http(testagent, otlp_http_url, otlp_logs_s
 
 
 async def test_logs_endpoint_json_http(testagent, otlp_http_url, otlp_logs_json, service_name, loop):
-    """OTLP logs HTTP endpoint accepts JSON data."""
     resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=JSON_HEADERS, data=otlp_logs_json)
     assert resp.status == 200
 
@@ -274,7 +268,6 @@ async def test_logs_endpoint_json_http(testagent, otlp_http_url, otlp_logs_json,
 
 
 async def test_logs_endpoint_invalid_content_type(testagent, otlp_http_url, otlp_logs_string, loop):
-    """Endpoint rejects invalid content types."""
     resp = await testagent.post(
         f"{otlp_http_url}{LOGS_ENDPOINT}", headers={"Content-Type": "application/xml"}, data=otlp_logs_string
     )
@@ -290,7 +283,6 @@ async def test_logs_endpoint_invalid_content_type(testagent, otlp_http_url, otlp
 
 
 async def test_logs_endpoint_invalid_json(testagent, otlp_http_url, loop):
-    """Endpoint rejects malformed JSON."""
     resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=JSON_HEADERS, data=b'{"invalid": json}')
     assert resp.status == 400
 
@@ -304,7 +296,6 @@ async def test_logs_endpoint_invalid_json(testagent, otlp_http_url, loop):
 
 
 async def test_logs_endpoint_basic_grpc(testagent, otlp_logs_grpc_client, otlp_logs_protobuf, loop):
-    """GRPC logs export with successful forwarding."""
     call = otlp_logs_grpc_client.Export(otlp_logs_protobuf)
     response = await call
 
@@ -321,7 +312,6 @@ async def test_logs_endpoint_basic_grpc(testagent, otlp_logs_grpc_client, otlp_l
 async def test_session_logs_endpoint_grpc_forwarding(
     testagent, otlp_logs_grpc_client, otlp_test_client, otlp_logs_protobuf, service_name, log_message, loop
 ):
-    """GRPC logs forwarded to HTTP are retrievable via session endpoint."""
     call = otlp_logs_grpc_client.Export(otlp_logs_protobuf)
     response = await call
     assert response is not None
@@ -378,7 +368,7 @@ async def test_grpc_server_resilience_after_failure(grpc_client_with_failure_typ
     response1 = await call1
     assert response1 is not None
 
-    assert response1.partial_success.rejected_log_records > 0
+    assert response1.partial_success.rejected_log_records == 1  # 1 ResourceLogs object
     assert "Forward failed" in response1.partial_success.error_message
 
     http_status = await _get_http_status_from_metadata(call1)
@@ -388,7 +378,7 @@ async def test_grpc_server_resilience_after_failure(grpc_client_with_failure_typ
     response2 = await call2
     assert response2 is not None
 
-    assert response2.partial_success.rejected_log_records > 0
+    assert response2.partial_success.rejected_log_records == 1  # 1 ResourceLogs object
     assert "Forward failed" in response2.partial_success.error_message
 
     call3 = grpc_client_with_failure_type.Export(ExportLogsServiceRequest())
