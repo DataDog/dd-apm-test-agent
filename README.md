@@ -504,7 +504,7 @@ Mimics the pipeline_stats endpoint of the agent, but always returns OK, and logs
 
 Accepts OpenTelemetry Protocol (OTLP) v1.7.0 logs in protobuf format via HTTP. This endpoint validates and decodes OTLP logs payloads for testing OpenTelemetry logs exporters and libraries.
 
-The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and stores the decoded logs for retrieval via the `/test/session/logs` endpoint.
+The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and `Content-Type: application/json` and stores the decoded logs for retrieval via the `/test/session/logs` endpoint.
 
 ### /v1/metrics (HTTP)
 
