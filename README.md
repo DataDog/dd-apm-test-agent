@@ -391,6 +391,15 @@ Return OpenTelemetry logs that have been received by the agent for the given ses
 
 Logs are returned as a JSON list of the OTLP logs payloads received. The logs are in the standard OpenTelemetry Protocol (OTLP) v1.7.0 format, decoded from protobuf into JSON.
 
+### /test/session/metrics
+
+Return OpenTelemetry metrics that have been received by the agent for the given session token.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+Metrics are returned as a JSON list of the OTLP metrics payloads received. The metrics are in the standard OpenTelemetry Protocol (OTLP) v1.7.0 format, decoded from protobuf into JSON.
+
 ### /test/session/responses/config (POST)
 Create a Remote Config payload to retrieve in endpoint `/v0.7/config`
 
@@ -495,24 +504,30 @@ Mimics the pipeline_stats endpoint of the agent, but always returns OK, and logs
 
 Accepts OpenTelemetry Protocol (OTLP) v1.7.0 logs in protobuf format via HTTP. This endpoint validates and decodes OTLP logs payloads for testing OpenTelemetry logs exporters and libraries.
 
-The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and stores the decoded logs for retrieval via the `/test/session/logs` endpoint.
+The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and `Content-Type: application/json` and stores the decoded logs for retrieval via the `/test/session/logs` endpoint.
 
-### OTLP Logs via GRPC
+### /v1/metrics (HTTP)
 
-OTLP logs can also be sent via GRPC using the OpenTelemetry `LogsService.Export` method. The GRPC server implements the standard OTLP logs service interface and forwards all requests to the HTTP server, ensuring consistent processing and session management.
+Accepts OpenTelemetry Protocol (OTLP) v1.7.0 metrics in protobuf format via HTTP. This endpoint validates and decodes OTLP metrics payloads for testing OpenTelemetry metrics exporters and libraries.
 
-**Note:** OTLP logs are served on separate ports from the main APM endpoints (default: 8126):
+The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and `Content-Type: application/json` and stores the decoded metrics for retrieval via the `/test/session/metrics` endpoint.
+
+### OTLP Logs and Metrics via GRPC
+
+OTLP logs and metrics can also be sent via GRPC using the OpenTelemetry `LogsService.Export` and `MetricsService.Export` methods respectively. The GRPC server implements the standard OTLP service interfaces and forwards all requests to the HTTP server, ensuring consistent processing and session management.
+
+**Note:** OTLP endpoints are served on separate ports from the main APM endpoints (default: 8126):
 - **HTTP**: Port 4318 (default) - Use `--otlp-http-port` to configure
 - **GRPC**: Port 4317 (default) - Use `--otlp-grpc-port` to configure
 
-Both protocols store decoded logs for retrieval via the `/test/session/logs` HTTP endpoint.
+Both protocols store decoded data for retrieval via the `/test/session/logs` and `/test/session/metrics` HTTP endpoints respectively.
 
 GRPC Client → GRPC Server → HTTP POST → HTTP Server → Agent Storage
                     ↓                                      ↓
             (forwards protobuf)                    (session management)
                     ↓                                      ↓
                    HTTP                              Retrievable via
-                Response                          /test/session/logs
+                Response                     /test/session/{logs,metrics}
 
 ### /tracer_flare/v1
 
