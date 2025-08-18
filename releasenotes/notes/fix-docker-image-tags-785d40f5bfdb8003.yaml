@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Fixes windows docker image tagging to avoid having only linux or windows images published for ``latest`` and ``vx.y.z`` tags.

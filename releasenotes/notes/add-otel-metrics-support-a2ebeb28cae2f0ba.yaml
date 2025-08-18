@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    OTLP: Added OpenTelemetry Protocol (OTLP) metrics support via HTTP endpoint ``/v1/metrics`` on port 4318 and GRPC server on port 4317.
+    Supports all OTLP metric types including Gauge, Sum, Histogram, ExponentialHistogram, and Summary.
+    The GRPC server forwards requests to the OTLP HTTP server for validation and storage, enabling testing of applications that send metrics via either protocol.
+    Session endpoint ``/test/session/metrics`` allows retrieval of captured metrics for test validation.

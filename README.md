@@ -26,13 +26,16 @@ The test agent can be installed from PyPI:
 
     pip install ddapm-test-agent
 
-    ddapm-test-agent --port=8126
+    # HTTP on port 8126, OTLP HTTP on port 4318, OTLP GRPC on port 4317
+    ddapm-test-agent --port=8126 --otlp-http-port=4318 --otlp-grpc-port=4317
 
 or from Docker:
 
     # Run the test agent and mount the snapshot directory
     docker run --rm\
             -p 8126:8126\
+            -p 4318:4318\
+            -p 4317:4317\
             -e SNAPSHOT_CI=0\
             -v $PWD/tests/snapshots:/snapshots\
             ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
@@ -379,6 +382,24 @@ Return stats that have been received by the agent for the given session token.
 
 Stats are returned as a JSON list of the stats payloads received.
 
+### /test/session/logs
+
+Return OpenTelemetry logs that have been received by the agent for the given session token.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+Logs are returned as a JSON list of the OTLP logs payloads received. The logs are in the standard OpenTelemetry Protocol (OTLP) v1.7.0 format, decoded from protobuf into JSON.
+
+### /test/session/metrics
+
+Return OpenTelemetry metrics that have been received by the agent for the given session token.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+Metrics are returned as a JSON list of the OTLP metrics payloads received. The metrics are in the standard OpenTelemetry Protocol (OTLP) v1.7.0 format, decoded from protobuf into JSON.
+
 ### /test/session/responses/config (POST)
 Create a Remote Config payload to retrieve in endpoint `/v0.7/config`
 
@@ -478,6 +499,35 @@ curl -X GET 'http://0.0.0.0:8126/test/integrations/tested_versions'
 ### /v0.1/pipeline_stats
 
 Mimics the pipeline_stats endpoint of the agent, but always returns OK, and logs a line everytime it's called.
+
+### /v1/logs (HTTP)
+
+Accepts OpenTelemetry Protocol (OTLP) v1.7.0 logs in protobuf format via HTTP. This endpoint validates and decodes OTLP logs payloads for testing OpenTelemetry logs exporters and libraries.
+
+The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and `Content-Type: application/json` and stores the decoded logs for retrieval via the `/test/session/logs` endpoint.
+
+### /v1/metrics (HTTP)
+
+Accepts OpenTelemetry Protocol (OTLP) v1.7.0 metrics in protobuf format via HTTP. This endpoint validates and decodes OTLP metrics payloads for testing OpenTelemetry metrics exporters and libraries.
+
+The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and `Content-Type: application/json` and stores the decoded metrics for retrieval via the `/test/session/metrics` endpoint.
+
+### OTLP Logs and Metrics via GRPC
+
+OTLP logs and metrics can also be sent via GRPC using the OpenTelemetry `LogsService.Export` and `MetricsService.Export` methods respectively. The GRPC server implements the standard OTLP service interfaces and forwards all requests to the HTTP server, ensuring consistent processing and session management.
+
+**Note:** OTLP endpoints are served on separate ports from the main APM endpoints (default: 8126):
+- **HTTP**: Port 4318 (default) - Use `--otlp-http-port` to configure
+- **GRPC**: Port 4317 (default) - Use `--otlp-grpc-port` to configure
+
+Both protocols store decoded data for retrieval via the `/test/session/logs` and `/test/session/metrics` HTTP endpoints respectively.
+
+GRPC Client → GRPC Server → HTTP POST → HTTP Server → Agent Storage
+                    ↓                                      ↓
+            (forwards protobuf)                    (session management)
+                    ↓                                      ↓
+                   HTTP                              Retrievable via
+                Response                     /test/session/{logs,metrics}
 
 ### /tracer_flare/v1
 

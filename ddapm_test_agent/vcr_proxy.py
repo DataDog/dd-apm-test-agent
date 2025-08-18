@@ -84,7 +84,7 @@ def get_vcr(subdirectory: str, vcr_cassettes_directory: str) -> vcr.VCR:
     )
 
 
-def generate_cassette_name(path: str, method: str, body: bytes, vcr_cassette_suffix: Optional[str]) -> str:
+def generate_cassette_name(path: str, method: str, body: bytes, vcr_cassette_prefix: Optional[str]) -> str:
     decoded_body = normalize_multipart_body(body) if body else ""
     try:
         parsed_body = json.loads(decoded_body) if decoded_body else {}
@@ -96,11 +96,11 @@ def generate_cassette_name(path: str, method: str, body: bytes, vcr_cassette_suf
     hash_hex = hash_object.hexdigest()[:8]
     safe_path = _file_safe_string(path)
 
-    safe_vcr_cassette_suffix = _file_safe_string(vcr_cassette_suffix) if vcr_cassette_suffix else None
+    safe_vcr_cassette_prefix = _file_safe_string(vcr_cassette_prefix) if vcr_cassette_prefix else None
 
     return (
-        f"{safe_path}_{method.lower()}_{hash_hex}_{safe_vcr_cassette_suffix}"
-        if safe_vcr_cassette_suffix
+        f"{safe_vcr_cassette_prefix}_{safe_path}_{method.lower()}_{hash_hex}"
+        if safe_vcr_cassette_prefix
         else f"{safe_path}_{method.lower()}_{hash_hex}"
     )
 
@@ -124,9 +124,9 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
 
     body_bytes = await request.read()
 
-    vcr_cassette_suffix = request.pop("vcr_cassette_suffix", None)
+    vcr_cassette_prefix = request.pop("vcr_cassette_prefix", None)
 
-    cassette_name = generate_cassette_name(path, request.method, body_bytes, vcr_cassette_suffix)
+    cassette_name = generate_cassette_name(path, request.method, body_bytes, vcr_cassette_prefix)
     with get_vcr(provider, vcr_cassettes_directory).use_cassette(f"{cassette_name}.yaml"):
         oai_response = requests.request(
             method=request.method,

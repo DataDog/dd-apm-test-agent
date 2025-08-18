@@ -1,0 +1,4 @@
+---
+upgrade:
+  - |
+    vcr: ``test_name`` specified in ``/vcr/test/start`` is now used as a prefix for generated cassette names instead of a suffix.
