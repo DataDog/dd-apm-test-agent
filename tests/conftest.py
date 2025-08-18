@@ -165,7 +165,7 @@ def v1_reference_http_trace_payload_data() -> bytes:
         ]
         }
     )
-    return data
+    return cast(bytes, data)
 
 
 @pytest.fixture
