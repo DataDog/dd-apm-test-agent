@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import atexit
 import base64
 from collections import OrderedDict
@@ -12,6 +13,7 @@ import pprint
 import re
 import socket
 import sys
+from typing import Any
 from typing import Awaitable
 from typing import Callable
 from typing import DefaultDict
@@ -32,8 +34,11 @@ from aiohttp import web
 from aiohttp.web import HTTPException
 from aiohttp.web import Request
 from aiohttp.web import middleware
+from grpc import aio as grpc_aio
 from msgpack.exceptions import ExtraData as MsgPackExtraDataException
 from multidict import CIMultiDict
+from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import add_LogsServiceServicer_to_server
+from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import add_MetricsServiceServicer_to_server
 
 from . import _get_version
 from . import trace_snapshot
@@ -44,6 +49,12 @@ from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
 from .integration import Integration
+from .logs import LOGS_ENDPOINT
+from .logs import OTLPLogsGRPCServicer
+from .logs import decode_logs_request
+from .metrics import METRICS_ENDPOINT
+from .metrics import OTLPMetricsGRPCServicer
+from .metrics import decode_metrics_request
 from .remoteconfig import RemoteConfigServer
 from .trace import Span
 from .trace import Trace
@@ -64,6 +75,12 @@ from .tracerflare import v1_decode as v1_tracerflare_decode
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 from .vcr_proxy import proxy_request
+
+
+# Default ports
+DEFAULT_APM_PORT = 8126
+DEFAULT_OTLP_HTTP_PORT = 4318
+DEFAULT_OTLP_GRPC_PORT = 4317
 
 
 class NoSuchSessionException(Exception):
@@ -486,6 +503,34 @@ class Agent:
                 stats.append(s)
         return stats
 
+    async def _logs_by_session(self, token: Optional[str]) -> List[Dict[str, Any]]:
+        """Return the logs that belong to the given session token.
+
+        If token is None or if the token was used to manually start a session
+        with /session-start then return all logs that were sent since the last
+        /session-start request was made.
+        """
+        logs: List[Dict[str, Any]] = []
+        for req in self._requests_by_session(token):
+            if req.match_info.handler == self.handle_v1_logs:
+                logs_data = self._decode_v1_logs(req)
+                logs.append(logs_data)
+        return logs
+
+    async def _metrics_by_session(self, token: Optional[str]) -> List[Dict[str, Any]]:
+        """Return the metrics that belong to the given session token.
+
+        If token is None or if the token was used to manually start a session
+        with /session-start then return all metrics that were sent since the last
+        /session-start request was made.
+        """
+        metrics: List[Dict[str, Any]] = []
+        for req in self._requests_by_session(token):
+            if req.match_info.handler == self.handle_v1_metrics:
+                metrics_data = self._decode_v1_metrics(req)
+                metrics.append(metrics_data)
+        return metrics
+
     async def _integration_requests_by_session(
         self,
         token: Optional[str],
@@ -558,6 +603,22 @@ class Agent:
         raw_data = self._request_data(request)
         return tracestats_decode_v06(raw_data)
 
+    def _decode_v1_logs(self, request: Request) -> Dict[str, Any]:
+        raw_data = self._request_data(request)
+        content_type = request.headers.get("Content-Type", "").lower().strip()
+        try:
+            return decode_logs_request(raw_data, content_type)
+        except Exception as e:
+            raise web.HTTPBadRequest(text=str(e))
+
+    def _decode_v1_metrics(self, request: Request) -> Dict[str, Any]:
+        raw_data = self._request_data(request)
+        content_type = request.headers.get("Content-Type", "").lower().strip()
+        try:
+            return decode_metrics_request(raw_data, content_type)
+        except Exception as e:
+            raise web.HTTPBadRequest(text=str(e))
+
     async def handle_v04_traces(self, request: Request) -> web.Response:
         return await self._handle_traces(request, version="v0.4")
 
@@ -579,6 +640,36 @@ class Agent:
 
     async def handle_v01_pipelinestats(self, request: Request) -> web.Response:
         log.info("received /v0.1/pipeline_stats payload")
+        return web.HTTPOk()
+
+    async def handle_v1_logs(self, request: Request) -> web.Response:
+        logs_data = self._decode_v1_logs(request)
+        num_resource_logs = len(logs_data.get("resource_logs", []))
+        total_log_records = sum(
+            len(scope_log.get("log_records", []))
+            for resource_log in logs_data.get("resource_logs", [])
+            for scope_log in resource_log.get("scope_logs", [])
+        )
+        log.info(
+            "received /v1/logs payload with %r resource log(s) containing %r log record(s)",
+            num_resource_logs,
+            total_log_records,
+        )
+        return web.HTTPOk()
+
+    async def handle_v1_metrics(self, request: Request) -> web.Response:
+        metrics_data = self._decode_v1_metrics(request)
+        num_resource_metrics = len(metrics_data.get("resource_metrics", []))
+        total_metrics = sum(
+            len(scope_metric.get("metrics", []))
+            for resource_metric in metrics_data.get("resource_metrics", [])
+            for scope_metric in resource_metric.get("scope_metrics", [])
+        )
+        log.info(
+            "received /v1/metrics payload with %r resource metric(s) containing %r metric(s)",
+            num_resource_metrics,
+            total_metrics,
+        )
         return web.HTTPOk()
 
     async def handle_v07_remoteconfig(self, request: Request) -> web.Response:
@@ -941,6 +1032,16 @@ class Agent:
         stats = await self._tracestats_by_session(token)
         return web.json_response(stats)
 
+    async def handle_session_logs(self, request: Request) -> web.Response:
+        token = request["session_token"]
+        logs = await self._logs_by_session(token)
+        return web.json_response(logs)
+
+    async def handle_session_metrics(self, request: Request) -> web.Response:
+        token = request["session_token"]
+        metrics = await self._metrics_by_session(token)
+        return web.json_response(metrics)
+
     async def handle_session_requests(self, request: Request) -> web.Response:
         token = request["session_token"]
         resp = []
@@ -957,6 +1058,8 @@ class Agent:
                 self.handle_v1_tracer_flare,
                 self.handle_evp_proxy_v2_api_v2_llmobs,
                 self.handle_evp_proxy_v2_llmobs_eval_metric,
+                self.handle_v1_logs,
+                self.handle_v1_metrics,
             ):
                 continue
             resp.append(
@@ -1174,6 +1277,59 @@ class Agent:
         return response
 
 
+def make_otlp_http_app(agent: Agent) -> web.Application:
+    """Create a separate HTTP application for OTLP endpoints using the shared agent instance."""
+
+    @middleware
+    async def otlp_store_request_middleware(request: Request, handler: _Handler) -> web.Response:
+        # Always store requests for OTLP endpoints
+        await agent._store_request(request)
+        return await handler(request)
+
+    app = web.Application(
+        middlewares=[
+            otlp_store_request_middleware,  # type: ignore
+            session_token_middleware,  # type: ignore
+        ],
+    )
+
+    # Add only OTLP HTTP endpoints
+    app.add_routes(
+        [
+            web.post(LOGS_ENDPOINT, agent.handle_v1_logs),
+            web.post(METRICS_ENDPOINT, agent.handle_v1_metrics),
+            web.get("/test/session/requests", agent.handle_session_requests),
+            web.get("/test/session/logs", agent.handle_session_logs),
+            web.get("/test/session/metrics", agent.handle_session_metrics),
+            web.get("/test/session/clear", agent.handle_session_clear),
+            web.get("/test/session/start", agent.handle_session_start),
+        ]
+    )
+
+    return app
+
+
+async def make_otlp_grpc_server_async(agent: Agent, http_port: int, grpc_port: int) -> Any:
+    """Create and start a separate GRPC server for OTLP endpoints that forwards to HTTP server."""
+    # Define the servicer class only when GRPC is available
+    server = grpc_aio.server()
+
+    # Add the OTLP logs servicer
+    logs_servicer = OTLPLogsGRPCServicer(http_port)
+    add_LogsServiceServicer_to_server(logs_servicer, server)
+
+    # Add the OTLP metrics servicer
+    metrics_servicer = OTLPMetricsGRPCServicer(http_port)
+    add_MetricsServiceServicer_to_server(metrics_servicer, server)
+
+    # Setup and start the server
+    listen_addr = f"[::]:{grpc_port}"
+    server.add_insecure_port(listen_addr)
+    await server.start()
+
+    return server
+
+
 def make_app(
     enabled_checks: List[str],
     log_span_fmt: str,
@@ -1262,6 +1418,7 @@ def make_app(
         ],
         enabled=enabled_checks,
     )
+    app["agent"] = agent
     app["checks"] = checks
     app["snapshot_dir"] = snapshot_dir
     app["snapshot_ci_mode"] = snapshot_ci_mode
@@ -1293,6 +1450,18 @@ def main(args: Optional[List[str]] = None) -> None:
         help="Print version info and exit.",
     )
     parser.add_argument("-p", "--port", type=int, default=int(os.environ.get("PORT", 8126)))
+    parser.add_argument(
+        "--otlp-http-port",
+        type=int,
+        default=int(os.environ.get("OTLP_HTTP_PORT", 4318)),
+        help="Port to listen for OTLP HTTP requests (default: 4318)",
+    )
+    parser.add_argument(
+        "--otlp-grpc-port",
+        type=int,
+        default=int(os.environ.get("OTLP_GRPC_PORT", 4317)),
+        help="Port to listen for OTLP GRPC requests (default: 4317)",
+    )
     parser.add_argument(
         "--snapshot-dir",
         type=str,
@@ -1444,7 +1613,60 @@ def main(args: Optional[List[str]] = None) -> None:
         vcr_cassettes_directory=parsed_args.vcr_cassettes_directory,
     )
 
-    web.run_app(app, sock=apm_sock, port=parsed_args.port)
+    # Validate port configuration
+    if parsed_args.port == parsed_args.otlp_http_port:
+        raise ValueError("APM and OTLP HTTP ports cannot be the same")
+    if parsed_args.port == parsed_args.otlp_grpc_port:
+        raise ValueError("APM and OTLP GRPC ports cannot be the same")
+    if parsed_args.otlp_http_port == parsed_args.otlp_grpc_port:
+        raise ValueError("OTLP HTTP and GRPC ports cannot be the same")
+
+    # Get the shared agent instance from the main app
+    agent = app["agent"]
+    otlp_http_app = make_otlp_http_app(agent)
+
+    async def run_servers():
+        """Run APM and OTLP HTTP servers concurrently."""
+        # Create runners for both apps
+        apm_runner = web.AppRunner(app)
+        await apm_runner.setup()
+
+        otlp_http_runner = web.AppRunner(otlp_http_app)
+        await otlp_http_runner.setup()
+
+        # Start GRPC server if available (async creation)
+        otlp_grpc_server = await make_otlp_grpc_server_async(
+            agent, parsed_args.otlp_http_port, parsed_args.otlp_grpc_port
+        )
+
+        # Create sites for both apps
+        if apm_sock:
+            apm_site = web.SockSite(apm_runner, apm_sock)
+        else:
+            apm_site = web.TCPSite(apm_runner, port=parsed_args.port)
+
+        otlp_http_site = web.TCPSite(otlp_http_runner, port=parsed_args.otlp_http_port)
+
+        # Start both servers concurrently
+        await asyncio.gather(apm_site.start(), otlp_http_site.start())
+
+        print(f"======== Running APM server on port {parsed_args.port} ========")
+        print(f"======== Running OTLP HTTP server on port {parsed_args.otlp_http_port} ========")
+        print(f"======== Running OTLP GRPC server on port {parsed_args.otlp_grpc_port} ========")
+        print("(Press CTRL+C to quit)")
+
+        try:
+            # Keep the servers running
+            await asyncio.Event().wait()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            await apm_runner.cleanup()
+            await otlp_http_runner.cleanup()
+            await otlp_grpc_server.stop(grace=5.0)
+
+    # Run the servers
+    asyncio.run(run_servers())
 
 
 if __name__ == "__main__":

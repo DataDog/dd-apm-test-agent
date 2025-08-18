@@ -4,6 +4,8 @@ import signal
 import subprocess
 import time
 
+import pytest
+
 from ddapm_test_agent.trace import trace_id
 
 
@@ -380,22 +382,23 @@ async def test_put_integrations(
     )
 
 
-def test_uds(tmp_path, available_port):
+async def test_uds(tmp_path, agent, available_port, loop):
     env = os.environ.copy()
     env["DD_APM_RECEIVER_SOCKET"] = str(tmp_path / "apm.socket")
     env["PORT"] = str(available_port)
     p = subprocess.Popen(["ddapm-test-agent"], env=env)
 
-    # Check for the socket
-    for i in range(50):
-        if (tmp_path / "apm.socket").exists():
-            break
-        time.sleep(0.01)
-    else:
-        raise AssertionError("Test agent did not create the socket in time")
+    # Sleep for 1 second to give time for the testagent to start up
+    time.sleep(1)
+    assert (tmp_path / "apm.socket").exists(), "Test agent did not create the socket in time"
 
     # Check the permissions
     assert (tmp_path / "apm.socket").stat().st_mode & 0o722 == 0o722
+
+    # Check that the test agent is running
+    await agent.put("/v0.4/traces", data=b"")
+    resp = await agent.get("/test/session/requests")
+    assert resp.status == 200, await resp.text()
 
     # Kill the process without atexit handlers
     os.kill(p.pid, signal.SIGKILL)
@@ -470,3 +473,31 @@ async def test_evp_proxy_v2_api_intake_llmobs_v2_eval_metric(agent):
     assert resp.status == 200
     reqs = await resp.json()
     assert len(reqs) == 1
+
+
+@pytest.fixture
+def testagent_connection_type():
+    return "uds"
+
+
+async def test_traces_via_uds(
+    testagent,
+    testagent_uds_socket_path,
+    v04_reference_http_trace_payload_headers,
+    v04_reference_http_trace_payload_data,
+    v04_reference_http_trace_payload_data_raw,
+):
+    """Test traces can be sent and received via UDS."""
+    assert testagent_uds_socket_path.exists(), f"UDS socket does not exist at {testagent_uds_socket_path}"
+
+    resp = await testagent.put(
+        "http://localhost/v0.4/traces",
+        headers=v04_reference_http_trace_payload_headers,
+        data=v04_reference_http_trace_payload_data,
+    )
+    assert resp.status == 200
+
+    resp = await testagent.get("http://localhost/test/traces")
+    assert resp.status == 200
+    received_traces = await resp.json()
+    assert received_traces == v04_reference_http_trace_payload_data_raw

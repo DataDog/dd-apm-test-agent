@@ -5,7 +5,6 @@ from pathlib import Path
 import random
 import socket
 import subprocess
-from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Dict
 from typing import Generator
@@ -14,19 +13,30 @@ from typing import Literal
 from typing import Optional
 from typing import Set
 from typing import cast
+from urllib.parse import urlparse
 
 import aiohttp
+from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectorError
 from aiohttp.client_exceptions import ClientOSError
 from aiohttp.web import Response
 from ddsketch import LogCollapsingLowestDenseDDSketch
 from ddsketch.pb.proto import DDSketchProto
+import grpc.aio as grpc_aio
 import msgpack
+from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import LogsServiceStub
+from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import MetricsServiceStub
 import pytest
 
+from ddapm_test_agent.agent import DEFAULT_OTLP_GRPC_PORT
+from ddapm_test_agent.agent import DEFAULT_OTLP_HTTP_PORT
 from ddapm_test_agent.agent import _parse_csv
 from ddapm_test_agent.agent import make_app
+from ddapm_test_agent.agent import make_otlp_grpc_server_async
 from ddapm_test_agent.apmtelemetry import TelemetryEvent
+from ddapm_test_agent.client import TestOTLPClient
+from ddapm_test_agent.logs import LOGS_ENDPOINT
+from ddapm_test_agent.metrics import METRICS_ENDPOINT
 from ddapm_test_agent.trace import Span
 from ddapm_test_agent.trace import Trace
 from ddapm_test_agent.trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
@@ -570,7 +580,7 @@ def testagent_port(available_port: str) -> str:
 
 @pytest.fixture
 def testagent_url(testagent_port: str) -> str:
-    return "http://localhost:%s" % testagent_port
+    return "http://127.0.0.1:%s" % testagent_port
 
 
 @pytest.fixture(scope="module")
@@ -582,25 +592,63 @@ def testagent_snapshot_ci_mode() -> bool:
 
 
 @pytest.fixture
-async def testagent(
-    loop: asyncio.BaseEventLoop, testagent_port: str, testagent_snapshot_ci_mode: bool
-) -> AsyncGenerator[aiohttp.ClientSession, None]:
+def testagent_connection_type():
+    return "http"
+
+
+@pytest.fixture
+def testagent_uds_socket_path(tmp_path):
+    return tmp_path / "apm.socket"
+
+
+@pytest.fixture
+def test_agent_env(testagent_connection_type, testagent_uds_socket_path):
     env = os.environ.copy()
-    env.update(
+    if testagent_connection_type == "uds":
+        env["DD_APM_RECEIVER_SOCKET"] = str(testagent_uds_socket_path)
+    return env
+
+
+@pytest.fixture
+async def testagent(
+    loop,
+    testagent_port,
+    testagent_snapshot_ci_mode,
+    test_agent_env,
+    testagent_connection_type,
+    testagent_uds_socket_path,
+):
+    test_agent_env.update(
         {
             "PORT": testagent_port,
             "SNAPSHOT_CI": "1" if testagent_snapshot_ci_mode else "0",
             "SNAPSHOT_DIR": os.path.join(os.path.dirname(__file__), "integration_snapshots"),
         }
     )
-    p = subprocess.Popen(["ddapm-test-agent"], env=env)
+    p = subprocess.Popen(["ddapm-test-agent"], env=test_agent_env)
 
-    # Wait for server to start
     try:
-        async with aiohttp.ClientSession() as session:
+        if testagent_connection_type == "uds":
+            import time
+
+            for i in range(100):
+                if testagent_uds_socket_path.exists():
+                    break
+                time.sleep(0.05)
+            else:
+                raise AssertionError("Test agent did not create UDS socket in time")
+
+            connector = aiohttp.UnixConnector(path=str(testagent_uds_socket_path))
+            session = aiohttp.ClientSession(connector=connector)
+            base_url = "http://localhost/"
+        else:
+            session = aiohttp.ClientSession()
+            base_url = f"http://localhost:{testagent_port}"
+
+        async with session:
             for _ in range(100):
                 try:
-                    r = await session.get(f"http://localhost:{testagent_port}")
+                    r = await session.get(base_url)
                 except (ClientConnectorError, ClientOSError):
                     pass
                 else:
@@ -608,7 +656,149 @@ async def testagent(
                         break
                 await asyncio.sleep(0.05)
             else:
-                assert 0
+                raise AssertionError("Test agent did not start in time")
+
             yield session
     finally:
         p.terminate()
+        p.wait()
+
+
+# OTLP Constants
+PROTOBUF_HEADERS = {"Content-Type": "application/x-protobuf"}
+JSON_HEADERS = {"Content-Type": "application/json"}
+
+
+# OTLP Helper Functions
+async def _get_http_status_from_metadata(call):
+    """Extract HTTP status from GRPC trailing metadata."""
+    trailing_metadata = await call.trailing_metadata()
+    for key, value in trailing_metadata:
+        if key == "http-status":
+            return int(value)
+    return None
+
+
+# Common OTLP Test Data Fixtures
+@pytest.fixture
+def service_name():
+    return "ddservice"
+
+
+@pytest.fixture
+def environment():
+    return "ddenv"
+
+
+@pytest.fixture
+def version():
+    return "ddv1"
+
+
+@pytest.fixture
+def host_name():
+    return "ddhost"
+
+
+# OTLP Infrastructure Fixtures
+@pytest.fixture
+def otlp_http_url(testagent_url):
+    parsed_url = urlparse(testagent_url)
+    return f"{parsed_url.scheme}://{parsed_url.hostname}:{DEFAULT_OTLP_HTTP_PORT}"
+
+
+@pytest.fixture
+def otlp_test_client(otlp_http_url):
+    """OTLP client for retrieving stored logs, metrics and requests."""
+    parsed_url = urlparse(otlp_http_url)
+    client = TestOTLPClient(parsed_url.hostname, parsed_url.port, parsed_url.scheme)
+    client.clear()
+    client.wait_to_start()
+    yield client
+    client.clear()
+
+
+@pytest.fixture(params=["logs", "metrics"])
+async def otlp_grpc_client(request):
+    """GRPC client that can connect to either logs or metrics service."""
+    channel = grpc_aio.insecure_channel(f"127.0.0.1:{DEFAULT_OTLP_GRPC_PORT}")
+
+    if request.param == "logs":
+        stub = LogsServiceStub(channel)
+    elif request.param == "metrics":
+        stub = MetricsServiceStub(channel)
+    else:
+        raise ValueError(f"Unknown service type: {request.param}")
+
+    yield stub
+
+    await channel.close()
+
+
+@pytest.fixture
+async def otlp_logs_grpc_client():
+    """GRPC client specifically for logs service."""
+    channel = grpc_aio.insecure_channel(f"127.0.0.1:{DEFAULT_OTLP_GRPC_PORT}")
+    stub = LogsServiceStub(channel)
+
+    yield stub
+
+    await channel.close()
+
+
+@pytest.fixture
+async def otlp_metrics_grpc_client():
+    """GRPC client specifically for metrics service."""
+    channel = grpc_aio.insecure_channel(f"127.0.0.1:{DEFAULT_OTLP_GRPC_PORT}")
+    stub = MetricsServiceStub(channel)
+
+    yield stub
+
+    await channel.close()
+
+
+@pytest.fixture
+async def grpc_client_with_failure_type(agent_app, available_port, aiohttp_server, request):
+    """GRPC server with configurable HTTP backend failure scenarios for both logs and metrics."""
+    grpc_port = int(available_port)
+
+    # Require explicit tuple of (failure_type, service_type)
+    param = getattr(request, "param")
+    if not isinstance(param, tuple) or len(param) != 2:
+        raise ValueError("grpc_client_with_failure_type requires a tuple of (failure_type, service_type)")
+
+    failure_type, service_type = param
+    if service_type not in ["logs", "metrics"]:
+        raise ValueError(f"service_type must be 'logs' or 'metrics', got: {service_type}")
+
+    endpoint = LOGS_ENDPOINT if service_type == "logs" else METRICS_ENDPOINT
+
+    http_handlers = {
+        "http_400": lambda _: web.HTTPBadRequest(text="invalid"),
+        "http_500": lambda _: web.HTTPInternalServerError(text="boom"),
+    }
+
+    if failure_type == "connection_failure":
+        http_port = 99999  # Non-existent port
+    elif failure_type in http_handlers:
+        app = web.Application()
+        app.router.add_post(endpoint, http_handlers[failure_type])
+        http_server = await aiohttp_server(app)
+        http_port = http_server.port
+    else:
+        raise ValueError(f"Unknown failure_type: {failure_type}")
+
+    grpc_server = await make_otlp_grpc_server_async(agent_app.app["agent"], http_port=http_port, grpc_port=grpc_port)
+    channel = grpc_aio.insecure_channel(f"localhost:{grpc_port}")
+
+    if service_type == "logs":
+        stub = LogsServiceStub(channel)
+    elif service_type == "metrics":
+        stub = MetricsServiceStub(channel)
+    else:
+        raise ValueError(f"Unknown service_type: {service_type}")
+
+    yield stub
+
+    await channel.close()
+    await grpc_server.stop(grace=0)
