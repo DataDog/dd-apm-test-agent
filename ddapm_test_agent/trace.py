@@ -768,9 +768,8 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
             for span in v:
                 converted_span = _convert_v1_span(span, string_table)
                 spans.append(converted_span)
-        # We explicitly ignore the 5th key, which is the droppedTrace flag (unset by tracers)
         elif k == 5:
-            pass
+            raise TypeError("Tracers must not set the droppedTrace(5) flag.")
         elif k == 6:
             if len(v) != 16:
                 raise TypeError("Trace ID must be 16 bytes, got %r." % len(v))
@@ -785,7 +784,6 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
     if len(spans) == 0:
         raise TypeError("Chunk must contain at least one span.")
 
-    # TODO: bring chunk level attributes trace_id, priority, origin, decision_maker in
     for span in spans:
         span["trace_id"] = trace_id
         span["_dd.p.tid"] = trace_id_high
@@ -915,9 +913,9 @@ def _convert_v1_span_link(link: Any, string_table: List[str]) -> SpanLink:
         elif k == 3:
             v4Link["attributes"] = _convert_v1_span_link_attributes(v, string_table)
         elif k == 4:
-            raise NotImplementedError("Span link tracestate is not supported yet.")
+            v4Link["tracestate"] = _get_and_add_string(string_table, v)
         elif k == 5:
-            raise NotImplementedError("Span link flags are not supported yet.")
+            v4Link["flags"] = v
         else:
             raise TypeError("Unknown key %r in v1 span link" % k)
     return v4Link
