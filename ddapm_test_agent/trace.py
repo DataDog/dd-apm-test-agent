@@ -785,11 +785,18 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
         raise TypeError("Chunk must contain at least one span.")
 
     for span in spans:
+        if "metrics" not in span:
+            span["metrics"] = {}
+        if "meta" not in span:
+            span["meta"] = {}
         span["trace_id"] = trace_id
-        span["_dd.p.tid"] = trace_id_high
-        span["_dd.p.dm"] = decision_maker
-        span["_dd.origin"] = origin
-        span["_sampling_priority_v1"] = priority
+        span["meta"]["_dd.p.tid"] = hex(trace_id_high)
+        if decision_maker != "":
+            span["meta"]["_dd.p.dm"] = decision_maker
+        if origin != "":
+            span["meta"]["_dd.origin"] = origin
+        if priority != "":
+            span["metrics"]["_sampling_priority_v1"] = priority
         for k, v in meta.items():
             span["meta"][k] = v
         for k, v in metrics.items():
