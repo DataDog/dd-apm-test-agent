@@ -704,7 +704,10 @@ def decode_v07(data: bytes) -> v04TracePayload:
 
 def decode_v1(data: bytes) -> v04TracePayload:
     """Decode a v1 trace payload.
-    TODO docs
+    The v1 format is similar to the v07 format but in an optimized format and with a few changes:
+     - Strings are deduplicated and sent in a "Streaming" format where strings are referred to by their index in a string table
+     - Trace IDs are sent as 128 bit integers in a bytes array
+     - 'meta' and 'metrics' are now sent as typed 'attributes', more similar to how OTLP traces are sent
     """
     payload = msgpack.unpackb(data, strict_map_key=False)
     return _convert_v1_payload(payload)
@@ -731,9 +734,8 @@ def _convert_v1_payload(data: Any) -> v04TracePayload:
     for k, v in data.items():
         if k == 1:
             raise TypeError("Message pack representation of v1 trace payload must stream strings")
-        elif (
-            k > 1 and k < 10
-        ):  # All keys from 2-9 are strings, for now we can just build the string table TODO assert on these?
+        elif k > 1 and k < 10:  # All keys from 2-9 are strings, for now we can just build the string table
+            # TODO: In the future we can assert on these keys
             if isinstance(v, str):
                 string_table.append(v)
         elif k == 11:

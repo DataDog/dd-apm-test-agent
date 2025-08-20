@@ -857,7 +857,6 @@ class Agent:
                     traces = self._decode_v07_traces(request)
                 elif version == "v1":
                     traces = self._decode_v1_traces(request)
-                    log.info("received v1 trace for token %r, IGNORING for now", token)
                 log.info(
                     "received trace for token %r payload with %r trace chunks",
                     token,
