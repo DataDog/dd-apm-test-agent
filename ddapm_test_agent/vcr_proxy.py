@@ -22,6 +22,7 @@ import vcr
 logger = logging.getLogger(__name__)
 
 
+#  Used for AWS signature recalculation for bedrock-runtime initial proxying
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 
