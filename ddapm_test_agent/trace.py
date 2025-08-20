@@ -705,9 +705,9 @@ def decode_v07(data: bytes) -> v04TracePayload:
 def decode_v1(data: bytes) -> v04TracePayload:
     """Decode a v1 trace payload.
     The v1 format is similar to the v07 format but in an optimized format and with a few changes:
-     - Strings are deduplicated and sent in a "Streaming" format where strings are referred to by their index in a string table
-     - Trace IDs are sent as 128 bit integers in a bytes array
-     - 'meta' and 'metrics' are now sent as typed 'attributes', more similar to how OTLP traces are sent
+    - Strings are deduplicated and sent in a "Streaming" format where strings are referred to by their index in a string table
+    - Trace IDs are sent as 128 bit integers in a bytes array
+    - 'meta' and 'metrics' are now sent as typed 'attributes', more similar to how OTLP traces are sent
     """
     payload = msgpack.unpackb(data, strict_map_key=False)
     return _convert_v1_payload(payload)
