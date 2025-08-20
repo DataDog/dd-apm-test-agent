@@ -809,8 +809,11 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
 def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
     if not isinstance(span, dict):
         raise TypeError("Span must be a map.")
-    v4Span = Span()
+
+    # Create a regular dict first, then cast to TypedDict
+    v4Span: Dict[str, Any] = {}
     env, version, component, spanKind = "", "", "", ""
+
     for k, v in span.items():
         if k == 1:
             v4Span["service"] = _get_and_add_string(string_table, v)
@@ -877,6 +880,7 @@ def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
                 spanKind = "consumer"
             else:
                 raise TypeError("Unknown span kind %r." % v)
+
     if "meta" not in v4Span or v4Span["meta"] is None:
         v4Span["meta"] = {}
     if env != "":
@@ -887,13 +891,18 @@ def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
         v4Span["meta"]["component"] = component
     if spanKind != "":
         v4Span["meta"]["span.kind"] = spanKind
-    return v4Span
+
+    # Cast to TypedDict
+    return v4Span  # type: ignore
 
 
 def _convert_v1_span_event(event: Any, string_table: List[str]) -> SpanEvent:
     if not isinstance(event, dict):
         raise TypeError("Span event must be a map, got type %r." % type(event))
-    v4Event = SpanEvent()
+
+    # Create a regular dict first, then cast to TypedDict
+    v4Event: Dict[str, Any] = {}
+
     for k, v in event.items():
         if k == 1:
             v4Event["time_unix_nano"] = v
@@ -903,13 +912,18 @@ def _convert_v1_span_event(event: Any, string_table: List[str]) -> SpanEvent:
             v4Event["attributes"] = _convert_v1_span_event_attributes(v, string_table)
         else:
             raise TypeError("Unknown key %r in v1 span event" % k)
-    return v4Event
+
+    # Cast to TypedDict
+    return v4Event  # type: ignore
 
 
 def _convert_v1_span_link(link: Any, string_table: List[str]) -> SpanLink:
     if not isinstance(link, dict):
         raise TypeError("Span link must be a map, got type %r." % type(link))
-    v4Link = SpanLink()
+
+    # Create a regular dict first, then cast to TypedDict
+    v4Link: Dict[str, Any] = {}
+
     for k, v in link.items():
         if k == 1:
             if len(v) != 16:
@@ -927,7 +941,9 @@ def _convert_v1_span_link(link: Any, string_table: List[str]) -> SpanLink:
             v4Link["flags"] = v
         else:
             raise TypeError("Unknown key %r in v1 span link" % k)
-    return v4Link
+
+    # Cast to TypedDict
+    return v4Link  # type: ignore
 
 
 def _convert_v1_span_link_attributes(attr: Any, string_table: List[str]) -> Dict[str, str]:
