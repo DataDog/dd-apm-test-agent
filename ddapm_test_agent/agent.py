@@ -59,10 +59,10 @@ from .remoteconfig import RemoteConfigServer
 from .trace import Span
 from .trace import Trace
 from .trace import TraceMap
+from .trace import decode_v1 as trace_decode_v1
 from .trace import decode_v04 as trace_decode_v04
 from .trace import decode_v05 as trace_decode_v05
 from .trace import decode_v07 as trace_decode_v07
-from .trace import decode_v1 as trace_decode_v1
 from .trace import pprint_trace
 from .trace import v04TracePayload
 from .trace_checks import CheckMetaTracerVersionHeader

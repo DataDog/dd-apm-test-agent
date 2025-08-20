@@ -4,9 +4,9 @@ import msgpack
 import pytest
 
 from ddapm_test_agent.trace import bfs_order
+from ddapm_test_agent.trace import decode_v1_span
 from ddapm_test_agent.trace import decode_v04
 from ddapm_test_agent.trace import dfs_order
-from ddapm_test_agent.trace import decode_v1_span
 from ddapm_test_agent.trace import root_span
 
 from .trace_utils import random_id

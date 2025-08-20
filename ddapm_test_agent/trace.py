@@ -704,7 +704,7 @@ def decode_v07(data: bytes) -> v04TracePayload:
 
 def decode_v1(data: bytes) -> v04TracePayload:
     """Decode a v1 trace payload.
-     TODO docs
+    TODO docs
     """
     payload = msgpack.unpackb(data, strict_map_key=False)
     return _convert_v1_payload(payload)
@@ -731,7 +731,9 @@ def _convert_v1_payload(data: Any) -> v04TracePayload:
     for k, v in data.items():
         if k == 1:
             raise TypeError("Message pack representation of v1 trace payload must stream strings")
-        elif k > 1 and k < 10:  # All keys from 2-9 are strings, for now we can just build the string table TODO assert on these?
+        elif (
+            k > 1 and k < 10
+        ):  # All keys from 2-9 are strings, for now we can just build the string table TODO assert on these?
             if isinstance(v, str):
                 string_table.append(v)
         elif k == 11:
@@ -930,7 +932,7 @@ def _convert_v1_span_link(link: Any, string_table: List[str]) -> SpanLink:
 
 def _convert_v1_span_link_attributes(attr: Any, string_table: List[str]) -> Dict[str, str]:
     """
-    Convert a v1 span link attributes to a v4 span link attributes. Unfortunately we need multiple implementations that 
+    Convert a v1 span link attributes to a v4 span link attributes. Unfortunately we need multiple implementations that
     convert "attributes" as the v0.4 representation of attributes is different between span links and span events.
     """
     if not isinstance(attr, list):
@@ -963,7 +965,7 @@ def _convert_v1_span_link_attributes(attr: Any, string_table: List[str]) -> Dict
 
 def _convert_v1_span_event_attributes(attr: Any, string_table: List[str]) -> Dict[str, Dict[str, Any]]:
     """
-    Convert a v1 span event attributes to a v4 span event attributes. Unfortunately we need multiple implementations that 
+    Convert a v1 span event attributes to a v4 span event attributes. Unfortunately we need multiple implementations that
     convert "attributes" as the v0.4 representation of attributes is different between span links and span events.
     """
     if not isinstance(attr, list):
@@ -1000,7 +1002,9 @@ def _convert_v1_span_event_attributes(attr: Any, string_table: List[str]) -> Dic
     return attributes
 
 
-def _convert_v1_attributes(attr: Any, meta: Dict[str, str], metrics: Dict[str, MetricType], string_table: List[str]) -> None:
+def _convert_v1_attributes(
+    attr: Any, meta: Dict[str, str], metrics: Dict[str, MetricType], string_table: List[str]
+) -> None:
     if not isinstance(attr, list):
         raise TypeError("Attribute must be a list, got type %r." % type(attr))
     if len(attr) % 3 != 0:
