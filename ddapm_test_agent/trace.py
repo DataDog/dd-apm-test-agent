@@ -756,6 +756,7 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
     trace_id, trace_id_high = 0, 0
     meta: Dict[str, str] = {}
     metrics: Dict[str, MetricType] = {}
+    spans: List[Span] = []
     for k, v in chunk.items():
         if k == 1:
             priority = v
@@ -768,7 +769,6 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
         elif k == 4:
             if not isinstance(v, list):
                 raise TypeError("Chunk 'spans'(4) must be a list.")
-            spans: List[Span] = []
             for span in v:
                 converted_span = _convert_v1_span(span, string_table)
                 spans.append(converted_span)
@@ -784,9 +784,6 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
             decision_maker = _get_and_add_string(string_table, v)
         else:
             raise TypeError("Unknown key %r in v1 trace chunk" % k)
-
-    if len(spans) == 0:
-        raise TypeError("Chunk must contain at least one span.")
 
     for span in spans:
         if "metrics" not in span:
