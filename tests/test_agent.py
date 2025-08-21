@@ -530,7 +530,7 @@ async def test_trace_v1_basic():
                     6: bytes(
                         [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xE3]
                     ),
-                    7: "-4",
+                    7: 4,
                 }
             ],
         }
@@ -556,6 +556,67 @@ async def test_trace_v1_basic():
         "some-global": "cool-value",
         "_dd.p.tid": "0x55",
         "_dd.p.dm": "-4",
+        "_dd.origin": "rum",
+    }
+    assert result_span["metrics"] == {"fooNum": 3.14, "_sampling_priority_v1": 1}
+    assert result_span["type"] == "span-type"
+    assert result_span["trace_id"] == 8675
+
+
+async def test_trace_v1_no_sampling_mechanism():
+    data = msgpack.packb(
+        {
+            2: "hello",
+            11: [
+                {
+                    1: 1,
+                    2: "rum",
+                    3: ["some-global", 1, "cool-value"],
+                    4: [
+                        {
+                            1: "my-service",
+                            2: "span-name",
+                            3: 1,
+                            4: 1234,
+                            5: 5555,
+                            6: 987,
+                            7: 150,
+                            8: True,
+                            9: ["foo", 1, "bar", "fooNum", 3, 3.14],
+                            10: "span-type",
+                            13: "some-env",
+                            14: "my-version",
+                            15: "my-component",
+                            16: 1,
+                        }
+                    ],
+                    6: bytes(
+                        [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xE3]
+                    ),
+                }
+            ],
+        }
+    )
+    result = decode_v1(data)
+    assert len(result) == 1
+    assert len(result[0]) == 1
+    result_span = result[0][0]
+    assert result_span["service"] == "my-service"
+    assert result_span["name"] == "span-name"
+    assert result_span["resource"] == "hello"
+    assert result_span["span_id"] == 1234
+    assert result_span["parent_id"] == 5555
+    assert result_span["start"] == 987
+    assert result_span["duration"] == 150
+    assert result_span["error"] == 1
+    assert result_span["meta"] == {
+        "foo": "bar",
+        "env": "some-env",
+        "version": "my-version",
+        "component": "my-component",
+        "span.kind": "internal",
+        "some-global": "cool-value",
+        "_dd.p.tid": "0x55",
         "_dd.origin": "rum",
     }
     assert result_span["metrics"] == {"fooNum": 3.14, "_sampling_priority_v1": 1}

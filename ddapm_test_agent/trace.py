@@ -1,5 +1,6 @@
 """Tracing specific functions and types"""
 
+from enum import IntEnum
 import json
 from typing import Any
 from typing import Callable
@@ -112,6 +113,59 @@ TopLevelSpanValue = Union[
 Trace = List[Span]
 v04TracePayload = List[List[Span]]
 TraceMap = OrderedDict[int, Trace]
+
+
+class V1ChunkKeys(IntEnum):
+    PRIORITY = 1
+    ORIGIN = 2
+    ATTRIBUTES = 3
+    SPANS = 4
+    DROPPED_TRACE = 5
+    TRACE_ID = 6
+    SAMPLING_MECHANISM = 7
+
+
+class V1SpanKeys(IntEnum):
+    SERVICE = 1
+    NAME = 2
+    RESOURCE = 3
+    SPAN_ID = 4
+    PARENT_ID = 5
+    START = 6
+    DURATION = 7
+    ERROR = 8
+    ATTRIBUTES = 9
+    TYPE = 10
+    SPAN_LINKS = 11
+    SPAN_EVENTS = 12
+    ENV = 13
+    VERSION = 14
+    COMPONENT = 15
+    SPAN_KIND = 16
+
+
+class V1SpanLinkKeys(IntEnum):
+    TRACE_ID = 1
+    SPAN_ID = 2
+    ATTRIBUTES = 3
+    TRACE_STATE = 4
+    FLAGS = 5
+
+
+class V1SpanEventKeys(IntEnum):
+    TIME = 1
+    NAME = 2
+    ATTRIBUTES = 3
+
+
+class V1AnyValueKeys(IntEnum):
+    STRING = 1
+    BOOL = 2
+    DOUBLE = 3
+    INT = 4
+    BYTES = 5
+    ARRAY = 6
+    KEY_VALUE_LIST = 7
 
 
 # TODO:ban add extra tags to add to the span
@@ -752,36 +806,36 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
     if not isinstance(chunk, dict):
         raise TypeError("Chunk must be a map.")
 
-    priority, origin, decision_maker = "", "", ""
+    priority, origin, sampling_mechanism = "", "", None
     trace_id, trace_id_high = 0, 0
     meta: Dict[str, str] = {}
     metrics: Dict[str, MetricType] = {}
     spans: List[Span] = []
     for k, v in chunk.items():
-        if k == 1:
+        if k == V1ChunkKeys.PRIORITY:
             priority = v
-        elif k == 2:
+        elif k == V1ChunkKeys.ORIGIN:
             origin = _get_and_add_string(string_table, v)
-        elif k == 3:
+        elif k == V1ChunkKeys.ATTRIBUTES:
             if not isinstance(v, list):
                 raise TypeError("Chunk Attributes must be a list, got type %r." % type(v))
             _convert_v1_attributes(v, meta, metrics, string_table)
-        elif k == 4:
+        elif k == V1ChunkKeys.SPANS:
             if not isinstance(v, list):
                 raise TypeError("Chunk 'spans'(4) must be a list.")
             for span in v:
                 converted_span = _convert_v1_span(span, string_table)
                 spans.append(converted_span)
-        elif k == 5:
+        elif k == V1ChunkKeys.DROPPED_TRACE:
             raise TypeError("Tracers must not set the droppedTrace(5) flag.")
-        elif k == 6:
+        elif k == V1ChunkKeys.TRACE_ID:
             if len(v) != 16:
                 raise TypeError("Trace ID must be 16 bytes, got %r." % len(v))
             # trace_id is a 128 bit integer in a bytes array, so we need to get the last 64 bits
             trace_id = int.from_bytes(v[8:], "big")
             trace_id_high = int.from_bytes(v[:8], "big")
-        elif k == 7:
-            decision_maker = _get_and_add_string(string_table, v)
+        elif k == V1ChunkKeys.SAMPLING_MECHANISM:
+            sampling_mechanism = v
         else:
             raise TypeError("Unknown key %r in v1 trace chunk" % k)
 
@@ -792,8 +846,8 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
             span["meta"] = {}
         span["trace_id"] = trace_id
         span["meta"]["_dd.p.tid"] = hex(trace_id_high)
-        if decision_maker != "":
-            span["meta"]["_dd.p.dm"] = decision_maker
+        if sampling_mechanism != None:
+            span["meta"]["_dd.p.dm"] = "-" + str(sampling_mechanism)
         if origin != "":
             span["meta"]["_dd.origin"] = origin
         if priority != "":
@@ -814,25 +868,25 @@ def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
     env, version, component, spanKind = "", "", "", ""
 
     for k, v in span.items():
-        if k == 1:
+        if k == V1SpanKeys.SERVICE:
             v4Span["service"] = _get_and_add_string(string_table, v)
-        elif k == 2:
+        elif k == V1SpanKeys.NAME:
             v4Span["name"] = _get_and_add_string(string_table, v)
-        elif k == 3:
+        elif k == V1SpanKeys.RESOURCE:
             v4Span["resource"] = _get_and_add_string(string_table, v)
-        elif k == 4:
+        elif k == V1SpanKeys.SPAN_ID:
             v4Span["span_id"] = v
-        elif k == 5:
+        elif k == V1SpanKeys.PARENT_ID:
             v4Span["parent_id"] = v
-        elif k == 6:
+        elif k == V1SpanKeys.START:
             v4Span["start"] = v
-        elif k == 7:
+        elif k == V1SpanKeys.DURATION:
             v4Span["duration"] = v
-        elif k == 8:
+        elif k == V1SpanKeys.ERROR:
             if not isinstance(v, bool):
                 raise TypeError("Error must be a boolean, got type %r." % type(v))
             v4Span["error"] = 1 if v else 0
-        elif k == 9:  # Attributes
+        elif k == V1SpanKeys.ATTRIBUTES:
             if not isinstance(v, list):
                 raise TypeError("Attributes must be a list, got type %r." % type(v))
             meta: Dict[str, str] = {}
@@ -840,9 +894,9 @@ def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
             _convert_v1_attributes(v, meta, metrics, string_table)
             v4Span["meta"] = meta
             v4Span["metrics"] = metrics
-        elif k == 10:
+        elif k == V1SpanKeys.TYPE:
             v4Span["type"] = _get_and_add_string(string_table, v)
-        elif k == 11:
+        elif k == V1SpanKeys.SPAN_LINKS:
             if not isinstance(v, list):
                 raise TypeError("Span links must be a list, got type %r." % type(v))
             links: List[SpanLink] = []
@@ -850,7 +904,7 @@ def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
                 link = _convert_v1_span_link(raw_link, string_table)
                 links.append(link)
             v4Span["span_links"] = links
-        elif k == 12:
+        elif k == V1SpanKeys.SPAN_EVENTS:
             if not isinstance(v, list):
                 raise TypeError("Span events must be a list, got type %r." % type(v))
             events: List[SpanEvent] = []
@@ -858,13 +912,13 @@ def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
                 event = _convert_v1_span_event(raw_event, string_table)
                 events.append(event)
             v4Span["span_events"] = events
-        elif k == 13:
+        elif k == V1SpanKeys.ENV:
             env = _get_and_add_string(string_table, v)
-        elif k == 14:
+        elif k == V1SpanKeys.VERSION:
             version = _get_and_add_string(string_table, v)
-        elif k == 15:
+        elif k == V1SpanKeys.COMPONENT:
             component = _get_and_add_string(string_table, v)
-        elif k == 16:
+        elif k == V1SpanKeys.SPAN_KIND:
             if not isinstance(v, int):
                 raise TypeError("Span kind must be an integer, got type %r." % type(v))
             if v == 1:
@@ -903,11 +957,11 @@ def _convert_v1_span_event(event: Any, string_table: List[str]) -> SpanEvent:
     v4Event: Dict[str, Any] = {}
 
     for k, v in event.items():
-        if k == 1:
+        if k == V1SpanEventKeys.TIME:
             v4Event["time_unix_nano"] = v
-        elif k == 2:
+        elif k == V1SpanEventKeys.NAME:
             v4Event["name"] = _get_and_add_string(string_table, v)
-        elif k == 3:
+        elif k == V1SpanEventKeys.ATTRIBUTES:
             v4Event["attributes"] = _convert_v1_span_event_attributes(v, string_table)
         else:
             raise TypeError("Unknown key %r in v1 span event" % k)
@@ -924,19 +978,19 @@ def _convert_v1_span_link(link: Any, string_table: List[str]) -> SpanLink:
     v4Link: Dict[str, Any] = {}
 
     for k, v in link.items():
-        if k == 1:
+        if k == V1SpanLinkKeys.TRACE_ID:
             if len(v) != 16:
                 raise TypeError("Trace ID must be 16 bytes, got %r." % len(v))
             # trace_id is a 128 bit integer in a bytes array, so we need to get the last 64 bits
             v4Link["trace_id"] = int.from_bytes(v[8:], "big")
             v4Link["trace_id_high"] = int.from_bytes(v[:8], "big")
-        elif k == 2:
+        elif k == V1SpanLinkKeys.SPAN_ID:
             v4Link["span_id"] = v
-        elif k == 3:
+        elif k == V1SpanLinkKeys.ATTRIBUTES:
             v4Link["attributes"] = _convert_v1_span_link_attributes(v, string_table)
-        elif k == 4:
+        elif k == V1SpanLinkKeys.TRACE_STATE:
             v4Link["tracestate"] = _get_and_add_string(string_table, v)
-        elif k == 5:
+        elif k == V1SpanLinkKeys.FLAGS:
             v4Link["flags"] = v
         else:
             raise TypeError("Unknown key %r in v1 span link" % k)
@@ -959,19 +1013,19 @@ def _convert_v1_span_link_attributes(attr: Any, string_table: List[str]) -> Dict
         key = _get_and_add_string(string_table, attr[i])
         value_type = attr[i + 1]
         value = attr[i + 2]
-        if value_type == 1:  # String
+        if value_type == V1AnyValueKeys.STRING:
             v4_attributes[key] = _get_and_add_string(string_table, value)
-        elif value_type == 2:  # Bool
+        elif value_type == V1AnyValueKeys.BOOL:
             v4_attributes[key] = "true" if value else "false"
-        elif value_type == 3:  # Double
+        elif value_type == V1AnyValueKeys.DOUBLE:
             v4_attributes[key] = str(value)
-        elif value_type == 4:  # Int
+        elif value_type == V1AnyValueKeys.INT:
             v4_attributes[key] = str(value)
-        elif value_type == 5:  # Bytes
+        elif value_type == V1AnyValueKeys.BYTES:
             raise NotImplementedError("Bytes values are not supported yet.")
-        elif value_type == 6:  # Array
+        elif value_type == V1AnyValueKeys.ARRAY:
             raise NotImplementedError("Array of values are not supported yet.")
-        elif value_type == 7:  # Key Value list
+        elif value_type == V1AnyValueKeys.KEY_VALUE_LIST:
             raise NotImplementedError("Key value list values are not supported yet.")
         else:
             raise TypeError("Unknown attribute value type %r." % value_type)
@@ -993,23 +1047,23 @@ def _convert_v1_span_event_attributes(attr: Any, string_table: List[str]) -> Dic
         key = _get_and_add_string(string_table, attr[i])
         value_type = attr[i + 1]
         value = attr[i + 2]
-        if value_type == 1:  # String
+        if value_type == V1AnyValueKeys.STRING:
             v4_attr_value["type"] = 0
             v4_attr_value["string_value"] = _get_and_add_string(string_table, value)
-        elif value_type == 2:  # Bool
+        elif value_type == V1AnyValueKeys.BOOL:
             v4_attr_value["type"] = 1
             v4_attr_value["bool_value"] = value
-        elif value_type == 3:  # Double
+        elif value_type == V1AnyValueKeys.DOUBLE:
             v4_attr_value["type"] = 3
             v4_attr_value["double_value"] = value
-        elif value_type == 4:  # Int
+        elif value_type == V1AnyValueKeys.INT:
             v4_attr_value["type"] = 2  # Yes the constants are different here
             v4_attr_value["int_value"] = value
-        elif value_type == 5:  # Bytes
+        elif value_type == V1AnyValueKeys.BYTES:
             raise NotImplementedError("Bytes values are not supported yet.")
-        elif value_type == 6:  # Array
+        elif value_type == V1AnyValueKeys.ARRAY:
             raise NotImplementedError("Array of strings values are not supported yet.")
-        elif value_type == 7:  # Key Value list
+        elif value_type == V1AnyValueKeys.KEY_VALUE_LIST:
             raise NotImplementedError("Key value list values are not supported yet.")
         else:
             raise TypeError("Unknown attribute value type %r." % value_type)
@@ -1028,20 +1082,20 @@ def _convert_v1_attributes(
         key = _get_and_add_string(string_table, attr[i])
         value_type = attr[i + 1]
         value = attr[i + 2]
-        if value_type == 1:  # String
+        if value_type == V1AnyValueKeys.STRING:
             meta[key] = _get_and_add_string(string_table, value)
-        elif value_type == 2:  # Bool
+        elif value_type == V1AnyValueKeys.BOOL:
             # Treat v1 boolean attributes as metrics with a value of 1 or 0
             metrics[key] = 1 if value else 0
-        elif value_type == 3:  # Double
+        elif value_type == V1AnyValueKeys.DOUBLE:
             metrics[key] = value
-        elif value_type == 4:  # Int
+        elif value_type == V1AnyValueKeys.INT:
             metrics[key] = value
-        elif value_type == 5:  # Bytes
+        elif value_type == V1AnyValueKeys.BYTES:
             raise NotImplementedError("Bytes values are not supported yet.")
-        elif value_type == 6:  # Array
+        elif value_type == V1AnyValueKeys.ARRAY:
             raise NotImplementedError("Array of strings values are not supported yet.")
-        elif value_type == 7:  # Key Value list
+        elif value_type == V1AnyValueKeys.KEY_VALUE_LIST:
             raise NotImplementedError("Key value list values are not supported yet.")
         else:
             raise TypeError("Unknown attribute value type %r." % value_type)
