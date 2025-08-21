@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add support for the /v1.0/traces endpoint on the trace-agent, for now these payloads are converted automatically to the "v4" format for ease of adoption.
