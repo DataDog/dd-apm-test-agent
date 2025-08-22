@@ -212,17 +212,19 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
     vcr_cassette_prefix = request.pop("vcr_cassette_prefix", None)
     cassette_name = generate_cassette_name(path, request.method, body_bytes, vcr_cassette_prefix)
 
-    if provider == "bedrock-runtime" and not os.path.exists(os.path.join(vcr_cassettes_directory, provider, cassette_name)):
+    if provider == "bedrock-runtime" and not os.path.exists(
+        os.path.join(vcr_cassettes_directory, provider, cassette_name)
+    ):
         # Extract AWS headers needed for signature recalculation
         auth_header = request.headers.get("Authorization", "")
         x_amz_security_token = request.headers.get("x-amz-security-token", "")
         x_amz_date = request.headers.get("x-amz-date", "")
-        
+
         if not auth_header.startswith("AWS4-HMAC-SHA256"):
             return Response(body="Missing AWS4-HMAC-SHA256 authorization header", status=400)
         if not x_amz_security_token or not x_amz_date:
             return Response(body="Missing required AWS headers", status=400)
-        
+
         # Parse authorization components and setup headers for real AWS endpoint
         auth_parts = parse_authorization_header(auth_header)
         aws_access_key = auth_parts.get("Credential", "").split("/")[0]
@@ -230,25 +232,31 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
         parsed_url = urlparse(target_url)
         headers = dict(request.headers)
         headers["Host"] = parsed_url.netloc
-        
+
         # Regenerate AWS signature for the real bedrock endpoint (proxy signature was for localhost)
         secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
         if not secret_key:
             return Response(body="AWS_SECRET_ACCESS_KEY environment variable not set", status=500)
-            
+
         date = x_amz_date[:8]  # Extract date in YYYYMMDD format
         # Create canonical request with proper URL encoding (colons -> %3A for model IDs)
         canonical_request = create_canonical_request(
-            request.method, parsed_url.path, parsed_url.query, headers, 
-            signed_headers, headers.get("x-amz-content-sha256", "")
+            request.method,
+            parsed_url.path,
+            parsed_url.query,
+            headers,
+            signed_headers,
+            headers.get("x-amz-content-sha256", ""),
         )
         # Build string to sign and compute new signature
         string_to_sign = f"AWS4-HMAC-SHA256\n{x_amz_date}\n{date}/{AWS_REGION}/bedrock/aws4_request\n{hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()}"
         signing_key = get_signing_key(secret_key, date, AWS_REGION, "bedrock")
         signature = hmac.new(signing_key, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
-        
+
         # Replace authorization header with new signature for AWS endpoint
-        headers["Authorization"] = f"AWS4-HMAC-SHA256 Credential={aws_access_key}/{date}/{AWS_REGION}/bedrock/aws4_request,SignedHeaders={';'.join(signed_headers)},Signature={signature}"
+        headers["Authorization"] = (
+            f"AWS4-HMAC-SHA256 Credential={aws_access_key}/{date}/{AWS_REGION}/bedrock/aws4_request,SignedHeaders={';'.join(signed_headers)},Signature={signature}"
+        )
 
     with get_vcr(provider, vcr_cassettes_directory).use_cassette(f"{cassette_name}.yaml"):
         provider_response = requests.request(
