@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+from typing import Any
 from typing import Dict
 from typing import Optional
 from urllib.parse import urljoin
@@ -167,15 +168,15 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
     vcr_cassette_prefix = request.pop("vcr_cassette_prefix", None)
     cassette_name = generate_cassette_name(path, request.method, body_bytes, vcr_cassette_prefix)
 
-    request_kwargs = dict(
-        method=request.method,
-        url=target_url,
-        headers=headers,
-        data=body_bytes,
-        cookies=dict(request.cookies),
-        allow_redirects=False,
-        stream=True,
-    )
+    request_kwargs: Dict[str, Any] = {
+        "method": request.method,
+        "url": target_url,
+        "headers": headers,
+        "data": body_bytes,
+        "cookies": dict(request.cookies),
+        "allow_redirects": False,
+        "stream": True,
+    }
 
     if provider in AWS_SERVICES and not os.path.exists(os.path.join(vcr_cassettes_directory, provider, cassette_name)):
         if not AWS_SECRET_ACCESS_KEY:
