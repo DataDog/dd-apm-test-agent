@@ -1,19 +1,36 @@
 import hashlib
 import json
+import logging
 import os
 import re
+from typing import Any
+from typing import Dict
 from typing import Optional
 from urllib.parse import urljoin
 
 from aiohttp.web import Request
 from aiohttp.web import Response
 import requests
+from requests_aws4auth import AWS4Auth
 import vcr
+
+
+logger = logging.getLogger(__name__)
+
+
+#  Used for AWS signature recalculation for aws services initial proxying
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 
 
 def url_path_join(base_url: str, path: str) -> str:
     """Join a base URL with a path, handling slashes automatically."""
     return urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+
+
+AWS_SERVICES = {
+    "bedrock-runtime": "bedrock",
+}
 
 
 PROVIDER_BASE_URLS = {
@@ -23,7 +40,24 @@ PROVIDER_BASE_URLS = {
     "anthropic": "https://api.anthropic.com/",
     "datadog": "https://api.datadoghq.com/",
     "genai": "https://generativelanguage.googleapis.com/",
+    "bedrock-runtime": f"https://bedrock-runtime.{AWS_REGION}.amazonaws.com",
 }
+
+CASSETTE_FILTER_HEADERS = [
+    "authorization",
+    "OpenAI-Organization",
+    "api-key",
+    "x-api-key",
+    "dd-api-key",
+    "dd-application-key",
+    "x-goog-api-key",
+    "x-amz-security-token",
+    "x-amz-content-sha256",
+    "x-amz-date",
+    "x-amz-user-agent",
+    "amz-sdk-invocation-id",
+    "amz-sdk-request",
+]
 
 NORMALIZERS = [
     (
@@ -65,6 +99,21 @@ def normalize_multipart_body(body: bytes) -> str:
             return f"[binary_data_{hex_digest}]"
 
 
+def parse_authorization_header(auth_header: str) -> Dict[str, str]:
+    """Parse AWS Authorization header to extract components"""
+    if not auth_header.startswith("AWS4-HMAC-SHA256 "):
+        return {}
+
+    auth_parts = auth_header[len("AWS4-HMAC-SHA256 ") :].split(",")
+    parsed = {}
+
+    for part in auth_parts:
+        key, value = part.split("=", 1)
+        parsed[key.strip()] = value.strip()
+
+    return parsed
+
+
 def get_vcr(subdirectory: str, vcr_cassettes_directory: str) -> vcr.VCR:
     cassette_dir = os.path.join(vcr_cassettes_directory, subdirectory)
 
@@ -72,15 +121,7 @@ def get_vcr(subdirectory: str, vcr_cassettes_directory: str) -> vcr.VCR:
         cassette_library_dir=cassette_dir,
         record_mode="once",
         match_on=["path", "method"],
-        filter_headers=[
-            "authorization",
-            "OpenAI-Organization",
-            "api-key",
-            "x-api-key",
-            "dd-api-key",
-            "dd-application-key",
-            "x-goog-api-key",
-        ],
+        filter_headers=CASSETTE_FILTER_HEADERS,
     )
 
 
@@ -125,31 +166,47 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
     body_bytes = await request.read()
 
     vcr_cassette_prefix = request.pop("vcr_cassette_prefix", None)
-
     cassette_name = generate_cassette_name(path, request.method, body_bytes, vcr_cassette_prefix)
+
+    request_kwargs: Dict[str, Any] = {
+        "method": request.method,
+        "url": target_url,
+        "headers": headers,
+        "data": body_bytes,
+        "cookies": dict(request.cookies),
+        "allow_redirects": False,
+        "stream": True,
+    }
+
+    if provider in AWS_SERVICES and not os.path.exists(os.path.join(vcr_cassettes_directory, provider, cassette_name)):
+        if not AWS_SECRET_ACCESS_KEY:
+            return Response(
+                body="AWS_SECRET_ACCESS_KEY environment variable not set for aws signature recalculation",
+                status=400,
+            )
+
+        auth_header = request.headers.get("Authorization", "")
+        auth_parts = parse_authorization_header(auth_header)
+        aws_access_key = auth_parts.get("Credential", "").split("/")[0]
+
+        auth = AWS4Auth(aws_access_key, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_SERVICES[provider])
+        request_kwargs["auth"] = auth
+
     with get_vcr(provider, vcr_cassettes_directory).use_cassette(f"{cassette_name}.yaml"):
-        oai_response = requests.request(
-            method=request.method,
-            url=target_url,
-            headers=headers,
-            data=body_bytes,
-            cookies=dict(request.cookies),
-            allow_redirects=False,
-            stream=True,
-        )
+        provider_response = requests.request(**request_kwargs)
 
     # Extract content type without charset
-    content_type = oai_response.headers.get("content-type", "")
+    content_type = provider_response.headers.get("content-type", "")
     if ";" in content_type:
         content_type = content_type.split(";")[0].strip()
 
     response = Response(
-        body=oai_response.content,
-        status=oai_response.status_code,
+        body=provider_response.content,
+        status=provider_response.status_code,
         content_type=content_type,
     )
 
-    for key, value in oai_response.headers.items():
+    for key, value in provider_response.headers.items():
         if key.lower() not in (
             "content-length",
             "transfer-encoding",

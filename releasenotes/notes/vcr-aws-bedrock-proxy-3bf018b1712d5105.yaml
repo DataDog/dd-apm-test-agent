@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    vcr: adds support for proxying aws bedrock runtime. to record cassettes for the first time, the `AWS_SECRET_ACCESS_KEY` environment variable must be set for the container running the test agent, for request signature recalculation. Additionally, `AWS_REGION` can be set, defaulting to `us-east-1`.
