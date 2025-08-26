@@ -4,8 +4,10 @@ import signal
 import subprocess
 import time
 
+import msgpack
 import pytest
 
+from ddapm_test_agent.trace import decode_v1
 from ddapm_test_agent.trace import trace_id
 
 
@@ -473,6 +475,306 @@ async def test_evp_proxy_v2_api_intake_llmobs_v2_eval_metric(agent):
     assert resp.status == 200
     reqs = await resp.json()
     assert len(reqs) == 1
+
+
+async def test_trace_v1(
+    agent,
+    v04_reference_http_trace_payload_headers,
+    v1_reference_http_trace_payload_data,
+):
+    resp = await agent.put(
+        "/v1.0/traces",
+        headers=v04_reference_http_trace_payload_headers,
+        data=v1_reference_http_trace_payload_data,
+    )
+    assert resp.status == 200, await resp.text()
+
+    result_resp = await agent.get("/test/traces", params={"trace_ids": str(8675)})
+
+    assert result_resp.status == 200
+    result = json.loads(await result_resp.text())
+    assert len(result) == 1
+    assert len(result[0]) == 1, result
+    assert result[0][0]["trace_id"] == 8675
+    assert result[0][0]["meta"]["_dd.p.tid"] == "0x55"
+    assert result[0][0]["service"] == "my-service"
+
+
+async def test_trace_v1_basic():
+    data = msgpack.packb(
+        {
+            2: "hello",
+            11: [
+                {
+                    1: 1,
+                    2: "rum",
+                    3: ["some-global", 1, "cool-value"],
+                    4: [
+                        {
+                            1: "my-service",
+                            2: "span-name",
+                            3: 1,
+                            4: 1234,
+                            5: 5555,
+                            6: 987,
+                            7: 150,
+                            8: True,
+                            9: ["foo", 1, "bar", "fooNum", 3, 3.14],
+                            10: "span-type",
+                            13: "some-env",
+                            14: "my-version",
+                            15: "my-component",
+                            16: 1,
+                        }
+                    ],
+                    6: bytes(
+                        [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xE3]
+                    ),
+                    7: 4,
+                }
+            ],
+        }
+    )
+    result = decode_v1(data)
+    assert len(result) == 1
+    assert len(result[0]) == 1
+    result_span = result[0][0]
+    assert result_span["service"] == "my-service"
+    assert result_span["name"] == "span-name"
+    assert result_span["resource"] == "hello"
+    assert result_span["span_id"] == 1234
+    assert result_span["parent_id"] == 5555
+    assert result_span["start"] == 987
+    assert result_span["duration"] == 150
+    assert result_span["error"] == 1
+    assert result_span["meta"] == {
+        "foo": "bar",
+        "env": "some-env",
+        "version": "my-version",
+        "component": "my-component",
+        "span.kind": "internal",
+        "some-global": "cool-value",
+        "_dd.p.tid": "0x55",
+        "_dd.p.dm": "-4",
+        "_dd.origin": "rum",
+    }
+    assert result_span["metrics"] == {"fooNum": 3.14, "_sampling_priority_v1": 1}
+    assert result_span["type"] == "span-type"
+    assert result_span["trace_id"] == 8675
+
+
+async def test_trace_v1_no_sampling_mechanism():
+    data = msgpack.packb(
+        {
+            2: "hello",
+            11: [
+                {
+                    1: 1,
+                    2: "rum",
+                    3: ["some-global", 1, "cool-value"],
+                    4: [
+                        {
+                            1: "my-service",
+                            2: "span-name",
+                            3: 1,
+                            4: 1234,
+                            5: 5555,
+                            6: 987,
+                            7: 150,
+                            8: True,
+                            9: ["foo", 1, "bar", "fooNum", 3, 3.14],
+                            10: "span-type",
+                            13: "some-env",
+                            14: "my-version",
+                            15: "my-component",
+                            16: 1,
+                        }
+                    ],
+                    6: bytes(
+                        [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xE3]
+                    ),
+                }
+            ],
+        }
+    )
+    result = decode_v1(data)
+    assert len(result) == 1
+    assert len(result[0]) == 1
+    result_span = result[0][0]
+    assert result_span["service"] == "my-service"
+    assert result_span["name"] == "span-name"
+    assert result_span["resource"] == "hello"
+    assert result_span["span_id"] == 1234
+    assert result_span["parent_id"] == 5555
+    assert result_span["start"] == 987
+    assert result_span["duration"] == 150
+    assert result_span["error"] == 1
+    assert result_span["meta"] == {
+        "foo": "bar",
+        "env": "some-env",
+        "version": "my-version",
+        "component": "my-component",
+        "span.kind": "internal",
+        "some-global": "cool-value",
+        "_dd.p.tid": "0x55",
+        "_dd.origin": "rum",
+    }
+    assert result_span["metrics"] == {"fooNum": 3.14, "_sampling_priority_v1": 1}
+    assert result_span["type"] == "span-type"
+    assert result_span["trace_id"] == 8675
+
+
+async def test_trace_v1_span_event():
+    data = msgpack.packb(
+        {
+            11: [
+                {
+                    4: [
+                        {
+                            1: "my-service",
+                            2: "span-name",
+                            3: 1,
+                            4: 1234,
+                            5: 5555,
+                            6: 987,
+                            7: 150,
+                            10: "span-type",
+                            13: "some-env",
+                            14: "my-version",
+                            15: "my-component",
+                            16: 1,
+                            12: [
+                                {
+                                    1: 9876,
+                                    2: "event-name",
+                                    3: [
+                                        "event-key",
+                                        1,
+                                        "event-value",
+                                        "event-key2",
+                                        2,
+                                        True,
+                                        "event-key3",
+                                        3,
+                                        3.14,
+                                        "event-key4",
+                                        4,
+                                        123,
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                    6: bytes(
+                        [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xE3]
+                    ),
+                    7: "-4",
+                }
+            ]
+        }
+    )
+    result = decode_v1(data)
+    assert len(result) == 1
+    assert len(result[0]) == 1
+    result_span = result[0][0]
+    assert result_span["service"] == "my-service"
+    assert len(result_span["span_events"]) == 1
+    assert result_span["span_events"][0]["name"] == "event-name"
+    assert result_span["span_events"][0]["attributes"] == {
+        "event-key": {"type": 0, "string_value": "event-value"},
+        "event-key2": {"type": 1, "bool_value": True},
+        "event-key3": {"type": 3, "double_value": 3.14},
+        "event-key4": {"type": 2, "int_value": 123},
+    }
+
+
+async def test_trace_v1_span_links():
+    data = msgpack.packb(
+        {
+            11: [
+                {
+                    4: [
+                        {
+                            1: "my-service",
+                            2: "span-name",
+                            3: 1,
+                            4: 1234,
+                            5: 5555,
+                            6: 987,
+                            7: 150,
+                            10: "span-type",
+                            13: "some-env",
+                            14: "my-version",
+                            15: "my-component",
+                            16: 1,
+                            11: [
+                                {
+                                    1: bytes(
+                                        [
+                                            0x00,
+                                            0x00,
+                                            0x00,
+                                            0x00,
+                                            0x00,
+                                            0x00,
+                                            0x00,
+                                            0x56,
+                                            0x00,
+                                            0x00,
+                                            0x00,
+                                            0x00,
+                                            0x00,
+                                            0x00,
+                                            0x21,
+                                            0xE4,
+                                        ]
+                                    ),
+                                    2: 1234,
+                                    3: [
+                                        "some-key",
+                                        1,
+                                        "potato",
+                                        "some-key2",
+                                        2,
+                                        True,
+                                        "some-key3",
+                                        3,
+                                        3.14,
+                                        "some-key4",
+                                        4,
+                                        123,
+                                    ],
+                                    4: "some-tracestate",
+                                    5: 1,
+                                }
+                            ],
+                        }
+                    ],
+                    6: bytes(
+                        [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xE3]
+                    ),
+                    7: "-4",
+                }
+            ]
+        }
+    )
+    result = decode_v1(data)
+    assert len(result) == 1
+    assert len(result[0]) == 1
+    result_span = result[0][0]
+    assert result_span["service"] == "my-service"
+    assert len(result_span["span_links"]) == 1
+    assert result_span["span_links"][0]["trace_id"] == 8676
+    assert result_span["span_links"][0]["trace_id_high"] == 86
+    assert result_span["span_links"][0]["span_id"] == 1234
+    assert result_span["span_links"][0]["attributes"] == {
+        "some-key": "potato",
+        "some-key2": "true",
+        "some-key3": "3.14",
+        "some-key4": "123",
+    }
+    assert result_span["span_links"][0]["tracestate"] == "some-tracestate"
+    assert result_span["span_links"][0]["flags"] == 1
 
 
 @pytest.fixture
