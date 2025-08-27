@@ -2,10 +2,14 @@ import asyncio
 import datetime
 import json
 import logging
-import os
 from pathlib import Path
 import time
-from typing import Any, List, Dict
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Protocol
+from typing import Tuple
 import urllib.parse
 import weakref
 
@@ -15,9 +19,6 @@ from jinja2 import Environment
 from jinja2 import FileSystemLoader
 
 log = logging.getLogger(__name__)
-
-
-from typing import Protocol, List, Callable, Tuple, Union, Optional
 
 
 class BodyProcessor:
@@ -544,7 +545,7 @@ class WebUI:
             # Test JSON serializability
             json.dumps(cleaned)
             return cleaned
-        except Exception as e:
+        except Exception:
             # Failed to clean trace data
             return []
 
@@ -588,7 +589,6 @@ class WebUI:
         template = self.jinja_env.get_template("dashboard.html")
 
         # Get server configuration information
-        app_config = request.app
 
         # Get server configuration (not runtime status)
         enabled_servers = {
@@ -703,7 +703,9 @@ class WebUI:
             title="Configuration",
             session_tokens=all_tokens,
             selected_token=selected_token,
-            current_config_json=json.dumps(current_config, indent=2) if current_config else "{}",
+            current_config_json=json.dumps(current_config, indent=2)
+            if current_config
+            else "{}",
             config_data=json.dumps(all_configs, indent=2) if all_configs else "{}",
         )
         return web.Response(text=content, content_type="text/html")
@@ -1259,7 +1261,7 @@ class WebUI:
                         "span_count": span_count,
                         "trace_data_b64": trace_data_b64,
                     }
-            except Exception as e:
+            except Exception:
                 # Failed to process streaming trace data
                 trace_data = None
 
