@@ -27,7 +27,7 @@ setup(
     long_description_content_type="text/markdown",
     license="BSD 3",
     packages=find_packages(exclude=["tests*", "releasenotes", "scripts"]),
-    package_data={"ddapm_test_agent": ["py.typed"]},
+    package_data={"ddapm_test_agent": ["py.typed", "templates/*", "static/*"]},
     python_requires=">=3.8",
     install_requires=[
         "aiohttp",
@@ -37,6 +37,7 @@ setup(
         "typing_extensions",
         "yarl",
         "vcrpy",
+        "jinja2>=3.0.0",
         # ddtrace libraries officially support opentelemetry-proto 1.33.1
         # which implements the v1.7.0 spec
         "opentelemetry-proto>1.33.0,<1.37.0",

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_layout, empty_state, action_button %}
+
+{% block content %}
+{% call page_layout("Traces") %}
+    {% if traces %}
+        <div class="traces-list">
+            {% for trace_id, spans in traces.items() %}
+            <div class="trace-item">
+                <div class="trace-header">
+                    <h3>Trace {{ trace_id }}</h3>
+                    <span class="span-count">{{ spans|length }} spans</span>
+                </div>
+                <div class="trace-actions">
+                    {{ action_button("/traces/" + trace_id, "View Details") }}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        {{ empty_state("No traces available") }}
+    {% endif %}
+{% endcall %}
+{% endblock %}

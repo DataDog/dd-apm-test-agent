@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="trace-detail-page">
+    <div class="page-header">
+        <h2>Trace {{ trace_id }}</h2>
+    </div>
+
+    {% if error %}
+        <div class="error-message">
+            <p>{{ error }}</p>
+        </div>
+    {% elif trace %}
+        <div class="trace-details">
+            <div class="spans-list">
+                {% for span in trace %}
+                <div class="span-item">
+                    <div class="span-header">
+                        <h4>{{ span.get('name', 'Unknown') }}</h4>
+                        <span class="span-id">ID: {{ span.get('span_id') }}</span>
+                    </div>
+                    <div class="span-details">
+                        <p><strong>Service:</strong> {{ span.get('service', 'N/A') }}</p>
+                        <p><strong>Resource:</strong> {{ span.get('resource', 'N/A') }}</p>
+                        <p><strong>Duration:</strong> {{ span.get('duration', 'N/A') }}</p>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    {% else %}
+        <div class="empty-state">
+            <p>No trace data available</p>
+        </div>
+    {% endif %}
+</div>
+{% endblock %}

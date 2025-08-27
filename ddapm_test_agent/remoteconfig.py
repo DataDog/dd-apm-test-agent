@@ -26,7 +26,7 @@ class RemoteConfigServer:
         self._update_response(token, data)
 
     @staticmethod
-    def _build_config_path_response(path: str, msg: str) -> Dict[str, Any]:
+    def _build_config_path_response(path: str, msg: Any) -> Dict[str, Any]:
         expires_date = datetime.datetime.strftime(
             datetime.datetime.now() + datetime.timedelta(days=1), "%Y-%m-%dT%H:%M:%SZ"
         )
@@ -84,7 +84,7 @@ class RemoteConfigServer:
         }
         return remote_config_payload
 
-    def create_config_path_response(self, token: Optional[str], path: str, msg: str) -> None:
+    def create_config_path_response(self, token: Optional[str], path: str, msg: Any) -> None:
         remote_config_payload = self._build_config_path_response(path, msg)
         self.create_config_response(token, remote_config_payload)
 

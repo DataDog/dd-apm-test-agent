@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_layout, empty_state, action_button %}
+
+{% block content %}
+{% call page_layout("Sessions") %}
+    {% if sessions %}
+        <div class="sessions-list">
+            {% for session in sessions %}
+            <div class="session-item">
+                <div class="session-header">
+                    <h3>{{ session }}</h3>
+                </div>
+                <div class="session-actions">
+                    {{ action_button("/sessions/" + session, "View Details") }}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        {{ empty_state("No active sessions") }}
+    {% endif %}
+{% endcall %}
+{% endblock %}

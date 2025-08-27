@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Test Agent - {{ title }}{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="nav-brand">
+                <h1>Test Agent</h1>
+            </div>
+            <ul class="nav-links">
+                <li><a href="/" class="nav-link">Dashboard</a></li>
+                <li><a href="/requests" class="nav-link">Requests</a></li>
+                <li><a href="/config" class="nav-link">Remote Config</a></li>
+                <li><a href="/tracerflares" class="nav-link">Tracer Flares</a></li>
+                <li><a href="/snapshots" class="nav-link">Snapshots</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <main class="main-content">
+        {% block content %}
+        {% endblock %}
+    </main>
+
+</body>
+</html>

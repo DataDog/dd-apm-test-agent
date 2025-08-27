@@ -1,0 +1,410 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="snapshot-detail-page">
+    <div class="page-header">
+        <h2>{{ filename }}</h2>
+        <div class="breadcrumb">
+            <a href="/snapshots" class="breadcrumb-link">Snapshots</a>
+            <span class="breadcrumb-separator">/</span>
+            <span class="breadcrumb-current">{{ filename }}</span>
+        </div>
+    </div>
+
+    {% if error %}
+        <div class="error-message">
+            <p>{{ error }}</p>
+        </div>
+    {% else %}
+        <div class="snapshot-meta">
+            <div class="meta-card">
+                <h3>File Information</h3>
+                <div class="meta-details">
+                    <div class="meta-item">
+                        <span class="meta-label">Filename:</span>
+                        <span class="meta-value">{{ file_info.filename }}</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Size:</span>
+                        <span class="meta-value">{{ "%.1f" | format(file_info.size / 1024) }} KB</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Modified:</span>
+                        <span class="meta-value">{{ file_info.modified | timestamp_format }}</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">JSON Valid:</span>
+                        <span class="meta-value {{ 'valid' if is_valid_json else 'invalid' }}">
+                            {{ 'Yes' if is_valid_json else 'No' }}
+                        </span>
+                    </div>
+                    {% if is_valid_json %}
+                    <div class="meta-item">
+                        <span class="meta-label">Traces:</span>
+                        <span class="meta-value">{{ trace_count }}</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Spans:</span>
+                        <span class="meta-value">{{ span_count }}</span>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        {% if parse_error %}
+            <div class="error-message">
+                <p><strong>JSON Parse Error:</strong> {{ parse_error }}</p>
+            </div>
+        {% endif %}
+
+        <div class="snapshot-content">
+            <div class="content-header">
+                <h3>Content</h3>
+                <div class="content-actions">
+                    {% if is_valid_json and trace_count > 0 %}
+                    <button id="view-toggle" class="action-button" onclick="toggleView()">JSON View</button>
+                    {% endif %}
+                    <button class="action-button" onclick="copyToClipboard()">Copy</button>
+                    <button class="action-button" onclick="toggleWrap()">Toggle Wrap</button>
+                </div>
+            </div>
+
+            {% if is_valid_json and trace_count > 0 %}
+            <div id="waterfall-view" class="waterfall-container">
+                <!-- Waterfall visualization will be generated here -->
+            </div>
+
+            <div id="json-view" class="code-container" style="display: none;">
+                <pre id="code-content" class="code-block"><code>{{ raw_content }}</code></pre>
+            </div>
+            {% else %}
+            <div id="json-view" class="code-container">
+                <pre id="code-content" class="code-block"><code>{{ raw_content }}</code></pre>
+            </div>
+            {% endif %}
+        </div>
+    {% endif %}
+</div>
+
+<script>
+{% if is_valid_json and trace_count > 0 %}
+const traceData = {{ trace_data | safe }};
+let currentView = 'waterfall';
+
+// Service color mapping
+const serviceColorMap = new Map();
+let nextColorIndex = 0;
+
+function getServiceColor(serviceName) {
+    if (!serviceColorMap.has(serviceName)) {
+        serviceColorMap.set(serviceName, nextColorIndex % 8);
+        nextColorIndex++;
+    }
+    return serviceColorMap.get(serviceName);
+}
+
+// Generate waterfall view on page load
+document.addEventListener('DOMContentLoaded', function() {
+    generateWaterfallView();
+});
+
+function toggleView() {
+    const toggleButton = document.getElementById('view-toggle');
+    const waterfallView = document.getElementById('waterfall-view');
+    const jsonView = document.getElementById('json-view');
+
+    if (currentView === 'waterfall') {
+        // Switch to JSON view
+        waterfallView.style.display = 'none';
+        jsonView.style.display = 'block';
+        toggleButton.textContent = 'Waterfall View';
+        currentView = 'json';
+    } else {
+        // Switch to waterfall view
+        if (!waterfallView.hasChildNodes()) {
+            generateWaterfallView();
+        }
+        waterfallView.style.display = 'block';
+        jsonView.style.display = 'none';
+        toggleButton.textContent = 'JSON View';
+        currentView = 'waterfall';
+    }
+}
+
+function generateWaterfallView() {
+    const container = document.getElementById('waterfall-view');
+
+    console.log('Generating waterfall view, traceData:', traceData);
+
+    if (!traceData) {
+        container.innerHTML = '<p class="empty-state">No trace data provided</p>';
+        return;
+    }
+
+    // Handle both single trace (object) and multiple traces (array) formats
+    let tracesToProcess = [];
+    if (Array.isArray(traceData)) {
+        if (traceData.length === 0) {
+            container.innerHTML = '<p class="empty-state">No trace data available for waterfall view</p>';
+            return;
+        }
+        tracesToProcess = traceData;
+    } else if (typeof traceData === 'object') {
+        // Single trace or single span
+        tracesToProcess = [traceData];
+    } else {
+        container.innerHTML = '<p class="empty-state">Invalid trace data format</p>';
+        return;
+    }
+
+    let html = '<div class="waterfall-traces">';
+    let hasValidTraces = false;
+
+    tracesToProcess.forEach((trace, traceIndex) => {
+        console.log('Processing trace:', trace);
+
+        let spans = [];
+
+        // Handle different trace formats
+        if (Array.isArray(trace)) {
+            if (trace.length === 0) return;
+            spans = trace;
+        } else if (typeof trace === 'object' && trace.span_id) {
+            // Single span
+            spans = [trace];
+        } else {
+            console.log('Skipping trace with unsupported format:', trace);
+            return;
+        }
+
+        hasValidTraces = true;
+
+        // Find the earliest start time and calculate total duration for this trace
+        const validSpans = spans.filter(span => span && typeof span === 'object');
+        if (validSpans.length === 0) return;
+
+        let minStart = Math.min(...validSpans.map(span => span.start || 0));
+        let maxEnd = Math.max(...validSpans.map(span => (span.start || 0) + (span.duration || 0)));
+        let totalDuration = maxEnd - minStart;
+
+        // Handle case where all spans have 0 duration
+        if (totalDuration === 0) {
+            totalDuration = Math.max(...validSpans.map(span => span.duration || 0));
+        }
+
+        const traceId = validSpans[0].trace_id !== undefined ? validSpans[0].trace_id : traceIndex;
+
+        html += `<div class="waterfall-trace">
+            <div class="trace-header" onclick="toggleTrace(${traceIndex})">
+                <div class="trace-header-left">
+                    <span class="trace-toggle" id="trace-toggle-${traceIndex}">▼</span>
+                    <h4>Trace ${traceId}</h4>
+                </div>
+                <span class="trace-duration">${formatDuration(totalDuration)}</span>
+            </div>
+            <div class="spans-timeline" id="trace-spans-${traceIndex}">`;
+
+        // Sort spans by start time and build hierarchy
+        const sortedSpans = [...validSpans].sort((a, b) => (a.start || 0) - (b.start || 0));
+        const spanHierarchy = buildSpanHierarchy(sortedSpans);
+
+        spanHierarchy.forEach(spanInfo => {
+            html += renderSpan(spanInfo, minStart, totalDuration, 0);
+        });
+
+        html += '</div></div>';
+    });
+
+    html += '</div>';
+
+    if (!hasValidTraces) {
+        container.innerHTML = '<p class="empty-state">No valid trace data found for waterfall view</p>';
+    } else {
+        container.innerHTML = html;
+    }
+}
+
+function buildSpanHierarchy(spans) {
+    const spanMap = new Map();
+    const rootSpans = [];
+
+    // Create span objects with children arrays
+    spans.forEach(span => {
+        spanMap.set(span.span_id, { ...span, children: [] });
+    });
+
+    // Build parent-child relationships
+    spans.forEach(span => {
+        if (span.parent_id && span.parent_id !== 0 && spanMap.has(span.parent_id)) {
+            spanMap.get(span.parent_id).children.push(spanMap.get(span.span_id));
+        } else {
+            rootSpans.push(spanMap.get(span.span_id));
+        }
+    });
+
+    return rootSpans;
+}
+
+function renderSpan(span, traceStart, totalDuration, depth) {
+    const start = span.start || 0;
+    const duration = span.duration || 0;
+    const relativeStart = start - traceStart;
+    const startPercent = totalDuration > 0 ? (relativeStart / totalDuration) * 100 : 0;
+    const widthPercent = totalDuration > 0 ? (duration / totalDuration) * 100 : 0;
+
+    const service = span.service || 'unknown';
+    const resource = span.resource || span.name || 'unknown';
+    const spanClass = span.error ? 'span-error' : 'span-normal';
+    const serviceColorClass = `service-color-${getServiceColor(service)}`;
+    const indentStyle = `margin-left: ${depth * 20}px;`;
+
+    const spanId = `span-${span.trace_id || 0}-${span.span_id || Math.random()}`;
+
+    let html = `
+        <div class="waterfall-span ${spanClass}" style="${indentStyle}">
+            <div class="span-row">
+                <div class="span-info" onclick="toggleSpan('${spanId}')">
+                    <div class="span-label">
+                        <span class="span-toggle" id="toggle-${spanId}">▶</span>
+                        <div class="span-names">
+                            <span class="service-name">${service}</span>
+                            <span class="operation-name">${resource}</span>
+                        </div>
+                    </div>
+                    <div class="span-timing">
+                        <span class="span-duration">${formatDuration(duration)}</span>
+                    </div>
+                </div>
+                <div class="span-bar-container">
+                    <div class="span-bar ${spanClass} ${serviceColorClass}"
+                         style="left: ${startPercent}%; width: ${Math.max(widthPercent, 0.1)}%;"
+                         title="${service}.${span.resource || span.name} - ${formatDuration(duration)}">
+                    </div>
+                </div>
+            </div>
+            <div class="span-details" id="details-${spanId}" style="display: none;">
+                ${renderSpanMetadata(span)}
+            </div>
+        </div>`;
+
+    // Render children recursively
+    span.children.forEach(child => {
+        html += renderSpan(child, traceStart, totalDuration, depth + 1);
+    });
+
+    return html;
+}
+
+function formatDuration(nanoseconds) {
+    if (nanoseconds < 1000) return `${nanoseconds}ns`;
+    if (nanoseconds < 1000000) return `${(nanoseconds / 1000).toFixed(1)}μs`;
+    if (nanoseconds < 1000000000) return `${(nanoseconds / 1000000).toFixed(1)}ms`;
+    return `${(nanoseconds / 1000000000).toFixed(2)}s`;
+}
+
+function toggleTrace(traceIndex) {
+    const toggle = document.getElementById(`trace-toggle-${traceIndex}`);
+    const spans = document.getElementById(`trace-spans-${traceIndex}`);
+
+    if (spans.style.display === 'none') {
+        spans.style.display = 'block';
+        toggle.textContent = '▼';
+    } else {
+        spans.style.display = 'none';
+        toggle.textContent = '▶';
+    }
+}
+
+function toggleSpan(spanId) {
+    const toggle = document.getElementById(`toggle-${spanId}`);
+    const details = document.getElementById(`details-${spanId}`);
+
+    if (details.style.display === 'none') {
+        details.style.display = 'block';
+        toggle.textContent = '▼';
+    } else {
+        details.style.display = 'none';
+        toggle.textContent = '▶';
+    }
+}
+
+function renderSpanMetadata(span) {
+    const fields = [
+        { label: 'Span ID', value: span.span_id },
+        { label: 'Trace ID', value: span.trace_id },
+        { label: 'Parent ID', value: span.parent_id || 'None' },
+        { label: 'Service', value: span.service || 'Not set' },
+        { label: 'Name', value: span.name },
+        { label: 'Resource', value: span.resource },
+        { label: 'Type', value: span.type || 'Not set' },
+        { label: 'Start', value: span.start ? new Date(span.start / 1000000).toISOString() : 'Not set' },
+        { label: 'Duration', value: span.duration ? formatDuration(span.duration) : 'Not set' },
+        { label: 'Error', value: span.error ? 'Yes' : 'No' }
+    ];
+
+    let html = '<div class="span-metadata">';
+    html += '<h5>Span Details</h5>';
+    html += '<div class="metadata-grid">';
+
+    fields.forEach(field => {
+        if (field.value !== undefined && field.value !== null && field.value !== '') {
+            html += `
+                <div class="metadata-item">
+                    <span class="metadata-label">${field.label}:</span>
+                    <span class="metadata-value">${field.value}</span>
+                </div>`;
+        }
+    });
+
+    // Add meta tags if present
+    if (span.meta && Object.keys(span.meta).length > 0) {
+        html += '<div class="metadata-section"><h6>Meta</h6>';
+        for (const [key, value] of Object.entries(span.meta)) {
+            html += `
+                <div class="metadata-item">
+                    <span class="metadata-label">${key}:</span>
+                    <span class="metadata-value">${value}</span>
+                </div>`;
+        }
+        html += '</div>';
+    }
+
+    // Add metrics if present
+    if (span.metrics && Object.keys(span.metrics).length > 0) {
+        html += '<div class="metadata-section"><h6>Metrics</h6>';
+        for (const [key, value] of Object.entries(span.metrics)) {
+            html += `
+                <div class="metadata-item">
+                    <span class="metadata-label">${key}:</span>
+                    <span class="metadata-value">${value}</span>
+                </div>`;
+        }
+        html += '</div>';
+    }
+
+    html += '</div></div>';
+    return html;
+}
+{% endif %}
+
+function copyToClipboard() {
+    const content = document.getElementById('code-content').textContent;
+    navigator.clipboard.writeText(content).then(function() {
+        alert('Content copied to clipboard!');
+    }).catch(function(err) {
+        console.error('Failed to copy content: ', err);
+        alert('Failed to copy content');
+    });
+}
+
+function toggleWrap() {
+    const codeBlock = document.getElementById('code-content');
+    if (codeBlock.style.whiteSpace === 'pre-wrap') {
+        codeBlock.style.whiteSpace = 'pre';
+    } else {
+        codeBlock.style.whiteSpace = 'pre-wrap';
+    }
+}
+</script>
+{% endblock %}

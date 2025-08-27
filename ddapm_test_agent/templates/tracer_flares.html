@@ -1,0 +1,640 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="tracer-flares-page">
+    <div class="page-header">
+        <h2>Tracer Flares</h2>
+        <p>View tracer flares sent to the test agent</p>
+    </div>
+
+    <!-- Flare Generator Controls -->
+    <div class="flare-generator">
+        {% if active_flare %}
+        <div class="active-flare-status">
+            <div class="status-header">
+                <h3>🟢 Flare Collection Active</h3>
+                <div class="flare-details">
+                    <span>Case ID: {{ active_flare.case_id }}</span>
+                    <span>UUID: {{ active_flare.uuid[:8] }}...</span>
+                    <span id="duration">Duration: <span id="duration-text">0s</span></span>
+                </div>
+            </div>
+            <div class="flare-actions">
+                <button onclick="stopFlare()" class="btn btn-danger">Stop & Upload Flare</button>
+            </div>
+        </div>
+        {% else %}
+        <div class="flare-generator-controls">
+            <h3>Tracer Flare Generator</h3>
+            <p>Start collecting debug logs and generate a tracer flare when ready.</p>
+            <div class="generator-actions">
+                <button onclick="startFlare()" class="btn btn-primary">Start Flare Collection</button>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="stats-summary">
+        <div class="stat-card">
+            <h3>Total Flares</h3>
+            <div class="stat-number">{{ total_flares }}</div>
+        </div>
+        {% if active_flare %}
+        <div class="stat-card active">
+            <h3>Collection Status</h3>
+            <div class="stat-status">ACTIVE</div>
+        </div>
+        {% endif %}
+        <div class="stat-card">
+            <h3>Auto-Refresh</h3>
+            <div class="auto-refresh-controls">
+                <div class="stat-status" id="refresh-status">ON</div>
+                <button onclick="toggleAutoRefresh()" class="btn btn-small" id="refresh-toggle-btn">Pause</button>
+            </div>
+        </div>
+    </div>
+
+    {% if tracer_flares %}
+    <div class="flares-container">
+        {% for flare in tracer_flares %}
+        <div class="flare-card">
+            <div class="flare-header">
+                <h4>Flare {{ loop.index }}</h4>
+                <div class="flare-meta">
+                    <span class="case-id">Case ID: {{ flare.case_id or 'N/A' }}</span>
+                    <span class="source">Source: {{ flare.source or 'N/A' }}</span>
+                </div>
+            </div>
+
+            <div class="flare-details">
+                <div class="detail-row">
+                    <strong>Email:</strong> {{ flare.email or 'N/A' }}
+                </div>
+                <div class="detail-row">
+                    <strong>Hostname:</strong> {{ flare.hostname or 'N/A' }}
+                </div>
+                <div class="detail-row">
+                    <strong>UUID:</strong> {{ flare.uuid or 'N/A' }}
+                </div>
+                <div class="detail-row">
+                    <strong>Session Token:</strong> {{ flare.session_token or 'default' }}
+                </div>
+                {% if flare.flare_file %}
+                <div class="detail-row">
+                    <strong>Flare File:</strong>
+                    <span class="file-info">{{ (flare.flare_file|length / 1024)|round(2) }} KB (base64 encoded)</span>
+                    <button class="btn btn-primary" onclick="downloadTracerFlare('{{ loop.index0 }}', '{{ flare.case_id or 'unknown' }}')">Download ZIP</button>
+                </div>
+                {% endif %}
+            </div>
+
+            {% if flare.error %}
+            <div class="flare-error">
+                <strong>Error:</strong> {{ flare.error }}
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <h3>No Tracer Flares</h3>
+        <p>No tracer flares have been received yet.</p>
+        <div class="help-text">
+            <h4>To generate a tracer flare:</h4>
+            <ol>
+                <li>Set up Remote Config with AGENT_TASK configuration</li>
+                <li>The tracer will send the flare to <code>/tracer_flare/v1</code></li>
+                <li>Flares will appear here once received</li>
+            </ol>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<style>
+.tracer-flares-page {
+    padding: 20px;
+}
+
+.stats-summary {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 30px;
+}
+
+.stat-card {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 20px;
+    text-align: center;
+    min-width: 150px;
+}
+
+.stat-card h3 {
+    margin: 0 0 10px 0;
+    color: #495057;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.stat-number {
+    font-size: 32px;
+    font-weight: bold;
+    color: #007bff;
+}
+
+.flares-container {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.flare-card {
+    background: #ffffff;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.flare-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #dee2e6;
+}
+
+.flare-header h4 {
+    margin: 0;
+    color: #495057;
+}
+
+.flare-meta {
+    display: flex;
+    gap: 15px;
+    font-size: 12px;
+    color: #6c757d;
+}
+
+.case-id, .source {
+    background: #e9ecef;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+.flare-details {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.detail-row {
+    padding: 8px 0;
+    border-bottom: 1px solid #f8f9fa;
+}
+
+.detail-row strong {
+    color: #495057;
+    margin-right: 8px;
+}
+
+.file-info {
+    color: #28a745;
+    font-family: monospace;
+}
+
+.flare-error {
+    background: #f8d7da;
+    border: 1px solid #f5c6cb;
+    border-radius: 4px;
+    padding: 10px;
+    color: #721c24;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+}
+
+.empty-state h3 {
+    margin: 0 0 10px 0;
+    color: #6c757d;
+}
+
+.empty-state p {
+    color: #6c757d;
+    margin-bottom: 30px;
+}
+
+.help-text {
+    text-align: left;
+    max-width: 500px;
+    margin: 0 auto;
+    background: #ffffff;
+    padding: 20px;
+    border-radius: 4px;
+    border: 1px solid #dee2e6;
+}
+
+.help-text h4 {
+    margin-top: 0;
+    color: #495057;
+}
+
+.help-text ol {
+    margin: 0;
+    padding-left: 20px;
+}
+
+.help-text li {
+    margin-bottom: 8px;
+    color: #495057;
+}
+
+.help-text code {
+    background: #f8f9fa;
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-family: monospace;
+    color: #e83e8c;
+}
+
+/* Flare Generator Styles */
+.flare-generator {
+    margin-bottom: 30px;
+}
+
+.flare-generator-controls {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 25px;
+    text-align: center;
+}
+
+.flare-generator-controls h3 {
+    margin: 0 0 10px 0;
+    color: #495057;
+}
+
+.flare-generator-controls p {
+    color: #6c757d;
+    margin: 0 0 20px 0;
+}
+
+.generator-actions .btn {
+    padding: 12px 24px;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.active-flare-status {
+    background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+    border: 2px solid #28a745;
+    border-radius: 8px;
+    padding: 20px;
+}
+
+.status-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.status-header h3 {
+    margin: 0;
+    color: #155724;
+    font-size: 18px;
+}
+
+.flare-details {
+    display: flex;
+    gap: 15px;
+    font-size: 13px;
+    color: #155724;
+}
+
+.flare-details span {
+    background: rgba(21, 87, 36, 0.1);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-family: monospace;
+}
+
+.flare-actions {
+    text-align: center;
+}
+
+.flare-actions .btn {
+    padding: 10px 20px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.btn {
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+    transition: all 0.2s ease;
+}
+
+.btn-primary {
+    background: #007bff;
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #0056b3;
+    transform: translateY(-1px);
+}
+
+.btn-danger {
+    background: #dc3545;
+    color: white;
+}
+
+.btn-danger:hover {
+    background: #c82333;
+    transform: translateY(-1px);
+}
+
+.stat-card.active {
+    background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+    border: 1px solid #28a745;
+}
+
+.stat-status {
+    font-size: 20px;
+    font-weight: bold;
+    color: #28a745;
+}
+
+.auto-refresh-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+
+.auto-refresh-controls .stat-status {
+    font-size: 16px;
+    margin-bottom: 0;
+}
+
+.btn-small {
+    padding: 4px 8px;
+    font-size: 12px;
+    border-radius: 4px;
+}
+
+.status-messages {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 1000;
+}
+
+.status-message {
+    padding: 12px 20px;
+    margin-bottom: 10px;
+    border-radius: 6px;
+    max-width: 350px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+}
+
+.status-success {
+    background: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+.status-error {
+    background: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+</style>
+
+<script>
+let durationTimer = null;
+let startTime = null;
+
+// Status message functions
+function showStatus(message, isError = false) {
+    const statusContainer = document.getElementById('status-messages') || createStatusContainer();
+    const statusDiv = document.createElement('div');
+    statusDiv.className = `status-message ${isError ? 'status-error' : 'status-success'}`;
+    statusDiv.textContent = message;
+
+    statusContainer.appendChild(statusDiv);
+
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+        if (statusContainer.contains(statusDiv)) {
+            statusContainer.removeChild(statusDiv);
+        }
+    }, 5000);
+}
+
+function createStatusContainer() {
+    const container = document.createElement('div');
+    container.id = 'status-messages';
+    container.className = 'status-messages';
+    document.body.appendChild(container);
+    return container;
+}
+
+async function startFlare() {
+    try {
+        const token = getCurrentSessionToken();
+        const response = await fetch('/tracerflares/start', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: `token=${encodeURIComponent(token || '')}`
+        });
+
+        const result = await response.json();
+        if (response.ok) {
+            showStatus(result.message);
+            // Refresh page to show active flare status
+            setTimeout(() => {
+                window.location.reload();
+            }, 1000);
+        } else {
+            showStatus(result.error || 'Error starting flare collection', true);
+        }
+    } catch (error) {
+        showStatus('Network error: ' + error.message, true);
+    }
+}
+
+async function stopFlare() {
+    if (!confirm('Are you sure you want to stop the flare collection and upload the flare?')) {
+        return;
+    }
+
+    try {
+        const token = getCurrentSessionToken();
+        const response = await fetch('/tracerflares/stop', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: `token=${encodeURIComponent(token || '')}`
+        });
+
+        const result = await response.json();
+        if (response.ok) {
+            showStatus(result.message);
+            // Refresh page to hide active flare status and potentially show new flare
+            // Give more time for the flare to be processed and stored
+            setTimeout(() => {
+                window.location.reload();
+            }, 3000);
+        } else {
+            showStatus(result.error || 'Error stopping flare collection', true);
+        }
+    } catch (error) {
+        showStatus('Network error: ' + error.message, true);
+    }
+}
+
+function getCurrentSessionToken() {
+    const urlParams = new URLSearchParams(window.location.search);
+    return urlParams.get('token');
+}
+
+function updateDuration() {
+    if (startTime) {
+        const now = Date.now();
+        const elapsed = Math.floor((now - startTime) / 1000);
+        const minutes = Math.floor(elapsed / 60);
+        const seconds = elapsed % 60;
+
+        const durationText = minutes > 0
+            ? `${minutes}m ${seconds}s`
+            : `${seconds}s`;
+
+        const durationElement = document.getElementById('duration-text');
+        if (durationElement) {
+            durationElement.textContent = durationText;
+        }
+    }
+}
+
+// Auto-refresh functionality
+let autoRefreshInterval = null;
+
+function startAutoRefresh() {
+    // Refresh the page every 10 seconds to show new flares
+    autoRefreshInterval = setInterval(() => {
+        console.log('Auto-refreshing tracer flares page...');
+        window.location.reload();
+    }, 10000); // 10 seconds
+}
+
+function stopAutoRefresh() {
+    if (autoRefreshInterval) {
+        clearInterval(autoRefreshInterval);
+        autoRefreshInterval = null;
+    }
+}
+
+function toggleAutoRefresh() {
+    if (autoRefreshInterval) {
+        stopAutoRefresh();
+        document.getElementById('refresh-status').textContent = 'OFF';
+        document.getElementById('refresh-toggle-btn').textContent = 'Resume';
+        console.log('Auto-refresh paused');
+    } else {
+        startAutoRefresh();
+        document.getElementById('refresh-status').textContent = 'ON';
+        document.getElementById('refresh-toggle-btn').textContent = 'Pause';
+        console.log('Auto-refresh resumed');
+    }
+}
+
+// Initialize duration timer if there's an active flare
+document.addEventListener('DOMContentLoaded', function() {
+    const durationElement = document.getElementById('duration-text');
+    if (durationElement) {
+        // Calculate start time from server data (assuming active_flare.start_time is available)
+        {% if active_flare %}
+        startTime = {{ active_flare.start_time * 1000 }};
+        updateDuration();
+        durationTimer = setInterval(updateDuration, 1000);
+        {% endif %}
+    }
+
+    // Start auto-refresh when page loads
+    startAutoRefresh();
+
+    // Stop auto-refresh when user is about to leave page
+    window.addEventListener('beforeunload', stopAutoRefresh);
+});
+
+function downloadTracerFlare(flareIndex, caseId) {
+    // Find the flare data from the page DOM
+    const flareCards = document.querySelectorAll('.flare-card');
+    if (flareIndex >= flareCards.length) {
+        showStatus('Flare not found', true);
+        return;
+    }
+
+    const flareCard = flareCards[flareIndex];
+    const fileInfoSpan = flareCard.querySelector('.file-info');
+    if (!fileInfoSpan) {
+        showStatus('No flare file found', true);
+        return;
+    }
+
+    // Get the flare data - we need to make a request to get the full base64 data
+    // since only a preview is shown in the template
+    console.log(`DEBUG: Downloading flare with case_id='${caseId}'`);
+
+    fetch(`/tracerflares/download?case_id=${encodeURIComponent(caseId)}`, {
+        method: 'GET'
+    })
+    .then(response => {
+        if (!response.ok) {
+            return response.json().then(errorData => {
+                throw new Error(`HTTP ${response.status}: ${errorData.error || response.statusText}`);
+            }).catch(() => {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            });
+        }
+        return response.blob();
+    })
+    .then(blob => {
+        // Create download link
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `tracer_flare_${caseId}_${Date.now()}.zip`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        showStatus('Flare downloaded successfully');
+    })
+    .catch(error => {
+        console.error('Download error:', error);
+        showStatus('Error downloading flare: ' + error.message, true);
+    });
+}
+
+</script>
+{% endblock %}

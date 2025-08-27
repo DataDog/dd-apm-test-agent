@@ -268,6 +268,7 @@ class Agent:
             "/v1.0/traces",
             "/v0.6/stats",
             "/v0.7/config",
+            "/info",
             "/telemetry/proxy/api/v2/apmtelemetry",
             "/v0.1/pipeline_stats",
             "/tracer_flare/v1",
@@ -1357,18 +1358,27 @@ def make_app(
     snapshot_removed_attrs: List[str],
     snapshot_regex_placeholders: Dict[str, str],
     vcr_cassettes_directory: str,
+    enable_web_ui: bool = False,
 ) -> web.Application:
     agent = Agent()
+
+    # Build middleware list conditionally
+    middlewares = []
+    if enable_web_ui:
+        from .web import request_response_capture_middleware
+        middlewares.append(request_response_capture_middleware)  # type: ignore
+    middlewares.extend([
+        handle_exception_middleware,  # type: ignore
+        agent.check_failure_middleware,  # type: ignore
+        agent.store_request_middleware,  # type: ignore
+        agent.request_forwarder_middleware,  # type: ignore
+        session_token_middleware,  # type: ignore
+        agent.vcr_proxy_suffix_middleware,  # type: ignore
+    ])
+
     app = web.Application(
         client_max_size=int(100e6),  # 100MB - arbitrary
-        middlewares=[
-            handle_exception_middleware,  # type: ignore
-            agent.check_failure_middleware,  # type: ignore
-            agent.store_request_middleware,  # type: ignore
-            agent.request_forwarder_middleware,  # type: ignore
-            session_token_middleware,  # type: ignore
-            agent.vcr_proxy_suffix_middleware,  # type: ignore
-        ],
+        middlewares=middlewares,
     )
     app.add_routes(
         [
@@ -1583,6 +1593,18 @@ def main(args: Optional[List[str]] = None) -> None:
         default=os.environ.get("VCR_CASSETTES_DIRECTORY", os.path.join(os.getcwd(), "vcr-cassettes")),
         help="Directory to read and store third party API cassettes.",
     )
+    parser.add_argument(
+        "--web-ui-port",
+        type=int,
+        default=int(os.environ.get("WEB_UI_PORT", 0)),
+        help="Port to serve the optional web UI (default: disabled). Example: --web-ui-port=8080",
+    )
+    parser.add_argument(
+        "--max-requests",
+        type=int,
+        default=int(os.environ.get("MAX_REQUESTS", 1000)),
+        help="Maximum number of requests to keep in memory (default: 1000). Older requests are discarded when limit is reached.",
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -1626,6 +1648,7 @@ def main(args: Optional[List[str]] = None) -> None:
         snapshot_removed_attrs=parsed_args.snapshot_removed_attrs,
         snapshot_regex_placeholders=parsed_args.snapshot_regex_placeholders,
         vcr_cassettes_directory=parsed_args.vcr_cassettes_directory,
+        enable_web_ui=parsed_args.web_ui_port > 0,
     )
 
     # Validate port configuration
@@ -1635,19 +1658,51 @@ def main(args: Optional[List[str]] = None) -> None:
         raise ValueError("APM and OTLP GRPC ports cannot be the same")
     if parsed_args.otlp_http_port == parsed_args.otlp_grpc_port:
         raise ValueError("OTLP HTTP and GRPC ports cannot be the same")
+    if parsed_args.web_ui_port > 0:
+        if parsed_args.web_ui_port == parsed_args.port:
+            raise ValueError("Web UI and APM ports cannot be the same")
+        if parsed_args.web_ui_port == parsed_args.otlp_http_port:
+            raise ValueError("Web UI and OTLP HTTP ports cannot be the same")
+        if parsed_args.web_ui_port == parsed_args.otlp_grpc_port:
+            raise ValueError("Web UI and OTLP GRPC ports cannot be the same")
 
     # Get the shared agent instance from the main app
     agent = app["agent"]
     otlp_http_app = make_otlp_http_app(agent)
 
+    # Create Web UI app if enabled
+    web_ui_app = None
+    if parsed_args.web_ui_port > 0:
+        from .web import WebUI
+        # Pass configuration directly to WebUI
+        web_ui_config = {
+            'snapshot_dir': parsed_args.snapshot_dir,
+            'vcr_cassettes_directory': parsed_args.vcr_cassettes_directory,
+            'disable_error_responses': parsed_args.disable_error_responses,
+            'web_ui_port': parsed_args.web_ui_port,
+            'max_requests': parsed_args.max_requests,
+        }
+        web_ui = WebUI(agent, config=web_ui_config)
+        web_ui_app = web_ui.make_app()
+        # Store WebUI instance reference for middleware access
+        web_ui_app._webui_instance = web_ui
+        # Also store on main app for middleware access
+        app._webui_instance = web_ui
+
     async def run_servers():
         """Run APM and OTLP HTTP servers concurrently."""
-        # Create runners for both apps
+        # Create runners for apps
         apm_runner = web.AppRunner(app)
         await apm_runner.setup()
 
         otlp_http_runner = web.AppRunner(otlp_http_app)
         await otlp_http_runner.setup()
+
+        # Create Web UI runner if enabled
+        web_ui_runner = None
+        if web_ui_app is not None:
+            web_ui_runner = web.AppRunner(web_ui_app)
+            await web_ui_runner.setup()
 
         # Start GRPC server if available (async creation)
         otlp_grpc_server = await make_otlp_grpc_server_async(
@@ -1662,12 +1717,23 @@ def main(args: Optional[List[str]] = None) -> None:
 
         otlp_http_site = web.TCPSite(otlp_http_runner, port=parsed_args.otlp_http_port)
 
-        # Start both servers concurrently
-        await asyncio.gather(apm_site.start(), otlp_http_site.start())
+        # Create Web UI site if enabled
+        web_ui_site = None
+        if web_ui_runner is not None:
+            web_ui_site = web.TCPSite(web_ui_runner, port=parsed_args.web_ui_port)
+
+        # Start servers concurrently
+        sites_to_start = [apm_site.start(), otlp_http_site.start()]
+        if web_ui_site is not None:
+            sites_to_start.append(web_ui_site.start())
+
+        await asyncio.gather(*sites_to_start)
 
         print(f"======== Running APM server on port {parsed_args.port} ========")
         print(f"======== Running OTLP HTTP server on port {parsed_args.otlp_http_port} ========")
         print(f"======== Running OTLP GRPC server on port {parsed_args.otlp_grpc_port} ========")
+        if web_ui_site is not None:
+            print(f"======== Running Web UI on port {parsed_args.web_ui_port} ========")
         print("(Press CTRL+C to quit)")
 
         try:
@@ -1678,6 +1744,8 @@ def main(args: Optional[List[str]] = None) -> None:
         finally:
             await apm_runner.cleanup()
             await otlp_http_runner.cleanup()
+            if web_ui_runner is not None:
+                await web_ui_runner.cleanup()
             await otlp_grpc_server.stop(grace=5.0)
 
     # Run the servers
