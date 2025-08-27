@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_layout, empty_state, action_button, error_message %}
+
+{% block content %}
+{% set extra_header %}
+    <div class="snapshot-info">
+        <span class="snapshot-dir">Directory: {{ snapshot_dir }}</span>
+    </div>
+{% endset %}
+
+{% call page_layout("Snapshots", extra_header=extra_header) %}
+    {% if error %}
+        {{ error_message(error) }}
+    {% endif %}
+
+    {% if snapshots %}
+        <div class="snapshots-controls">
+            <div class="snapshots-stats">
+                <p><strong><span id="total-count">{{ snapshots|length }}</span></strong> snapshot files found (<span id="filtered-count">{{ snapshots|length }}</span> shown)</p>
+            </div>
+            <div class="filter-controls">
+                <input type="text" id="filename-filter" placeholder="Filter by filename..." class="filter-input">
+            </div>
+        </div>
+        <div class="snapshots-table">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Filename</th>
+                        <th>Size</th>
+                        <th>Modified</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for snapshot in snapshots %}
+                    <tr class="snapshot-row" onclick="window.location.href='/snapshots/{{ snapshot.filename }}'" style="cursor: pointer;">
+                        <td class="filename-cell">{{ snapshot.filename }}</td>
+                        <td class="size-cell">{{ "%.1f" | format(snapshot.size / 1024) }} KB</td>
+                        <td class="modified-cell">{{ snapshot.modified | timestamp_format }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% else %}
+        {% if error %}
+            {{ empty_state("Unable to load snapshots") }}
+        {% else %}
+            {{ empty_state("No snapshot files found in " + snapshot_dir) }}
+        {% endif %}
+    {% endif %}
+{% endcall %}
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const filterInput = document.getElementById('filename-filter');
+    const filteredCountSpan = document.getElementById('filtered-count');
+    const table = document.querySelector('.snapshots-table table tbody');
+
+    if (filterInput && table) {
+        filterInput.addEventListener('input', function() {
+            const filterValue = this.value.toLowerCase().trim();
+            const rows = table.getElementsByTagName('tr');
+            let visibleCount = 0;
+
+            for (let i = 0; i < rows.length; i++) {
+                const filenameCell = rows[i].querySelector('.filename-cell');
+                if (filenameCell) {
+                    const filename = filenameCell.textContent.toLowerCase();
+                    if (filename.includes(filterValue)) {
+                        rows[i].style.display = '';
+                        visibleCount++;
+                    } else {
+                        rows[i].style.display = 'none';
+                    }
+                }
+            }
+
+            if (filteredCountSpan) {
+                filteredCountSpan.textContent = visibleCount;
+            }
+        });
+    }
+});
+</script>
+{% endblock %}

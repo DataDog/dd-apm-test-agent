@@ -1,0 +1,440 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="config-page">
+    <div class="page-header">
+        <h2>Remote Configuration Management</h2>
+        <p>Manually control remote config settings, files, and tasks to simulate remote config behavior.</p>
+    </div>
+
+    <div class="config-container">
+        <!-- Session Token Selection -->
+        <div class="config-section">
+            <h3>Session Management</h3>
+            <div class="form-row">
+                <label for="session-select">Select Session Token:</label>
+                <select id="session-select" class="form-control">
+                    {% for token in session_tokens %}
+                        {% if token is none %}
+                        <option value="" {% if selected_token is none %}selected{% endif %}>Default (No Token)</option>
+                        {% else %}
+                        <option value="{{ token }}" {% if selected_token == token %}selected{% endif %}>{{ token }}</option>
+                        {% endif %}
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+
+        <!-- Config Management Actions -->
+        <div class="config-section">
+            <h3>Configuration Actions</h3>
+            <div class="config-tabs">
+                <button class="tab-button active" onclick="switchTab(event, 'raw-config')">Raw Config</button>
+                <button class="tab-button" onclick="switchTab(event, 'path-config')">Path Config</button>
+            </div>
+
+            <!-- Raw Config Tab -->
+            <div id="raw-config" class="tab-content active">
+                <div class="form-group">
+                    <label for="raw-config-data">Configuration Data (JSON):</label>
+                    <textarea id="raw-config-data" class="config-textarea" placeholder="Enter JSON configuration data...">{{ current_config_json }}</textarea>
+                </div>
+                <div class="form-actions">
+                    <button onclick="createConfig()" class="btn btn-primary">Create Config</button>
+                    <button onclick="updateConfig()" class="btn btn-secondary">Update Config</button>
+                    <button onclick="clearConfig()" class="btn btn-danger">Clear Config</button>
+                </div>
+            </div>
+
+            <!-- Path Config Tab -->
+            <div id="path-config" class="tab-content">
+                <div class="form-group">
+                    <label for="config-path">Configuration Path:</label>
+                    <input type="text" id="config-path" class="form-control" placeholder="e.g., datadog/2/LIVE_DEBUGGING/enable_live_debugging/config">
+                </div>
+                <div class="form-group">
+                    <label for="config-message">Configuration Message (JSON):</label>
+                    <textarea id="config-message" class="config-textarea" placeholder="Enter JSON message data...">{}</textarea>
+                </div>
+                <div class="form-actions">
+                    <button onclick="createPathConfig()" class="btn btn-primary">Create Path Config</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Current Configuration Display -->
+        <div class="config-section">
+            <h3>Current Configuration</h3>
+            <div class="config-display">
+                <pre id="current-config-display">{{ config_data }}</pre>
+            </div>
+            <button onclick="refreshConfig()" class="btn btn-info">Refresh</button>
+        </div>
+
+        <!-- Status Messages -->
+        <div id="status-messages" class="status-messages"></div>
+    </div>
+</div>
+
+<style>
+.config-page {
+    padding: 20px;
+}
+
+.config-section {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.config-section h3 {
+    margin-top: 0;
+    color: #495057;
+    border-bottom: 2px solid #007bff;
+    padding-bottom: 10px;
+}
+
+.form-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.form-group {
+    margin-bottom: 15px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 600;
+    color: #495057;
+}
+
+.form-control {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.config-textarea {
+    width: 100%;
+    height: 200px;
+    padding: 12px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    resize: vertical;
+    background: #ffffff;
+}
+
+.config-tabs {
+    margin-bottom: 20px;
+}
+
+.tab-button {
+    background: #e9ecef;
+    border: 1px solid #dee2e6;
+    padding: 10px 20px;
+    cursor: pointer;
+    border-radius: 4px 4px 0 0;
+    margin-right: 5px;
+}
+
+.tab-button.active {
+    background: #007bff;
+    color: white;
+    border-color: #007bff;
+}
+
+.tab-content {
+    display: none;
+    border: 1px solid #dee2e6;
+    padding: 20px;
+    border-radius: 0 4px 4px 4px;
+    background: white;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+.form-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    text-decoration: none;
+    display: inline-block;
+}
+
+.btn-primary {
+    background: #007bff;
+    color: white;
+}
+
+.btn-secondary {
+    background: #6c757d;
+    color: white;
+}
+
+.btn-danger {
+    background: #dc3545;
+    color: white;
+}
+
+.btn-info {
+    background: #17a2b8;
+    color: white;
+}
+
+.btn:hover {
+    opacity: 0.9;
+}
+
+.config-display {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    padding: 15px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.config-display pre {
+    margin: 0;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.status-messages {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 1000;
+}
+
+.status-message {
+    padding: 10px 15px;
+    margin-bottom: 10px;
+    border-radius: 4px;
+    max-width: 300px;
+}
+
+.status-success {
+    background: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+.status-error {
+    background: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+</style>
+
+<script>
+function switchTab(event, tabName) {
+    // Hide all tab contents
+    const tabContents = document.getElementsByClassName('tab-content');
+    for (let i = 0; i < tabContents.length; i++) {
+        tabContents[i].classList.remove('active');
+    }
+
+    // Remove active class from all tab buttons
+    const tabButtons = document.getElementsByClassName('tab-button');
+    for (let i = 0; i < tabButtons.length; i++) {
+        tabButtons[i].classList.remove('active');
+    }
+
+    // Show selected tab and mark button as active
+    document.getElementById(tabName).classList.add('active');
+    event.currentTarget.classList.add('active');
+}
+
+function showStatus(message, isError = false) {
+    const statusContainer = document.getElementById('status-messages');
+    const statusDiv = document.createElement('div');
+    statusDiv.className = `status-message ${isError ? 'status-error' : 'status-success'}`;
+    statusDiv.textContent = message;
+
+    statusContainer.appendChild(statusDiv);
+
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+        statusContainer.removeChild(statusDiv);
+    }, 5000);
+}
+
+function getCurrentToken() {
+    const select = document.getElementById('session-select');
+    return select.value || null;
+}
+
+async function createConfig() {
+    const token = getCurrentToken();
+    const configData = document.getElementById('raw-config-data').value;
+
+    try {
+        const response = await fetch('/config/create', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: `token=${encodeURIComponent(token || '')}&config_data=${encodeURIComponent(configData)}`
+        });
+
+        const result = await response.json();
+        if (response.ok) {
+            showStatus(result.message);
+            setTimeout(() => refreshConfig(), 1000);
+        } else {
+            showStatus(result.error || 'Error creating config', true);
+        }
+    } catch (error) {
+        showStatus('Network error: ' + error.message, true);
+    }
+}
+
+async function updateConfig() {
+    const token = getCurrentToken();
+    const configData = document.getElementById('raw-config-data').value;
+
+    try {
+        const response = await fetch('/config/update', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: `token=${encodeURIComponent(token || '')}&config_data=${encodeURIComponent(configData)}`
+        });
+
+        const result = await response.json();
+        if (response.ok) {
+            showStatus(result.message);
+            setTimeout(() => refreshConfig(), 1000);
+        } else {
+            showStatus(result.error || 'Error updating config', true);
+        }
+    } catch (error) {
+        showStatus('Network error: ' + error.message, true);
+    }
+}
+
+async function createPathConfig() {
+    const token = getCurrentToken();
+    const path = document.getElementById('config-path').value;
+    const message = document.getElementById('config-message').value;
+
+    if (!path.trim()) {
+        showStatus('Configuration path is required', true);
+        return;
+    }
+
+    try {
+        const response = await fetch('/config/create_path', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: `token=${encodeURIComponent(token || '')}&path=${encodeURIComponent(path)}&message=${encodeURIComponent(message)}`
+        });
+
+        const result = await response.json();
+        if (response.ok) {
+            showStatus(result.message);
+            setTimeout(() => refreshConfig(), 1000);
+        } else {
+            showStatus(result.error || 'Error creating path config', true);
+        }
+    } catch (error) {
+        showStatus('Network error: ' + error.message, true);
+    }
+}
+
+async function clearConfig() {
+    const token = getCurrentToken();
+
+    if (!confirm('Are you sure you want to clear the configuration for this session?')) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/config/clear', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: `token=${encodeURIComponent(token || '')}`
+        });
+
+        const result = await response.json();
+        if (response.ok) {
+            showStatus(result.message);
+            document.getElementById('raw-config-data').value = '{}';
+            setTimeout(() => refreshConfig(), 1000);
+        } else {
+            showStatus(result.error || 'Error clearing config', true);
+        }
+    } catch (error) {
+        showStatus('Network error: ' + error.message, true);
+    }
+}
+
+function refreshConfig() {
+    // Navigate to current page with selected token to refresh data
+    const token = getCurrentToken();
+    const url = new URL(window.location);
+    if (token) {
+        url.searchParams.set('token', token);
+    } else {
+        url.searchParams.delete('token');
+    }
+    window.location.href = url.toString();
+}
+
+// Initialize the interface
+document.addEventListener('DOMContentLoaded', function() {
+    // Set up session token change handler
+    document.getElementById('session-select').addEventListener('change', function() {
+        const token = this.value;
+        const url = new URL(window.location);
+        if (token) {
+            url.searchParams.set('token', token);
+        } else {
+            url.searchParams.delete('token');
+        }
+        window.location.href = url.toString();
+    });
+
+    // Format JSON in textareas
+    const textareas = document.querySelectorAll('.config-textarea');
+    textareas.forEach(textarea => {
+        textarea.addEventListener('blur', function() {
+            try {
+                const parsed = JSON.parse(this.value);
+                this.value = JSON.stringify(parsed, null, 2);
+            } catch (e) {
+                // Invalid JSON, leave as is
+            }
+        });
+    });
+});
+</script>
+{% endblock %}

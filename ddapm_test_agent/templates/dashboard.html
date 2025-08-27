@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard">
+    <div class="dashboard-header">
+        <h2>Agent Configuration Dashboard</h2>
+    </div>
+
+    <div class="dashboard-grid">
+        <div class="dashboard-card">
+            <div class="card-header">
+                <h3>Server Configuration</h3>
+            </div>
+            <div class="card-content">
+                <div class="stat-item">
+                    <span class="stat-label">Web UI Port:</span>
+                    <span class="stat-value">{{ web_ui_port }}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">APM Server Port:</span>
+                    <span class="stat-value">{{ apm_port }}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">OTLP HTTP Port:</span>
+                    <span class="stat-value">{{ otlp_http_port }}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">OTLP GRPC Port:</span>
+                    <span class="stat-value">{{ otlp_grpc_port }}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Proxying to Agent:</span>
+                    <span class="stat-value {{ 'proxy-enabled' if is_proxying else 'proxy-disabled' }}">
+                        {{ 'Yes' if is_proxying else 'No' }}
+                    </span>
+                </div>
+                {% if is_proxying %}
+                <div class="stat-item">
+                    <span class="stat-label">Agent URL:</span>
+                    <span class="stat-value">{{ agent_url }}</span>
+                </div>
+                {% endif %}
+                <div class="stat-item">
+                    <span class="stat-label">Snapshot Directory:</span>
+                    <span class="stat-value">{{ snapshot_dir }}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">VCR Enabled:</span>
+                    <span class="stat-value">{{ 'Yes' if vcr_enabled else 'No' }}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Error Responses Disabled:</span>
+                    <span class="stat-value">{{ 'Yes' if error_responses_disabled else 'No' }}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Max Requests in Memory:</span>
+                    <span class="stat-value">{{ max_requests }}</span>
+                </div>
+            </div>
+        </div>
+
+
+
+        <div class="dashboard-card">
+            <div class="card-header">
+                <h3>Enabled Servers</h3>
+            </div>
+            <div class="card-content">
+                <div class="stat-item">
+                    <span class="stat-label">Web UI:</span>
+                    <span class="stat-value">{{ 'Enabled' if enabled_servers.web_ui else 'Disabled' }}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">APM Server:</span>
+                    <span class="stat-value">{{ 'Enabled' if enabled_servers.apm_server else 'Disabled' }}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">OTLP HTTP Server:</span>
+                    <span class="stat-value">{{ 'Enabled' if enabled_servers.otlp_http else 'Disabled' }}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">OTLP GRPC Server:</span>
+                    <span class="stat-value">{{ 'Enabled' if enabled_servers.otlp_grpc else 'Disabled' }}</span>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+{% endblock %}

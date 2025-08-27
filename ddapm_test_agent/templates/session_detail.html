@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="session-detail-page">
+    <div class="page-header">
+        <h2>Session {{ token }}</h2>
+    </div>
+
+    {% if error %}
+        <div class="error-message">
+            <p>{{ error }}</p>
+        </div>
+    {% else %}
+        <div class="session-details">
+            <div class="session-info">
+                <h3>Session Information</h3>
+                <p><strong>Token:</strong> {{ token }}</p>
+                <p><strong>Traces:</strong> {{ traces|length }}</p>
+            </div>
+
+            {% if traces %}
+                <div class="session-traces">
+                    <h3>Traces in this Session</h3>
+                    {% for trace in traces %}
+                    <div class="trace-summary">
+                        <p><strong>Spans:</strong> {{ trace|length }}</p>
+                        {% if trace %}
+                            <p><strong>Root Service:</strong> {{ trace[0].get('service', 'N/A') }}</p>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+    {% endif %}
+</div>
+{% endblock %}
