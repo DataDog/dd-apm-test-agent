@@ -703,8 +703,8 @@ class WebUI:
             title="Configuration",
             session_tokens=all_tokens,
             selected_token=selected_token,
-            current_config=current_config,
-            all_configs=all_configs,
+            current_config_json=json.dumps(current_config, indent=2) if current_config else "{}",
+            config_data=json.dumps(all_configs, indent=2) if all_configs else "{}",
         )
         return web.Response(text=content, content_type="text/html")
 
