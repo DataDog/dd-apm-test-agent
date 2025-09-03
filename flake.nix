@@ -58,6 +58,7 @@
               requests
               yarl
               vcrpy
+              requests-aws4auth
               protobuf
               opentelemetry-proto
               grpcio

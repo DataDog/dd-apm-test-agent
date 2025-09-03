@@ -146,6 +146,13 @@ The cassettes are matched based on the path, method, and body of the request. To
 
 Optionally specifying whatever mounted path is used for the cassettes directory. The test agent comes with a default set of cassettes for OpenAI, Azure OpenAI, and DeepSeek.
 
+#### AWS Services
+AWS service proxying, specifically recording cassettes for the first time, requires a `AWS_SECRET_ACCESS_KEY` environment variable to be set for the container running the test agent. This is used to recalculate the AWS signature for the request, as the one generated client-side likely used `{test-agent-host}:{test-agent-port}/vcr/{aws-service}` as the host, and the signature will mismatch that on the actual AWS service.
+
+Additionally, the `AWS_REGION` environment variable can be set, defaulting to `us-east-1`.
+
+To add a new AWS service to proxy, add an entry in the `PROVIDER_BASE_URLS` for its provider url, and an entry in the `AWS_SERVICES` dictionary for the service name, since they are not always a one-to-one mapping with the implied provider url (e.g, `https://bedrock-runtime.{AWS_REGION}.amazonaws.com` is the provider url, but the service name is `bedrock`, as `bedrock` also has multiple sub services, like `converse`).
+
 #### Usage in clients
 
 To use this feature in your client, you can use the `/vcr/{provider}` endpoint to proxy requests to the provider API.
