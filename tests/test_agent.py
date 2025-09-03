@@ -1,6 +1,7 @@
 import json
 import os
 import signal
+import stat
 import subprocess
 import time
 
@@ -401,6 +402,38 @@ async def test_uds(tmp_path, agent, available_port, loop):
     await agent.put("/v0.4/traces", data=b"")
     resp = await agent.get("/test/session/requests")
     assert resp.status == 200, await resp.text()
+
+    # Kill the process without atexit handlers
+    os.kill(p.pid, signal.SIGKILL)
+
+    # Ensure the test agent can start again
+    try:
+        subprocess.run(["ddapm-test-agent"], env=env, timeout=0.1)
+    except subprocess.TimeoutExpired:
+        # Expected since the test agent should start up normally
+        pass
+    else:
+        raise Exception("Test agent failed to start")
+
+
+def test_named_pipe(tmp_path, available_port):
+    env = os.environ.copy()
+    env["DD_APM_RECEIVER_NAMED_PIPE"] = str(tmp_path / "apm.pipe")
+    env["PORT"] = str(available_port)
+    p = subprocess.Popen(["ddapm-test-agent"], env=env)
+
+    # Check for the named pipe
+    for i in range(50):
+        if (tmp_path / "apm.pipe").exists():
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("Test agent did not create the named pipe in time")
+
+    # Check the permissions and that it's a FIFO
+    pipe_stat = (tmp_path / "apm.pipe").stat()
+    assert stat.S_ISFIFO(pipe_stat.st_mode), "Created file is not a named pipe (FIFO)"
+    assert pipe_stat.st_mode & 0o666 == 0o666
 
     # Kill the process without atexit handlers
     os.kill(p.pid, signal.SIGKILL)

@@ -21,7 +21,7 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.8", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
@@ -40,12 +40,12 @@ jobs:
       - name: Check VCR cassettes size
         run: |
           CASSETTES_SIZE=$(du -sb vcr-cassettes/ 2>/dev/null | cut -f1 || echo "0")
-          
+
           MAX_SIZE=2097152
-          
+
           echo "VCR cassettes size: ${CASSETTES_SIZE} bytes ($((CASSETTES_SIZE / 1024 / 1024))MB)"
           echo "Maximum allowed size: ${MAX_SIZE} bytes (2MB)"
-          
+
           if [ "$CASSETTES_SIZE" -gt "$MAX_SIZE" ]; then
             echo "❌ VCR cassettes directory is larger than 2MB!"
             echo "Current size: $((CASSETTES_SIZE / 1024 / 1024))MB"
@@ -54,4 +54,4 @@ jobs:
           else
             echo "✅ VCR cassettes directory size is within limits"
           fi
-    
+
