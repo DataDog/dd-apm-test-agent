@@ -65,7 +65,7 @@ let
       owner = "datadog";
       repo = "dd-trace-py";
       rev = "refs/tags/v${version}";
-      hash = "sha256-Ax220/uBNwSZNBFYxbxAe0rmLrqYYf3a8K/PIuSE150=";
+      hash = "sha256-K6KTvkdXOSWogyjQyzpD2Gmh8I8pcJnDDjByBys/z64=";
     };
   };
 in
