@@ -1623,11 +1623,11 @@ def make_app(
 
 
 def _start_named_pipe_server(pipe_path: str, agent: "Agent") -> None:
-    """Start named pipe server for cross-platform IPC."""
-    if platform.system() == "Windows":
-        _start_windows_named_pipe_server(pipe_path, agent)
-    else:
-        _start_unix_named_pipe_server(pipe_path, agent)
+    """Start Windows named pipe server."""
+    if platform.system() != "Windows":
+        log.warning("Named pipes are only supported on Windows, ignoring --trace-named-pipe")
+        return
+    _start_windows_named_pipe_server(pipe_path, agent)
 
 
 def _start_windows_named_pipe_server(pipe_path: str, agent: "Agent") -> None:
@@ -1675,45 +1675,6 @@ def _start_windows_named_pipe_server(pipe_path: str, agent: "Agent") -> None:
             log.error(f"Error in Windows named pipe server: {e}")
 
 
-def _start_unix_named_pipe_server(pipe_path: str, agent: "Agent") -> None:
-    """Start Unix named pipe server using FIFOs."""
-    log.info(f"Starting Unix named pipe server on: {pipe_path}")
-
-    try:
-        # Remove existing pipe if it exists
-        if os.path.exists(pipe_path):
-            os.unlink(pipe_path)
-
-        # Create FIFO
-        os.mkfifo(pipe_path, 0o666)
-        log.info(f"Created named pipe (FIFO): {pipe_path}")
-
-        # Set up cleanup
-        atexit.register(lambda: os.path.exists(pipe_path) and os.unlink(pipe_path))
-
-        while True:
-            try:
-                # Open pipe for reading (blocks until writer connects)
-                with open(pipe_path, 'rb') as pipe_fd:
-                    log.info("Client connected to named pipe")
-
-                    # Read all data
-                    data = pipe_fd.read()
-                    if data:
-                        # Process request
-                        response = agent._process_named_pipe_request(data)
-
-                        # Write response back (open for writing)
-                        with open(pipe_path, 'wb') as write_fd:
-                            write_fd.write(response)
-
-                        log.info(f"Processed named pipe request, sent {len(response)} bytes response")
-
-            except Exception as e:
-                log.error(f"Error handling Unix named pipe client: {e}")
-
-    except Exception as e:
-        log.error(f"Error in Unix named pipe server: {e}")
 
 
 def _handle_windows_named_pipe_client(pipe_handle, agent: "Agent") -> None:
