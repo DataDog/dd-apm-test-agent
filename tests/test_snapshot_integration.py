@@ -13,9 +13,9 @@ from typing import Generator
 import aiohttp
 from ddtrace._trace.sampler import DatadogSampler
 from ddtrace._trace.sampling_rule import SamplingRule
-from ddtrace.trace import Tracer
 from ddtrace.profiling import Profiler
 from ddtrace.propagation.http import HTTPPropagator
+from ddtrace.trace import Tracer
 import pytest
 
 
@@ -32,13 +32,9 @@ def trace_sample_rate() -> float:
 
 
 @pytest.fixture
-def stats_tracer(
-    tracer: Tracer, trace_sample_rate: float
-) -> Generator[Tracer, None, None]:
+def stats_tracer(tracer: Tracer, trace_sample_rate: float) -> Generator[Tracer, None, None]:
     tracer.configure(compute_stats_enabled=True)
-    tracer._sampler = DatadogSampler(
-        rules=[SamplingRule(sample_rate=trace_sample_rate)]
-    )
+    tracer._sampler = DatadogSampler(rules=[SamplingRule(sample_rate=trace_sample_rate)])
     for processor in tracer._span_processors:
         if processor.__class__.__name__ == "SpanStatsProcessorV06":
             processor._agent_url = tracer._agent_url
@@ -285,9 +281,7 @@ async def test_cmd(testagent_url: str, testagent: aiohttp.ClientSession, tracer:
     assert p.returncode == 1
 
 
-async def test_profiling_endpoint(
-    testagent_url: str, testagent: aiohttp.ClientSession, tracer: Tracer
-) -> None:
+async def test_profiling_endpoint(testagent_url: str, testagent: aiohttp.ClientSession, tracer: Tracer) -> None:
     p = Profiler(tracer=tracer)
     p.start()
     p.stop(flush=True)
