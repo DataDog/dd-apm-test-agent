@@ -931,9 +931,7 @@ class Agent:
         regex_overrides = _parse_map(request.url.query.get("regex_placeholders", ""))
         regex_replaces = default_attribute_regex_replaces.copy()
         regex_replaces.update(regex_overrides)
-        attribute_regex_replaces = dict(
-            (f"{{{key}}}", re.compile(regex)) for (key, regex) in regex_replaces.items()
-        )
+        attribute_regex_replaces = dict((f"{{{key}}}", re.compile(regex)) for (key, regex) in regex_replaces.items())
         log.info("using regex placeholders %r", attribute_regex_replaces)
 
         if "span_id" in span_removes:

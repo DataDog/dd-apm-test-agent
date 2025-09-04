@@ -88,7 +88,8 @@ async def test_single_trace(
     response_code,
 ):
     await testagent.get(f"{testagent_url}/test/session/start?test_session_token=test_single_trace")
-    tracer = Tracer(url=testagent_url)
+    tracer = Tracer()
+    tracer._agent_url = testagent_url
     with tracer.trace(operation_name, service=service, resource=resource, span_type=span_type) as span:
         if error is not None:
             span.error = error
