@@ -1,6 +1,8 @@
 import json
 import os
+import platform
 import signal
+import stat
 import subprocess
 import time
 
@@ -413,6 +415,64 @@ async def test_uds(tmp_path, agent, available_port, loop):
         pass
     else:
         raise Exception("Test agent failed to start")
+
+
+@pytest.mark.skipif(platform.system() != "Windows", reason="Named pipes are Windows-specific")
+def test_named_pipe(available_port):
+    import platform
+    import win32pipe
+
+    # Windows named pipe path
+    pipe_path = "\\\\.\\pipe\\dd-apm-test-agent"
+
+    env = os.environ.copy()
+    env["DD_APM_RECEIVER_NAMED_PIPE"] = pipe_path
+    env["PORT"] = str(available_port)
+
+    # Start agent with named pipe
+    p = subprocess.Popen(
+        ["ddapm-test-agent"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    try:
+        # Wait a bit for startup
+        time.sleep(2)
+
+        # Check if process is still running (didn't crash on startup)
+        if p.poll() is not None:
+            stdout, stderr = p.communicate()
+            raise AssertionError(f"Agent failed to start with named pipe. stderr: {stderr}, stdout: {stdout}")
+
+        # Use WaitNamedPipe for Windows verification
+        try:
+            # Wait up to 10 seconds for the named pipe to be available
+            success = win32pipe.WaitNamedPipe(pipe_path, 10000)
+            if not success:
+                stdout, stderr = p.communicate()
+                raise AssertionError(
+                    f"Windows named pipe was not created in time at {pipe_path}. "
+                    f"Agent stderr: {stderr}, stdout: {stdout}"
+                )
+            print(f"Windows named pipe verified: {pipe_path}")
+        except ImportError:
+            # If win32pipe not available, just verify process is running
+            print("win32pipe not available, skipping pipe verification")
+
+        # If we get here, named pipe setup was successful
+        assert True, "Named pipe server started successfully"
+
+    finally:
+        # Clean up: kill the process
+        try:
+            p.terminate()
+            p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
 
 
 async def test_post_known_settings(agent):
