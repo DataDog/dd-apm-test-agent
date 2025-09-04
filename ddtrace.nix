@@ -24,7 +24,7 @@ let
 
   ddtrace = python.pkgs.buildPythonPackage rec {
     pname = "ddtrace";
-    version = "2.9.2";
+    version = "3.11.0";
     pyproject = true;
 
     nativeBuildInputs =
