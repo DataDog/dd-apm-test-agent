@@ -1,4 +1,4 @@
-from ddtrace import Tracer
+from ddtrace.trace import Tracer
 import pytest
 
 from ddapm_test_agent.client import TestAgentClient
@@ -11,7 +11,8 @@ async def client(testagent, testagent_url):
 
 @pytest.fixture
 async def tracer(testagent_url):
-    t = Tracer(testagent_url)
+    t = Tracer()
+    t._agent_url = testagent_url
     yield t
     t.shutdown()
 
