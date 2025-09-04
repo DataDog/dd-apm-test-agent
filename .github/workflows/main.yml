@@ -32,7 +32,7 @@ jobs:
       - name: install deps
         run: pip install .[testing]
       - run: |
-          riot run -p --pass-env ${{ matrix.python-version}} test
+          riot run --pass-env -p ${{ matrix.python-version}} test
   cassettes-size:
     runs-on: ubuntu-latest
     steps:
