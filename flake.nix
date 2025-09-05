@@ -3,7 +3,7 @@
   nixConfig.bash-prompt-prefix = "\[ddapm-test-agent\] ";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/24.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/25.05";
 
     flake-utils.url = "github:numtide/flake-utils";
 

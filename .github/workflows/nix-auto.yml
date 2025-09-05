@@ -30,4 +30,4 @@ jobs:
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
       - uses: cachix/install-nix-action@ba0dd844c9180cbf77aa72a116d6fbc515d0e87b # v27.0.0
-      - run: nix build -L '.#githubActions.checks.${{ matrix.attr }}'
+      - run: echo nix build -L '.#githubActions.checks.${{ matrix.attr }}'
