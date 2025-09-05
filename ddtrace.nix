@@ -24,15 +24,21 @@ let
 
   ddtrace = python.pkgs.buildPythonPackage rec {
     pname = "ddtrace";
-    version = "3.11.0";
+    version = "3.13.0";
     pyproject = true;
 
     nativeBuildInputs =
-      [ pkgs.cmake ]
+      [
+        pkgs.cmake
+        pkgs.rustc
+        pkgs.cargo
+        pkgs.rustup
+      ]
       ++ (with python.pkgs; [
         cmake
         setuptools
         setuptools_scm
+        setuptools-rust
         cython
       ]);
 
@@ -65,7 +71,7 @@ let
       owner = "datadog";
       repo = "dd-trace-py";
       rev = "refs/tags/v${version}";
-      hash = "sha256-WXE3nLJ+yfk++b8GeqOT1bAyBTfp4XgrLGn9BiuEphk=";
+      hash = "sha256-FZAlXopP6gXVGp8hzw/QS794QjpoO/GlmWH7z1cSQq4=";
     };
   };
 in
