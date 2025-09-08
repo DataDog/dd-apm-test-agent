@@ -1,0 +1,3 @@
+---fixes:
+  - |
+    vcr: fixes a bug where the aws signature recalculation would always happen, even if the cassette already existed.
