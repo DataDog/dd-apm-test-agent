@@ -133,7 +133,7 @@ def _session_token(request: Request) -> Optional[str]:
 
 async def _vcr_proxy_cassette_prefix(request: Request) -> Optional[str]:
     try:
-        request_body: dict[str, str] = await request.json()
+        request_body: Dict[str, str] = await request.json()
         requested_test_name = request_body.get("test_name")
         return requested_test_name
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -165,7 +165,7 @@ async def handle_exception_middleware(request: Request, handler: _Handler) -> we
 
 async def _forward_request(
     request_data: bytes, headers: Mapping[str, str], full_agent_url: str
-) -> tuple[ClientResponse, str]:
+) -> Tuple[ClientResponse, str]:
     async with ClientSession() as session:
         async with session.post(
             full_agent_url,
@@ -929,10 +929,9 @@ class Agent:
         # Get the span attributes that are to be removed for this snapshot.
         default_attribute_regex_replaces: Dict[str, str] = request.app["snapshot_regex_placeholders"]
         regex_overrides = _parse_map(request.url.query.get("regex_placeholders", ""))
-        attribute_regex_replaces = dict(
-            (f"{{{key}}}", re.compile(regex))
-            for (key, regex) in (default_attribute_regex_replaces | regex_overrides).items()
-        )
+        regex_replaces = default_attribute_regex_replaces.copy()
+        regex_replaces.update(regex_overrides)
+        attribute_regex_replaces = dict((f"{{{key}}}", re.compile(regex)) for (key, regex) in regex_replaces.items())
         log.info("using regex placeholders %r", attribute_regex_replaces)
 
         if "span_id" in span_removes:

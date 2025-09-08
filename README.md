@@ -17,11 +17,6 @@ See the [Development](#development) section for how to get the test agent runnin
 
 ## Installation
 
-The test agent can be installed using [nix](https://docs.determinate.systems/getting-started/):
-
-    nix profile install github:datadog/dd-apm-test-agent#ddapm-test-agent
-    # nix profile upgrade ddapm-test-agent # to upgrade
-
 The test agent can be installed from PyPI:
 
     pip install ddapm-test-agent

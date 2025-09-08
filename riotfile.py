@@ -12,7 +12,7 @@ venv = Venv(
         Venv(
             name="test",
             command="pytest {cmdargs}",
-            pys=["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"],
+            pys=["3.11", "3.12", "3.13"],
             pkgs={pkg: latest for pkg in testing_deps},
         ),
         Venv(
@@ -21,6 +21,7 @@ venv = Venv(
                 "isort": latest,
                 "toml": latest,
             },
+            pys=["3.11"],
             venvs=[
                 Venv(
                     name="black",
@@ -39,6 +40,7 @@ venv = Venv(
         Venv(
             name="flake8",
             command="flake8 {cmdargs}",
+            pys=["3.11"],
             pkgs={
                 "flake8": latest,
                 "flake8-blind-except": latest,
@@ -54,6 +56,7 @@ venv = Venv(
             name="mypy",
             create=True,
             command="mypy {cmdargs}",
+            pys=["3.11"],
             pkgs={
                 "mypy": "==1.7.1",
                 "pytest": latest,

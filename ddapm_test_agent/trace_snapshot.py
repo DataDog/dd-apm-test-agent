@@ -3,13 +3,13 @@ import json
 import logging
 import operator
 import pprint
-from re import Pattern
 import textwrap
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
 from typing import OrderedDict as OrderedDictType
+from typing import Pattern
 from typing import Set
 from typing import Tuple
 from typing import cast
@@ -188,9 +188,13 @@ def _match_traces(t1s: List[Trace], t2s: List[Trace]) -> List[Tuple[Trace, Trace
     return matches
 
 
-def _diff_spans(
-    s1: Span, s2: Span, ignored: Set[str]
-) -> Tuple[List[str], List[str], List[str], List[Tuple[List[str], List[str]]], List[Tuple[List[str], List[str]]]]:
+def _diff_spans(s1: Span, s2: Span, ignored: Set[str]) -> Tuple[
+    List[str],
+    List[str],
+    List[str],
+    List[Tuple[List[str], List[str]]],
+    List[Tuple[List[str], List[str]]],
+]:
     """Return differing attributes between two spans and their meta/metrics maps.
 
     It is assumed that the spans have passed through preliminary validation
@@ -255,7 +259,11 @@ def _diff_spans(
             )
             link_diff = []
             for d1, d2, ign in [
-                (l1_no_tags, l2_no_tags, set(i[11:] for i in ignored if i.startswith("span_links."))),
+                (
+                    l1_no_tags,
+                    l2_no_tags,
+                    set(i[11:] for i in ignored if i.startswith("span_links.")),
+                ),
                 (
                     l1.get("attributes") or {},
                     l2.get("attributes") or {},
@@ -288,7 +296,11 @@ def _diff_spans(
             )
             event_diff = []
             for d1, d2, ign in [
-                (l1_no_tags, l2_no_tags, set(i[12:] for i in ignored if i.startswith("span_events."))),
+                (
+                    l1_no_tags,
+                    l2_no_tags,
+                    set(i[12:] for i in ignored if i.startswith("span_events.")),
+                ),
                 (
                     e1.get("attributes") or {},
                     e2.get("attributes") or {},
@@ -307,7 +319,13 @@ def _diff_spans(
     results.append(event_diffs)  # type: ignore
 
     return cast(
-        Tuple[List[str], List[str], List[str], List[Tuple[List[str], List[str]]], List[Tuple[List[str], List[str]]]],
+        Tuple[
+            List[str],
+            List[str],
+            List[str],
+            List[Tuple[List[str], List[str]]],
+            List[Tuple[List[str], List[str]]],
+        ],
         tuple(results),
     )
 
@@ -334,9 +352,13 @@ def _compare_traces(expected: Trace, received: Trace, ignored: Set[str]) -> None
         ) as frame:
             frame.add_item(f"Expected span:\n{pprint.pformat(s_exp)}")
             frame.add_item(f"Received span:\n{pprint.pformat(s_rec)}")
-            top_level_diffs, meta_diffs, metrics_diffs, span_link_diffs, span_event_diffs = _diff_spans(
-                s_exp, s_rec, ignored
-            )
+            (
+                top_level_diffs,
+                meta_diffs,
+                metrics_diffs,
+                span_link_diffs,
+                span_event_diffs,
+            ) = _diff_spans(s_exp, s_rec, ignored)
 
             for diffs, diff_type, d_exp, d_rec in [
                 (top_level_diffs, "span", s_exp, s_rec),
@@ -363,7 +385,12 @@ def _compare_traces(expected: Trace, received: Trace, ignored: Set[str]) -> None
 
             for i, (link_level_diffs, attribute_diffs) in enumerate(span_link_diffs):
                 for diffs, diff_type, d_exp, d_rec in [
-                    (link_level_diffs, f"{i}", s_exp["span_links"][i], s_rec["span_links"][i]),
+                    (
+                        link_level_diffs,
+                        f"{i}",
+                        s_exp["span_links"][i],
+                        s_rec["span_links"][i],
+                    ),
                     (
                         attribute_diffs,
                         f"{i} attributes",
@@ -387,7 +414,12 @@ def _compare_traces(expected: Trace, received: Trace, ignored: Set[str]) -> None
 
             for i, (event_level_diffs, attribute_diffs) in enumerate(span_event_diffs):
                 for diffs, diff_type, d_exp, d_rec in [
-                    (event_level_diffs, f"{i}", s_exp["span_events"][i], s_rec["span_events"][i]),
+                    (
+                        event_level_diffs,
+                        f"{i}",
+                        s_exp["span_events"][i],
+                        s_rec["span_events"][i],
+                    ),
                     (
                         attribute_diffs,
                         f"{i} attributes",
@@ -545,4 +577,7 @@ def generate_snapshot(
     removed: Optional[List[str]] = None,
     attribute_regex_replaces: Optional[Dict[str, Pattern[str]]] = None,
 ) -> str:
-    return _snapshot_json(_normalize_traces(received_traces, attribute_regex_replaces or {}), removed or [])
+    return _snapshot_json(
+        _normalize_traces(received_traces, attribute_regex_replaces or {}),
+        removed or [],
+    )
