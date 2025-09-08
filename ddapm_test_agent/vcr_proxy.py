@@ -167,6 +167,7 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
 
     vcr_cassette_prefix = request.pop("vcr_cassette_prefix", None)
     cassette_name = generate_cassette_name(path, request.method, body_bytes, vcr_cassette_prefix)
+    cassette_file_name = f"{cassette_name}.yaml"
 
     request_kwargs: Dict[str, Any] = {
         "method": request.method,
@@ -178,7 +179,9 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
         "stream": True,
     }
 
-    if provider in AWS_SERVICES and not os.path.exists(os.path.join(vcr_cassettes_directory, provider, cassette_name)):
+    if provider in AWS_SERVICES and not os.path.exists(
+        os.path.join(vcr_cassettes_directory, provider, cassette_file_name)
+    ):
         if not AWS_SECRET_ACCESS_KEY:
             return Response(
                 body="AWS_SECRET_ACCESS_KEY environment variable not set for aws signature recalculation",
@@ -192,7 +195,7 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
         auth = AWS4Auth(aws_access_key, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_SERVICES[provider])
         request_kwargs["auth"] = auth
 
-    with get_vcr(provider, vcr_cassettes_directory).use_cassette(f"{cassette_name}.yaml"):
+    with get_vcr(provider, vcr_cassettes_directory).use_cassette(cassette_file_name):
         provider_response = requests.request(**request_kwargs)
 
     # Extract content type without charset
