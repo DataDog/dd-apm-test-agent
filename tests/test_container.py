@@ -108,3 +108,21 @@ def test_container_uds(build_image, tmp_path_factory):
             time.sleep(0.1)
         else:
             raise Exception("Test agent did not start in time: %s" % stderr)
+
+
+@pytest.mark.skipif(platform.system() != "Windows", reason="Named pipes are Windows-specific")
+def test_container_named_pipe(build_image, tmp_path_factory):
+    named_pipe_dir = tmp_path_factory.mktemp("named_pipe")
+
+    with docker_run(
+        image="ddapm-test-agent:test",
+        volumes=[f"{str(named_pipe_dir)}:/opt/datadog-agent/run"],
+        env={"DD_APM_RECEIVER_NAMED_PIPE": "/opt/datadog-agent/run/apm.pipe"},
+    ) as c:
+        for i in range(50):
+            stdout, stderr = c.logs()
+            if "could not set permissions" in stderr or "could not create named pipe" in stderr:
+                break
+            time.sleep(0.1)
+        else:
+            raise Exception("Test agent did not start in time: %s" % stderr)

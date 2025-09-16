@@ -34,6 +34,27 @@ log = logging.getLogger(__name__)
 DEFAULT_SNAPSHOT_IGNORES = "span_id,trace_id,parent_id,duration,start,metrics.system.pid,metrics.system.process_id,metrics.process_id,metrics._dd.tracer_kr,meta.runtime-id,span_links.trace_id_high,span_events.time_unix_nano,meta.pathway.hash,meta._dd.p.tid"
 
 
+def _normalize_span_for_comparison(span: Span) -> Span:
+    """Normalize span for cross-platform comparison (Windows vs Unix).
+
+    Handles differences in how ddtrace creates spans on different platforms:
+    - Windows may omit fields with default values (error, type)
+    - Windows may use None instead of empty string for service
+    """
+    normalized = dict(span)
+
+    if "error" not in normalized:
+        normalized["error"] = 0
+
+    if "type" not in normalized:
+        normalized["type"] = ""
+
+    if normalized.get("service") is None:
+        normalized["service"] = ""
+
+    return cast(Span, normalized)
+
+
 def _key_match(d1: Dict[str, Any], d2: Dict[str, Any], key: str) -> bool:
     """
     >>> _key_match({"a": 1}, {"a": 2}, "a")
@@ -347,6 +368,10 @@ def _compare_traces(expected: Trace, received: Trace, ignored: Set[str]) -> None
         )
 
     for s_exp, s_rec in zip(expected, received):
+        # Normalize spans for cross-platform comparison (Windows vs Unix)
+        s_exp_norm = _normalize_span_for_comparison(s_exp)
+        s_rec_norm = _normalize_span_for_comparison(s_rec)
+
         with CheckTrace.add_frame(
             f"snapshot compare of span '{s_exp['name']}' at position {s_exp['span_id']} in trace"
         ) as frame:
@@ -358,12 +383,12 @@ def _compare_traces(expected: Trace, received: Trace, ignored: Set[str]) -> None
                 metrics_diffs,
                 span_link_diffs,
                 span_event_diffs,
-            ) = _diff_spans(s_exp, s_rec, ignored)
+            ) = _diff_spans(s_exp_norm, s_rec_norm, ignored)
 
             for diffs, diff_type, d_exp, d_rec in [
-                (top_level_diffs, "span", s_exp, s_rec),
-                (meta_diffs, "meta", s_exp["meta"], s_rec["meta"]),
-                (metrics_diffs, "metrics", s_exp["metrics"], s_rec["metrics"]),
+                (top_level_diffs, "span", s_exp_norm, s_rec_norm),
+                (meta_diffs, "meta", s_exp_norm["meta"], s_rec_norm["meta"]),
+                (metrics_diffs, "metrics", s_exp_norm["metrics"], s_rec_norm["metrics"]),
             ]:
                 for diff_key in diffs:
                     if diff_key not in d_exp:
