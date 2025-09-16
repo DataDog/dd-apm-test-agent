@@ -1486,14 +1486,6 @@ class Agent:
                 else:
                     # Handle Payload or other types by converting to string first
                     body_data = str(response.body).encode()
-            elif hasattr(response, "_body") and response._body:
-                if isinstance(response._body, bytes):
-                    body_data = response._body
-                elif isinstance(response._body, str):
-                    body_data = response._body.encode()
-                else:
-                    # Handle Payload or other types by converting to string first
-                    body_data = str(response._body).encode()
             else:
                 body_data = b""
 
