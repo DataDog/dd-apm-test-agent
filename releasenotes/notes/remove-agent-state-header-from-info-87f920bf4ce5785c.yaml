@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Remove `Datadog-Agent-State` header from `/info` endpoint response to match actual Datadog agent behavior.
