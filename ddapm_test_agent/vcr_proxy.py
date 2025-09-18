@@ -146,7 +146,7 @@ def generate_cassette_name(path: str, method: str, body: bytes, vcr_cassette_pre
     )
 
 
-async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Response:
+async def proxy_request(request: Request, vcr_cassettes_directory: str, vcr_ci_mode: bool) -> Response:
     path = request.match_info["path"]
     if request.query_string:
         path = path + "?" + request.query_string
@@ -159,15 +159,22 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
     if provider not in PROVIDER_BASE_URLS:
         return Response(body=f"Unsupported provider: {provider}", status=400)
 
-    target_url = url_path_join(PROVIDER_BASE_URLS[provider], remaining_path)
-
-    headers = {key: value for key, value in request.headers.items() if key != "Host"}
-
     body_bytes = await request.read()
 
     vcr_cassette_prefix = request.pop("vcr_cassette_prefix", None)
     cassette_name = generate_cassette_name(path, request.method, body_bytes, vcr_cassette_prefix)
     cassette_file_name = f"{cassette_name}.yaml"
+    cassette_file_path = os.path.join(vcr_cassettes_directory, provider, cassette_file_name)
+    cassette_exists = os.path.exists(cassette_file_path)
+
+    if vcr_ci_mode and not cassette_exists:
+        return Response(
+            body=f"Cassette {cassette_file_name} not found while running in CI mode. Please generate the cassette locally and commit it.",
+            status=500,
+        )
+
+    target_url = url_path_join(PROVIDER_BASE_URLS[provider], remaining_path)
+    headers = {key: value for key, value in request.headers.items() if key != "Host"}
 
     request_kwargs: Dict[str, Any] = {
         "method": request.method,
@@ -179,9 +186,7 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str) -> Respo
         "stream": True,
     }
 
-    if provider in AWS_SERVICES and not os.path.exists(
-        os.path.join(vcr_cassettes_directory, provider, cassette_file_name)
-    ):
+    if provider in AWS_SERVICES and not cassette_exists:
         if not AWS_SECRET_ACCESS_KEY:
             return Response(
                 body="AWS_SECRET_ACCESS_KEY environment variable not set for aws signature recalculation",

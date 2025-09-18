@@ -111,6 +111,11 @@ def snapshot_server_cassettes_directory() -> Generator[str, None, None]:
 
 
 @pytest.fixture
+def vcr_ci_mode() -> Generator[bool, None, None]:
+    yield False
+
+
+@pytest.fixture
 async def agent_app(
     aiohttp_server,
     agent_enabled_checks,
@@ -126,6 +131,7 @@ async def agent_app(
     snapshot_removed_attrs,
     snapshot_regex_placeholders,
     snapshot_server_cassettes_directory,
+    vcr_ci_mode,
 ):
     app = await aiohttp_server(
         make_app(
@@ -142,6 +148,7 @@ async def agent_app(
             snapshot_removed_attrs,
             snapshot_regex_placeholders,
             snapshot_server_cassettes_directory,
+            vcr_ci_mode,
         )
     )
     yield app
