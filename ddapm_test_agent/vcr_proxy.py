@@ -170,7 +170,7 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str, vcr_ci_m
     if vcr_ci_mode and not cassette_exists:
         return Response(
             body=f"Cassette {cassette_file_name} not found while running in CI mode. Please generate the cassette locally and commit it.",
-            status=404,
+            status=500,
         )
 
     target_url = url_path_join(PROVIDER_BASE_URLS[provider], remaining_path)
