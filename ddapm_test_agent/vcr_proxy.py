@@ -173,7 +173,6 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str, vcr_ci_m
             status=404,
         )
 
-    
     target_url = url_path_join(PROVIDER_BASE_URLS[provider], remaining_path)
     headers = {key: value for key, value in request.headers.items() if key != "Host"}
 
