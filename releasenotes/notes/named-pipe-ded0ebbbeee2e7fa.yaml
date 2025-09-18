@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add support for running the test agent over a Windows named pipe.
