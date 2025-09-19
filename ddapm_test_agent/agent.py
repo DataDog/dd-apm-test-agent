@@ -24,6 +24,7 @@ from typing import Mapping
 from typing import Optional
 from typing import Set
 from typing import Tuple
+from typing import Union
 from typing import cast
 from urllib.parse import urlparse
 from urllib.parse import urlunparse
@@ -238,6 +239,17 @@ def default_value_trace_results_summary():
         "Failed_Checks": 0,
         "Skipped_Checks": 0,
     }
+
+
+def _as_bool(value: Union[str, bool]) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value.lower() in ("true", "1"):
+        return True
+    elif value.lower() in ("false", "0"):
+        return False
+    else:
+        return bool(value)
 
 
 @dataclass
@@ -1585,7 +1597,7 @@ def main(args: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--vcr-ci-mode",
         type=bool,
-        default=os.environ.get("VCR_CI_MODE", False),
+        default=_as_bool(os.environ.get("VCR_CI_MODE", False)),
         help="Will change the test agent to record VCR cassettes in CI mode, throwing an error if a cassette is not found on /vcr/{provider}",
     )
     parsed_args = parser.parse_args(args=args)
