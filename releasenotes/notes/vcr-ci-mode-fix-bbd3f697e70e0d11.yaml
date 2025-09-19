@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    vcr: fixes a bug where the vcr ci mode was not being properly parsed from the environment variable, causing ci mode to be enabled improperly.
