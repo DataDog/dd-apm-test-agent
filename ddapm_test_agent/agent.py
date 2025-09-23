@@ -1579,6 +1579,7 @@ def make_app(
     snapshot_removed_attrs: List[str],
     snapshot_regex_placeholders: Dict[str, str],
     vcr_cassettes_directory: str,
+    vcr_ci_mode: bool,
     enable_web_ui: bool = False,
 ) -> web.Application:
     agent = Agent()
@@ -1952,6 +1953,12 @@ def main(args: Optional[List[str]] = None) -> None:
         help="Directory to read and store third party API cassettes.",
     )
     parser.add_argument(
+        "--vcr-ci-mode",
+        type=bool,
+        default=os.environ.get("VCR_CI_MODE", False),
+        help="Will change the test agent to record VCR cassettes in CI mode, throwing an error if a cassette is not found on /vcr/{provider}",
+    )
+    parser.add_argument(
         "--web-ui-port",
         type=int,
         default=int(os.environ.get("WEB_UI_PORT", 0)),
@@ -2006,6 +2013,7 @@ def main(args: Optional[List[str]] = None) -> None:
         snapshot_removed_attrs=parsed_args.snapshot_removed_attrs,
         snapshot_regex_placeholders=parsed_args.snapshot_regex_placeholders,
         vcr_cassettes_directory=parsed_args.vcr_cassettes_directory,
+        vcr_ci_mode=parsed_args.vcr_ci_mode,
         enable_web_ui=parsed_args.web_ui_port > 0,
     )
 
