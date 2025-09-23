@@ -18,6 +18,7 @@ from aiohttp.web import StreamResponse
 from jinja2 import Environment
 from jinja2 import FileSystemLoader
 
+
 log = logging.getLogger(__name__)
 
 
@@ -56,25 +57,21 @@ class TraceProcessor:
     """Utility class for processing trace data"""
 
     @staticmethod
-    def process_traces(
-        raw_data: bytes, content_type: str, path: str, suppress_errors: bool = False
-    ) -> Dict:
+    def process_traces(raw_data: bytes, content_type: str, path: str, suppress_errors: bool = False) -> Dict:
         """Process trace data and return standardized trace information"""
         if not raw_data:
             return TraceProcessor._empty_trace_result(path)
 
         try:
             # Import decode functions
+            from .trace import decode_v1 as trace_decode_v1
             from .trace import decode_v04 as trace_decode_v04
             from .trace import decode_v05 as trace_decode_v05
             from .trace import decode_v07 as trace_decode_v07
-            from .trace import decode_v1 as trace_decode_v1
 
             # Decode based on path
             traces = []
-            log.info(
-                f"Decoding trace data for path: {path}, data length: {len(raw_data)}"
-            )
+            log.info(f"Decoding trace data for path: {path}, data length: {len(raw_data)}")
             if path == "/v0.4/traces":
                 traces = trace_decode_v04(content_type, raw_data, suppress_errors)
             elif path == "/v0.5/traces":
@@ -330,9 +327,7 @@ class WebUI:
 
         # Set up Jinja2 template environment
         templates_dir = Path(__file__).parent / "templates"
-        self.jinja_env = Environment(
-            loader=FileSystemLoader(str(templates_dir)), autoescape=True
-        )
+        self.jinja_env = Environment(loader=FileSystemLoader(str(templates_dir)), autoescape=True)
 
         # Add custom filters
         def timestamp_format(timestamp):
@@ -406,9 +401,7 @@ class WebUI:
             # Parse query parameters into a dict for template rendering
             query_params = {}
             if query_string:
-                query_params = urllib.parse.parse_qs(
-                    query_string, keep_blank_values=True
-                )
+                query_params = urllib.parse.parse_qs(query_string, keep_blank_values=True)
 
             # Check if this is a trace request and process trace data
             trace_data = None
@@ -422,23 +415,17 @@ class WebUI:
                 "query_params": query_params,
                 "headers": req_data["headers"],
                 "content_type": req_data["content_type"],
-                "content_length": len(req_data["request_body"])
-                if req_data["request_body"]
-                else 0,
+                "content_length": len(req_data["request_body"]) if req_data["request_body"] else 0,
                 "remote_addr": req_data["remote_addr"],
                 "timestamp": req_data["timestamp"],
-                "session_token": req_data["headers"].get(
-                    "X-Datadog-Test-Session-Token"
-                ),
+                "session_token": req_data["headers"].get("X-Datadog-Test-Session-Token"),
                 "body": request_body,
                 "body_is_binary": request_body_is_binary,
                 "trace_data": trace_data,
                 "response": {
                     "status": req_data["response"]["status"],
                     "headers": req_data["response"]["headers"],
-                    "content_type": req_data["response"]["headers"].get(
-                        "Content-Type", ""
-                    ),
+                    "content_type": req_data["response"]["headers"].get("Content-Type", ""),
                     "body": response_body,
                     "body_is_binary": response_body_is_binary,
                 },
@@ -496,18 +483,14 @@ class WebUI:
         raw_data = req["_testagent_data"]
         content_type = req.content_type or ""
 
-        return TraceProcessor.process_traces(
-            raw_data, content_type, req.path, suppress_errors=False
-        )
+        return TraceProcessor.process_traces(raw_data, content_type, req.path, suppress_errors=False)
 
     def _process_middleware_trace_data(self, req_data, path):
         """Process trace data from middleware-captured request data"""
         raw_data = req_data.get("request_body", b"")
         content_type = req_data.get("content_type", "")
 
-        return TraceProcessor.process_traces(
-            raw_data, content_type, path, suppress_errors=True
-        )
+        return TraceProcessor.process_traces(raw_data, content_type, path, suppress_errors=True)
 
     def _is_trace_request(self, req) -> bool:
         """Check if request is a trace request based on path"""
@@ -681,9 +664,7 @@ class WebUI:
         # Get current remote config data for selected token
         current_config = {}
         try:
-            current_config = await self.agent._rc_server.get_config_response(
-                selected_token
-            )
+            current_config = await self.agent._rc_server.get_config_response(selected_token)
             if not current_config:
                 current_config = {}
         except Exception:
@@ -703,9 +684,7 @@ class WebUI:
             title="Configuration",
             session_tokens=all_tokens,
             selected_token=selected_token,
-            current_config_json=json.dumps(current_config, indent=2)
-            if current_config
-            else "{}",
+            current_config_json=json.dumps(current_config, indent=2) if current_config else "{}",
             config_data=json.dumps(all_configs, indent=2) if all_configs else "{}",
         )
         return web.Response(text=content, content_type="text/html")
@@ -724,9 +703,7 @@ class WebUI:
                 return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
 
             self.agent._rc_server.create_config_response(token, parsed_config)
-            return web.json_response(
-                {"status": "success", "message": "Config created successfully"}
-            )
+            return web.json_response({"status": "success", "message": "Config created successfully"})
 
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -745,9 +722,7 @@ class WebUI:
                 return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
 
             self.agent._rc_server.update_config_response(token, parsed_config)
-            return web.json_response(
-                {"status": "success", "message": "Config updated successfully"}
-            )
+            return web.json_response({"status": "success", "message": "Config updated successfully"})
 
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -767,16 +742,10 @@ class WebUI:
             try:
                 parsed_message = json.loads(message)
             except json.JSONDecodeError as e:
-                return web.json_response(
-                    {"error": f"Invalid message JSON: {e}"}, status=400
-                )
+                return web.json_response({"error": f"Invalid message JSON: {e}"}, status=400)
 
-            self.agent._rc_server.create_config_path_response(
-                token, path, parsed_message
-            )
-            return web.json_response(
-                {"status": "success", "message": "Config path created successfully"}
-            )
+            self.agent._rc_server.create_config_path_response(token, path, parsed_message)
+            return web.json_response({"status": "success", "message": "Config path created successfully"})
 
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -789,9 +758,7 @@ class WebUI:
 
             # Clear by creating empty response
             self.agent._rc_server.create_config_response(token, {})
-            return web.json_response(
-                {"status": "success", "message": "Config cleared successfully"}
-            )
+            return web.json_response({"status": "success", "message": "Config cleared successfully"})
 
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -895,17 +862,13 @@ class WebUI:
 
             # Check if there's an active flare
             if not hasattr(self.agent, "_active_flares"):
-                return web.json_response(
-                    {"error": "No active flare collection"}, status=400
-                )
+                return web.json_response({"error": "No active flare collection"}, status=400)
 
             active_flares = getattr(self.agent, "_active_flares", {})
             flare_key = session_token or "default"
 
             if flare_key not in active_flares:
-                return web.json_response(
-                    {"error": "No active flare for this session"}, status=400
-                )
+                return web.json_response({"error": "No active flare for this session"}, status=400)
 
             flare_info = active_flares[flare_key]
 
@@ -944,9 +907,7 @@ class WebUI:
             case_id = request.query.get("case_id")
 
             if not case_id:
-                return web.json_response(
-                    {"error": "case_id parameter required"}, status=400
-                )
+                return web.json_response({"error": "case_id parameter required"}, status=400)
 
             # Get ALL tracer flares from all sessions
             all_flares = []
@@ -984,9 +945,7 @@ class WebUI:
                 return web.json_response({"error": error_msg}, status=404)
 
             if "flare_file" not in target_flare:
-                return web.json_response(
-                    {"error": "No flare file in this flare"}, status=404
-                )
+                return web.json_response({"error": "No flare file in this flare"}, status=404)
 
             try:
                 # Decode base64 flare file data
@@ -998,14 +957,10 @@ class WebUI:
                 return web.Response(
                     body=flare_data,
                     content_type="application/zip",
-                    headers={
-                        "Content-Disposition": f'attachment; filename="tracer_flare_{case_id}.zip"'
-                    },
+                    headers={"Content-Disposition": f'attachment; filename="tracer_flare_{case_id}.zip"'},
                 )
             except Exception as decode_error:
-                return web.json_response(
-                    {"error": f"Error decoding flare file: {decode_error}"}, status=500
-                )
+                return web.json_response({"error": f"Error decoding flare file: {decode_error}"}, status=500)
 
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -1081,9 +1036,7 @@ class WebUI:
             try:
                 parsed_data = json.loads(raw_content)
                 # Pretty-format the JSON
-                formatted_content = json.dumps(
-                    parsed_data, indent=2, ensure_ascii=False
-                )
+                formatted_content = json.dumps(parsed_data, indent=2, ensure_ascii=False)
                 is_valid_json = True
 
                 # Count traces and spans
@@ -1165,18 +1118,14 @@ class WebUI:
         try:
             # Send initial request count from unified storage
             last_count = len(request_storage)
-            await response.write(
-                f"data: {json.dumps({'type': 'count', 'count': last_count})}\n\n".encode()
-            )
+            await response.write(f"data: {json.dumps({'type': 'count', 'count': last_count})}\n\n".encode())
 
             # Keep connection alive with heartbeats
             # New requests are now sent via notify_new_request from middleware
             while True:
                 await asyncio.sleep(5)  # Heartbeat every 5 seconds
                 # Send heartbeat (will raise exception if connection is closed)
-                await response.write(
-                    f"data: {json.dumps({'type': 'heartbeat'})}\n\n".encode()
-                )
+                await response.write(f"data: {json.dumps({'type': 'heartbeat'})}\n\n".encode())
 
         except (ConnectionResetError, asyncio.CancelledError, Exception):
             pass
@@ -1200,11 +1149,14 @@ class WebUI:
             "/v1.0/traces",
         ]:
             try:
-                import json
                 import base64
+                import json
 
                 # Parse trace data using the proper decoder based on path
-                from .trace import decode_v04, decode_v05, decode_v07, decode_v1
+                from .trace import decode_v1
+                from .trace import decode_v04
+                from .trace import decode_v05
+                from .trace import decode_v07
 
                 raw_body = request_info.get("body", "")
                 content_type = request_info.get("content_type", "")
@@ -1251,9 +1203,7 @@ class WebUI:
                             "span_count": span_count,
                         }
                     )
-                    trace_data_b64 = base64.b64encode(
-                        trace_data_json.encode("utf-8")
-                    ).decode("ascii")
+                    trace_data_b64 = base64.b64encode(trace_data_json.encode("utf-8")).decode("ascii")
 
                     trace_data = {
                         "traces": clean_traces,
@@ -1331,9 +1281,7 @@ class WebUI:
         """Handle clearing all stored requests"""
         # Clear unified request storage
         request_storage.clear_requests()
-        return web.json_response(
-            {"status": "success", "message": "All requests cleared"}
-        )
+        return web.json_response({"status": "success", "message": "All requests cleared"})
 
     async def handle_download_requests(self, request: web.Request) -> web.Response:
         """Handle downloading all current requests as JSON"""
@@ -1445,9 +1393,7 @@ class WebUI:
 
             # Calculate timing
             min_start = min(span.get("start", 0) for span in valid_spans)
-            max_end = max(
-                span.get("start", 0) + span.get("duration", 0) for span in valid_spans
-            )
+            max_end = max(span.get("start", 0) + span.get("duration", 0) for span in valid_spans)
             total_duration = max_end - min_start
 
             if total_duration == 0:
@@ -1488,9 +1434,7 @@ class WebUI:
             parent_id = span.get("parent_id")
             if not parent_id or parent_id not in span_lookup:
                 # Root span
-                root_spans.append(
-                    {"span": span, "children": self._get_children(span, spans)}
-                )
+                root_spans.append({"span": span, "children": self._get_children(span, spans)})
 
         return root_spans
 
@@ -1501,15 +1445,11 @@ class WebUI:
 
         for span in all_spans:
             if span.get("parent_id") == parent_id and span.get("span_id") != parent_id:
-                children.append(
-                    {"span": span, "children": self._get_children(span, all_spans)}
-                )
+                children.append({"span": span, "children": self._get_children(span, all_spans)})
 
         return sorted(children, key=lambda c: c["span"].get("start", 0))
 
-    def _render_span_html(
-        self, span_info: Dict, min_start: int, total_duration: int, depth: int
-    ) -> str:
+    def _render_span_html(self, span_info: Dict, min_start: int, total_duration: int, depth: int) -> str:
         """Render HTML for a single span and its children"""
         span = span_info["span"]
         children = span_info.get("children", [])
@@ -1536,7 +1476,7 @@ class WebUI:
         indent_style = f"margin-left: {depth * 20}px;"
         bar_style = f"left: {left_percent}%; width: {max(width_percent, 0.5)}%;"
 
-        html = f'''
+        html = f"""
         <div class="{span_class}" style="{indent_style}">
             <div class="span-info">
                 <span class="service-name">{service}</span>
@@ -1545,7 +1485,7 @@ class WebUI:
             </div>
             <div class="span-bar" style="{bar_style}"></div>
         </div>
-        '''
+        """
 
         # Add children
         for child in children:

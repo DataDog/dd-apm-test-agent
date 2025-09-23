@@ -1588,15 +1588,18 @@ def make_app(
     middlewares = []
     if enable_web_ui:
         from .web import request_response_capture_middleware
+
         middlewares.append(request_response_capture_middleware)  # type: ignore
-    middlewares.extend([
-        handle_exception_middleware,  # type: ignore
-        agent.check_failure_middleware,  # type: ignore
-        agent.store_request_middleware,  # type: ignore
-        agent.request_forwarder_middleware,  # type: ignore
-        session_token_middleware,  # type: ignore
-        agent.vcr_proxy_suffix_middleware,  # type: ignore
-    ])
+    middlewares.extend(
+        [
+            handle_exception_middleware,  # type: ignore
+            agent.check_failure_middleware,  # type: ignore
+            agent.store_request_middleware,  # type: ignore
+            agent.request_forwarder_middleware,  # type: ignore
+            session_token_middleware,  # type: ignore
+            agent.vcr_proxy_suffix_middleware,  # type: ignore
+        ]
+    )
 
     app = web.Application(
         client_max_size=int(100e6),  # 100MB - arbitrary
@@ -2052,13 +2055,14 @@ def main(args: Optional[List[str]] = None) -> None:
     web_ui_app = None
     if parsed_args.web_ui_port > 0:
         from .web import WebUI
+
         # Pass configuration directly to WebUI
         web_ui_config = {
-            'snapshot_dir': parsed_args.snapshot_dir,
-            'vcr_cassettes_directory': parsed_args.vcr_cassettes_directory,
-            'disable_error_responses': parsed_args.disable_error_responses,
-            'web_ui_port': parsed_args.web_ui_port,
-            'max_requests': parsed_args.max_requests,
+            "snapshot_dir": parsed_args.snapshot_dir,
+            "vcr_cassettes_directory": parsed_args.vcr_cassettes_directory,
+            "disable_error_responses": parsed_args.disable_error_responses,
+            "web_ui_port": parsed_args.web_ui_port,
+            "max_requests": parsed_args.max_requests,
         }
         web_ui = WebUI(agent, config=web_ui_config)
         web_ui_app = web_ui.make_app()
