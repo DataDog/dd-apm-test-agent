@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    vcr: adds a new ``--vcr-ci-mode`` flag and accompanying ``VCR_CI_MODE`` environment variable that, when set to ``true`` (defaults to ``false``), will throw a 404 error if a cassette is not found in CI mode to ensure that all cassettes are generated locally and committed.

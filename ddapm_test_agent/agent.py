@@ -9,10 +9,12 @@ from dataclasses import field
 import json
 import logging
 import os
+import platform
 import pprint
 import re
 import socket
 import sys
+import threading
 from typing import Any
 from typing import Awaitable
 from typing import Callable
@@ -133,7 +135,7 @@ def _session_token(request: Request) -> Optional[str]:
 
 async def _vcr_proxy_cassette_prefix(request: Request) -> Optional[str]:
     try:
-        request_body: dict[str, str] = await request.json()
+        request_body: Dict[str, str] = await request.json()
         requested_test_name = request_body.get("test_name")
         return requested_test_name
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -165,7 +167,7 @@ async def handle_exception_middleware(request: Request, handler: _Handler) -> we
 
 async def _forward_request(
     request_data: bytes, headers: Mapping[str, str], full_agent_url: str
-) -> tuple[ClientResponse, str]:
+) -> Tuple[ClientResponse, str]:
     async with ClientSession() as session:
         async with session.post(
             full_agent_url,
@@ -238,6 +240,59 @@ def default_value_trace_results_summary():
         "Failed_Checks": 0,
         "Skipped_Checks": 0,
     }
+
+
+class MockQuery:
+    """Mock query object that behaves like a dict."""
+
+    def __init__(self):
+        self._data = {}  # Empty query params for named pipe processing
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __contains__(self, key):
+        return key in self._data
+
+
+class MockURL:
+    """Mock URL object for named pipe processing."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self.query = MockQuery()
+
+
+class MockRequest:
+    """Mock Request object for named pipe processing."""
+
+    def __init__(
+        self, method: str, path: str, headers: Dict[str, str], body: bytes, agent: "Agent", app: web.Application
+    ):
+        self.method = method
+        self.path = path
+        self.headers = headers
+        self._body = body
+        self._data: Dict[str, Any] = {}
+        self.url = MockURL(path)
+        self.content_type = headers.get("Content-Type", "application/msgpack")
+        self.app = app
+
+    async def read(self) -> bytes:
+        """Mock read() method that returns the body data."""
+        return self._body
+
+    def __getitem__(self, key):
+        return self._data.get(key)
+
+    def __setitem__(self, key, value):
+        self._data[key] = value
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
 
 
 @dataclass
@@ -832,7 +887,6 @@ class Agent:
                 "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
                 "span_events": True,  # Advertise support for the top-level Span field for Span Events
             },
-            headers={"Datadog-Agent-State": "03e868b3ecdd62a91423cc4c3917d0d151fb9fa486736911ab7f5a0750c63824"},
         )
 
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5", "v0.7", "v1"]) -> web.Response:
@@ -930,10 +984,9 @@ class Agent:
         # Get the span attributes that are to be removed for this snapshot.
         default_attribute_regex_replaces: Dict[str, str] = request.app["snapshot_regex_placeholders"]
         regex_overrides = _parse_map(request.url.query.get("regex_placeholders", ""))
-        attribute_regex_replaces = dict(
-            (f"{{{key}}}", re.compile(regex))
-            for (key, regex) in (default_attribute_regex_replaces | regex_overrides).items()
-        )
+        regex_replaces = default_attribute_regex_replaces.copy()
+        regex_replaces.update(regex_overrides)
+        attribute_regex_replaces = dict((f"{{{key}}}", re.compile(regex)) for (key, regex) in regex_replaces.items())
         log.info("using regex placeholders %r", attribute_regex_replaces)
 
         if "span_id" in span_removes:
@@ -1290,6 +1343,174 @@ class Agent:
                 raise web.HTTPBadRequest(body=msg)
         return response
 
+    def _parse_http_request(self, data: bytes) -> tuple[str, str, Dict[str, str], bytes]:
+        """Parse HTTP request from raw bytes.
+
+        Returns:
+            tuple: (method, path, headers_dict, body)
+        """
+        try:
+            # Split request into headers and body
+            if b"\r\n\r\n" in data:
+                header_data, body = data.split(b"\r\n\r\n", 1)
+            else:
+                header_data, body = data, b""
+
+            # Parse headers
+            header_lines = header_data.decode("utf-8", errors="ignore").split("\r\n")
+            if not header_lines:
+                raise ValueError("No request line found")
+
+            # Parse request line (e.g., "POST /v0.4/traces HTTP/1.1")
+            request_line = header_lines[0]
+            parts = request_line.split(" ")
+            if len(parts) < 2:
+                raise ValueError(f"Invalid request line: {request_line}")
+
+            method = parts[0]
+            path = parts[1]
+
+            # Parse headers
+            headers: Dict[str, str] = {}
+            for line in header_lines[1:]:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    headers[key.strip()] = value.strip()
+
+            return method, path, headers, body
+
+        except Exception as e:
+            log.error(f"Error parsing HTTP request: {e}")
+            raise ValueError(f"Failed to parse HTTP request: {e}") from e
+
+    def _process_named_pipe_request(self, data: bytes, app: web.Application) -> bytes:
+        """Process a request using the existing Agent infrastructure."""
+        try:
+            # Parse the HTTP request
+            method, path, headers, body = self._parse_http_request(data)
+
+            log.info(f"Processing Named Pipe request: {method} {path}")
+
+            # Create a mock Request object
+            mock_request = MockRequest(method, path, headers, body, self, app)
+
+            # Extract session token like the middleware does
+            token = None
+            if "X-Datadog-Test-Session-Token" in headers:
+                token = headers["X-Datadog-Test-Session-Token"]
+            mock_request["session_token"] = token
+
+            # Store request data for agent processing
+            mock_request["_testagent_data"] = body
+
+            # Route to appropriate handler based on path using dictionary lookup
+            path_handlers = {
+                "/v0.4/traces": self.handle_v04_traces,
+                "/v0.5/traces": self.handle_v05_traces,
+                "/v0.7/traces": self.handle_v07_traces,
+                "/v1.0/traces": self.handle_v1_traces,
+                "/v0.6/stats": self.handle_v06_tracestats,
+                "/v0.1/pipeline_stats": self.handle_v01_pipelinestats,
+                "/v0.7/config": self.handle_v07_remoteconfig,
+                "/telemetry/proxy/api/v2/apmtelemetry": self.handle_v2_apmtelemetry,
+                "/profiling/v1/input": self.handle_v1_profiling,
+                "/tracer_flare/v1": self.handle_v1_tracer_flare,
+                "/evp_proxy/v2/api/v2/llmobs": self.handle_evp_proxy_v2_api_v2_llmobs,
+                "/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric": self.handle_evp_proxy_v2_llmobs_eval_metric,
+                "/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric": self.handle_evp_proxy_v2_llmobs_eval_metric,
+                "/info": self.handle_info,
+                # Test endpoints
+                "/test/session/start": self.handle_session_start,
+                "/test/session/clear": self.handle_session_clear,
+                "/test/session/snapshot": self.handle_snapshot,
+                "/test/session/traces": self.handle_session_traces,
+                "/test/session/apmtelemetry": self.handle_session_apmtelemetry,
+                "/test/session/tracerflares": self.handle_session_tracerflares,
+                "/test/session/stats": self.handle_session_tracestats,
+                "/test/session/requests": self.handle_session_requests,
+                "/test/session/responses/config": self.handle_v07_remoteconfig_create,
+                "/test/session/responses/config/path": self.handle_v07_remoteconfig_path_create,
+                "/test/traces": self.handle_test_traces,
+                "/test/apmtelemetry": self.handle_test_apmtelemetry,
+                "/test/trace/analyze": self.handle_trace_analyze,
+                "/test/trace_check/failures": self.get_trace_check_failures,
+                "/test/trace_check/clear": self.clear_trace_check_failures,
+                "/test/trace_check/summary": self.get_trace_check_summary,
+                "/test/integrations/tested_versions": self.handle_get_tested_integrations,
+                "/test/settings": self.handle_settings,
+            }
+
+            # Get handler from dictionary lookup
+            handler = path_handlers.get(path)
+            if not handler:
+                return self._create_error_response(404, "Not Found")
+
+            try:
+                # Create a new event loop for this thread if one doesn't exist
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+            # Initialize the CheckTrace context like middleware does
+            start_trace("named_pipe_request %s %s" % (method, path))
+
+            # Run the handler
+            response = loop.run_until_complete(handler(mock_request))  # type: ignore[arg-type]
+
+            # Convert aiohttp response to HTTP bytes
+            return self._convert_response_to_http(response)
+
+        except Exception as e:
+            log.error(f"Error processing Named Pipe request: {e}", exc_info=True)
+            return self._create_error_response(500, "Internal Server Error")
+
+    def _convert_response_to_http(self, response: web.Response) -> bytes:
+        """Convert aiohttp Response to HTTP response bytes."""
+        try:
+            # Build HTTP response
+            status_line = f"HTTP/1.1 {response.status} {response.reason}\r\n"
+
+            # Build headers
+            headers_lines = []
+            for key, value in response.headers.items():
+                headers_lines.append(f"{key}: {value}\r\n")
+
+            # Get response body
+            body_data: bytes
+            if hasattr(response, "body") and response.body:
+                if isinstance(response.body, bytes):
+                    body_data = response.body
+                elif isinstance(response.body, str):
+                    body_data = response.body.encode()
+                else:
+                    # Handle Payload or other types by converting to string first
+                    body_data = str(response.body).encode()
+            else:
+                body_data = b""
+
+            # Add Content-Length header if not present
+            if "Content-Length" not in response.headers:
+                headers_lines.append(f"Content-Length: {len(body_data)}\r\n")
+
+            # Combine all parts
+            headers_str = "".join(headers_lines)
+            http_response = status_line + headers_str + "\r\n"
+            return http_response.encode("utf-8") + body_data
+
+        except Exception as e:
+            log.error(f"Error converting response to HTTP: {e}")
+            return self._create_error_response(500, "Internal Server Error")
+
+    def _create_error_response(self, status_code: int, reason: str) -> bytes:
+        """Create an HTTP error response."""
+        body = f"{status_code} {reason}".encode("utf-8")
+        response = f"HTTP/1.1 {status_code} {reason}\r\n"
+        response += f"Content-Length: {len(body)}\r\n"
+        response += "Content-Type: text/plain\r\n"
+        response += "\r\n"
+        return response.encode("utf-8") + body
+
 
 def make_otlp_http_app(agent: Agent) -> web.Application:
     """Create a separate HTTP application for OTLP endpoints using the shared agent instance."""
@@ -1428,7 +1649,7 @@ def make_app(
             web.route(
                 "*",
                 "/vcr/{path:.*}",
-                lambda request: proxy_request(request, vcr_cassettes_directory),
+                lambda request: proxy_request(request, vcr_cassettes_directory, vcr_ci_mode),
             ),
         ]
     )
@@ -1458,6 +1679,137 @@ def make_app(
     app["snapshot_regex_placeholders"] = snapshot_regex_placeholders
     app["vcr_cassettes_directory"] = vcr_cassettes_directory
     return app
+
+
+def _start_named_pipe_server(pipe_path: str, agent: "Agent", app: web.Application) -> None:
+    """Start Windows named pipe server."""
+    if platform.system() != "Windows":
+        log.warning("Named pipes are only supported on Windows, ignoring --trace-named-pipe")
+        return
+
+    # Import Windows-specific modules here to avoid import errors on other platforms
+    try:
+        import win32file
+        import win32pipe
+    except ImportError as e:
+        log.error(f"Failed to import Windows modules for named pipes: {e}")
+        return
+
+    _start_windows_named_pipe_server(pipe_path, agent, app, win32pipe, win32file)
+
+
+def _create_and_wait_for_client(
+    pipe_path: str, agent: "Agent", app: web.Application, win32pipe: Any, win32file: Any
+) -> None:
+    """Create a single pipe instance and wait for a client connection."""
+    while True:
+        try:
+            # Create named pipe instance
+            pipe_handle = win32pipe.CreateNamedPipe(
+                pipe_path,
+                win32pipe.PIPE_ACCESS_DUPLEX,
+                win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
+                win32pipe.PIPE_UNLIMITED_INSTANCES,  # allow multiple concurrent connections
+                65536,  # output buffer size
+                65536,  # input buffer size
+                0,  # default timeout
+                None,  # security attributes
+            )
+
+            if pipe_handle == win32file.INVALID_HANDLE_VALUE:
+                log.error("Failed to create named pipe instance")
+                import time
+
+                time.sleep(1)  # Wait before retrying
+                continue
+
+            log.debug("Named pipe instance created, waiting for client...")
+
+            # Wait for client connection
+            win32pipe.ConnectNamedPipe(pipe_handle, None)
+            log.info("Client connected to named pipe instance")
+
+            # Handle the client request
+            _handle_windows_named_pipe_client(pipe_handle, agent, app, win32pipe, win32file)
+
+        except Exception as e:
+            log.error(f"Error in named pipe instance: {e}")
+            import time
+
+            time.sleep(1)  # Wait before retrying
+
+
+def _start_windows_named_pipe_server(
+    pipe_path: str, agent: "Agent", app: web.Application, win32pipe: Any, win32file: Any
+) -> None:
+    """Start a Windows named pipe server with multiple instances."""
+    if win32pipe is None:
+        log.error("Windows named pipe support not available (pywin32 not installed)")
+        return
+
+    log.info(f"Starting Windows named pipe server on: {pipe_path}")
+
+    # Create multiple pipe instances for better concurrency
+    num_instances = 10  # Support up to 10 concurrent connections
+    threads = []
+
+    for _ in range(num_instances):
+        thread = threading.Thread(
+            target=_create_and_wait_for_client, args=(pipe_path, agent, app, win32pipe, win32file), daemon=True
+        )
+        thread.start()
+        threads.append(thread)
+
+    log.info(f"Started {num_instances} named pipe instances")
+
+    # Keep the main thread alive and monitor instance threads
+    try:
+        while True:
+            import time
+
+            time.sleep(5)
+
+            # Check if any threads have died and restart them
+            for i, thread in enumerate(threads):
+                if not thread.is_alive():
+                    log.warning(f"Restarting named pipe instance {i}")
+                    new_thread = threading.Thread(
+                        target=_create_and_wait_for_client,
+                        args=(pipe_path, agent, app, win32pipe, win32file),
+                        daemon=True,
+                    )
+                    new_thread.start()
+                    threads[i] = new_thread
+
+    except KeyboardInterrupt:
+        log.info("Named pipe server shutting down")
+
+
+def _handle_windows_named_pipe_client(
+    pipe_handle: Any, agent: "Agent", app: web.Application, win32pipe: Any, win32file: Any
+) -> None:
+    """Handle a Windows named pipe client connection."""
+    try:
+        # Read request data
+        result, data = win32file.ReadFile(pipe_handle, 65536)
+        if result == 0:  # SUCCESS
+            log.info(f"Received {len(data)} bytes from named pipe client")
+
+            # Process request
+            response = agent._process_named_pipe_request(data, app)
+
+            # Write response
+            win32file.WriteFile(pipe_handle, response)
+            log.info(f"Sent {len(response)} bytes response to named pipe client")
+
+    except Exception as e:
+        log.error(f"Error handling Windows named pipe client: {e}")
+    finally:
+        try:
+            win32pipe.DisconnectNamedPipe(pipe_handle)
+            win32file.CloseHandle(pipe_handle)
+        except Exception:
+            pass
 
 
 def main(args: Optional[List[str]] = None) -> None:
@@ -1560,6 +1912,12 @@ def main(args: Optional[List[str]] = None) -> None:
         type=str,
         default=os.environ.get("DD_APM_RECEIVER_SOCKET", None),
         help=("Will listen for traces on the specified socket path"),
+    )
+    parser.add_argument(
+        "--trace-named-pipe",
+        type=str,
+        default=os.environ.get("DD_APM_RECEIVER_NAMED_PIPE", None),
+        help=("Will listen for traces on the specified named pipe path"),
     )
     parser.add_argument(
         "--trace-request-delay",
@@ -1668,6 +2026,18 @@ def main(args: Optional[List[str]] = None) -> None:
 
     # Get the shared agent instance from the main app
     agent = app["agent"]
+
+    # Named pipe setup (after agent is available)
+    named_pipe_thread = None
+    if parsed_args.trace_named_pipe is not None:
+
+        def start_named_pipe_server():
+            _start_named_pipe_server(parsed_args.trace_named_pipe, agent, app)
+
+        named_pipe_thread = threading.Thread(target=start_named_pipe_server, daemon=True)
+        named_pipe_thread.start()
+        log.info(f"Started named pipe server on: {parsed_args.trace_named_pipe}")
+
     otlp_http_app = make_otlp_http_app(agent)
 
     # Create Web UI app if enabled

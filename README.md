@@ -17,11 +17,6 @@ See the [Development](#development) section for how to get the test agent runnin
 
 ## Installation
 
-The test agent can be installed using [nix](https://docs.determinate.systems/getting-started/):
-
-    nix profile install github:datadog/dd-apm-test-agent#ddapm-test-agent
-    # nix profile upgrade ddapm-test-agent # to upgrade
-
 The test agent can be installed from PyPI:
 
     pip install ddapm-test-agent
@@ -146,6 +141,13 @@ The cassettes are matched based on the path, method, and body of the request. To
 
 Optionally specifying whatever mounted path is used for the cassettes directory. The test agent comes with a default set of cassettes for OpenAI, Azure OpenAI, and DeepSeek.
 
+#### AWS Services
+AWS service proxying, specifically recording cassettes for the first time, requires a `AWS_SECRET_ACCESS_KEY` environment variable to be set for the container running the test agent. This is used to recalculate the AWS signature for the request, as the one generated client-side likely used `{test-agent-host}:{test-agent-port}/vcr/{aws-service}` as the host, and the signature will mismatch that on the actual AWS service.
+
+Additionally, the `AWS_REGION` environment variable can be set, defaulting to `us-east-1`.
+
+To add a new AWS service to proxy, add an entry in the `PROVIDER_BASE_URLS` for its provider url, and an entry in the `AWS_SERVICES` dictionary for the service name, since they are not always a one-to-one mapping with the implied provider url (e.g, `https://bedrock-runtime.{AWS_REGION}.amazonaws.com` is the provider url, but the service name is `bedrock`, as `bedrock` also has multiple sub services, like `converse`).
+
 #### Usage in clients
 
 To use this feature in your client, you can use the `/vcr/{provider}` endpoint to proxy requests to the provider API.
@@ -193,6 +195,10 @@ base_url = "http://127.0.0.1:9126/vcr/{new_provider}"
 And pass in a valid API key (if needed) in the way that provider expects.
 
 To redact api keys, modify the `filter_headers` list in the `get_vcr` function in `ddapm_test_agent/vcr_proxy.py`. This can be confirmed by viewing cassettes in the `vcr-cassettes` directory (or the otherwise specified directory), and verifying that any new cassettes do not contain the api key.
+
+#### Running in CI
+
+To have the vcr proxy throw a 404 error if a cassette is not found in CI mode to ensure that all cassettes are generated locally and committed, set the `VCR_CI_MODE` environment variable or the `--vcr-ci-mode` flag in the cli tool to `true` (this value defaults to `false`).
 
 ## Configuration
 

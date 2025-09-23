@@ -10,7 +10,8 @@ jobs:
     steps:
       - uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v4.9.1
         with:
-          python-version: '3.13'
+          # Run typing/formatting/etc checks on the oldest version we support
+          python-version: '3.11'
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           fetch-depth: 0
@@ -21,18 +22,26 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        python-version: ["3.8", "3.13"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
-      - uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v4.9.1
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
           python-version: ${{ matrix.python-version }}
       - name: install deps
         run: pip install .[testing]
-      - run: |
-          riot run -p --pass-env ${{ matrix.python-version}} test
+      # Windows: Use vanilla pytest (riot doesn't support Windows - see https://github.com/DataDog/riot/issues/74)
+      - name: Run tests (Windows - direct pytest)
+        if: runner.os == 'Windows'
+        run: |
+          echo "Using pytest directly due to riot Windows limitation (https://github.com/DataDog/riot/issues/74)"
+          python -m pytest -v --basetemp=$env:TEMP\pytest tests/ --ignore=tests/test_container.py
+      - name: Run tests (Unix - riot)
+        if: runner.os != 'Windows'
+        run: |
+          riot run --pass-env -p ${{ matrix.python-version}} test
   cassettes-size:
     runs-on: ubuntu-latest
     steps:
@@ -40,12 +49,12 @@ jobs:
       - name: Check VCR cassettes size
         run: |
           CASSETTES_SIZE=$(du -sb vcr-cassettes/ 2>/dev/null | cut -f1 || echo "0")
-          
+
           MAX_SIZE=2097152
-          
+
           echo "VCR cassettes size: ${CASSETTES_SIZE} bytes ($((CASSETTES_SIZE / 1024 / 1024))MB)"
           echo "Maximum allowed size: ${MAX_SIZE} bytes (2MB)"
-          
+
           if [ "$CASSETTES_SIZE" -gt "$MAX_SIZE" ]; then
             echo "❌ VCR cassettes directory is larger than 2MB!"
             echo "Current size: $((CASSETTES_SIZE / 1024 / 1024))MB"
@@ -54,4 +63,4 @@ jobs:
           else
             echo "✅ VCR cassettes directory size is within limits"
           fi
-    
+
