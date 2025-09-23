@@ -196,6 +196,10 @@ And pass in a valid API key (if needed) in the way that provider expects.
 
 To redact api keys, modify the `filter_headers` list in the `get_vcr` function in `ddapm_test_agent/vcr_proxy.py`. This can be confirmed by viewing cassettes in the `vcr-cassettes` directory (or the otherwise specified directory), and verifying that any new cassettes do not contain the api key.
 
+#### Running in CI
+
+To have the vcr proxy throw a 404 error if a cassette is not found in CI mode to ensure that all cassettes are generated locally and committed, set the `VCR_CI_MODE` environment variable or the `--vcr-ci-mode` flag in the cli tool to `true` (this value defaults to `false`).
+
 ## Configuration
 
 The test agent can be configured via command-line options or via environment variables.
