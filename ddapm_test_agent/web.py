@@ -168,7 +168,8 @@ class TraceProcessor:
 class RequestObserver(Protocol):
     """Observer interface for request notifications"""
 
-    async def notify_request(self, request_data: Dict) -> None: ...
+    async def notify_request(self, request_data: Dict) -> None:
+        ...
 
 
 class RequestStorage:
