@@ -1589,15 +1589,15 @@ def make_app(
     if enable_web_ui:
         from .web import request_response_capture_middleware
 
-        middlewares.append(request_response_capture_middleware)  # type: ignore
+        middlewares.append(request_response_capture_middleware)
     middlewares.extend(
         [
-            handle_exception_middleware,  # type: ignore
-            agent.check_failure_middleware,  # type: ignore
-            agent.store_request_middleware,  # type: ignore
-            agent.request_forwarder_middleware,  # type: ignore
-            session_token_middleware,  # type: ignore
-            agent.vcr_proxy_suffix_middleware,  # type: ignore
+            handle_exception_middleware,
+            agent.check_failure_middleware,
+            agent.store_request_middleware,
+            agent.request_forwarder_middleware,
+            session_token_middleware,
+            agent.vcr_proxy_suffix_middleware,
         ]
     )
 

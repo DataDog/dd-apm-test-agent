@@ -57,7 +57,7 @@ class TraceProcessor:
     """Utility class for processing trace data"""
 
     @staticmethod
-    def process_traces(raw_data: bytes, content_type: str, path: str, suppress_errors: bool = False) -> Dict:
+    def process_traces(raw_data: bytes, content_type: str, path: str, suppress_errors: bool = False) -> Dict[str, Any]:
         """Process trace data and return standardized trace information"""
         if not raw_data:
             return TraceProcessor._empty_trace_result(path)
@@ -89,7 +89,7 @@ class TraceProcessor:
             return TraceProcessor._empty_trace_result(path)
 
     @staticmethod
-    def _process_decoded_traces(traces: List, path: str) -> Dict:
+    def _process_decoded_traces(traces: List[Any], path: str) -> Dict[str, Any]:
         """Convert decoded traces to standardized format"""
         # Count traces and spans
         trace_count = len(traces)
@@ -153,7 +153,7 @@ class TraceProcessor:
         }
 
     @staticmethod
-    def _empty_trace_result(path: str) -> Dict:
+    def _empty_trace_result(path: str) -> Dict[str, Any]:
         """Return empty trace result for error cases"""
         return {
             "is_trace_request": True,
@@ -168,19 +168,19 @@ class TraceProcessor:
 class RequestObserver(Protocol):
     """Observer interface for request notifications"""
 
-    async def notify_request(self, request_data: Dict) -> None:
-        ...
+    async def notify_request(self, request_data: Dict[str, Any]) -> None:
+        pass
 
 
 class RequestStorage:
     """Centralized storage for all request/response data"""
 
     def __init__(self, max_requests: int = 200):
-        self._requests: List[Dict] = []
+        self._requests: List[Dict[str, Any]] = []
         self._max_requests = max_requests
         self._observers: List[RequestObserver] = []
 
-    def add_request(self, request_data: Dict) -> None:
+    def add_request(self, request_data: Dict[str, Any]) -> None:
         """Add a new request and notify observers"""
         self._requests.append(request_data)
 
@@ -198,7 +198,7 @@ class RequestStorage:
                 # Don't let observer failures break request processing
                 pass
 
-    def get_all_requests(self) -> List[Dict]:
+    def get_all_requests(self) -> List[Dict[str, Any]]:
         """Get all stored requests (most recent first)"""
         return list(reversed(self._requests))
 
@@ -224,7 +224,7 @@ request_storage = None
 
 
 @web.middleware
-async def request_response_capture_middleware(request: web.Request, handler):
+async def request_response_capture_middleware(request: web.Request, handler: Any) -> Any:
     """Middleware to capture all request/response data for WebUI"""
     request_start_time = time.time()
 
@@ -234,7 +234,8 @@ async def request_response_capture_middleware(request: web.Request, handler):
         try:
             request_body = await request.read()
             # Store the body back on the request for handlers to use
-            request._payload = request_body
+            # request._payload = request_body
+            request._payload.feed_data(request_body)
         except Exception as e:
             log.debug(f"Failed to read request body: {e}")
 
@@ -275,7 +276,8 @@ async def request_response_capture_middleware(request: web.Request, handler):
             },
             "duration_ms": (time.time() - request_start_time) * 1000,
         }
-        request_storage.add_request(request_data)
+        if request_storage is not None:
+            request_storage.add_request(request_data)
         raise
 
     # Store captured data for successful requests
@@ -296,7 +298,8 @@ async def request_response_capture_middleware(request: web.Request, handler):
     }
 
     # Store in unified request storage (with automatic size limit and observer notifications)
-    request_storage.add_request(request_data)
+    if request_storage is not None:
+        request_storage.add_request(request_data)
 
     return response
 
@@ -307,7 +310,7 @@ MAX_STORED_REQUESTS = 200
 class WebUI:
     """Web UI module for the dd-apm-test-agent"""
 
-    def __init__(self, agent: Any, config: Dict = None) -> None:
+    def __init__(self, agent: Any, config: Optional[Dict[str, Any]] = None) -> None:
         self.agent = agent
         self.config = config or {}
 
@@ -321,7 +324,7 @@ class WebUI:
             request_storage._max_requests = max_requests
 
         # Track SSE connections for real-time updates
-        self._sse_connections: weakref.WeakSet = weakref.WeakSet()
+        self._sse_connections: weakref.WeakSet[Any] = weakref.WeakSet()
 
         # Register as observer for request notifications
         request_storage.add_observer(self)
@@ -338,8 +341,8 @@ class WebUI:
 
         self.jinja_env.filters["timestamp_format"] = timestamp_format
 
-    async def notify_request(self, request_data: Dict) -> None:
-        """RequestObserver implementation - notify SSE connections of new requests"""
+    async def notify_request(self, request_data: Dict[str, Any]) -> None:
+        """Request Observer implementation - notify SSE connections of new requests"""
         if not self._sse_connections:
             return
 
@@ -352,7 +355,7 @@ class WebUI:
             {
                 "type": "new_request",
                 "request": processed_request,
-                "total_count": len(request_storage),
+                "total_count": len(request_storage) if request_storage is not None else 0,
             }
         )
 
@@ -368,12 +371,12 @@ class WebUI:
         for connection in dead_connections:
             self._sse_connections.discard(connection)
 
-    def get_requests_from_agent(self) -> List[dict]:
+    def get_requests_from_agent(self) -> List[Dict[str, Any]]:
         """Get processed request data from unified request storage"""
         processed_requests = []
 
         # Get all requests from unified storage (already in most recent first order)
-        all_requests = request_storage.get_all_requests()[:MAX_STORED_REQUESTS]
+        all_requests = request_storage.get_all_requests()[:MAX_STORED_REQUESTS] if request_storage is not None else []
 
         for req_data in all_requests:
             processed_request = self._process_single_request(req_data)
@@ -382,7 +385,7 @@ class WebUI:
 
         return processed_requests
 
-    def _process_single_request(self, req_data: Dict) -> Optional[Dict]:
+    def _process_single_request(self, req_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Process a single request data dict into WebUI format"""
         try:
             # Process request and response bodies using utility
@@ -436,7 +439,7 @@ class WebUI:
             log.debug(f"Failed to process captured request: {e}")
             return None
 
-    def _get_request_body(self, req) -> str:
+    def _get_request_body(self, req: Any) -> Any:
         """Extract and format request body for display"""
         if "_testagent_data" not in req:
             return ""
@@ -493,7 +496,7 @@ class WebUI:
 
         return TraceProcessor.process_traces(raw_data, content_type, path, suppress_errors=True)
 
-    def _is_trace_request(self, req) -> bool:
+    def _is_trace_request(self, req: Any) -> bool:
         """Check if request is a trace request based on path"""
         trace_paths = ["/v0.4/traces", "/v0.5/traces", "/v0.7/traces", "/v1.0/traces"]
         return req.path in trace_paths
@@ -594,7 +597,7 @@ class WebUI:
 
         content = template.render(
             title="Dashboard",
-            total_requests=len(request_storage),
+            total_requests=len(request_storage) if request_storage is not None else 0,
             # Server configuration
             web_ui_port=self.config.get("web_ui_port", 8080),
             apm_port=actual_apm_port,
@@ -619,7 +622,7 @@ class WebUI:
 
         content = template.render(
             requests=request_data,
-            total_requests=len(request_storage),
+            total_requests=len(request_storage) if request_storage is not None else 0,
         )
         return web.Response(text=content, content_type="text/html")
 
@@ -648,7 +651,7 @@ class WebUI:
         template = self.jinja_env.get_template("config.html")
 
         # Get selected token from query parameter
-        selected_token = request.query.get("token", "")
+        selected_token: Optional[str] = request.query.get("token", "")
         if selected_token == "null" or selected_token == "":
             selected_token = None
 
@@ -699,6 +702,10 @@ class WebUI:
 
             # Parse and validate JSON
             try:
+                if isinstance(config_data, bytes):
+                    config_data = config_data.decode("utf-8")
+                elif not isinstance(config_data, str):
+                    config_data = str(config_data)
                 parsed_config = json.loads(config_data)
             except json.JSONDecodeError as e:
                 return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
@@ -718,6 +725,10 @@ class WebUI:
 
             # Parse and validate JSON
             try:
+                if isinstance(config_data, bytes):
+                    config_data = config_data.decode("utf-8")
+                elif not isinstance(config_data, str):
+                    config_data = str(config_data)
                 parsed_config = json.loads(config_data)
             except json.JSONDecodeError as e:
                 return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
@@ -741,6 +752,10 @@ class WebUI:
 
             # Validate and parse message JSON
             try:
+                if isinstance(message, bytes):
+                    message = message.decode("utf-8")
+                elif not isinstance(message, str):
+                    message = str(message)
                 parsed_message = json.loads(message)
             except json.JSONDecodeError as e:
                 return web.json_response({"error": f"Invalid message JSON: {e}"}, status=400)
@@ -782,7 +797,7 @@ class WebUI:
 
             # Get flares for all other session tokens
             session_tokens = set()
-            for req_data in request_storage.get_all_requests():
+            for req_data in (request_storage.get_all_requests() if request_storage is not None else []):
                 token = req_data.get("headers", {}).get("X-Datadog-Test-Session-Token")
                 if token:
                     session_tokens.add(token)
@@ -919,7 +934,7 @@ class WebUI:
 
             # Get flares for all other session tokens
             session_tokens = set()
-            for req_data in request_storage.get_all_requests():
+            for req_data in (request_storage.get_all_requests() if request_storage is not None else []):
                 token = req_data.get("headers", {}).get("X-Datadog-Test-Session-Token")
                 if token:
                     session_tokens.add(token)
@@ -997,7 +1012,7 @@ class WebUI:
                         continue
         except Exception as e:
             # Handle directory access errors
-            error_msg = f"Error accessing snapshot directory: {e}"
+            error_msg: Optional[str] = f"Error accessing snapshot directory: {e}"
         else:
             error_msg = None
 
@@ -1039,6 +1054,7 @@ class WebUI:
                 # Pretty-format the JSON
                 formatted_content = json.dumps(parsed_data, indent=2, ensure_ascii=False)
                 is_valid_json = True
+                parse_error: Optional[str] = None
 
                 # Count traces and spans
                 trace_count = 0
@@ -1118,7 +1134,7 @@ class WebUI:
 
         try:
             # Send initial request count from unified storage
-            last_count = len(request_storage)
+            last_count = len(request_storage) if request_storage is not None else 0
             await response.write(f"data: {json.dumps({'type': 'count', 'count': last_count})}\n\n".encode())
 
             # Keep connection alive with heartbeats
@@ -1136,7 +1152,7 @@ class WebUI:
 
         return response
 
-    async def notify_new_request(self, request_info: dict) -> None:
+    async def notify_new_request(self, request_info: Dict[str, Any]) -> None:
         """Notify all SSE connections about a new request"""
         if not self._sse_connections:
             return
@@ -1224,7 +1240,7 @@ class WebUI:
             {
                 "type": "new_request",
                 "request": request_info,
-                "total_count": len(request_storage),
+                "total_count": len(request_storage) if request_storage is not None else 0,
             }
         )
 
@@ -1258,7 +1274,7 @@ class WebUI:
                 {
                     "type": "new_request",
                     "request": latest_request,
-                    "total_count": len(request_storage),
+                    "total_count": len(request_storage) if request_storage is not None else 0,
                 }
             )
 
@@ -1281,7 +1297,8 @@ class WebUI:
     async def handle_clear_requests(self, request: web.Request) -> web.Response:
         """Handle clearing all stored requests"""
         # Clear unified request storage
-        request_storage.clear_requests()
+        if request_storage is not None:
+            request_storage.clear_requests()
         return web.json_response({"status": "success", "message": "All requests cleared"})
 
     async def handle_download_requests(self, request: web.Request) -> web.Response:
@@ -1376,7 +1393,7 @@ class WebUI:
                 content_type="text/html",
             )
 
-    def _render_waterfall_html(self, traces: List) -> str:
+    def _render_waterfall_html(self, traces: List[Any]) -> str:
         """Render waterfall HTML from trace data"""
         if not traces:
             return '<div class="empty-state">No trace data available</div>'
@@ -1425,7 +1442,7 @@ class WebUI:
         html += "</div>"
         return html
 
-    def _build_span_hierarchy(self, spans: List[Dict]) -> List[Dict]:
+    def _build_span_hierarchy(self, spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Build hierarchical span structure"""
         # Create span lookup
         span_lookup = {span.get("span_id"): span for span in spans}
@@ -1439,7 +1456,7 @@ class WebUI:
 
         return root_spans
 
-    def _get_children(self, parent_span: Dict, all_spans: List[Dict]) -> List[Dict]:
+    def _get_children(self, parent_span: Dict[str, Any], all_spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Get child spans recursively"""
         parent_id = parent_span.get("span_id")
         children = []
@@ -1450,7 +1467,7 @@ class WebUI:
 
         return sorted(children, key=lambda c: c["span"].get("start", 0))
 
-    def _render_span_html(self, span_info: Dict, min_start: int, total_duration: int, depth: int) -> str:
+    def _render_span_html(self, span_info: Dict[str, Any], min_start: int, total_duration: int, depth: int) -> str:
         """Render HTML for a single span and its children"""
         span = span_info["span"]
         children = span_info.get("children", [])
