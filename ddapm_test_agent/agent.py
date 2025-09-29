@@ -1580,6 +1580,7 @@ def make_app(
     vcr_cassettes_directory: str,
     vcr_ci_mode: bool,
     vcr_provider_map: str,
+    vcr_ignore_headers: str,
 ) -> web.Application:
     agent = Agent()
     app = web.Application(
@@ -1641,7 +1642,9 @@ def make_app(
             web.route(
                 "*",
                 "/vcr/{path:.*}",
-                lambda request: proxy_request(request, vcr_cassettes_directory, vcr_ci_mode, vcr_provider_map),
+                lambda request: proxy_request(
+                    request, vcr_cassettes_directory, vcr_ci_mode, vcr_provider_map, vcr_ignore_headers
+                ),
             ),
         ]
     )
@@ -1955,6 +1958,12 @@ def main(args: Optional[List[str]] = None) -> None:
         default=os.environ.get("VCR_PROVIDER_MAP", ""),
         help="Comma-separated list of provider=base_url tuples to map providers to paths. Used in addition to the default provider paths.",
     )
+    parser.add_argument(
+        "--vcr-ignore-headers",
+        type=str,
+        default=os.environ.get("VCR_IGNORE_HEADERS", ""),
+        help="Comma-separated list of headers to ignore when recording VCR cassettes.",
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -2000,6 +2009,7 @@ def main(args: Optional[List[str]] = None) -> None:
         vcr_cassettes_directory=parsed_args.vcr_cassettes_directory,
         vcr_ci_mode=parsed_args.vcr_ci_mode,
         vcr_provider_map=parsed_args.vcr_provider_map,
+        vcr_ignore_headers=parsed_args.vcr_ignore_headers,
     )
 
     # Validate port configuration

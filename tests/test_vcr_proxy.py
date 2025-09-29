@@ -5,14 +5,17 @@ import socket
 import threading
 from typing import Any
 from typing import AsyncGenerator
+from typing import Dict
 from typing import Generator
 from typing import List
 from typing import Optional
+from typing import cast
 
 from aiohttp import FormData
 from aiohttp.multipart import MultipartWriter
 from aiohttp.test_utils import TestClient
 import pytest
+import yaml
 
 
 class DummyHandler(BaseHTTPRequestHandler):
@@ -80,10 +83,21 @@ def vcr_provider_map(dummy_server: HTTPServer) -> Generator[str, None, None]:
 
 
 @pytest.fixture
+def vcr_ignore_headers() -> Generator[str, None, None]:
+    yield "foo-bar,user-super-secret-api-key"
+
+
+@pytest.fixture
 async def vcr_test_name(agent: TestClient[Any, Any]) -> AsyncGenerator[None, None]:
     await agent.post("/vcr/test/start", json={"test_name": "test_name_prefix"})
     yield
     await agent.post("/vcr/test/stop")
+
+
+def get_recorded_request_from_yaml(file_path: str) -> Dict[str, Any]:
+    with open(file_path, "r") as file:
+        content = yaml.load(file, Loader=yaml.UnsafeLoader)
+    return cast(Dict[str, Any], content["interactions"][0])
 
 
 async def test_vcr_proxy_make_cassette(agent: TestClient[Any, Any], vcr_cassettes_directory: str) -> None:
@@ -177,3 +191,32 @@ async def test_vcr_proxy_with_multipart_form_data(agent: TestClient[Any, Any], v
 
     cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
     assert len(cassette_files) == 1
+
+
+async def test_vcr_proxy_does_not_record_ignored_headers(
+    agent: TestClient[Any, Any], vcr_cassettes_directory: str
+) -> None:
+    resp = await agent.post(
+        "/vcr/custom/serve",
+        json={"foo": "bar"},
+        headers={
+            "User-Super-Secret-Api-Key": "secret",
+            "Foo-Bar": "foo",
+            "Authorization": "test",
+            "Please-Record-Header": "test",
+        },
+    )
+
+    assert resp.status == 200
+    assert await resp.text() == "OK"
+
+    cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
+    assert len(cassette_files) == 1
+
+    cassette_file = cassette_files[0]
+    recorded_request = get_recorded_request_from_yaml(os.path.join(vcr_cassettes_directory, "custom", cassette_file))
+
+    assert recorded_request["request"]["headers"]["Please-Record-Header"] == ["test"]
+    assert "User-Super-Secret-Api-Key" not in recorded_request["request"]["headers"]
+    assert "Foo-Bar" not in recorded_request["request"]["headers"]
+    assert "Authorization" not in recorded_request["request"]["headers"]

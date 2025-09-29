@@ -163,6 +163,10 @@ With this configuration set, you can make the following request to the test agen
 curl -X POST 'http://127.0.0.1:9126/vcr/provider1/some/path'
 ```
 
+#### Ignoring Headers in Recorded Cassettes
+
+To ignore headers in recorded cassettes, you can use the `--vcr-ignore-headers` flag or `VCR_IGNORE_HEADERS` environment variable. The list should take the form of `header1,header2,header3`, and will be omitted from the recorded cassettes.
+
 #### AWS Services
 AWS service proxying, specifically recording cassettes for the first time, requires a `AWS_SECRET_ACCESS_KEY` environment variable to be set for the container running the test agent. This is used to recalculate the AWS signature for the request, as the one generated client-side likely used `{test-agent-host}:{test-agent-port}/vcr/{aws-service}` as the host, and the signature will mismatch that on the actual AWS service.
 

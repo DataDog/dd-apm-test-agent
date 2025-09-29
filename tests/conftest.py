@@ -128,6 +128,11 @@ def vcr_provider_map() -> Generator[str, None, None]:
 
 
 @pytest.fixture
+def vcr_ignore_headers() -> Generator[str, None, None]:
+    yield ""
+
+
+@pytest.fixture
 async def agent_app(
     aiohttp_server,
     agent_enabled_checks,
@@ -145,6 +150,7 @@ async def agent_app(
     vcr_cassettes_directory,
     vcr_ci_mode,
     vcr_provider_map,
+    vcr_ignore_headers,
 ):
     app = await aiohttp_server(
         make_app(
@@ -163,6 +169,7 @@ async def agent_app(
             vcr_cassettes_directory=vcr_cassettes_directory,
             vcr_ci_mode=vcr_ci_mode,
             vcr_provider_map=vcr_provider_map,
+            vcr_ignore_headers=vcr_ignore_headers,
         )
     )
     yield app
