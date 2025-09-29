@@ -123,6 +123,11 @@ def vcr_ci_mode() -> Generator[bool, None, None]:
 
 
 @pytest.fixture
+def vcr_provider_map() -> Generator[str, None, None]:
+    yield ""
+
+
+@pytest.fixture
 async def agent_app(
     aiohttp_server,
     agent_enabled_checks,
