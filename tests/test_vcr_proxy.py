@@ -1,10 +1,8 @@
-from http.server import BaseHTTPRequestHandler
-from http.server import HTTPServer
 import os
-import socket
-import threading
 from typing import Any
 from typing import AsyncGenerator
+from typing import Awaitable
+from typing import Callable
 from typing import Dict
 from typing import Generator
 from typing import List
@@ -12,31 +10,22 @@ from typing import Optional
 from typing import cast
 
 from aiohttp import FormData
+from aiohttp import web
 from aiohttp.multipart import MultipartWriter
 from aiohttp.test_utils import TestClient
+from aiohttp.test_utils import TestServer
 import pytest
 import yaml
 
 
-class DummyHandler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        if content_length > 0:
-            self.rfile.read(content_length)
+async def serve_handler(request: web.Request) -> web.Response:
+    response_headers = {}
 
-        if self.path == "/serve":
-            self.send_response(200)
-            self.send_header("Content-type", "text/plain")
-            self.send_header("Connection", "close")  # Ensure connection is closed cleanly
-            pass_through_value = self.headers.get("Pass-Through-Header-Value")
-            if pass_through_value:
-                self.send_header("Pass-Through-Header-Value", pass_through_value)
-            self.end_headers()
-            self.wfile.write(b"OK")
-        else:
-            self.send_response(404)
-            self.send_header("Connection", "close")
-            self.end_headers()
+    pass_through_value = request.headers.get("Pass-Through-Header-Value")
+    if pass_through_value:
+        response_headers["Pass-Through-Header-Value"] = pass_through_value
+
+    return web.Response(status=200, text="OK", headers=response_headers)
 
 
 class CustomFormData(FormData):
@@ -51,34 +40,20 @@ def get_cassettes_for_provider(provider: str, vcr_cassettes_directory: str) -> L
     return [f for f in os.listdir(custom_dir) if os.path.isfile(os.path.join(custom_dir, f))]
 
 
-@pytest.fixture(scope="session")
-def dummy_server() -> Generator[HTTPServer, None, None]:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("", 0))
-    port = sock.getsockname()[1]
-    sock.close()
+@pytest.fixture
+async def dummy_server(aiohttp_server: Callable[[web.Application], Awaitable[TestServer]]) -> TestServer:
+    app = web.Application()
+    app.router.add_post("/serve", serve_handler)
 
-    server = HTTPServer(("127.0.0.1", port), DummyHandler)
-    server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-    server_thread = threading.Thread(target=server.serve_forever)
-    server_thread.daemon = True
-    server_thread.start()
-
-    yield server
-
-    server.shutdown()
-    server.server_close()
-    server_thread.join(timeout=2)
+    server = await aiohttp_server(app)
+    return server
 
 
 @pytest.fixture
-def vcr_provider_map(dummy_server: HTTPServer) -> Generator[str, None, None]:
-    host, port = dummy_server.server_address
-    # Ensure host is a string, not bytes
-    host_str = host.decode() if isinstance(host, bytes) else host
-    provider_map = f"custom=http://{host_str}:{port}"
+def vcr_provider_map(dummy_server: TestServer) -> Generator[str, None, None]:
+    host = dummy_server.host
+    port = dummy_server.port
+    provider_map = f"custom=http://{host}:{port}"
     yield provider_map
 
 

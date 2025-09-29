@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -214,8 +215,11 @@ async def proxy_request(
         auth = AWS4Auth(aws_access_key, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_SERVICES[provider])
         request_kwargs["auth"] = auth
 
-    with get_vcr(provider, vcr_cassettes_directory, vcr_ignore_headers).use_cassette(cassette_file_name):
-        provider_response = requests.request(**request_kwargs)
+    def _make_request():
+        with get_vcr(provider, vcr_cassettes_directory, vcr_ignore_headers).use_cassette(cassette_file_name):
+            return requests.request(**request_kwargs)
+
+    provider_response = await asyncio.to_thread(_make_request)
 
     # Extract content type without charset
     content_type = provider_response.headers.get("content-type", "")
