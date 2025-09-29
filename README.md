@@ -139,7 +139,7 @@ The cassettes are matched based on the path, method, and body of the request. To
             -v $PWD/vcr-cassettes:/vcr-cassettes
             ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
 
-Optionally specifying whatever mounted path is used for the cassettes directory. The test agent comes with a default set of cassettes for OpenAI, Azure OpenAI, and DeepSeek.
+Optionally specifying whatever mounted path is used for the cassettes directory. The test agent comes with a default set of cassettes for OpenAI, Azure OpenAI, DeepSeek, Anthropic, Google GenAI, and AWS Bedrock Runtime.
 
 #### Custom 3rd Party Providers
 
