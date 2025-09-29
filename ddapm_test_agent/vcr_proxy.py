@@ -75,6 +75,15 @@ def _file_safe_string(s: str) -> str:
     return "".join(c if c.isalnum() or c in ".-" else "_" for c in s)
 
 
+def set_custom_vcr_providers(vcr_provider_map: str) -> None:
+    custom_providers = {
+        provider: provider_url
+        for provider_pair in vcr_provider_map.split(",")
+        for provider, provider_url in [provider_pair.split("=")]
+    }
+    PROVIDER_BASE_URLS.update(custom_providers)
+
+
 def normalize_multipart_body(body: bytes) -> str:
     if not body:
         return ""
@@ -146,7 +155,11 @@ def generate_cassette_name(path: str, method: str, body: bytes, vcr_cassette_pre
     )
 
 
-async def proxy_request(request: Request, vcr_cassettes_directory: str, vcr_ci_mode: bool) -> Response:
+async def proxy_request(
+    request: Request, vcr_cassettes_directory: str, vcr_ci_mode: bool, vcr_provider_map: str
+) -> Response:
+    set_custom_vcr_providers(vcr_provider_map)
+
     path = request.match_info["path"]
     if request.query_string:
         path = path + "?" + request.query_string
