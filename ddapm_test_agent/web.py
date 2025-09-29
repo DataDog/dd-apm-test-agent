@@ -234,7 +234,7 @@ async def request_response_capture_middleware(request: web.Request, handler: Any
         try:
             request_body = await request.read()
             # Store the body back on the request for handlers to use
-            # request._payload = request_body
+            request._payload.feed_eof()
             request._payload.feed_data(request_body)
         except Exception as e:
             log.debug(f"Failed to read request body: {e}")
