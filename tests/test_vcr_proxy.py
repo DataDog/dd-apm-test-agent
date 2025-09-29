@@ -151,15 +151,15 @@ async def test_vcr_proxy_uses_test_name_prefix(
 
 
 async def test_vcr_proxy_with_multipart_form_data(agent: TestClient[Any, Any], vcr_cassettes_directory: str) -> None:
-    form1 = CustomFormData(boundary="form-data-boundary-abc123")
-    form1.add_field("text_field", "some text value")
-    form1.add_field("number_field", "42")
-    form1.add_field("file_field", b"fake file content", filename="test.txt", content_type="text/plain")
+    form = CustomFormData(boundary="form-data-boundary-abc123")
+    form.add_field("text_field", "some text value")
+    form.add_field("number_field", "42")
+    form.add_field("file_field", b"fake file content", filename="test.txt", content_type="text/plain")
 
-    resp1 = await agent.post("/vcr/custom/serve", data=form1)
+    resp = await agent.post("/vcr/custom/serve", data=form)
 
-    assert resp1.status == 200
-    assert await resp1.text() == "OK"
+    assert resp.status == 200
+    assert await resp.text() == "OK"
 
     cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
     assert len(cassette_files) == 1
@@ -170,10 +170,10 @@ async def test_vcr_proxy_with_multipart_form_data(agent: TestClient[Any, Any], v
     form.add_field("number_field", "42")
     form.add_field("file_field", b"fake file content", filename="test.txt", content_type="text/plain")
 
-    resp2 = await agent.post("/vcr/custom/serve", data=form)
+    resp = await agent.post("/vcr/custom/serve", data=form)
 
-    assert resp2.status == 200
-    assert await resp2.text() == "OK"
+    assert resp.status == 200
+    assert await resp.text() == "OK"
 
     cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
     assert len(cassette_files) == 1
