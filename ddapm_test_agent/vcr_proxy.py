@@ -76,13 +76,14 @@ def _file_safe_string(s: str) -> str:
     return "".join(c if c.isalnum() or c in ".-" else "_" for c in s)
 
 
-def set_custom_vcr_providers(vcr_provider_map: str) -> None:
-    custom_providers = {
-        provider: provider_url
-        for provider_pair in vcr_provider_map.split(",")
-        for provider, provider_url in [provider_pair.split("=")]
-    }
-    PROVIDER_BASE_URLS.update(custom_providers)
+def get_custom_vcr_providers(vcr_provider_map: str) -> Dict[str, str]:
+    return dict(
+        [
+            vcr_provider_map.strip().split("=", 1)
+            for vcr_provider_map in vcr_provider_map.split(",")
+            if vcr_provider_map.strip()
+        ]
+    )
 
 
 def normalize_multipart_body(body: bytes) -> str:
@@ -160,7 +161,8 @@ def generate_cassette_name(path: str, method: str, body: bytes, vcr_cassette_pre
 async def proxy_request(
     request: Request, vcr_cassettes_directory: str, vcr_ci_mode: bool, vcr_provider_map: str, vcr_ignore_headers: str
 ) -> Response:
-    set_custom_vcr_providers(vcr_provider_map)
+    provider_base_urls = PROVIDER_BASE_URLS.copy()
+    provider_base_urls.update(get_custom_vcr_providers(vcr_provider_map))
 
     path = request.match_info["path"]
     if request.query_string:
@@ -171,7 +173,7 @@ async def proxy_request(
         return Response(body="Invalid path format. Expected /{provider}/...", status=400)
 
     provider, remaining_path = parts
-    if provider not in PROVIDER_BASE_URLS:
+    if provider not in provider_base_urls:
         return Response(body=f"Unsupported provider: {provider}", status=400)
 
     body_bytes = await request.read()
@@ -188,7 +190,7 @@ async def proxy_request(
             status=500,
         )
 
-    target_url = url_path_join(PROVIDER_BASE_URLS[provider], remaining_path)
+    target_url = url_path_join(provider_base_urls[provider], remaining_path)
     headers = {key: value for key, value in request.headers.items() if key != "Host"}
 
     request_kwargs: Dict[str, Any] = {
