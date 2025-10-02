@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add `/evp_proxy/v2/api/v2/exposures` endpoint to collect feature flag exposures requests.
