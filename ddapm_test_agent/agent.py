@@ -1128,6 +1128,7 @@ class Agent:
                 self.handle_v1_tracer_flare,
                 self.handle_evp_proxy_v2_api_v2_llmobs,
                 self.handle_evp_proxy_v2_llmobs_eval_metric,
+                self.handle_evp_proxy_v2_api_v2_exposures,
                 self.handle_v1_logs,
                 self.handle_v1_metrics,
             ):
