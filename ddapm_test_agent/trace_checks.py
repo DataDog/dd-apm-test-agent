@@ -14,6 +14,14 @@ from .trace import Span
 log = logging.getLogger(__name__)
 
 
+class TraceCheck(Check):
+    def on_span(self, span: Span) -> None:
+        pass
+
+    def on_trace_complete(self) -> None:
+        pass
+
+
 class CheckTraceCountHeader(Check):
     name = "trace_count_header"
     description = """
