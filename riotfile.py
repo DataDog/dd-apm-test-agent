@@ -63,6 +63,7 @@ venv = Venv(
                 "types-protobuf": latest,
                 "types-requests": latest,
                 "types-setuptools": latest,
+                "types-PyYAML": latest,
             },
         ),
         Venv(

@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    vcr: Adds support for specifying a list of custom providers in the ``--vcr-provider-map`` flag or ``VCR_PROVIDER_MAP`` environment variable. The list should take the form of ``provider1=http://provider1.com/,provider2=http://provider2.com/``.
+  - |
+    vcr: Adds support for specifying a list of headers to ignore when recording VCR cassettes in the ``--vcr-ignore-headers`` flag or ``VCR_IGNORE_HEADERS`` environment variable. The list should take the form of ``header1,header2,header3``.
