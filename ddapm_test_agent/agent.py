@@ -1580,6 +1580,8 @@ def make_app(
     snapshot_regex_placeholders: Dict[str, str],
     vcr_cassettes_directory: str,
     vcr_ci_mode: bool,
+    vcr_provider_map: str,
+    vcr_ignore_headers: str,
     enable_web_ui: bool = False,
 ) -> web.Application:
     agent = Agent()
@@ -1653,7 +1655,9 @@ def make_app(
             web.route(
                 "*",
                 "/vcr/{path:.*}",
-                lambda request: proxy_request(request, vcr_cassettes_directory, vcr_ci_mode),
+                lambda request: proxy_request(
+                    request, vcr_cassettes_directory, vcr_ci_mode, vcr_provider_map, vcr_ignore_headers
+                ),
             ),
         ]
     )
@@ -1962,6 +1966,18 @@ def main(args: Optional[List[str]] = None) -> None:
         help="Will change the test agent to record VCR cassettes in CI mode, throwing an error if a cassette is not found on /vcr/{provider}",
     )
     parser.add_argument(
+        "--vcr-provider-map",
+        type=str,
+        default=os.environ.get("VCR_PROVIDER_MAP", ""),
+        help="Comma-separated list of provider=base_url tuples to map providers to paths. Used in addition to the default provider paths.",
+    )
+    parser.add_argument(
+        "--vcr-ignore-headers",
+        type=str,
+        default=os.environ.get("VCR_IGNORE_HEADERS", ""),
+        help="Comma-separated list of headers to ignore when recording VCR cassettes.",
+    )
+    parser.add_argument(
         "--web-ui-port",
         type=int,
         default=int(os.environ.get("WEB_UI_PORT", 0)),
@@ -2017,6 +2033,8 @@ def main(args: Optional[List[str]] = None) -> None:
         snapshot_regex_placeholders=parsed_args.snapshot_regex_placeholders,
         vcr_cassettes_directory=parsed_args.vcr_cassettes_directory,
         vcr_ci_mode=parsed_args.vcr_ci_mode,
+        vcr_provider_map=parsed_args.vcr_provider_map,
+        vcr_ignore_headers=parsed_args.vcr_ignore_headers,
         enable_web_ui=parsed_args.web_ui_port > 0,
     )
 

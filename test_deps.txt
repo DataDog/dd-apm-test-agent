@@ -1,3 +1,4 @@
 ddtrace==3.11.0
 pytest
 riot==0.20.1
+PyYAML==6.0.3

@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -75,6 +76,16 @@ def _file_safe_string(s: str) -> str:
     return "".join(c if c.isalnum() or c in ".-" else "_" for c in s)
 
 
+def get_custom_vcr_providers(vcr_provider_map: str) -> Dict[str, str]:
+    return dict(
+        [
+            vcr_provider_map.strip().split("=", 1)
+            for vcr_provider_map in vcr_provider_map.split(",")
+            if vcr_provider_map.strip()
+        ]
+    )
+
+
 def normalize_multipart_body(body: bytes) -> str:
     if not body:
         return ""
@@ -114,14 +125,15 @@ def parse_authorization_header(auth_header: str) -> Dict[str, str]:
     return parsed
 
 
-def get_vcr(subdirectory: str, vcr_cassettes_directory: str) -> vcr.VCR:
+def get_vcr(subdirectory: str, vcr_cassettes_directory: str, vcr_ignore_headers: str) -> vcr.VCR:
     cassette_dir = os.path.join(vcr_cassettes_directory, subdirectory)
+    extra_ignore_headers = vcr_ignore_headers.split(",")
 
     return vcr.VCR(
         cassette_library_dir=cassette_dir,
         record_mode="once",
         match_on=["path", "method"],
-        filter_headers=CASSETTE_FILTER_HEADERS,
+        filter_headers=CASSETTE_FILTER_HEADERS + extra_ignore_headers,
     )
 
 
@@ -146,7 +158,12 @@ def generate_cassette_name(path: str, method: str, body: bytes, vcr_cassette_pre
     )
 
 
-async def proxy_request(request: Request, vcr_cassettes_directory: str, vcr_ci_mode: bool) -> Response:
+async def proxy_request(
+    request: Request, vcr_cassettes_directory: str, vcr_ci_mode: bool, vcr_provider_map: str, vcr_ignore_headers: str
+) -> Response:
+    provider_base_urls = PROVIDER_BASE_URLS.copy()
+    provider_base_urls.update(get_custom_vcr_providers(vcr_provider_map))
+
     path = request.match_info["path"]
     if request.query_string:
         path = path + "?" + request.query_string
@@ -156,7 +173,7 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str, vcr_ci_m
         return Response(body="Invalid path format. Expected /{provider}/...", status=400)
 
     provider, remaining_path = parts
-    if provider not in PROVIDER_BASE_URLS:
+    if provider not in provider_base_urls:
         return Response(body=f"Unsupported provider: {provider}", status=400)
 
     body_bytes = await request.read()
@@ -173,7 +190,7 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str, vcr_ci_m
             status=500,
         )
 
-    target_url = url_path_join(PROVIDER_BASE_URLS[provider], remaining_path)
+    target_url = url_path_join(provider_base_urls[provider], remaining_path)
     headers = {key: value for key, value in request.headers.items() if key != "Host"}
 
     request_kwargs: Dict[str, Any] = {
@@ -200,8 +217,11 @@ async def proxy_request(request: Request, vcr_cassettes_directory: str, vcr_ci_m
         auth = AWS4Auth(aws_access_key, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_SERVICES[provider])
         request_kwargs["auth"] = auth
 
-    with get_vcr(provider, vcr_cassettes_directory).use_cassette(cassette_file_name):
-        provider_response = requests.request(**request_kwargs)
+    def _make_request():
+        with get_vcr(provider, vcr_cassettes_directory, vcr_ignore_headers).use_cassette(cassette_file_name):
+            return requests.request(**request_kwargs)
+
+    provider_response = await asyncio.to_thread(_make_request)
 
     # Extract content type without charset
     content_type = provider_response.headers.get("content-type", "")
