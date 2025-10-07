@@ -329,6 +329,7 @@ class Agent:
             "/evp_proxy/v2/api/v2/llmobs",
             "/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric",
             "/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric",
+            "/evp_proxy/v4/api/v2/errorsintake",
         ]
 
         # Note that sessions are not cleared at any point since we don't know
@@ -801,6 +802,9 @@ class Agent:
     async def handle_evp_proxy_v2_llmobs_eval_metric(self, request: Request) -> web.Response:
         return web.HTTPOk()
 
+    async def handle_evp_proxy_v4_api_v2_errorsintake(self, request: Request) -> web.Response:
+        return web.HTTPOk()
+
     async def handle_put_tested_integrations(self, request: Request) -> web.Response:
         # we need to store the request manually since this is not a real DD agent endpoint
         await self._store_request(request)
@@ -878,6 +882,7 @@ class Agent:
                     "/v0.7/config",
                     "/tracer_flare/v1",
                     "/evp_proxy/v2/",
+                    "/evp_proxy/v4/",
                 ],
                 "feature_flags": [],
                 "config": {},
@@ -1124,6 +1129,7 @@ class Agent:
                 self.handle_v1_tracer_flare,
                 self.handle_evp_proxy_v2_api_v2_llmobs,
                 self.handle_evp_proxy_v2_llmobs_eval_metric,
+                self.handle_evp_proxy_v4_api_v2_errorsintake,
                 self.handle_v1_logs,
                 self.handle_v1_metrics,
             ):
@@ -1417,6 +1423,7 @@ class Agent:
                 "/evp_proxy/v2/api/v2/llmobs": self.handle_evp_proxy_v2_api_v2_llmobs,
                 "/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric": self.handle_evp_proxy_v2_llmobs_eval_metric,
                 "/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric": self.handle_evp_proxy_v2_llmobs_eval_metric,
+                "/evp_proxy/v4/api/v2/errorsintake": self.handle_evp_proxy_v4_api_v2_errorsintake,
                 "/info": self.handle_info,
                 # Test endpoints
                 "/test/session/start": self.handle_session_start,
@@ -1615,6 +1622,7 @@ def make_app(
             web.post("/evp_proxy/v2/api/v2/llmobs", agent.handle_evp_proxy_v2_api_v2_llmobs),
             web.post("/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric", agent.handle_evp_proxy_v2_llmobs_eval_metric),
             web.post("/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric", agent.handle_evp_proxy_v2_llmobs_eval_metric),
+            web.post("/evp_proxy/v4/api/v2/errorsintake", agent.handle_evp_proxy_v4_api_v2_errorsintake),
             web.get("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
