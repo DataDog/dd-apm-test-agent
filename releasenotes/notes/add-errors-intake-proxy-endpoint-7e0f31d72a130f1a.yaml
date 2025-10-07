@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add support for `/evp_proxy/v4/api/v2/errorsintake` endpoint to collect errors intake payload requests.
