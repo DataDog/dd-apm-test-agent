@@ -139,7 +139,33 @@ The cassettes are matched based on the path, method, and body of the request. To
             -v $PWD/vcr-cassettes:/vcr-cassettes
             ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
 
-Optionally specifying whatever mounted path is used for the cassettes directory. The test agent comes with a default set of cassettes for OpenAI, Azure OpenAI, and DeepSeek.
+Optionally specifying whatever mounted path is used for the cassettes directory. The test agent comes with a default set of cassettes for OpenAI, Azure OpenAI, DeepSeek, Anthropic, Google GenAI, and AWS Bedrock Runtime.
+
+#### Custom 3rd Party Providers
+
+The test agent can be configured to also register custom 3rd party providers. This is done by setting the `VCR_PROVIDER_MAP` environment variable or the `--vcr-provider-map` command-line option to a comma-separated list of provider names and their corresponding base URLs.
+
+```shell
+VCR_PROVIDER_MAP="provider1=http://provider1.com/,provider2=http://provider2.com/"
+```
+
+or
+
+```shell
+--vcr-provider-map="provider1=http://provider1.com/,provider2=http://provider2.com/"
+```
+
+The provider names are used to match the provider name in the request path, and the base URLs are used to proxy the request to the corresponding provider API endpoint.
+
+With this configuration set, you can make the following request to the test agent without error:
+
+```shell
+curl -X POST 'http://127.0.0.1:9126/vcr/provider1/some/path'
+```
+
+#### Ignoring Headers in Recorded Cassettes
+
+To ignore headers in recorded cassettes, you can use the `--vcr-ignore-headers` flag or `VCR_IGNORE_HEADERS` environment variable. The list should take the form of `header1,header2,header3`, and will be omitted from the recorded cassettes.
 
 #### AWS Services
 AWS service proxying, specifically recording cassettes for the first time, requires a `AWS_SECRET_ACCESS_KEY` environment variable to be set for the container running the test agent. This is used to recalculate the AWS signature for the request, as the one generated client-side likely used `{test-agent-host}:{test-agent-port}/vcr/{aws-service}` as the host, and the signature will mismatch that on the actual AWS service.
