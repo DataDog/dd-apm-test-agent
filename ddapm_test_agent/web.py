@@ -190,6 +190,7 @@ class RequestStorage:
 
         # Notify observers asynchronously
         import asyncio
+
         for observer in self._observers:
             try:
                 asyncio.create_task(observer.notify_request(request_data))
@@ -835,6 +836,7 @@ class WebUI:
 
             # Generate unique UUID for this flare request
             import uuid
+
             flare_uuid = str(uuid.uuid4())
 
             # Step 1: Send AGENT_CONFIG to enable debug logging
