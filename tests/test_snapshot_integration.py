@@ -5,6 +5,7 @@ and run the tests as usual.
 
 import asyncio
 import os
+import platform
 import subprocess
 from typing import Callable
 from typing import Dict
@@ -282,6 +283,7 @@ async def test_cmd(testagent_url: str, testagent: aiohttp.ClientSession, tracer:
     assert p.returncode == 1
 
 
+@pytest.mark.skipif(platform.system() == "Windows", reason="Profiling broken on windows")
 async def test_profiling_endpoint(testagent_url: str, testagent: aiohttp.ClientSession, tracer: Tracer) -> None:
     p = Profiler(tracer=tracer)
     p.start()
