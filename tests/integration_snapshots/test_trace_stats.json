@@ -1,0 +1,135 @@
+[[
+  {
+    "name": "http.request",
+    "service": "tests",
+    "resource": "/users/view",
+    "trace_id": 0,
+    "span_id": 1,
+    "parent_id": 0,
+    "type": "",
+    "error": 0,
+    "meta": {
+      "_dd.p.dm": "-3",
+      "_dd.p.ksr": "0",
+      "_dd.p.tid": "68e68ed400000000",
+      "language": "python",
+      "runtime-id": "6c0e6f7ea24a423bb099504dddd4f5e6"
+    },
+    "metrics": {
+      "_dd.rule_psr": 0.0,
+      "_dd.top_level": 1,
+      "_dd.tracer_kr": 1.0,
+      "_sampling_priority_v1": -1,
+      "process_id": 43445
+    },
+    "duration": 23000,
+    "start": 1759940308841385000
+  }],
+[
+  {
+    "name": "http.request",
+    "service": "tests",
+    "resource": "/users/view",
+    "trace_id": 1,
+    "span_id": 1,
+    "parent_id": 0,
+    "type": "",
+    "error": 0,
+    "meta": {
+      "_dd.p.dm": "-3",
+      "_dd.p.ksr": "0",
+      "_dd.p.tid": "68e68ed400000000",
+      "language": "python",
+      "runtime-id": "6c0e6f7ea24a423bb099504dddd4f5e6"
+    },
+    "metrics": {
+      "_dd.rule_psr": 0.0,
+      "_dd.top_level": 1,
+      "_dd.tracer_kr": 1.0,
+      "_sampling_priority_v1": -1,
+      "process_id": 43445
+    },
+    "duration": 7000,
+    "start": 1759940308841551000
+  }],
+[
+  {
+    "name": "http.request",
+    "service": "tests",
+    "resource": "/users/view",
+    "trace_id": 2,
+    "span_id": 1,
+    "parent_id": 0,
+    "type": "",
+    "error": 0,
+    "meta": {
+      "_dd.p.dm": "-3",
+      "_dd.p.ksr": "0",
+      "_dd.p.tid": "68e68ed400000000",
+      "language": "python",
+      "runtime-id": "6c0e6f7ea24a423bb099504dddd4f5e6"
+    },
+    "metrics": {
+      "_dd.rule_psr": 0.0,
+      "_dd.top_level": 1,
+      "_dd.tracer_kr": 1.0,
+      "_sampling_priority_v1": -1,
+      "process_id": 43445
+    },
+    "duration": 5000,
+    "start": 1759940308841584000
+  }],
+[
+  {
+    "name": "http.request",
+    "service": "tests",
+    "resource": "/users/view",
+    "trace_id": 3,
+    "span_id": 1,
+    "parent_id": 0,
+    "type": "",
+    "error": 0,
+    "meta": {
+      "_dd.p.dm": "-3",
+      "_dd.p.ksr": "0",
+      "_dd.p.tid": "68e68ed400000000",
+      "language": "python",
+      "runtime-id": "6c0e6f7ea24a423bb099504dddd4f5e6"
+    },
+    "metrics": {
+      "_dd.rule_psr": 0.0,
+      "_dd.top_level": 1,
+      "_dd.tracer_kr": 1.0,
+      "_sampling_priority_v1": -1,
+      "process_id": 43445
+    },
+    "duration": 3000,
+    "start": 1759940308841610000
+  }],
+[
+  {
+    "name": "http.request",
+    "service": "tests",
+    "resource": "/users/view",
+    "trace_id": 4,
+    "span_id": 1,
+    "parent_id": 0,
+    "type": "",
+    "error": 1,
+    "meta": {
+      "_dd.p.dm": "-3",
+      "_dd.p.ksr": "0",
+      "_dd.p.tid": "68e68ed400000000",
+      "language": "python",
+      "runtime-id": "6c0e6f7ea24a423bb099504dddd4f5e6"
+    },
+    "metrics": {
+      "_dd.rule_psr": 0.0,
+      "_dd.top_level": 1,
+      "_dd.tracer_kr": 1.0,
+      "_sampling_priority_v1": -1,
+      "process_id": 43445
+    },
+    "duration": 4000,
+    "start": 1759940308841628000
+  }]]
