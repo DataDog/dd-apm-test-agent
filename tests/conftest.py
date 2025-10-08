@@ -22,6 +22,7 @@ from aiohttp.client_exceptions import ClientOSError
 from aiohttp.web import Response
 from ddsketch import LogCollapsingLowestDenseDDSketch
 from ddsketch.pb.proto import DDSketchProto
+from ddtrace import config
 import grpc.aio as grpc_aio
 import msgpack
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import LogsServiceStub
@@ -40,8 +41,6 @@ from ddapm_test_agent.metrics import METRICS_ENDPOINT
 from ddapm_test_agent.trace import Span
 from ddapm_test_agent.trace import Trace
 from ddapm_test_agent.trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
-
-from ddtrace import config
 
 
 # Fix the service name to make tests consistently pass local and in CI.
