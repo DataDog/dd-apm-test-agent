@@ -1,3 +1,4 @@
+import platform
 import time
 
 import pytest
@@ -102,6 +103,7 @@ async def test_trace_content_length(agent, agent_enabled_checks):
     assert "Check 'trace_content_length' failed: content length" in await resp.text()
 
 
+@pytest.mark.skipif(platform.system() == "Windows", reason="Test doesn't work on Windows")
 @pytest.mark.parametrize("agent_enabled_checks", ["trace_stall"])
 async def test_trace_stall(
     agent,
