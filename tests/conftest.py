@@ -41,6 +41,11 @@ from ddapm_test_agent.trace import Span
 from ddapm_test_agent.trace import Trace
 from ddapm_test_agent.trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
 
+from ddtrace import config
+
+
+# Fix the service name to make tests consistently pass local and in CI.
+config.service = ""
 
 pytest_plugins = "aiohttp.pytest_plugin"
 

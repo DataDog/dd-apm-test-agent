@@ -1,7 +1,7 @@
 [[
   {
     "name": "http.request",
-    "service": "tests",
+    "service": "",
     "resource": "/users/view",
     "trace_id": 0,
     "span_id": 1,
@@ -28,7 +28,7 @@
 [
   {
     "name": "http.request",
-    "service": "tests",
+    "service": "",
     "resource": "/users/view",
     "trace_id": 1,
     "span_id": 1,
@@ -55,7 +55,7 @@
 [
   {
     "name": "http.request",
-    "service": "tests",
+    "service": "",
     "resource": "/users/view",
     "trace_id": 2,
     "span_id": 1,
@@ -82,7 +82,7 @@
 [
   {
     "name": "http.request",
-    "service": "tests",
+    "service": "",
     "resource": "/users/view",
     "trace_id": 3,
     "span_id": 1,
@@ -109,7 +109,7 @@
 [
   {
     "name": "http.request",
-    "service": "tests",
+    "service": "",
     "resource": "/users/view",
     "trace_id": 4,
     "span_id": 1,
