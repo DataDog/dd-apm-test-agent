@@ -2001,8 +2001,8 @@ def main(args: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--max-requests",
         type=int,
-        default=int(os.environ.get("MAX_REQUESTS", 1000)),
-        help="Maximum number of requests to keep in memory for the UI (default: 1000). Older requests are discarded when limit is reached.",
+        default=int(os.environ.get("MAX_REQUESTS", 200)),
+        help="Maximum number of requests to keep in memory for the UI (default: 200). Older requests are discarded when limit is reached.",
     )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)

@@ -132,7 +132,7 @@ The test agent includes an optional and **experimental** Web UI that provides a 
 The UI can be enabled with the `--web-ui-port PORT` command-line argument or by setting the `WEB_UI_PORT` environment variable.
 Once enabled, the Web UI can be accessed at `http://localhost:PORT` (default port is `8080`).
 
-There is also a maximum number of requests to store in memory to display in the UI, which can be configured with the `--max-requests` command-line argument or by setting the `MAX_REQUESTS` environment variable (default is `1000` requests).
+There is also a maximum number of requests to store in memory to display in the UI, which can be configured with the `--max-requests` command-line argument or by setting the `MAX_REQUESTS` environment variable (default is `200` requests).
 
 ### Recording 3rd party API requests
 
