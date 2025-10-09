@@ -1,0 +1,1925 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="requests-page">
+    <div class="page-header">
+        <h2>Requests</h2>
+    </div>
+
+    <div class="requests-container">
+        <div class="requests-controls">
+            <div class="filter-row">
+                <input type="text" id="filter-query" placeholder="Filter: method:POST -path:/info headers.user-agent:curl status:200..." class="filter-query-input">
+                <div class="tooltip-wrapper">
+                    <button class="action-button small" onclick="clearAllFilters()">Clear</button>
+                    <span class="tooltip-text">Clear all filters</span>
+                </div>
+                <div class="tooltip-wrapper">
+                    <button class="action-button small" onclick="showFilterHelp()">Help</button>
+                    <span class="tooltip-text">Show filter syntax guide</span>
+                </div>
+            </div>
+            <div class="stats-row">
+                <div class="request-stats">
+                    <span class="stat-item">Total: <span id="total-count">{{ requests|length }}</span></span>
+                    <span class="stat-item">Showing: <span id="visible-count">{{ requests|length }}</span></span>
+                </div>
+                <div class="action-controls">
+                    <div class="tooltip-wrapper">
+                        <button class="action-button small" onclick="refreshRequests()">Refresh</button>
+                        <span class="tooltip-text">Reload all requests from server</span>
+                    </div>
+                    <div class="tooltip-wrapper">
+                        <button id="pause-sse-btn" class="action-button small" onclick="toggleSSE()">Pause</button>
+                        <span class="tooltip-text">Pause/resume live request streaming</span>
+                    </div>
+                    <div class="tooltip-wrapper">
+                        <button class="action-button small" onclick="downloadRequests()">Download</button>
+                        <span class="tooltip-text">Download visible requests as JSON</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {% if requests %}
+            <div class="requests-table-container">
+                <table class="requests-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Method</th>
+                            <th>Path</th>
+                            <th>Size</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for req in requests %}
+                        <tr class="request-row" onclick="toggleRequestDetails('{{ loop.index0 }}')" style="cursor: pointer;">
+                            <td class="timestamp-cell">
+                                {{ req.timestamp | timestamp_format if req.timestamp }}
+                            </td>
+                            <td class="method-cell">
+                                <span class="method-badge method-{{ req.method.lower() }}">{{ req.method }}</span>
+                            </td>
+                            <td class="path-cell">
+                                <div class="path-info">
+                                    <span class="path">{{ req.path }}</span>
+                                    {% if req.query_string %}
+                                    <span class="query-string">?{{ req.query_string }}</span>
+                                    {% endif %}
+                                    {% if req.session_token %}
+                                    <span class="session-token">session: {{ req.session_token }}</span>
+                                    {% endif %}
+                                </div>
+                            </td>
+                            <td class="size-cell">
+                                {{ req.content_length }} bytes
+                            </td>
+                        </tr>
+                        <tr class="request-details" id="details-{{ loop.index0 }}" style="display: none;">
+                            <td colspan="4">
+                                <div class="request-details-content">
+                                    <div class="details-tabs">
+                                        <button class="tab-button active" onclick="switchTab('{{ loop.index0 }}', 'request')">Request</button>
+                                        <button class="tab-button" onclick="switchTab('{{ loop.index0 }}', 'response')">Response</button>
+                                        {% if req.trace_data %}
+                                        <button class="tab-button" onclick="switchTab('{{ loop.index0 }}', 'traces')">Traces</button>
+                                        {% endif %}
+                                    </div>
+
+                                    <div class="tab-content" id="request-tab-{{ loop.index0 }}">
+                                        <div class="details-section">
+                                            <h4>Headers</h4>
+                                            <div class="metadata-grid">
+                                                {% for header, value in req.headers.items() %}
+                                                <div class="metadata-item">
+                                                    <span class="metadata-label">{{ header }}:</span>
+                                                    <span class="metadata-value">{{ value }}</span>
+                                                </div>
+                                                {% endfor %}
+                                            </div>
+                                        </div>
+                                        {% if req.query_params %}
+                                        <div class="details-section">
+                                            <h4>Query Parameters</h4>
+                                            <div class="metadata-grid">
+                                                {% for param_name, param_values in req.query_params.items() %}
+                                                <div class="metadata-item">
+                                                    <span class="metadata-label">{{ param_name }}:</span>
+                                                    <span class="metadata-value">{{ param_values | join(', ') }}</span>
+                                                </div>
+                                                {% endfor %}
+                                            </div>
+                                        </div>
+                                        {% endif %}
+                                        {% if req.body %}
+                                        <div class="details-section">
+                                            <h4>Body</h4>
+                                            <div class="body-container">
+                                                {% if req.multipart_data %}
+                                                <div class="body-section">
+                                                    <h5>Multipart Form Data</h5>
+                                                    <div class="multipart-data">
+                                                        {% for key, value in req.multipart_data.items() %}
+                                                        <div class="multipart-field">
+                                                            <div class="field-header">
+                                                                <strong>{{ key }}:</strong>
+                                                                {% if key == 'flare_file' %}
+                                                                <span class="field-type">[ZIP file, {{ value|length }} chars base64]</span>
+                                                                {% else %}
+                                                                <span class="field-type">[text]</span>
+                                                                {% endif %}
+                                                            </div>
+                                                            <div class="field-value">
+                                                                <pre><code>{% if key == 'flare_file' %}{{ value[:500] }}{% if value|length > 500 %}...{% endif %}{% else %}{{ value }}{% endif %}</code></pre>
+                                                            </div>
+                                                        </div>
+                                                        {% endfor %}
+                                                    </div>
+                                                </div>
+                                                {% else %}
+                                                {% if not (req.content_type and 'multipart' in req.content_type.lower()) %}
+                                                <div class="body-section">
+                                                    <h5>Raw</h5>
+                                                    <div class="request-body">
+                                                        {% if req.content_type and 'msgpack' in req.content_type.lower() %}
+                                                        <pre><code class="raw-bytes" data-body="{{ req.body }}">Loading hex view...</code></pre>
+                                                        {% else %}
+                                                        <pre><code>{{ req.body }}</code></pre>
+                                                        {% endif %}
+                                                    </div>
+                                                </div>
+                                                {% endif %}
+                                                {% if req.content_type and ('json' in req.content_type.lower() or 'msgpack' in req.content_type.lower() or 'multipart' in req.content_type.lower()) %}
+                                                <div class="body-section">
+                                                    <h5>Decoded</h5>
+                                                    <div class="decoded-body" data-content-type="{{ req.content_type }}" data-body="{{ req.body }}">
+                                                        <!-- Decoded content will be inserted here by JavaScript -->
+                                                    </div>
+                                                </div>
+                                                {% endif %}
+                                                {% endif %}
+                                            </div>
+                                        </div>
+                                        {% endif %}
+                                    </div>
+
+                                    <div class="tab-content" id="response-tab-{{ loop.index0 }}" style="display: none;">
+                                        <div class="details-section">
+                                            <h4>Response Headers</h4>
+                                            <div class="metadata-grid">
+                                                <div class="metadata-item">
+                                                    <span class="metadata-label">Status:</span>
+                                                    <span class="metadata-value">{{ req.response.status }}</span>
+                                                </div>
+                                                <div class="metadata-item">
+                                                    <span class="metadata-label">Content-Type:</span>
+                                                    <span class="metadata-value">{{ req.response.content_type or 'text/plain' }}</span>
+                                                </div>
+                                                {% for header, value in req.response.headers.items() %}
+                                                <div class="metadata-item">
+                                                    <span class="metadata-label">{{ header }}:</span>
+                                                    <span class="metadata-value">{{ value }}</span>
+                                                </div>
+                                                {% endfor %}
+                                            </div>
+                                        </div>
+                                        <div class="details-section">
+                                            <h4>Response Body</h4>
+                                            <div class="body-container">
+                                                {% if not (req.response.content_type and 'multipart' in req.response.content_type.lower()) %}
+                                                <div class="body-section">
+                                                    <h5>Raw</h5>
+                                                    <div class="response-body">
+                                                        {% if req.response.body_is_binary %}
+                                                        <pre><code class="raw-bytes" data-body="{{ req.response.body }}">Loading hex view...</code></pre>
+                                                        {% else %}
+                                                        <pre><code>{{ req.response.body or 'Empty response body' }}</code></pre>
+                                                        {% endif %}
+                                                    </div>
+                                                </div>
+                                                {% endif %}
+                                                {% if req.response.content_type and ('json' in req.response.content_type.lower() or 'msgpack' in req.response.content_type.lower() or 'multipart' in req.response.content_type.lower()) %}
+                                                <div class="body-section">
+                                                    <h5>Decoded</h5>
+                                                    {% if req.response.body_is_binary %}
+                                                    <div class="decoded-body" data-content-type="{{ req.response.content_type }}" data-body="{{ req.response.body }}" data-is-binary="true">
+                                                    {% else %}
+                                                    <div class="decoded-body" data-content-type="{{ req.response.content_type }}" data-body="{{ req.response.body }}">
+                                                    {% endif %}
+                                                        <pre><code>Loading response...</code></pre>
+                                                    </div>
+                                                </div>
+                                                {% endif %}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {% if req.trace_data %}
+                                    <div class="tab-content" id="traces-tab-{{ loop.index0 }}" style="display: none;">
+                                        <!-- Hidden element containing trace data for JavaScript access -->
+                                        <div class="trace-data-container" data-trace-data-b64="{{ req.trace_data.trace_data_b64 }}" style="display: none;"></div>
+
+                                        <div class="details-section">
+                                            <h4>Trace Information</h4>
+                                            <div class="metadata-grid">
+                                                <div class="metadata-item">
+                                                    <span class="metadata-label">Traces:</span>
+                                                    <span class="metadata-value">{{ req.trace_data.trace_count }}</span>
+                                                </div>
+                                                <div class="metadata-item">
+                                                    <span class="metadata-label">Spans:</span>
+                                                    <span class="metadata-value">{{ req.trace_data.span_count }}</span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="details-section">
+                                            <h4>Trace Visualization</h4>
+                                            <div class="trace-container">
+                                                <div class="trace-controls">
+                                                    <button class="action-button small" onclick="toggleTraceView('{{ loop.index0 }}')">JSON View</button>
+                                                </div>
+
+                                                <div id="waterfall-view-{{ loop.index0 }}" class="waterfall-container">
+                                                    <!-- Waterfall visualization will be generated here -->
+                                                </div>
+
+                                                <div id="json-view-{{ loop.index0 }}" class="code-container" style="display: none;">
+                                                    <pre class="code-block"><code>{{ req.trace_data.traces | tojson(indent=2) }}</code></pre>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    {% endif %}
+
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <div class="empty-state">
+                <p>No requests received yet</p>
+                <p class="empty-subtitle">Requests will appear here as the test agent receives them</p>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<script src="https://msgpack.org/js/msgpack.js"></script>
+<script>
+// SSE state management (global scope)
+let sseEventSource = null;
+let ssePaused = false;
+let sseQueuedRequests = [];
+
+// Real-time filtering
+document.addEventListener('DOMContentLoaded', function() {
+    const filterQuery = document.getElementById('filter-query');
+    // Store full request objects for filtering
+    window.allRequests = [
+        {% for req in requests %}
+        {
+            method: {{ req.method | tojson }},
+            path: {{ req.path | tojson }},
+            session_token: {{ req.session_token | tojson }},
+            content_length: {{ req.content_length or 0 }},
+            timestamp: {{ req.timestamp or 0 }},
+            headers: {{ req.headers | tojson }},
+            query_string: {{ req.query_string | tojson }},
+            body: {{ req.body | tojson }},
+            response: {
+                status: {{ req.response.status if req.response else 'null' }},
+                headers: {{ req.response.headers | tojson if req.response else '{}' }},
+                body: {{ req.response.body | tojson if req.response else 'null' }}
+            }
+        }{% if not loop.last %},{% endif %}
+        {% endfor %}
+    ];
+    const visibleCount = document.getElementById('visible-count');
+
+    // Parse URL parameters for filter persistence
+    const urlParams = new URLSearchParams(window.location.search);
+    const filterParam = urlParams.get('filter');
+    if (filterParam) {
+        filterQuery.value = decodeURIComponent(filterParam);
+    }
+
+    function parseFilterQuery(queryString) {
+        const filters = [];
+        if (!queryString.trim()) return filters;
+
+        // Split by space but handle quoted strings
+        const tokens = queryString.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+
+        tokens.forEach(token => {
+            const isExclude = token.startsWith('-');
+            const cleanToken = isExclude ? token.slice(1) : token;
+            const colonIndex = cleanToken.indexOf(':');
+
+            if (colonIndex > 0) {
+                const key = cleanToken.slice(0, colonIndex).trim();
+                let value = cleanToken.slice(colonIndex + 1).trim();
+
+                // Remove quotes if present
+                if (value.startsWith('"') && value.endsWith('"')) {
+                    value = value.slice(1, -1);
+                }
+
+                filters.push({ key, value, exclude: isExclude });
+            }
+        });
+
+        return filters;
+    }
+
+    function getNestedValue(obj, path) {
+        return path.split('.').reduce((current, key) => {
+            return current && current[key] !== undefined ? current[key] : undefined;
+        }, obj);
+    }
+
+    function matchesFilter(request, filter) {
+        const { key, value, exclude } = filter;
+        let actualValue;
+
+
+        // Handle different filter keys
+        switch (key.toLowerCase()) {
+            case 'method':
+                actualValue = request.method?.toLowerCase();
+                break;
+            case 'path':
+                actualValue = request.path?.toLowerCase();
+                break;
+            case 'status':
+                actualValue = request.response?.status?.toString();
+                break;
+            case 'session':
+                actualValue = request.session_token?.toLowerCase();
+                break;
+            case 'size':
+                return matchNumericFilter(request.content_length || 0, value);
+            case 'duration':
+                return matchNumericFilter(request.duration_ms || 0, value);
+            case 'body':
+                actualValue = request.body?.toLowerCase();
+                break;
+            default:
+                // Handle nested keys like headers.user-agent or response.headers.content-type
+                if (key.startsWith('headers.')) {
+                    const headerName = key.slice(8).toLowerCase();
+                    const headers = getNestedValue(request, 'headers');
+                    // Case-insensitive header lookup
+                    if (headers) {
+                        const headerKey = Object.keys(headers).find(k => k.toLowerCase() === headerName);
+                        actualValue = headerKey ? headers[headerKey]?.toLowerCase() : undefined;
+                    }
+                } else if (key.startsWith('response.headers.')) {
+                    const headerName = key.slice(17).toLowerCase();
+                    const headers = getNestedValue(request, 'response.headers');
+                    // Case-insensitive header lookup
+                    if (headers) {
+                        const headerKey = Object.keys(headers).find(k => k.toLowerCase() === headerName);
+                        actualValue = headerKey ? headers[headerKey]?.toLowerCase() : undefined;
+                    }
+                } else if (key.startsWith('response.body')) {
+                    actualValue = getNestedValue(request, 'response.body')?.toLowerCase();
+                } else if (key.startsWith('response.')) {
+                    const respKey = key.slice(9);
+                    actualValue = getNestedValue(request, `response.${respKey}`)?.toString()?.toLowerCase();
+                } else {
+                    actualValue = getNestedValue(request, key)?.toString()?.toLowerCase();
+                }
+                break;
+        }
+
+        if (actualValue === undefined || actualValue === null) {
+            return exclude; // If field doesn't exist, exclude filters pass, include filters fail
+        }
+
+        const searchValue = value.toLowerCase();
+        let matches = false;
+
+        if (searchValue === '*') {
+            matches = actualValue !== '';
+        } else if (searchValue.includes('*')) {
+            // Simple wildcard matching
+            const regex = new RegExp('^' + searchValue.replace(/\*/g, '.*') + '$');
+            matches = regex.test(actualValue);
+        } else {
+            matches = actualValue.includes(searchValue);
+        }
+
+        const result = exclude ? !matches : matches;
+        if (key === 'path' && exclude) {
+            console.log('Exclusion debug:', { key, value, exclude, actualValue, matches, result });
+        }
+        return result;
+    }
+
+    function matchNumericFilter(actualValue, filterValue) {
+        const num = parseFloat(actualValue);
+        if (isNaN(num)) return false;
+
+        if (filterValue.startsWith('>')) {
+            return num > parseFloat(filterValue.slice(1));
+        } else if (filterValue.startsWith('<')) {
+            return num < parseFloat(filterValue.slice(1));
+        } else if (filterValue.startsWith('>=')) {
+            return num >= parseFloat(filterValue.slice(2));
+        } else if (filterValue.startsWith('<=')) {
+            return num <= parseFloat(filterValue.slice(2));
+        } else {
+            return num === parseFloat(filterValue);
+        }
+    }
+
+    function filterRequests() {
+        const queryString = filterQuery.value;
+        const filters = parseFilterQuery(queryString);
+
+        // Update URL with filter parameter
+        const url = new URL(window.location);
+        if (queryString.trim()) {
+            url.searchParams.set('filter', encodeURIComponent(queryString));
+        } else {
+            url.searchParams.delete('filter');
+        }
+        window.history.replaceState({}, '', url);
+
+        const rows = document.querySelectorAll('.request-row');
+        let visibleRows = 0;
+
+        rows.forEach((row, index) => {
+            // Get the full request object from our global array
+            const request = window.allRequests[index];
+
+            if (!request) {
+                // Fallback to showing the row if we don't have request data
+                row.style.display = '';
+                visibleRows++;
+                return;
+            }
+
+            // Apply all filters (AND logic)
+            let shouldShow = true;
+            for (const filter of filters) {
+                const filterResult = matchesFilter(request, filter);
+                if (!filterResult) {
+                    shouldShow = false;
+                    break;
+                }
+            }
+
+            // Debug for exclusion filters
+            if (filters.some(f => f.exclude && f.key === 'path')) {
+                console.log('Filter decision:', { path: request.path, shouldShow, filters });
+            }
+
+            if (shouldShow) {
+                row.style.display = '';
+                const detailsRow = row.nextElementSibling;
+                if (detailsRow && detailsRow.classList.contains('request-details') && detailsRow.style.display !== 'none') {
+                    detailsRow.style.display = '';
+                }
+                visibleRows++;
+            } else {
+                row.style.display = 'none';
+                const detailsRow = row.nextElementSibling;
+                if (detailsRow && detailsRow.classList.contains('request-details')) {
+                    detailsRow.style.display = 'none';
+                }
+            }
+        });
+
+        visibleCount.textContent = visibleRows;
+    }
+
+    // Set up Server-Sent Events for real-time updates
+    function setupSSE() {
+        sseEventSource = new EventSource('/requests/stream');
+
+        sseEventSource.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+
+            if (data.type === 'new_request') {
+                if (ssePaused) {
+                    // Queue the request for later processing
+                    sseQueuedRequests.push(data);
+                    updatePauseButton();
+                } else {
+                    addNewRequestToTable(data.request);
+                    updateRequestCount(data.total_count);
+                }
+            } else if (data.type === 'count') {
+                updateRequestCount(data.count);
+            }
+        };
+
+        sseEventSource.onerror = function(event) {
+            console.log('SSE connection error:', event);
+            // Reconnect after 5 seconds
+            setTimeout(() => {
+                sseEventSource.close();
+                setupSSE();
+            }, 5000);
+        };
+    }
+
+
+    function addNewRequestToTable(request) {
+        // Add to beginning of array to match DOM insertion order (newest first)
+        window.allRequests.unshift(request);
+
+        let tbody = document.querySelector('.requests-table tbody');
+
+        // If no table exists (empty state), create the table structure
+        if (!tbody) {
+            // Remove empty state if it exists
+            const emptyState = document.querySelector('.empty-state');
+            if (emptyState) {
+                emptyState.remove();
+                console.log('Removed empty state');
+            }
+
+            const requestsContainer = document.querySelector('.requests-table-container') ||
+                                    document.querySelector('.requests-container');
+
+            // Create the table structure
+            const tableHTML = `
+                <div class="requests-table-container">
+                    <table class="requests-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Method</th>
+                                <th>Path</th>
+                                <th>Size</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        </tbody>
+                    </table>
+                </div>
+            `;
+
+            if (requestsContainer && requestsContainer.classList.contains('requests-container')) {
+                requestsContainer.insertAdjacentHTML('beforeend', tableHTML);
+            } else {
+                document.querySelector('.requests-container').insertAdjacentHTML('beforeend', tableHTML);
+            }
+
+            tbody = document.querySelector('.requests-table tbody');
+        }
+
+        // Create new row HTML - new row will be at index 0 since we insert at top
+        const newRow = createRequestRow(request, 0);
+
+        // Insert at the top (most recent first)
+        tbody.insertAdjacentHTML('afterbegin', newRow);
+
+        // Update indices for all existing rows since we pushed them down
+        updateAllRowIndices();
+
+        // Process body decoding for the new request - get only the newly added elements
+        const lastAddedRow = tbody.querySelector('.request-row');
+        if (lastAddedRow) {
+            // The details row is the next sibling of the request row
+            const detailsRow = lastAddedRow.nextElementSibling;
+            if (detailsRow && detailsRow.classList.contains('request-details')) {
+                const newDecodedBodyElements = detailsRow.querySelectorAll('.decoded-body[data-body]');
+
+                console.log('Found decoded body elements:', newDecodedBodyElements.length);
+                newDecodedBodyElements.forEach(element => {
+                    const contentType = element.getAttribute('data-content-type');
+                    const bodyData = element.getAttribute('data-body');
+                    console.log('Processing body:', {contentType, bodyDataLength: bodyData ? bodyData.length : 0});
+
+                    if (bodyData && bodyData.trim()) {
+                        try {
+                            processBodyDecoding(element, contentType, bodyData);
+                        } catch (error) {
+                            console.error('Error processing body decoding:', error);
+                            // Continue processing other elements even if one fails
+                        }
+                    }
+                });
+            }
+        }
+
+        // Process raw bytes display for msgpack in new requests - get only the newly added elements
+        if (lastAddedRow && lastAddedRow.nextElementSibling) {
+            const newRawBytesElements = lastAddedRow.nextElementSibling.querySelectorAll('.raw-bytes[data-body]');
+            newRawBytesElements.forEach(element => {
+                const bodyData = element.getAttribute('data-body');
+                if (bodyData) {
+                    try {
+                        // Decode base64 to get actual bytes
+                        const binaryString = atob(bodyData);
+                        const uint8Array = new Uint8Array(binaryString.length);
+                        for (let i = 0; i < binaryString.length; i++) {
+                            uint8Array[i] = binaryString.charCodeAt(i);
+                        }
+                        const hexString = Array.from(uint8Array)
+                            .map(b => b.toString(16).padStart(2, '0'))
+                            .join(' ');
+                        element.textContent = hexString;
+                    } catch (e) {
+                        element.textContent = 'Error decoding base64: ' + e.message;
+                    }
+                }
+            });
+
+
+        // Re-apply filters to include the new request
+        filterRequests();
+        }
+    }
+
+    function updateAllRowIndices() {
+        // Update onclick handlers and IDs for all rows to match their new positions
+        const rows = document.querySelectorAll('.request-row');
+        rows.forEach((row, index) => {
+            // Update onclick handler
+            row.setAttribute('onclick', `toggleRequestDetails('${index}')`);
+
+            // Update the details row ID if it exists
+            const detailsRow = row.nextElementSibling;
+            if (detailsRow && detailsRow.classList.contains('request-details')) {
+                detailsRow.id = `details-${index}`;
+
+                // Update all tab IDs within the details row
+                const tabIds = ['info-tab', 'headers-tab', 'body-tab', 'response-tab', 'traces-tab'];
+                tabIds.forEach(tabId => {
+                    const tab = detailsRow.querySelector(`[id^="${tabId}"]`);
+                    if (tab) {
+                        tab.id = `${tabId}-${index}`;
+                    }
+                });
+            }
+        });
+    }
+
+    function createRequestRow(req, index) {
+        console.log('Creating request row with data:', { timestamp: req.timestamp, method: req.method, path: req.path });
+        const sessionToken = req.session_token ? `<span class="session-token">session: ${req.session_token}</span>` : '';
+        const queryString = req.query_string ? `<span class="query-string">?${req.query_string}</span>` : '';
+        const body = req.body || '';
+
+        let headersHTML = '';
+        for (const [header, value] of Object.entries(req.headers)) {
+            headersHTML += `
+                <div class="metadata-item">
+                    <span class="metadata-label">${header}:</span>
+                    <span class="metadata-value">${value}</span>
+                </div>
+            `;
+        }
+
+        return `
+            <tr class="request-row" onclick="toggleRequestDetails('${index}')" style="cursor: pointer;">
+                <td class="timestamp-cell">
+                    ${req.timestamp ? formatTimestamp(req.timestamp) : ''}
+                </td>
+                <td class="method-cell">
+                    <span class="method-badge method-${req.method.toLowerCase()}">${req.method}</span>
+                </td>
+                <td class="path-cell">
+                    <div class="path-info">
+                        <span class="path">${req.path}</span>
+                        ${queryString}
+                        ${sessionToken}
+                    </div>
+                </td>
+                <td class="size-cell">
+                    ${req.content_length} bytes
+                </td>
+            </tr>
+            <tr class="request-details" id="details-${index}" style="display: none;">
+                <td colspan="4">
+                    <div class="request-details-content">
+                        <div class="details-tabs">
+                            <button class="tab-button active" onclick="switchTab('${index}', 'request')">Request</button>
+                            <button class="tab-button" onclick="switchTab('${index}', 'response')">Response</button>
+                            ${req.trace_data ? `<button class="tab-button" onclick="switchTab('${index}', 'traces')">Traces</button>` : ''}
+                        </div>
+
+                        <div class="tab-content" id="request-tab-${index}">
+                            <div class="details-section">
+                                <h4>Headers</h4>
+                                <div class="metadata-grid">
+                                    ${headersHTML}
+                                </div>
+                            </div>
+                            ${req.query_params && Object.keys(req.query_params).length > 0 ? `
+                            <div class="details-section">
+                                <h4>Query Parameters</h4>
+                                <div class="metadata-grid">
+                                    ${Object.entries(req.query_params).map(([name, values]) =>
+                                        `<div class="metadata-item">
+                                            <span class="metadata-label">${name}:</span>
+                                            <span class="metadata-value">${Array.isArray(values) ? values.join(', ') : values}</span>
+                                        </div>`
+                                    ).join('')}
+                                </div>
+                            </div>
+                            ` : ''}
+                            ${body ? `
+                            <div class="details-section">
+                                <h4>Body</h4>
+                                <div class="body-container">
+                                    ${!(req.content_type && req.content_type.toLowerCase().includes('multipart')) ? `<div class="body-section">
+                                        <h5>Raw</h5>
+                                        <div class="request-body">
+                                            ${(req.content_type && req.content_type.toLowerCase().includes('msgpack')) ?
+                                                `<pre><code class="raw-bytes" data-body="${body ? body.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''}">Loading hex view...</code></pre>` :
+                                                `<pre><code>${body}</code></pre>`
+                                            }
+                                        </div>
+                                    </div>` : ''}
+                                    ${(req.content_type && (req.content_type.toLowerCase().includes('json') || req.content_type.toLowerCase().includes('msgpack') || req.content_type.toLowerCase().includes('multipart'))) ?
+                                        `<div class="body-section">
+                                            <h5>Decoded</h5>
+                                            <div class="decoded-body" data-content-type="${req.content_type || ''}" data-body="${body ? body.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''}">
+                                                <!-- Decoded content will be inserted here by JavaScript -->
+                                            </div>
+                                        </div>` : ''}
+                                </div>
+                            </div>
+                            ` : ''}
+                        </div>
+
+                        <div class="tab-content" id="response-tab-${index}" style="display: none;">
+                            <div class="details-section">
+                                <h4>Response Headers</h4>
+                                <div class="metadata-grid">
+                                    <div class="metadata-item">
+                                        <span class="metadata-label">Status:</span>
+                                        <span class="metadata-value">${req.response ? req.response.status : '200'}</span>
+                                    </div>
+                                    <div class="metadata-item">
+                                        <span class="metadata-label">Content-Type:</span>
+                                        <span class="metadata-value">${req.response ? (req.response.content_type || 'text/plain') : 'text/plain'}</span>
+                                    </div>
+                                    ${req.response && req.response.headers ? Object.entries(req.response.headers).map(([header, value]) => `
+                                    <div class="metadata-item">
+                                        <span class="metadata-label">${header}:</span>
+                                        <span class="metadata-value">${value}</span>
+                                    </div>
+                                    `).join('') : ''}
+                                </div>
+                            </div>
+                            <div class="details-section">
+                                <h4>Response Body</h4>
+                                <div class="body-container">
+                                    ${!(req.response && req.response.content_type && req.response.content_type.toLowerCase().includes('multipart')) ? `<div class="body-section">
+                                        <h5>Raw</h5>
+                                        <div class="response-body">
+                                            ${req.response && req.response.body_is_binary ?
+                                                `<pre><code class="raw-bytes" data-body="${req.response.body ? req.response.body.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''}">Loading hex view...</code></pre>` :
+                                                `<pre><code>${req.response && req.response.body ? req.response.body : 'Empty response body'}</code></pre>`
+                                            }
+                                        </div>
+                                    </div>` : ''}
+                                    ${(req.response && req.response.content_type && (req.response.content_type.toLowerCase().includes('json') || req.response.content_type.toLowerCase().includes('msgpack') || req.response.content_type.toLowerCase().includes('multipart'))) ?
+                                        `<div class="body-section">
+                                            <h5>Decoded</h5>
+                                            <div class="decoded-body" data-content-type="${req.response.content_type || ''}" data-body="${req.response.body ? req.response.body.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''}" ${req.response.body_is_binary ? 'data-is-binary="true"' : ''}>
+                                                <pre><code>Loading response...</code></pre>
+                                            </div>
+                                        </div>` : ''}
+                                </div>
+                            </div>
+                        </div>
+
+                        ${req.trace_data ? `
+                        <div class="tab-content" id="traces-tab-${index}" style="display: none;">
+                            <!-- Hidden element containing trace data for JavaScript access -->
+                            <div class="trace-data-container" data-trace-data-b64="${req.trace_data.trace_data_b64 || ''}" style="display: none;"></div>
+
+                            <div class="details-section">
+                                <h4>Trace Information</h4>
+                                <div class="metadata-grid">
+                                    <div class="metadata-item">
+                                        <span class="metadata-label">Traces:</span>
+                                        <span class="metadata-value">${req.trace_data.trace_count}</span>
+                                    </div>
+                                    <div class="metadata-item">
+                                        <span class="metadata-label">Spans:</span>
+                                        <span class="metadata-value">${req.trace_data.span_count}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="details-section">
+                                <h4>Trace Visualization</h4>
+                                <div class="trace-container">
+                                    <div class="trace-controls">
+                                        <button class="action-button small" onclick="toggleTraceView('${index}')">JSON View</button>
+                                    </div>
+
+                                    <div id="waterfall-view-${index}" class="waterfall-container">
+                                        <!-- Waterfall visualization will be generated here -->
+                                    </div>
+
+                                    <div id="json-view-${index}" class="code-container" style="display: none;">
+                                        <pre class="code-block"><code>${JSON.stringify(req.trace_data.traces, null, 2)}</code></pre>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        ` : ''}
+                    </div>
+                </td>
+            </tr>
+        `;
+    }
+
+    function updateRequestCount(count) {
+        const totalCountSpan = document.getElementById('total-count');
+        if (totalCountSpan) {
+            totalCountSpan.textContent = count;
+        }
+    }
+
+    // Make functions globally accessible
+    window.addNewRequestToTable = addNewRequestToTable;
+    window.updateRequestCount = updateRequestCount;
+
+    // Debug utility to verify array-DOM sync
+    window.debugFilterSync = function() {
+        const rows = document.querySelectorAll('.request-row');
+        const requests = window.allRequests;
+
+        console.log(`Array length: ${requests.length}, DOM rows: ${rows.length}`);
+
+        // Check first few entries
+        for (let i = 0; i < Math.min(5, rows.length); i++) {
+            const row = rows[i];
+            const request = requests[i];
+
+            // Extract method and path from DOM
+            const domMethod = row.querySelector('.method-badge')?.textContent;
+            const domPath = row.querySelector('.path-cell')?.textContent?.trim();
+
+            console.log(`Index ${i}:`, {
+                array: request ? `${request.method} ${request.path}` : 'undefined',
+                dom: `${domMethod} ${domPath}`
+            });
+        }
+    };
+
+    // Start SSE connection
+    setupSSE();
+
+    // Add event listeners for filters
+    filterQuery.addEventListener('input', filterRequests);
+
+    // Apply initial filter if loaded from URL
+    if (filterQuery.value.trim()) {
+        filterRequests();
+    }
+
+    // Process existing request bodies for decoding
+    processAllRequestBodies();
+});
+
+// SSE control functions (global scope)
+function pauseSSE() {
+    ssePaused = true;
+    updatePauseButton();
+    console.log('SSE paused');
+}
+
+function resumeSSE() {
+    ssePaused = false;
+
+    // Process queued requests in order
+    const processedCount = sseQueuedRequests.length;
+    while (sseQueuedRequests.length > 0) {
+        const data = sseQueuedRequests.shift();
+        addNewRequestToTable(data.request);
+        updateRequestCount(data.total_count);
+    }
+
+    updatePauseButton();
+    console.log('SSE resumed, processed', processedCount, 'queued requests');
+}
+
+function toggleSSE() {
+    if (ssePaused) {
+        resumeSSE();
+    } else {
+        pauseSSE();
+    }
+}
+
+function updatePauseButton() {
+    const pauseBtn = document.getElementById('pause-sse-btn');
+    if (pauseBtn) {
+        if (ssePaused) {
+            pauseBtn.textContent = `Resume (${sseQueuedRequests.length} queued)`;
+            pauseBtn.classList.add('paused');
+        } else {
+            pauseBtn.textContent = 'Pause';
+            pauseBtn.classList.remove('paused');
+        }
+    }
+}
+
+// Global helper functions for SSE
+function addNewRequestToTable(request) {
+    if (window.addNewRequestToTable) {
+        return window.addNewRequestToTable(request);
+    }
+}
+
+function updateRequestCount(count) {
+    if (window.updateRequestCount) {
+        return window.updateRequestCount(count);
+    }
+    const totalCountSpan = document.getElementById('total-count');
+    if (totalCountSpan) {
+        totalCountSpan.textContent = count;
+    }
+}
+
+// Function to process all request bodies on page load
+function processAllRequestBodies() {
+    // Process decoded bodies with size-based loading
+    const decodedBodyElements = document.querySelectorAll('.decoded-body');
+    decodedBodyElements.forEach((element, index) => {
+        const contentType = element.getAttribute('data-content-type');
+        const bodyData = element.getAttribute('data-body');
+
+        if (bodyData && bodyData.trim()) {
+            const isLargePayload = estimatePayloadSize(bodyData) > AUTO_DECODE_THRESHOLD_KB;
+
+            if (isLargePayload) {
+                // Show "Click to decode" button for large payloads
+                showClickToDecodeButton(element, contentType, bodyData, 'page', index);
+            } else {
+                // Process small payloads immediately with error handling
+                try {
+                    processBodyDecoding(element, contentType, bodyData);
+                } catch (error) {
+                    showDecodingError(element, error.message);
+                }
+            }
+        }
+    });
+
+    // Process raw bytes display for msgpack
+    const rawBytesElements = document.querySelectorAll('.raw-bytes[data-body]');
+    rawBytesElements.forEach(element => {
+        const bodyData = element.getAttribute('data-body');
+        if (bodyData) {
+            try {
+                // Decode base64 to get actual bytes
+                const binaryString = atob(bodyData);
+                const uint8Array = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    uint8Array[i] = binaryString.charCodeAt(i);
+                }
+                const hexString = Array.from(uint8Array)
+                    .map(b => b.toString(16).padStart(2, '0'))
+                    .join(' ');
+                element.textContent = hexString;
+            } catch (e) {
+                element.textContent = 'Error decoding base64: ' + e.message;
+            }
+        }
+    });
+}
+
+// Function to process body decoding based on content type
+function processBodyDecoding(element, contentType, bodyData) {
+    console.log('processBodyDecoding called with:', {contentType, bodyData: bodyData ? bodyData.substring(0, 100) + '...' : 'null'});
+    try {
+        if (!bodyData || !bodyData.trim()) {
+            element.innerHTML = `
+                <div class="empty-body">
+                    <pre><code>Empty or no response body</code></pre>
+                </div>
+            `;
+            return;
+        }
+
+        if (contentType && contentType.toLowerCase().includes('application/json')) {
+            // Handle HTML entities that might be in the data
+            let cleanBodyData = bodyData;
+            if (bodyData.includes('&quot;')) {
+                cleanBodyData = bodyData.replace(/&quot;/g, '"')
+                                        .replace(/&amp;/g, '&')
+                                        .replace(/&lt;/g, '<')
+                                        .replace(/&gt;/g, '>')
+                                        .replace(/&#x27;/g, "'");
+            }
+
+            // Try to parse and pretty-print JSON
+            try {
+                const jsonData = JSON.parse(cleanBodyData);
+                const prettyJson = JSON.stringify(jsonData, null, 2);
+                element.innerHTML = `
+                    <div class="json-body">
+                        <pre><code>${prettyJson}</code></pre>
+                    </div>
+                `;
+            } catch (jsonError) {
+                console.log('JSON parse error for data:', bodyData.substring(0, 200));
+                console.log('JSON parse error:', jsonError);
+                console.log('Full bodyData length:', bodyData.length);
+                console.log('CleanBodyData equals bodyData:', cleanBodyData === bodyData);
+
+                element.innerHTML = `
+                    <div class="error-body">
+                        <pre><code>Invalid JSON: ${jsonError.message}
+
+Data length: ${bodyData.length}
+Clean data length: ${cleanBodyData.length}
+First 100 chars: ${cleanBodyData.substring(0, 100)}
+Last 50 chars: ${cleanBodyData.slice(-50)}</code></pre>
+                    </div>
+                `;
+            }
+        } else if (contentType && contentType.toLowerCase().includes('application/msgpack')) {
+            // Try to decode msgpack
+            try {
+                // Decode base64 to get actual bytes for msgpack
+                const binaryString = atob(bodyData);
+                const uint8Array = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    uint8Array[i] = binaryString.charCodeAt(i);
+                }
+
+                // Decode using official msgpack.js library
+                let decodedData;
+                if (typeof msgpack !== 'undefined' && msgpack.unpack) {
+                    decodedData = msgpack.unpack(uint8Array);
+                } else if (typeof msgpack !== 'undefined' && msgpack.decode) {
+                    decodedData = msgpack.decode(uint8Array);
+                } else if (typeof MessagePack !== 'undefined') {
+                    decodedData = MessagePack.unpack(uint8Array);
+                } else {
+                    throw new Error('MessagePack library not found');
+                }
+                const prettyData = JSON.stringify(decodedData, null, 2);
+
+                element.innerHTML = `
+                    <div class="msgpack-body">
+                        <pre><code>${prettyData}</code></pre>
+                    </div>
+                `;
+            } catch (msgpackError) {
+                element.innerHTML = `
+                    <div class="msgpack-body">
+                        <pre><code>MessagePack Error: ${msgpackError.message}
+Base64 length: ${bodyData.length} chars
+Available libraries: ${Object.keys(window).filter(k => k.toLowerCase().includes('msgpack')).join(', ') || 'none'}</code></pre>
+                    </div>
+                `;
+            }
+        } else if (contentType && contentType.toLowerCase().includes('multipart/form-data')) {
+            // Handle multipart form data
+            try {
+                // Decode base64 to get raw multipart data
+                const rawData = atob(bodyData);
+
+                // Extract boundary from content type
+                const boundaryMatch = contentType.match(/boundary=([^;]+)/);
+                if (!boundaryMatch) {
+                    throw new Error('No boundary found in multipart content type');
+                }
+                const boundary = '--' + boundaryMatch[1];
+
+                // Parse multipart data
+                const parts = rawData.split(boundary);
+                const formData = {};
+                let fileCount = 0;
+
+                for (let i = 1; i < parts.length - 1; i++) { // Skip first (empty) and last (closing) parts
+                    const part = parts[i];
+                    if (!part.trim()) continue;
+
+                    // Split headers and body
+                    const headerBodySplit = part.indexOf('\r\n\r\n');
+                    if (headerBodySplit === -1) continue;
+
+                    const headers = part.substring(0, headerBodySplit);
+                    const body = part.substring(headerBodySplit + 4);
+
+                    // Extract field name from Content-Disposition header
+                    const nameMatch = headers.match(/name="([^"]+)"/);
+                    if (!nameMatch) continue;
+
+                    const fieldName = nameMatch[1];
+
+                    // Check if it's a file field
+                    const filenameMatch = headers.match(/filename="([^"]*)"/);
+                    if (filenameMatch) {
+                        // It's a file upload
+                        const filename = filenameMatch[1];
+                        const cleanBody = body.replace(/\r\n$/, ''); // Remove trailing CRLF
+                        formData[fieldName] = {
+                            type: 'file',
+                            filename: filename,
+                            size: cleanBody.length,
+                            content: `[Binary file data: ${cleanBody.length} bytes]`
+                        };
+                        fileCount++;
+                    } else {
+                        // It's a regular form field
+                        const cleanBody = body.replace(/\r\n$/, ''); // Remove trailing CRLF
+                        formData[fieldName] = {
+                            type: 'text',
+                            value: cleanBody
+                        };
+                    }
+                }
+
+                // Format for display
+                let displayContent = `Form Data (${Object.keys(formData).length} fields, ${fileCount} files):\n\n`;
+                for (const [key, data] of Object.entries(formData)) {
+                    if (data.type === 'file') {
+                        displayContent += `${key}: [FILE] ${data.filename} (${data.size} bytes)\n`;
+                    } else {
+                        displayContent += `${key}: ${data.value}\n`;
+                    }
+                }
+
+                element.innerHTML = `
+                    <div class="multipart-body">
+                        <pre><code>${displayContent}</code></pre>
+                    </div>
+                `;
+            } catch (multipartError) {
+                element.innerHTML = `
+                    <div class="multipart-body">
+                        <pre><code>Multipart parsing error: ${multipartError.message}
+
+Content-Type: ${contentType}
+Data length: ${bodyData.length} chars</code></pre>
+                    </div>
+                `;
+            }
+        } else {
+            // For other content types, try to show as text if it looks reasonable
+            try {
+                // Decode base64 to see if it's readable text
+                const rawData = atob(bodyData);
+                if (rawData.length > 0 && rawData.length < 10000) { // Only show reasonable-sized text
+                    // Check if it contains mostly printable characters
+                    const printableRatio = (rawData.match(/[\x20-\x7E\r\n\t]/g) || []).length / rawData.length;
+                    if (printableRatio > 0.8) { // 80% printable characters
+                        element.innerHTML = `
+                            <div class="text-body">
+                                <pre><code>${rawData}</code></pre>
+                            </div>
+                        `;
+                        return;
+                    }
+                }
+            } catch (e) {
+                // Not valid base64 or not readable text, fall through to hide
+            }
+            // For binary or other unreadable content types, hide the decoded section
+            element.style.display = 'none';
+        }
+    } catch (error) {
+        console.error('Error processing body:', error);
+        element.innerHTML = `
+            <div class="error-body">
+                <pre><code>Error processing response: ${error.message}</code></pre>
+            </div>
+        `;
+    }
+}
+
+function switchTab(index, tab) {
+    console.log('switchTab called:', index, tab);
+    // Update tab buttons
+    const tabButtons = document.querySelectorAll(`#details-${index} .tab-button`);
+    tabButtons.forEach(button => button.classList.remove('active'));
+    event.target.classList.add('active');
+
+    // Show/hide tab content
+    const requestTab = document.getElementById(`request-tab-${index}`);
+    const responseTab = document.getElementById(`response-tab-${index}`);
+    const tracesTab = document.getElementById(`traces-tab-${index}`);
+
+    console.log('Found tabs:', {requestTab, responseTab, tracesTab});
+
+    // Hide all tabs first
+    requestTab.style.display = 'none';
+    responseTab.style.display = 'none';
+    if (tracesTab) tracesTab.style.display = 'none';
+
+    // Show selected tab
+    if (tab === 'request') {
+        requestTab.style.display = 'block';
+    } else if (tab === 'response') {
+        responseTab.style.display = 'block';
+    } else if (tab === 'traces' && tracesTab) {
+        console.log('Showing traces tab and generating waterfall');
+        tracesTab.style.display = 'block';
+        // Generate waterfall view if not already generated
+        try {
+            generateWaterfallViewForRequest(index);
+        } catch (error) {
+            console.error('Error generating waterfall view:', error);
+        }
+    }
+}
+
+// Size threshold for automatic decoding (in KB)
+const AUTO_DECODE_THRESHOLD_KB = 50;
+
+function toggleRequestDetails(index) {
+    const detailsRow = document.getElementById(`details-${index}`);
+
+    if (detailsRow.style.display === 'none' || !detailsRow.style.display) {
+        detailsRow.style.display = 'table-row';
+
+        // Trigger deferred decoding for this request
+        deferredDecodeRequest(index);
+    } else {
+        detailsRow.style.display = 'none';
+    }
+}
+
+function deferredDecodeRequest(index) {
+    // Use a small timeout to allow the UI to render the details row first
+    setTimeout(() => {
+        processRequestDecoding(index);
+    }, 10);
+}
+
+function processRequestDecoding(index) {
+    console.log('Processing deferred decoding for request:', index);
+
+    // Find all decoded-body elements in this request's details
+    const detailsRow = document.getElementById(`details-${index}`);
+    if (!detailsRow) return;
+
+    const decodedBodyElements = detailsRow.querySelectorAll('.decoded-body[data-content-type]');
+
+    decodedBodyElements.forEach((element, elementIndex) => {
+        const contentType = element.getAttribute('data-content-type');
+        const bodyData = element.getAttribute('data-body');
+        const isLargePayload = estimatePayloadSize(bodyData) > AUTO_DECODE_THRESHOLD_KB;
+
+        if (isLargePayload) {
+            // Show "Click to decode" button for large payloads
+            showClickToDecodeButton(element, contentType, bodyData, index, elementIndex);
+        } else {
+            // Show loading state then decode automatically for small payloads
+            showLoadingState(element);
+            setTimeout(() => {
+                try {
+                    processBodyDecoding(element, contentType, bodyData);
+                } catch (error) {
+                    showDecodingError(element, error.message);
+                }
+            }, 50);
+        }
+    });
+
+    // Also process raw bytes elements
+    const rawBytesElements = detailsRow.querySelectorAll('.raw-bytes[data-body]');
+    rawBytesElements.forEach(element => {
+        const bodyData = element.getAttribute('data-body');
+        if (bodyData) {
+            setTimeout(() => {
+                try {
+                    // Decode base64 to get actual bytes
+                    const binaryString = atob(bodyData);
+                    const uint8Array = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        uint8Array[i] = binaryString.charCodeAt(i);
+                    }
+                    const hexString = Array.from(uint8Array)
+                        .map(b => b.toString(16).padStart(2, '0'))
+                        .join(' ');
+                    element.textContent = hexString;
+                } catch (e) {
+                    element.textContent = 'Error decoding base64: ' + e.message;
+                }
+            }, 25);
+        }
+    });
+}
+
+function estimatePayloadSize(base64Data) {
+    if (!base64Data) return 0;
+    // Base64 encoding increases size by ~33%, so decode length gives rough byte size
+    return (base64Data.length * 3 / 4) / 1024; // Convert to KB
+}
+
+function showLoadingState(element) {
+    element.innerHTML = `
+        <div class="loading-state">
+            <div class="loading-spinner"></div>
+            <span>Decoding payload...</span>
+        </div>
+    `;
+}
+
+function showClickToDecodeButton(element, contentType, bodyData, requestIndex, elementIndex) {
+    const payloadSizeKB = estimatePayloadSize(bodyData);
+    const elementId = `decode-btn-${requestIndex}-${elementIndex}`;
+
+    element.innerHTML = `
+        <div class="large-payload-notice">
+            <div class="payload-info">
+                <strong>Large Payload Detected</strong>
+                <p>Size: ~${payloadSizeKB.toFixed(1)} KB</p>
+                <p>Content-Type: ${contentType}</p>
+            </div>
+            <button id="${elementId}" class="decode-button" onclick="decodeOnDemand('${elementId}', '${requestIndex}', '${elementIndex}')">
+                Click to Decode
+            </button>
+        </div>
+    `;
+}
+
+function decodeOnDemand(buttonId, requestIndex, elementIndex) {
+    const button = document.getElementById(buttonId);
+    const element = button.closest('.decoded-body');
+    const contentType = element.getAttribute('data-content-type');
+    const bodyData = element.getAttribute('data-body');
+
+    // Show loading state
+    showLoadingState(element);
+
+    // Decode asynchronously to prevent UI blocking
+    setTimeout(() => {
+        try {
+            processBodyDecoding(element, contentType, bodyData);
+        } catch (error) {
+            showDecodingError(element, error.message);
+        }
+    }, 50);
+}
+
+function showDecodingError(element, errorMessage) {
+    element.innerHTML = `
+        <div class="decoding-error">
+            <strong>Decoding Error:</strong>
+            <pre>${errorMessage}</pre>
+        </div>
+    `;
+}
+
+function refreshRequests() {
+    location.reload();
+}
+
+async function clearRequests() {
+    if (!confirm('Are you sure you want to clear all requests? This cannot be undone.')) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/requests/clear', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        });
+
+        if (response.ok) {
+            // Clear the global requests array
+            window.allRequests = [];
+            // Clear the UI
+            const requestsTable = document.querySelector('.requests-table-container');
+            const requestsContainer = document.querySelector('.requests-container');
+
+            if (requestsTable) {
+                requestsTable.remove();
+            }
+
+            // Show empty state
+            const emptyStateHTML = `
+                <div class="empty-state">
+                    <p>No requests received yet</p>
+                    <p class="empty-subtitle">Requests will appear here as the test agent receives them</p>
+                </div>
+            `;
+            if (requestsContainer) {
+                requestsContainer.insertAdjacentHTML('beforeend', emptyStateHTML);
+            }
+
+            // Update counter (if it exists)
+            const statBadge = document.querySelector('.stat-badge');
+            if (statBadge) {
+                statBadge.textContent = '0 total requests';
+            }
+        } else {
+            const errorText = await response.text();
+            console.error('Clear requests failed:', response.status, errorText);
+            alert(`Failed to clear requests: ${response.status}`);
+        }
+    } catch (error) {
+        console.error('Error clearing requests:', error);
+        alert('Error clearing requests');
+    }
+}
+
+function downloadRequests() {
+    // Get currently visible requests (respecting filters)
+    const visibleRequests = [];
+    const rows = document.querySelectorAll('.request-row');
+
+    rows.forEach((row, index) => {
+        // Check if row is visible (not filtered out)
+        if (row.style.display !== 'none') {
+            if (window.allRequests[index]) {
+                visibleRequests.push(window.allRequests[index]);
+            }
+        }
+    });
+
+    // Create a blob with the filtered data (minified JSON)
+    const jsonData = JSON.stringify(visibleRequests);
+    const blob = new Blob([jsonData], { type: 'application/json' });
+
+    // Create download link
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `requests_filtered_${new Date().toISOString().slice(0,19).replace(/[:-]/g, '')}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
+}
+
+function formatTimestamp(timestamp) {
+    if (!timestamp) return '';
+    const date = new Date(timestamp * 1000); // Convert from seconds to milliseconds
+    return date.getFullYear() + '-' +
+           String(date.getMonth() + 1).padStart(2, '0') + '-' +
+           String(date.getDate()).padStart(2, '0') + ' ' +
+           String(date.getHours()).padStart(2, '0') + ':' +
+           String(date.getMinutes()).padStart(2, '0') + ':' +
+           String(date.getSeconds()).padStart(2, '0');
+}
+
+
+function applyQuickFilter(filterType, value) {
+    const filterQuery = document.getElementById('filter-query');
+
+    // Create filter string based on type
+    let filterString = '';
+    switch(filterType) {
+        case 'method':
+            filterString = `method:${value}`;
+            break;
+        case 'path':
+            filterString = `path:${value}`;
+            break;
+        case 'session':
+            filterString = `session:${value}`;
+            break;
+    }
+
+    // Add to existing filter or replace
+    const currentFilter = filterQuery.value.trim();
+    if (currentFilter) {
+        filterQuery.value = `${currentFilter} ${filterString}`;
+    } else {
+        filterQuery.value = filterString;
+    }
+
+    // Trigger the filter update
+    const filterEvent = new Event('input', { bubbles: true });
+    filterQuery.dispatchEvent(filterEvent);
+}
+
+function clearAllFilters() {
+    const filterQuery = document.getElementById('filter-query');
+    filterQuery.value = '';
+
+    // Trigger filter update
+    const filterEvent = new Event('input', { bubbles: true });
+    filterQuery.dispatchEvent(filterEvent);
+}
+
+function showFilterHelp() {
+    const helpText = `Filter Syntax:
+• key:value - Include requests matching key=value
+• -key:value - Exclude requests matching key=value
+• Multiple filters with spaces (AND logic)
+
+Supported keys:
+• method:POST - HTTP method
+• path:/api/traces - Request path (partial match)
+• status:200 - Response status code
+• session:abc123 - Session token (partial match)
+• headers.user-agent:curl - Request header
+• response.headers.content-type:json - Response header
+• size:>1000 or size:<500 - Content size comparison
+• body:contains - Request body contains text
+• response.body:error - Response body contains text
+
+Examples:
+• method:POST -path:/info
+• headers.user-agent:curl status:200
+• size:>1000 -headers.authorization:*
+• method:POST path:/traces response.status:200`;
+
+    alert(helpText);
+}
+
+function downloadFlareFile(sessionToken, requestIndex) {
+    // Find the multipart data for this request
+    const requestRows = document.querySelectorAll('.request-row');
+    if (requestIndex >= requestRows.length) {
+        alert('Request not found');
+        return;
+    }
+
+    // Get the flare_file data from the DOM
+    const detailsRow = document.getElementById(`details-${requestIndex}`);
+    if (!detailsRow) {
+        alert('Request details not found');
+        return;
+    }
+
+    const flareFields = detailsRow.querySelectorAll('.multipart-field');
+    let flareFileData = null;
+
+    flareFields.forEach(field => {
+        const headerText = field.querySelector('.field-header strong').textContent;
+        if (headerText === 'flare_file:') {
+            const codeElement = field.querySelector('pre code');
+            if (codeElement) {
+                // Get the full data from the data attribute, fallback to text content
+                flareFileData = codeElement.getAttribute('data-full-data') || codeElement.textContent.replace(/\.\.\.$/, '');
+            }
+        }
+    });
+
+    if (!flareFileData) {
+        alert('Flare file data not found');
+        return;
+    }
+
+    try {
+        // Convert base64 to binary data
+        const binaryString = atob(flareFileData);
+        const uint8Array = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            uint8Array[i] = binaryString.charCodeAt(i);
+        }
+
+        // Create blob and download
+        const blob = new Blob([uint8Array], { type: 'application/zip' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `tracer_flare_${sessionToken || 'default'}_${Date.now()}.zip`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    } catch (e) {
+        alert('Error downloading file: ' + e.message);
+    }
+}
+
+// Waterfall visualization functions for traces tab
+const requestTraceData = new Map(); // Cache trace data per request index
+const serviceColorMap = new Map();
+let nextColorIndex = 0;
+
+function getServiceColor(serviceName) {
+    if (!serviceColorMap.has(serviceName)) {
+        serviceColorMap.set(serviceName, nextColorIndex % 8);
+        nextColorIndex++;
+    }
+    return serviceColorMap.get(serviceName);
+}
+
+function generateWaterfallViewForRequest(index) {
+    console.log('generateWaterfallViewForRequest called with index:', index);
+    try {
+        const container = document.getElementById(`waterfall-view-${index}`);
+
+        if (!container) {
+            console.error(`Waterfall container not found for request ${index}`);
+            return;
+        }
+
+        console.log('Found waterfall container:', container);
+
+        // Check if already generated (ignore HTML comments and whitespace)
+        const hasActualContent = Array.from(container.childNodes).some(node =>
+            node.nodeType === Node.ELEMENT_NODE ||
+            (node.nodeType === Node.TEXT_NODE && node.textContent.trim())
+        );
+        if (hasActualContent) {
+            console.log('Container already has actual content, skipping generation');
+            return;
+        }
+
+        console.log('About to get trace data for request:', index);
+        // Get trace data from the request
+        const traceData = getTraceDataForRequest(index);
+
+        console.log('Generating waterfall view for request', index, 'traceData:', traceData);
+
+    if (!traceData || !Array.isArray(traceData) || traceData.length === 0) {
+        container.innerHTML = '<p class="empty-state">No trace data available for waterfall view</p>';
+        return;
+    }
+
+    const traces = traceData;
+    let html = '<div class="waterfall-traces">';
+
+    traces.forEach((trace, traceIndex) => {
+        console.log('Processing trace:', trace);
+
+        let spans = [];
+
+        // Handle different trace formats
+        if (Array.isArray(trace)) {
+            if (trace.length === 0) return;
+            spans = trace;
+        } else if (typeof trace === 'object' && trace.span_id) {
+            // Single span
+            spans = [trace];
+        } else {
+            console.log('Skipping trace with unsupported format:', trace);
+            return;
+        }
+
+        // Find the earliest start time and calculate total duration for this trace
+        const validSpans = spans.filter(span => span && typeof span === 'object');
+        if (validSpans.length === 0) return;
+
+        let minStart = Math.min(...validSpans.map(span => span.start || 0));
+        let maxEnd = Math.max(...validSpans.map(span => (span.start || 0) + (span.duration || 0)));
+        let totalDuration = maxEnd - minStart;
+
+        // Handle case where all spans have 0 duration
+        if (totalDuration === 0) {
+            totalDuration = Math.max(...validSpans.map(span => span.duration || 0));
+        }
+
+        const traceId = validSpans[0].trace_id !== undefined ? validSpans[0].trace_id : traceIndex;
+
+        html += `<div class="waterfall-trace">
+            <div class="trace-header" onclick="toggleTraceForRequest(${index}, ${traceIndex})">
+                <div class="trace-header-left">
+                    <span class="trace-toggle" id="trace-toggle-${index}-${traceIndex}">▼</span>
+                    <h4>Trace ${traceId}</h4>
+                </div>
+                <span class="trace-duration">${formatDuration(totalDuration)}</span>
+            </div>
+            <div class="spans-timeline" id="trace-spans-${index}-${traceIndex}">`;
+
+        // Sort spans by start time and build hierarchy
+        const sortedSpans = [...validSpans].sort((a, b) => (a.start || 0) - (b.start || 0));
+        const spanHierarchy = buildSpanHierarchy(sortedSpans);
+
+        spanHierarchy.forEach(spanInfo => {
+            html += renderSpanForRequest(spanInfo, minStart, totalDuration, 0, index, traceIndex);
+        });
+
+        html += '</div></div>';
+    });
+
+        html += '</div>';
+        container.innerHTML = html;
+    } catch (error) {
+        console.error('Error in generateWaterfallViewForRequest:', error);
+        const container = document.getElementById(`waterfall-view-${index}`);
+        if (container) {
+            container.innerHTML = '<p class="error-message">Error generating waterfall view: ' + error.message + '</p>';
+        }
+    }
+}
+
+function getTraceDataForRequest(index) {
+    console.log('getTraceDataForRequest called with index:', index);
+    // Get trace data from DOM or cache
+    const tracesTab = document.getElementById(`traces-tab-${index}`);
+    console.log('Found traces tab:', tracesTab);
+    if (tracesTab) {
+        // Try base64 encoded data first (for streaming requests)
+        let dataElement = tracesTab.querySelector('.trace-data-container[data-trace-data-b64]');
+        if (dataElement) {
+            try {
+                const traceDataB64 = dataElement.getAttribute('data-trace-data-b64');
+                console.log('Found base64 trace data, length:', traceDataB64 ? traceDataB64.length : 'null');
+                const traceDataStr = atob(traceDataB64);
+                return JSON.parse(traceDataStr);
+            } catch (e) {
+                console.error('Failed to parse base64 trace data:', e);
+            }
+        }
+
+        // Fallback to regular data attribute (for non-streaming requests)
+        dataElement = tracesTab.querySelector('.trace-data-container[data-trace-data]');
+        console.log('Found regular data element:', dataElement);
+        if (dataElement) {
+            try {
+                const traceDataStr = dataElement.getAttribute('data-trace-data');
+                console.log('Raw trace data attribute:', traceDataStr ? traceDataStr.substring(0, 200) + '...' : 'null');
+                return JSON.parse(traceDataStr);
+            } catch (e) {
+                console.error('Failed to parse trace data:', e);
+            }
+        }
+    }
+    return null;
+}
+
+function buildSpanHierarchy(spans) {
+    const spanMap = new Map();
+    const rootSpans = [];
+
+    // Create span objects with children arrays
+    spans.forEach(span => {
+        spanMap.set(span.span_id, { ...span, children: [] });
+    });
+
+    // Build parent-child relationships
+    spans.forEach(span => {
+        if (span.parent_id && span.parent_id !== 0 && spanMap.has(span.parent_id)) {
+            spanMap.get(span.parent_id).children.push(spanMap.get(span.span_id));
+        } else {
+            rootSpans.push(spanMap.get(span.span_id));
+        }
+    });
+
+    return rootSpans;
+}
+
+function renderSpanForRequest(span, traceStart, totalDuration, depth, requestIndex, traceIndex) {
+    const start = span.start || 0;
+    const duration = span.duration || 0;
+    const relativeStart = start - traceStart;
+    const startPercent = totalDuration > 0 ? (relativeStart / totalDuration) * 100 : 0;
+    const widthPercent = totalDuration > 0 ? (duration / totalDuration) * 100 : 0;
+
+    const service = span.service || 'unknown';
+    const resource = span.resource || span.name || 'unknown';
+    const spanClass = span.error ? 'span-error' : 'span-normal';
+    const serviceColorClass = `service-color-${getServiceColor(service)}`;
+    const indentStyle = `margin-left: ${depth * 20}px;`;
+
+    const spanId = `span-${requestIndex}-${traceIndex}-${span.span_id || Math.random()}`;
+
+    let html = `
+        <div class="waterfall-span ${spanClass}" style="${indentStyle}">
+            <div class="span-row">
+                <div class="span-info" onclick="toggleSpanForRequest('${spanId}')">
+                    <div class="span-label">
+                        <span class="span-toggle" id="toggle-${spanId}">▶</span>
+                        <div class="span-names">
+                            <span class="service-name">${service}</span>
+                            <span class="operation-name">${resource}</span>
+                        </div>
+                    </div>
+                    <div class="span-timing">
+                        <span class="span-duration">${formatDuration(duration)}</span>
+                    </div>
+                </div>
+                <div class="span-bar-container">
+                    <div class="span-bar ${spanClass} ${serviceColorClass}"
+                         style="left: ${startPercent}%; width: ${Math.max(widthPercent, 0.1)}%;"
+                         title="${service}.${span.resource || span.name} - ${formatDuration(duration)}">
+                    </div>
+                </div>
+            </div>
+            <div class="span-details" id="details-${spanId}" style="display: none;">
+                ${renderSpanMetadata(span)}
+            </div>
+        </div>`;
+
+    // Render children recursively
+    span.children.forEach(child => {
+        html += renderSpanForRequest(child, traceStart, totalDuration, depth + 1, requestIndex, traceIndex);
+    });
+
+    return html;
+}
+
+function formatDuration(nanoseconds) {
+    if (nanoseconds < 1000) return `${nanoseconds}ns`;
+    if (nanoseconds < 1000000) return `${(nanoseconds / 1000).toFixed(1)}μs`;
+    if (nanoseconds < 1000000000) return `${(nanoseconds / 1000000).toFixed(1)}ms`;
+    return `${(nanoseconds / 1000000000).toFixed(2)}s`;
+}
+
+function toggleTraceForRequest(requestIndex, traceIndex) {
+    const toggle = document.getElementById(`trace-toggle-${requestIndex}-${traceIndex}`);
+    const spans = document.getElementById(`trace-spans-${requestIndex}-${traceIndex}`);
+
+    if (spans.style.display === 'none') {
+        spans.style.display = 'block';
+        toggle.textContent = '▼';
+    } else {
+        spans.style.display = 'none';
+        toggle.textContent = '▶';
+    }
+}
+
+function toggleSpanForRequest(spanId) {
+    const toggle = document.getElementById(`toggle-${spanId}`);
+    const details = document.getElementById(`details-${spanId}`);
+
+    if (details.style.display === 'none') {
+        details.style.display = 'block';
+        toggle.textContent = '▼';
+    } else {
+        details.style.display = 'none';
+        toggle.textContent = '▶';
+    }
+}
+
+function renderSpanMetadata(span) {
+    const fields = [
+        { label: 'Span ID', value: span.span_id },
+        { label: 'Trace ID', value: span.trace_id },
+        { label: 'Parent ID', value: span.parent_id || 'None' },
+        { label: 'Service', value: span.service || 'Not set' },
+        { label: 'Name', value: span.name },
+        { label: 'Resource', value: span.resource },
+        { label: 'Type', value: span.type || 'Not set' },
+        { label: 'Start', value: span.start ? new Date(span.start / 1000000).toISOString() : 'Not set' },
+        { label: 'Duration', value: span.duration ? formatDuration(span.duration) : 'Not set' },
+        { label: 'Error', value: span.error ? 'Yes' : 'No' }
+    ];
+
+    let html = '<div class="span-metadata">';
+    html += '<h5>Span Details</h5>';
+    html += '<div class="metadata-grid">';
+
+    fields.forEach(field => {
+        if (field.value !== undefined && field.value !== null && field.value !== '') {
+            html += `
+                <div class="metadata-item">
+                    <span class="metadata-label">${field.label}:</span>
+                    <span class="metadata-value">${field.value}</span>
+                </div>`;
+        }
+    });
+
+    // Add meta tags if present
+    if (span.meta && Object.keys(span.meta).length > 0) {
+        html += '<div class="metadata-section"><h6>Meta</h6>';
+        for (const [key, value] of Object.entries(span.meta)) {
+            html += `
+                <div class="metadata-item">
+                    <span class="metadata-label">${key}:</span>
+                    <span class="metadata-value">${value}</span>
+                </div>`;
+        }
+        html += '</div>';
+    }
+
+    // Add metrics if present
+    if (span.metrics && Object.keys(span.metrics).length > 0) {
+        html += '<div class="metadata-section"><h6>Metrics</h6>';
+        for (const [key, value] of Object.entries(span.metrics)) {
+            html += `
+                <div class="metadata-item">
+                    <span class="metadata-label">${key}:</span>
+                    <span class="metadata-value">${value}</span>
+                </div>`;
+        }
+        html += '</div>';
+    }
+
+    html += '</div></div>';
+    return html;
+}
+
+function toggleTraceView(index) {
+    const toggleButton = event.target;
+    const waterfallView = document.getElementById(`waterfall-view-${index}`);
+    const jsonView = document.getElementById(`json-view-${index}`);
+
+    if (toggleButton.textContent === 'JSON View') {
+        // Switch to JSON view
+        waterfallView.style.display = 'none';
+        jsonView.style.display = 'block';
+        toggleButton.textContent = 'Waterfall View';
+    } else {
+        // Switch to waterfall view
+        waterfallView.style.display = 'block';
+        jsonView.style.display = 'none';
+        toggleButton.textContent = 'JSON View';
+        // Regenerate waterfall if needed
+        generateWaterfallViewForRequest(index);
+    }
+}
+
+</script>
+{% endblock %}

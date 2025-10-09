@@ -1,0 +1,40 @@
+{# Reusable template components #}
+
+{# Page layout with consistent header and structure #}
+{% macro page_layout(page_title, subtitle=None, extra_header=None) -%}
+<div class="{{ page_title.lower() }}-page">
+    <div class="page-header">
+        <h2>{{ page_title }}</h2>
+        {% if subtitle %}
+            <div class="page-subtitle">
+                <span>{{ subtitle }}</span>
+            </div>
+        {% endif %}
+        {% if extra_header %}
+            {{ extra_header | safe }}
+        {% endif %}
+    </div>
+    <div class="{{ page_title.lower() }}-container">
+        {{ caller() }}
+    </div>
+</div>
+{%- endmacro %}
+
+{# Empty state component #}
+{% macro empty_state(message) -%}
+<div class="empty-state">
+    <p>{{ message }}</p>
+</div>
+{%- endmacro %}
+
+{# Error message component #}
+{% macro error_message(message) -%}
+<div class="error-message">
+    <p>{{ message }}</p>
+</div>
+{%- endmacro %}
+
+{# Action button component #}
+{% macro action_button(url, text, class_name="action-button") -%}
+<a href="{{ url }}" class="{{ class_name }}">{{ text }}</a>
+{%- endmacro %}

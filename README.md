@@ -21,8 +21,8 @@ The test agent can be installed from PyPI:
 
     pip install ddapm-test-agent
 
-    # HTTP on port 8126, OTLP HTTP on port 4318, OTLP GRPC on port 4317
-    ddapm-test-agent --port=8126 --otlp-http-port=4318 --otlp-grpc-port=4317
+    # HTTP on port 8126, OTLP HTTP on port 4318, OTLP GRPC on port 4317, with the web-ui enabled
+    ddapm-test-agent --port=8126 --otlp-http-port=4318 --otlp-grpc-port=4317 --web-ui-port=8080
 
 or from Docker:
 
@@ -124,6 +124,15 @@ The traces are normalized and output in JSON to a file. The following transforma
 - Span attributes are otherwise ordered alphanumerically.
 - The span meta and metrics maps if empty are excluded.
 
+
+#### Web UI
+
+The test agent includes an optional and **experimental** Web UI that provides a dashboard for inspecting agent configuration, viewing received requests, exploring traces and snapshots, and managing tracer-flare and remote configuration.
+
+The UI can be enabled with the `--web-ui-port PORT` command-line argument or by setting the `WEB_UI_PORT` environment variable.
+Once enabled, the Web UI can be accessed at `http://localhost:PORT` (default port is `8080`).
+
+There is also a maximum number of requests to store in memory to display in the UI, which can be configured with the `--max-requests` command-line argument or by setting the `MAX_REQUESTS` environment variable (default is `200` requests).
 
 ### Recording 3rd party API requests
 
