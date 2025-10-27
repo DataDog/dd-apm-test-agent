@@ -3,6 +3,7 @@ import json
 
 from google.protobuf.json_format import MessageToDict
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
+from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceResponse
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue
 from opentelemetry.proto.common.v1.common_pb2 import KeyValue
 from opentelemetry.proto.logs.v1.logs_pb2 import LogRecord
@@ -86,6 +87,9 @@ def otlp_logs_json(otlp_logs_protobuf):
 async def test_logs_endpoint_basic_http(testagent, otlp_http_url, otlp_logs_string, loop):
     resp = await testagent.post(f"{otlp_http_url}{LOGS_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_logs_string)
     assert resp.status == 200
+    assert resp.content_type == "application/x-protobuf"
+    body = await resp.read()
+    assert body == ExportLogsServiceResponse().SerializeToString()
 
 
 @pytest.mark.parametrize(
