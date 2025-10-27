@@ -3,6 +3,7 @@ import json
 
 from google.protobuf.json_format import MessageToDict
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceRequest
+from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceResponse
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue
 from opentelemetry.proto.common.v1.common_pb2 import KeyValue
 from opentelemetry.proto.metrics.v1.metrics_pb2 import AggregationTemporality
@@ -191,6 +192,9 @@ async def test_metrics_endpoint_basic_http(testagent, otlp_http_url, otlp_metric
         f"{otlp_http_url}{METRICS_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_metrics_string
     )
     assert resp.status == 200
+    assert resp.content_type == "application/x-protobuf"
+    body = await resp.read()
+    assert body == ExportMetricsServiceResponse().SerializeToString()
 
 
 @pytest.mark.parametrize(

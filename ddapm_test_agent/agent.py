@@ -39,7 +39,9 @@ from aiohttp.web import middleware
 from grpc import aio as grpc_aio
 from msgpack.exceptions import ExtraData as MsgPackExtraDataException
 from multidict import CIMultiDict
+from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceResponse
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import add_LogsServiceServicer_to_server
+from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceResponse
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import add_MetricsServiceServicer_to_server
 
 from . import _get_version
@@ -724,7 +726,9 @@ class Agent:
             num_resource_logs,
             total_log_records,
         )
-        return web.HTTPOk()
+        return web.Response(
+            body=ExportLogsServiceResponse().SerializeToString(), status=200, content_type="application/x-protobuf"
+        )
 
     async def handle_v1_metrics(self, request: Request) -> web.Response:
         metrics_data = self._decode_v1_metrics(request)
@@ -739,7 +743,9 @@ class Agent:
             num_resource_metrics,
             total_metrics,
         )
-        return web.HTTPOk()
+        return web.Response(
+            body=ExportMetricsServiceResponse().SerializeToString(), status=200, content_type="application/x-protobuf"
+        )
 
     async def handle_v07_remoteconfig(self, request: Request) -> web.Response:
         """Emulates Remote Config endpoint: /v0.7/config"""

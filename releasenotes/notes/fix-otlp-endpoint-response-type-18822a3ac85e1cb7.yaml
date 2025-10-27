@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    otlp: Fix OTLP endpoint response format for logs and metrics to return proper protobuf content type and serialized response body for HTTP requests.
