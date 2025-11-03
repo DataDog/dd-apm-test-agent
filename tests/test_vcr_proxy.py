@@ -257,7 +257,9 @@ async def test_vcr_proxy_does_not_record_ignored_headers(
     assert "Authorization" not in recorded_request["request"]["headers"]
 
 
-async def test_vcr_proxy_converts_legacy_vcr_cassette_to_json(agent: TestClient[Any, Any], vcr_cassettes_directory: str, vcr_legacy_cassette: str) -> None:
+async def test_vcr_proxy_converts_legacy_vcr_cassette_to_json(
+    agent: TestClient[Any, Any], vcr_cassettes_directory: str, vcr_legacy_cassette: str
+) -> None:
     assert os.path.exists(vcr_legacy_cassette)
 
     resp = await agent.post("/vcr/custom/serve", json={"foo": "bar"})
