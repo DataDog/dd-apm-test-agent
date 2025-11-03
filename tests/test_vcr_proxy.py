@@ -1,3 +1,4 @@
+import json
 import os
 from typing import Any
 from typing import AsyncGenerator
@@ -15,7 +16,6 @@ from aiohttp.multipart import MultipartWriter
 from aiohttp.test_utils import TestClient
 from aiohttp.test_utils import TestServer
 import pytest
-import yaml
 
 
 async def serve_handler(request: web.Request) -> web.Response:
@@ -69,10 +69,9 @@ async def vcr_test_name(agent: TestClient[Any, Any]) -> AsyncGenerator[None, Non
     await agent.post("/vcr/test/stop")
 
 
-def get_recorded_request_from_yaml(file_path: str) -> Dict[str, Any]:
+def get_recorded_request(file_path: str) -> Dict[str, Any]:
     with open(file_path, "r") as file:
-        content = yaml.load(file, Loader=yaml.UnsafeLoader)
-    return cast(Dict[str, Any], content["interactions"][0])
+        return json.load(file)
 
 
 async def test_vcr_proxy_make_cassette(agent: TestClient[Any, Any], vcr_cassettes_directory: str) -> None:
@@ -189,9 +188,9 @@ async def test_vcr_proxy_does_not_record_ignored_headers(
     assert len(cassette_files) == 1
 
     cassette_file = cassette_files[0]
-    recorded_request = get_recorded_request_from_yaml(os.path.join(vcr_cassettes_directory, "custom", cassette_file))
+    recorded_request = get_recorded_request(os.path.join(vcr_cassettes_directory, "custom", cassette_file))
 
-    assert recorded_request["request"]["headers"]["Please-Record-Header"] == ["test"]
+    assert recorded_request["request"]["headers"]["Please-Record-Header"] == "test"
     assert "User-Super-Secret-Api-Key" not in recorded_request["request"]["headers"]
     assert "Foo-Bar" not in recorded_request["request"]["headers"]
     assert "Authorization" not in recorded_request["request"]["headers"]
