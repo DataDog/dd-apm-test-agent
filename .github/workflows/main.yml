@@ -16,6 +16,7 @@ jobs:
         with:
           fetch-depth: 0
       - run: pip install .[testing]
+      - run: pip install 'pip-tools>=7.4.0'
       - run: riot -v run -s check_fmt
       - run: riot -v run -s flake8
       - run: riot -v run mypy
@@ -32,6 +33,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: install deps
         run: pip install .[testing]
+      - name: install pip-tools
+        if: runner.os != 'Windows'
+        run: pip install 'pip-tools>=7.4.0'
       # Windows: Use vanilla pytest (riot doesn't support Windows - see https://github.com/DataDog/riot/issues/74)
       - name: Run tests (Windows - direct pytest)
         if: runner.os == 'Windows'
