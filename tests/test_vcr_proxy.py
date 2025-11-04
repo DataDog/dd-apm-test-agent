@@ -131,7 +131,9 @@ def vcr_legacy_cassette(vcr_cassettes_directory: str) -> Generator[str, None, No
 
 def get_recorded_request(file_path: str) -> Dict[str, Any]:
     with open(file_path, "r") as file:
-        return json.load(file)
+        data = json.load(file)
+        assert isinstance(data, dict)
+        return data
 
 
 async def test_vcr_proxy_make_cassette(agent: TestClient[Any, Any], vcr_cassettes_directory: str) -> None:

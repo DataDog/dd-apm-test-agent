@@ -284,7 +284,7 @@ def _convert_vcr_cassette_to_custom_format(
 def _normalize_header_value(value: Any) -> str:
     """Normalize header value to a string (handles list values)."""
     if isinstance(value, list):
-        return value[0] if value else ""
+        return str(value[0]) if value else ""
     return str(value)
 
 
@@ -299,7 +299,7 @@ def _create_cassette_from_requests_response(
     ignore_headers: List[str],
 ) -> CassetteData:
     """Create cassette data from a requests.Response object."""
-    logger.info(f"Creating cassette data from requests.Response object: {response.content}")
+    logger.info(f"Creating cassette data from requests.Response object: {response.content!r}")
     return CassetteData(
         request=CassetteDataRequest(
             method=request_kwargs["method"],
@@ -414,9 +414,13 @@ async def _request(
         cassette = _write_cassette_file(cassette_file_path, request_kwargs, provider_response, vcr_ignore_headers)
 
     # Build response from cassette data
-    response_body = cassette.response.body
-    if isinstance(response_body, str):
-        response_body = _encode_body(response_body)
+    response_body_str = cassette.response.body
+    response_body: bytes
+    if isinstance(response_body_str, str):
+        response_body = _encode_body(response_body_str)
+    else:
+        # This shouldn't happen given CassetteDataResponse.body is typed as str
+        response_body = b""
 
     response = Response(
         body=response_body,
