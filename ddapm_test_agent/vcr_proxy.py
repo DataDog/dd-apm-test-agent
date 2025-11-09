@@ -199,13 +199,16 @@ def _decode_body(body: bytes) -> str:
     if not body:
         return ""
 
+    # Check for null bytes - strong indicator of binary data (e.g., event streams, protobuf)
+    if b"\x00" in body:
+        return "base64:" + base64.b64encode(body).decode("ascii")
+
     try:
+        # Try UTF-8 decode - if successful, it's text
         return body.decode("utf-8")
     except UnicodeDecodeError:
-        try:
-            return body.decode("latin-1")
-        except Exception:
-            return base64.b64encode(body).decode("ascii")
+        # If UTF-8 fails, treat as binary
+        return "base64:" + base64.b64encode(body).decode("ascii")
 
 
 def _encode_body(body: str) -> bytes:
@@ -213,16 +216,16 @@ def _encode_body(body: str) -> bytes:
     if not body:
         return b""
 
+    # Check for base64 marker first (for binary data that was base64-encoded)
+    if body.startswith("base64:"):
+        return base64.b64decode(body[7:])
+
     try:
-        # First try to encode as UTF-8 (most common case)
+        # Try to encode as UTF-8 (most common case)
         return body.encode("utf-8")
     except UnicodeEncodeError:
-        # If that fails, try to decode as base64 (for binary data)
-        try:
-            return base64.b64decode(body)
-        except Exception:
-            # If all else fails, encode as latin-1
-            return body.encode("latin-1")
+        # If all else fails, encode as latin-1
+        return body.encode("latin-1")
 
 
 def _parse_authorization_header(auth_header: str) -> Dict[str, str]:
@@ -415,12 +418,7 @@ async def _request(
 
     # Build response from cassette data
     response_body_str = cassette.response.body
-    response_body: bytes
-    if isinstance(response_body_str, str):
-        response_body = _encode_body(response_body_str)
-    else:
-        # This shouldn't happen given CassetteDataResponse.body is typed as str
-        response_body = b""
+    response_body = _encode_body(response_body_str) if isinstance(response_body_str, str) else b""
 
     response = Response(
         body=response_body,
