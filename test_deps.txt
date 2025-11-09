@@ -1,5 +1,4 @@
 ddtrace==3.15.0
 pytest
 riot==0.20.1
-pip-tools>=7.4.0
 PyYAML==6.0.3
