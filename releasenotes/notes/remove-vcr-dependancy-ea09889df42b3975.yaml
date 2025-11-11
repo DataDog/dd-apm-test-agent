@@ -1,0 +1,4 @@
+---
+deprecations:
+  - |
+    VCR has been removed as a dependency, and instead JSON cassettes are produced. Legacy VCR cassettes are converted to JSON on first use, and the old VCR cassettes are removed. This functionality will be removed in ddapm-test-agent==2.0.0, at which point only JSON cassettes will be written and read.

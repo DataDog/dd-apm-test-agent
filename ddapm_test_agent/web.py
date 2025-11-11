@@ -797,7 +797,7 @@ class WebUI:
 
             # Get flares for all other session tokens
             session_tokens = set()
-            for req_data in (request_storage.get_all_requests() if request_storage is not None else []):
+            for req_data in request_storage.get_all_requests() if request_storage is not None else []:
                 token = req_data.get("headers", {}).get("X-Datadog-Test-Session-Token")
                 if token:
                     session_tokens.add(token)
@@ -934,7 +934,7 @@ class WebUI:
 
             # Get flares for all other session tokens
             session_tokens = set()
-            for req_data in (request_storage.get_all_requests() if request_storage is not None else []):
+            for req_data in request_storage.get_all_requests() if request_storage is not None else []:
                 token = req_data.get("headers", {}).get("X-Datadog-Test-Session-Token")
                 if token:
                     session_tokens.add(token)
