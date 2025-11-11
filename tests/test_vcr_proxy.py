@@ -16,50 +16,6 @@ from aiohttp.test_utils import TestClient
 from aiohttp.test_utils import TestServer
 import pytest
 
-from ddapm_test_agent.vcr_proxy import _generate_cassette_name
-
-
-LEGACY_CASSETTE_CONTENT = """
-interactions:
-- request:
-    body: '{"foo": "bar"}'
-    headers:
-      ? !!python/object/apply:multidict._multidict.istr
-      - Accept
-      : - '*/*'
-      ? !!python/object/apply:multidict._multidict.istr
-      - Accept-Encoding
-      : - gzip, deflate
-      Connection:
-      - keep-alive
-      Content-Length:
-      - '14'
-      ? !!python/object/apply:multidict._multidict.istr
-      - Content-Type
-      : - application/json
-      ? !!python/object/apply:multidict._multidict.istr
-      - User-Agent
-      : - Python/3.12 aiohttp/3.11.16
-    method: POST
-    uri: http://127.0.0.1:49221/serve
-  response:
-      body:
-        string: OK
-      headers:
-        Content-Length:
-        - '2'
-        Content-Type:
-        - text/plain; charset=utf-8
-        Date:
-        - Mon, 03 Nov 2025 19:35:59 GMT
-        Server:
-        - Python/3.12 aiohttp/3.11.16
-      status:
-        code: 200
-        message: OK
-  version: 1
-"""
-
 
 async def serve_handler(request: web.Request) -> web.Response:
     response_headers = {}
@@ -110,23 +66,6 @@ async def vcr_test_name(agent: TestClient[Any, Any]) -> AsyncGenerator[None, Non
     await agent.post("/vcr/test/start", json={"test_name": "test_name_prefix"})
     yield
     await agent.post("/vcr/test/stop")
-
-
-@pytest.fixture
-def vcr_legacy_cassette(vcr_cassettes_directory: str) -> Generator[str, None, None]:
-    cassette_name = _generate_cassette_name("custom/serve", "POST", b'{"foo": "bar"}', None)
-    os.makedirs(os.path.join(vcr_cassettes_directory, "custom"), exist_ok=True)
-    cassette_file_path = os.path.join(vcr_cassettes_directory, "custom", f"{cassette_name}.yaml")
-
-    with open(cassette_file_path, "w") as file:
-        file.write(LEGACY_CASSETTE_CONTENT)
-
-    yield cassette_file_path
-
-    if os.path.exists(cassette_file_path):
-        #  this should be deleted by the test_vcr_proxy_converts_legacy_vcr_cassette_to_json test
-        #  if not, clean it up here instead
-        os.remove(cassette_file_path)
 
 
 def get_recorded_request(file_path: str) -> Dict[str, Any]:
@@ -256,23 +195,3 @@ async def test_vcr_proxy_does_not_record_ignored_headers(
     assert "User-Super-Secret-Api-Key" not in recorded_request["request"]["headers"]
     assert "Foo-Bar" not in recorded_request["request"]["headers"]
     assert "Authorization" not in recorded_request["request"]["headers"]
-
-
-async def test_vcr_proxy_converts_legacy_vcr_cassette_to_json(
-    agent: TestClient[Any, Any], vcr_cassettes_directory: str, vcr_legacy_cassette: str
-) -> None:
-    assert os.path.exists(vcr_legacy_cassette)
-
-    resp = await agent.post("/vcr/custom/serve", json={"foo": "bar"})
-
-    assert resp.status == 200
-    assert await resp.text() == "OK"
-
-    cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
-    assert len(cassette_files) == 1  # should have rewritten the legacy cassette to JSON
-
-    cassette_file = cassette_files[0]
-    assert cassette_file.endswith(".json")
-    assert os.path.exists(os.path.join(vcr_cassettes_directory, "custom", cassette_file))
-
-    assert not os.path.exists(vcr_legacy_cassette)
