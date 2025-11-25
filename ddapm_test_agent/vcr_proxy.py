@@ -1,6 +1,5 @@
 import asyncio
 import base64
-from dataclasses import dataclass
 import hashlib
 import json
 import logging
@@ -9,7 +8,10 @@ import re
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Mapping
 from typing import Optional
+from typing import TypedDict
+from typing import cast
 from urllib.parse import urljoin
 
 from aiohttp.web import Request
@@ -21,8 +23,7 @@ from requests_aws4auth import AWS4Auth
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class CassetteDataRequest:
+class CassetteDataRequest(TypedDict):
     """Represents the request portion of a cassette."""
 
     method: str
@@ -30,73 +31,20 @@ class CassetteDataRequest:
     headers: Dict[str, str]
     body: str
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "CassetteDataRequest":
-        """Create from a dictionary."""
-        return cls(
-            method=data["method"],
-            url=data["url"],
-            headers=data["headers"],
-            body=data["body"],
-        )
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to a dictionary for JSON serialization."""
-        return {
-            "method": self.method,
-            "url": self.url,
-            "headers": self.headers,
-            "body": self.body,
-        }
-
-
-@dataclass
-class CassetteDataResponse:
+class CassetteDataResponse(TypedDict):
     """Represents the response portion of a cassette."""
 
     status: Dict[str, Any]  # {"code": int, "message": str}
     headers: Dict[str, str]
     body: str
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "CassetteDataResponse":
-        """Create from a dictionary."""
-        return cls(
-            status=data["status"],
-            headers=data["headers"],
-            body=data["body"],
-        )
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to a dictionary for JSON serialization."""
-        return {
-            "status": self.status,
-            "headers": self.headers,
-            "body": self.body,
-        }
-
-
-@dataclass
-class CassetteData:
+class CassetteData(TypedDict):
     """Represents a VCR cassette with request and response data."""
 
     request: CassetteDataRequest
     response: CassetteDataResponse
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "CassetteData":
-        """Create from a dictionary (e.g., loaded from JSON)."""
-        return cls(
-            request=CassetteDataRequest.from_dict(data["request"]),
-            response=CassetteDataResponse.from_dict(data["response"]),
-        )
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to a dictionary for JSON serialization."""
-        return {
-            "request": self.request.to_dict(),
-            "response": self.response.to_dict(),
-        }
 
 
 #  Used for AWS signature recalculation for aws services initial proxying
@@ -270,7 +218,7 @@ def _write_cassette_file(
     request_kwargs: Dict[str, Any],
     response: requests.Response,
     vcr_ignore_headers: str,
-) -> CassetteData:
+) -> None:
     """Write cassette data to a JSON file."""
     logger.info(f"Writing cassette file to {cassette_file_path}")
 
@@ -299,9 +247,14 @@ def _write_cassette_file(
     )
 
     with open(cassette_file_path, "w") as f:
-        json.dump(cassette.to_dict(), f, indent=2)
+        json.dump(cassette, f, indent=2)
 
-    return cassette
+
+def _write_response_headers(response: Response, headers: Mapping[str, str]) -> None:
+    skip_headers = {"content-length", "transfer-encoding", "content-encoding", "connection"}
+    for key, value in headers.items():
+        if key.lower() not in skip_headers:
+            response.headers[key] = value
 
 
 async def _request(
@@ -320,25 +273,25 @@ async def _request(
         logger.info(f"Cassette file exists at {cassette_file_path}")
 
         with open(cassette_file_path, "r") as f:
-            cassette = CassetteData.from_dict(json.load(f))
+            cassette = cast(CassetteData, json.load(f))
+
+        response_body = _encode_body(cassette["response"]["body"])
+        response = Response(
+            body=response_body,
+            status=cassette["response"]["status"]["code"],
+        )
+
+        response_headers = cassette["response"]["headers"]
     else:
         logger.info(f"Cassette file does not exist at {cassette_file_path}, making a request to the provider")
         provider_response = await asyncio.to_thread(lambda: requests.request(**request_kwargs))
-        cassette = _write_cassette_file(cassette_file_path, request_kwargs, provider_response, vcr_ignore_headers)
 
-    # Build response from cassette data
-    response_body_str = cassette.response.body
-    response_body = _encode_body(response_body_str) if isinstance(response_body_str, str) else b""
+        _write_cassette_file(cassette_file_path, request_kwargs, provider_response, vcr_ignore_headers)
 
-    response = Response(
-        body=response_body,
-        status=cassette.response.status["code"],
-    )
-
-    skip_headers = {"content-length", "transfer-encoding", "content-encoding", "connection"}
-    for key, value in cassette.response.headers.items():
-        if key.lower() not in skip_headers:
-            response.headers[key] = value
+        response = Response(body=provider_response.content, status=provider_response.status_code)
+        response_headers = provider_response.headers
+        
+    _write_response_headers(response, response_headers)
 
     return response
 
