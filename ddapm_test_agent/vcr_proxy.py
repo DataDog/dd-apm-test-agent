@@ -290,7 +290,7 @@ async def _request(
 
         response = Response(body=provider_response.content, status=provider_response.status_code)
         response_headers = provider_response.headers
-        
+
     _write_response_headers(response, response_headers)
 
     return response
@@ -329,7 +329,8 @@ async def proxy_request(
         )
 
     target_url = _url_path_join(provider_base_urls[provider], remaining_path)
-    headers = {key: value for key, value in request.headers.items() if key != "Host"}
+    skip_headers = {"host", "transfer-encoding"}
+    headers = {key: value for key, value in request.headers.items() if not (key.lower() in skip_headers)}
 
     request_kwargs: Dict[str, Any] = {
         "method": request.method,

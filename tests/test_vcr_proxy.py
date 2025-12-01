@@ -195,3 +195,10 @@ async def test_vcr_proxy_does_not_record_ignored_headers(
     assert "User-Super-Secret-Api-Key" not in recorded_request["request"]["headers"]
     assert "Foo-Bar" not in recorded_request["request"]["headers"]
     assert "Authorization" not in recorded_request["request"]["headers"]
+
+
+async def test_vcr_proxy_with_chunked_request(agent: TestClient[Any, Any], vcr_cassettes_directory: str) -> None:
+    resp = await agent.post("/vcr/custom/serve", json={"foo": "bar"}, chunked=True)
+
+    assert resp.status == 200
+    assert await resp.text() == "OK"
