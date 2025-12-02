@@ -276,3 +276,10 @@ async def test_vcr_proxy_converts_legacy_vcr_cassette_to_json(
     assert os.path.exists(os.path.join(vcr_cassettes_directory, "custom", cassette_file))
 
     assert not os.path.exists(vcr_legacy_cassette)
+
+
+async def test_vcr_proxy_with_chunked_request(agent: TestClient[Any, Any], vcr_cassettes_directory: str) -> None:
+    resp = await agent.post("/vcr/custom/serve", json={"foo": "bar"}, chunked=True)
+
+    assert resp.status == 200
+    assert await resp.text() == "OK"
