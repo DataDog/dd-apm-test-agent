@@ -883,7 +883,7 @@ class Agent:
     async def handle_info(self, request: Request) -> web.Response:
         return web.json_response(
             {
-                "version": "test",
+                "version": os.environ.get("TEST_AGENT_VERSION", "test"),
                 "endpoints": [
                     "/v0.4/traces",
                     "/v0.5/traces",
