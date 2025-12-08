@@ -118,6 +118,19 @@ async def test_info(agent):
         "span_events": True,
     }
 
+async def test_info_custom_version(agent, monkeypatch):
+    custom_version = "1.2.3"
+    monkeypatch.setenv("TEST_AGENT_VERSION", custom_version)
+
+    resp = await agent.get("/info")
+    assert resp.status == 200
+
+    info = await resp.json()
+    assert info["version"] == custom_version
+
+    # Verify other fields are still present
+    assert "endpoints" in info
+    assert "peer_tags" in info
 
 async def test_apmtelemetry(
     agent,
