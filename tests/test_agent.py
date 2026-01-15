@@ -530,6 +530,38 @@ async def test_post_unknown_settings(
     assert "dummy_setting" not in agent.app
 
 
+async def test_client_drop_p0s_configuration(agent):
+    resp = await agent.get("/info")
+    assert resp.status == 200
+    info = await resp.json()
+    assert info["client_drop_p0s"] is True
+    assert agent.app["client_drop_p0s"] is True
+
+    resp = await agent.post(
+        "/test/settings",
+        data='{ "client_drop_p0s": false }',
+    )
+    assert resp.status == 202, await resp.text()
+    assert agent.app["client_drop_p0s"] is False
+
+    resp = await agent.get("/info")
+    assert resp.status == 200
+    info = await resp.json()
+    assert info["client_drop_p0s"] is False
+
+    resp = await agent.post(
+        "/test/settings",
+        data='{ "client_drop_p0s": true }',
+    )
+    assert resp.status == 202, await resp.text()
+    assert agent.app["client_drop_p0s"] is True
+
+    resp = await agent.get("/info")
+    assert resp.status == 200
+    info = await resp.json()
+    assert info["client_drop_p0s"] is True
+
+
 async def test_evp_proxy_v4_api_v2_errorsintake(agent):
     resp = await agent.post("/evp_proxy/v4/api/v2/errorsintake", data='{"key": "value"}')
     assert resp.status == 200, await resp.text()
