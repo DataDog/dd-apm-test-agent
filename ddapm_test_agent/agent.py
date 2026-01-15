@@ -882,6 +882,17 @@ class Agent:
         return web.HTTPAccepted()
 
     async def handle_info(self, request: Request) -> web.Response:
+        # CORS headers for cross-origin requests from Datadog UI
+        headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+        }
+
+        # Handle OPTIONS preflight
+        if request.method == "OPTIONS":
+            return web.Response(status=200, headers=headers)
+
         return web.json_response(
             {
                 "version": "test",
@@ -903,6 +914,7 @@ class Agent:
                 "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
                 "span_events": True,  # Advertise support for the top-level Span field for Span Events
             },
+            headers=headers,
         )
 
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5", "v0.7", "v1"]) -> web.Response:
@@ -1651,6 +1663,7 @@ def make_app(
             web.post("/evp_proxy/v2/api/v2/exposures", agent.handle_evp_proxy_v2_api_v2_exposures),
             web.post("/evp_proxy/v4/api/v2/errorsintake", agent.handle_evp_proxy_v4_api_v2_errorsintake),
             web.get("/info", agent.handle_info),
+            web.options("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/snapshot", agent.handle_snapshot),

@@ -497,7 +497,7 @@ class LLMObsEventPlatformAPI:
         headers = {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-DD-*",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-DD-Api-Key, X-DD-Application-Key, X-CSRF-Token, x-csrf-token, x-web-ui-version, X-Datadog-Trace-ID, X-Datadog-Parent-ID, X-Datadog-Origin, X-Datadog-Sampling-Priority, Accept, Origin, Referer",
         }
 
         # Handle OPTIONS preflight
@@ -554,7 +554,7 @@ class LLMObsEventPlatformAPI:
         headers = {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-DD-*",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-DD-Api-Key, X-DD-Application-Key, X-CSRF-Token, x-csrf-token, x-web-ui-version, X-Datadog-Trace-ID, X-Datadog-Parent-ID, X-Datadog-Origin, X-Datadog-Sampling-Priority, Accept, Origin, Referer",
         }
 
         # Handle OPTIONS preflight
@@ -587,7 +587,7 @@ class LLMObsEventPlatformAPI:
         headers = {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-DD-*",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-DD-Api-Key, X-DD-Application-Key, X-CSRF-Token, x-csrf-token, x-web-ui-version, X-Datadog-Trace-ID, X-Datadog-Parent-ID, X-Datadog-Origin, X-Datadog-Sampling-Priority, Accept, Origin, Referer",
         }
 
         if request.method == "OPTIONS":
@@ -634,7 +634,7 @@ class LLMObsEventPlatformAPI:
         headers = {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-DD-*",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-DD-Api-Key, X-DD-Application-Key, X-CSRF-Token, x-csrf-token, x-web-ui-version, X-Datadog-Trace-ID, X-Datadog-Parent-ID, X-Datadog-Origin, X-Datadog-Sampling-Priority, Accept, Origin, Referer",
         }
 
         if request.method == "OPTIONS":
@@ -672,7 +672,7 @@ class LLMObsEventPlatformAPI:
         headers = {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-DD-*",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-DD-Api-Key, X-DD-Application-Key, X-CSRF-Token, x-csrf-token, x-web-ui-version, X-Datadog-Trace-ID, X-Datadog-Parent-ID, X-Datadog-Origin, X-Datadog-Sampling-Priority, Accept, Origin, Referer",
         }
 
         if request.method == "OPTIONS":
@@ -833,7 +833,7 @@ class LLMObsEventPlatformAPI:
         headers = {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-DD-*",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-DD-Api-Key, X-DD-Application-Key, X-CSRF-Token, x-csrf-token, x-web-ui-version, X-Datadog-Trace-ID, X-Datadog-Parent-ID, X-Datadog-Origin, X-Datadog-Sampling-Priority, Accept, Origin, Referer",
         }
 
         log.info(f"handle_trace called: method={request.method}, path={request.path}, query={request.query_string}")
