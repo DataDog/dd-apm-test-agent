@@ -152,6 +152,167 @@ def extract_fields_from_tags(tags: List[str]) -> Dict[str, str]:
     return result
 
 
+def parse_filter_query(query: str) -> List[Dict[str, str]]:
+    """Parse a filter query string into a list of filter conditions.
+
+    Query format: @field:value @field2:value2
+    Example: @ml_app:test-app @event_type:span @parent_id:undefined
+
+    Returns a list of dicts with 'field' and 'value' keys.
+    """
+    import re
+
+    filters = []
+    if not query:
+        return filters
+
+    # Match @field:value patterns (value can contain hyphens, underscores, etc.)
+    pattern = r'@([\w.]+):([^\s]+)'
+    matches = re.findall(pattern, query)
+
+    for field, value in matches:
+        filters.append({"field": field, "value": value})
+
+    log.info(f"Parsed filter query: {query} -> {filters}")
+    return filters
+
+
+def apply_filters(spans: List[Dict[str, Any]], filters: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    """Apply filter conditions to a list of spans.
+
+    Supports filtering by:
+    - ml_app: matches span.ml_app
+    - event_type: matches span event type (always 'span' for LLMObs)
+    - parent_id: matches span.parent_id ('undefined' for root spans, '*' for any)
+    - meta.span.kind: matches span kind
+    - status: matches span status
+    - name: matches span name
+    - trace_id: matches span trace_id
+    - span_id: matches span span_id
+
+    Special values:
+    - '*' matches any value (wildcard)
+    - 'undefined' for parent_id matches root spans (no parent)
+    """
+    if not filters:
+        return spans
+
+    filtered = []
+    for span in spans:
+        matches_all = True
+
+        for f in filters:
+            field = f["field"]
+            value = f["value"]
+
+            # Wildcard '*' matches anything
+            if value == "*":
+                continue
+
+            # Get the span value for this field
+            span_value = get_span_field_value(span, field)
+
+            # Check if it matches
+            if span_value is None:
+                matches_all = False
+                break
+
+            # String comparison (case-insensitive for some fields)
+            if str(span_value).lower() != str(value).lower():
+                matches_all = False
+                break
+
+        if matches_all:
+            filtered.append(span)
+
+    log.info(f"Filtered {len(spans)} spans to {len(filtered)} spans")
+    return filtered
+
+
+def compute_children_ids(spans: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    """Compute children_ids for each span from parent_id relationships.
+
+    The SDK sends parent_id but not children_ids. The backend computes
+    children_ids by inverting the parent-child relationships.
+
+    Returns a dict mapping span_id -> list of child span_ids.
+    """
+    children_map: Dict[str, List[str]] = {}
+
+    # Initialize empty lists for all spans
+    for span in spans:
+        span_id = span.get("span_id", "")
+        if span_id:
+            children_map[span_id] = []
+
+    # Build children lists from parent_id
+    for span in spans:
+        span_id = span.get("span_id", "")
+        parent_id = span.get("parent_id", "")
+
+        # Skip if no parent or parent is "undefined" (root span)
+        if not parent_id or parent_id == "undefined":
+            continue
+
+        # Add this span to its parent's children list
+        if parent_id in children_map:
+            children_map[parent_id].append(span_id)
+        else:
+            # Parent might not be in our span list (cross-trace)
+            children_map[parent_id] = [span_id]
+
+    return children_map
+
+
+def get_span_field_value(span: Dict[str, Any], field: str) -> Optional[str]:
+    """Get the value of a field from a span for filtering.
+
+    Handles nested fields like meta.span.kind.
+    """
+    # Direct top-level fields
+    if field == "ml_app":
+        return span.get("ml_app", span.get("_ui_ml_app"))
+    elif field == "event_type":
+        return "span"  # Always 'span' for LLMObs spans
+    elif field == "parent_id":
+        parent = span.get("parent_id")
+        # Normalize empty/null parent_id to "undefined"
+        if not parent or parent == "0" or parent == "":
+            return "undefined"
+        return str(parent)
+    elif field == "status":
+        return span.get("status", "ok")
+    elif field == "name":
+        return span.get("name")
+    elif field == "trace_id":
+        return span.get("trace_id")
+    elif field == "span_id":
+        return span.get("span_id")
+    elif field == "service":
+        return span.get("service")
+    elif field == "env":
+        return span.get("env")
+
+    # Nested fields with dot notation
+    if field.startswith("meta."):
+        parts = field.split(".")
+        value = span.get("meta", {})
+        for part in parts[1:]:
+            if isinstance(value, dict):
+                value = value.get(part)
+            else:
+                return None
+        return value
+
+    # Check in tags
+    tags = span.get("tags", [])
+    for tag in tags:
+        if isinstance(tag, str) and tag.startswith(f"{field}:"):
+            return tag.split(":", 1)[1]
+
+    return None
+
+
 def convert_span_to_event_platform_format(span: Dict[str, Any]) -> Dict[str, Any]:
     """Convert an LLMObs span to Event Platform event format.
 
@@ -303,6 +464,9 @@ def build_event_platform_list_response(
     """
     from datetime import datetime
 
+    # Compute children_ids for all spans upfront
+    children_map = compute_children_ids(spans[:limit])
+
     events = []
     for span in spans[:limit]:
         meta = span.get("meta", {})
@@ -327,6 +491,12 @@ def build_event_platform_list_response(
         # Get service and env (remapped from tags)
         service = span.get("service", "")
         env = span.get("env", "")
+
+        # Get children_ids from computed map
+        children_ids = children_map.get(span_id, [])
+
+        # Get span_links from SDK (for cross-span relationships in agentic graphs)
+        span_links = span.get("span_links", [])
 
         # Debug log
         log.info(f"Building event: name={name}, kind={span_kind}, ml_app={ml_app}")
@@ -357,6 +527,11 @@ def build_event_platform_list_response(
         model_name = model_metadata.get("model_name", meta.get("model_name", ""))
         model_provider = model_metadata.get("model_provider", meta.get("model_provider", ""))
 
+        # Compute start and end timestamps in milliseconds
+        end_ns = start_ns + duration
+        start_ms = start_ns // 1_000_000
+        end_ms = end_ns // 1_000_000
+
         # Build the custom object (this is where the actual span data lives)
         # The UI accesses this via getMlObsAttrs(event) which returns event.custom
         custom_data = {
@@ -367,6 +542,8 @@ def build_event_platform_list_response(
                 "document_version": 3,
             },
             "duration": duration,
+            "start": start_ms,
+            "end": end_ms,
             "event_type": "span",
             "kind": span_kind,  # Also at top level for easier access
             "meta": {
@@ -390,12 +567,18 @@ def build_event_platform_list_response(
             },
             "ml_app": ml_app,
             "name": name,
+            "resource": name,  # Usually same as name
             "parent_id": span.get("parent_id", "undefined"),
+            "children_ids": children_ids,  # Computed from parent relationships
+            "span_links": span_links,  # From SDK for agentic execution graph
             "span_id": span_id,
             "start_ns": start_ns,
             "status": status,
+            "error": 1 if status == "error" else 0,
             "tags": tags,
             "trace_id": trace_id,
+            "service": service,
+            "env": env,
             "trace": {
                 "estimated_total_cost": 0,
             },
@@ -524,8 +707,17 @@ class LLMObsEventPlatformAPI:
             list_params = body.get("list", {})
             limit = list_params.get("limit", 100)
 
+            # Extract filter query string from list.search.query
+            search_params = list_params.get("search", {})
+            query_str = search_params.get("query", "")
+
             # Get spans from stored requests
             spans = self.get_llmobs_spans()
+
+            # Apply filters if query is provided
+            if query_str:
+                filters = parse_filter_query(query_str)
+                spans = apply_filters(spans, filters)
 
             # Generate request ID for multi-step queries
             request_id = str(uuid.uuid4())
@@ -867,6 +1059,9 @@ class LLMObsEventPlatformAPI:
                     headers=headers,
                 )
 
+            # Compute children_ids from parent_id relationships
+            children_map = compute_children_ids(trace_spans)
+
             # Build spans dict keyed by span_id
             spans_dict = {}
             root_id = None
@@ -887,8 +1082,14 @@ class LLMObsEventPlatformAPI:
                 # Get service (remapped from tags)
                 service = span.get("service", "")
 
+                # Get children_ids from computed map
+                children_ids = children_map.get(span_id, [])
+
+                # Get span_links from SDK (for cross-span relationships)
+                span_links = span.get("span_links", [])
+
                 # Debug log
-                log.info(f"Trace span: span_id={span_id}, name={span.get('name')}, kind={span_kind}, ml_app={ml_app}")
+                log.info(f"Trace span: span_id={span_id}, name={span.get('name')}, kind={span_kind}, ml_app={ml_app}, children={children_ids}")
 
                 # Determine root span (no parent or parent is "undefined")
                 parent_id = span.get("parent_id", "undefined")
@@ -900,16 +1101,28 @@ class LLMObsEventPlatformAPI:
                 model_name = model_metadata.get("model_name", meta.get("model_name", ""))
                 model_provider = model_metadata.get("model_provider", meta.get("model_provider", ""))
 
+                # Compute start and end timestamps in milliseconds
+                start_ns = span.get("start_ns", 0)
+                duration_ns = span.get("duration", 0)
+                start_ms = start_ns // 1_000_000
+                end_ms = (start_ns + duration_ns) // 1_000_000
+
                 spans_dict[span_id] = {
                     "trace_id": span.get("trace_id", ""),
                     "span_id": span_id,
                     "parent_id": parent_id,
+                    "children_ids": children_ids,  # Computed from parent relationships
+                    "span_links": span_links,  # From SDK for cross-span relationships
                     "name": span.get("name", ""),
+                    "resource": span.get("name", ""),  # Usually same as name
                     "tags": tags,
                     "status": span.get("status", "ok"),
-                    "start": span.get("start_ns", 0) // 1_000_000,  # Convert to ms
-                    "duration": span.get("duration", 0),
+                    "error": 1 if span.get("status") == "error" else 0,
+                    "start": start_ms,
+                    "end": end_ms,
+                    "duration": duration_ns,
                     "service": service,
+                    "env": span.get("env", ""),
                     "ml_app": ml_app,
                     "kind": span_kind,  # Also at top level
                     "meta": {
