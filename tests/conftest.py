@@ -174,6 +174,7 @@ async def agent_app(
             vcr_ci_mode=vcr_ci_mode,
             vcr_provider_map=vcr_provider_map,
             vcr_ignore_headers=vcr_ignore_headers,
+            client_drop_p0s=True,
         )
     )
     yield app

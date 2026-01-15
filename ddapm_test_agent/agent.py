@@ -897,7 +897,7 @@ class Agent:
                 ],
                 "feature_flags": [],
                 "config": {},
-                "client_drop_p0s": True,
+                "client_drop_p0s": request.app["client_drop_p0s"],
                 # Just a random selection of some peer_tags to aggregate on for testing, not exhaustive
                 "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
                 "span_events": True,  # Advertise support for the top-level Span field for Span Events
@@ -1601,6 +1601,7 @@ def make_app(
     vcr_ci_mode: bool,
     vcr_provider_map: str,
     vcr_ignore_headers: str,
+    client_drop_p0s: bool,
     enable_web_ui: bool = False,
 ) -> web.Application:
     agent = Agent()
@@ -1707,6 +1708,7 @@ def make_app(
     app["snapshot_removed_attrs"] = snapshot_removed_attrs
     app["snapshot_regex_placeholders"] = snapshot_regex_placeholders
     app["vcr_cassettes_directory"] = vcr_cassettes_directory
+    app["client_drop_p0s"] = client_drop_p0s
     return app
 
 
@@ -1975,6 +1977,12 @@ def main(args: Optional[List[str]] = None) -> None:
         help=("Will change the test agent to send [200: Ok] responses instead of error responses back to the tracer."),
     )
     parser.add_argument(
+        "--client-drop-p0s",
+        type=bool,
+        default=os.environ.get("DD_APM_CLIENT_DROP_P0S", True),
+        help=("Controls the client_drop_p0s feature flag advertised in the /info endpoint."),
+    )
+    parser.add_argument(
         "--vcr-cassettes-directory",
         type=str,
         default=os.environ.get("VCR_CASSETTES_DIRECTORY", os.path.join(os.getcwd(), "vcr-cassettes")),
@@ -2056,6 +2064,7 @@ def main(args: Optional[List[str]] = None) -> None:
         vcr_ci_mode=parsed_args.vcr_ci_mode,
         vcr_provider_map=parsed_args.vcr_provider_map,
         vcr_ignore_headers=parsed_args.vcr_ignore_headers,
+        client_drop_p0s=parsed_args.client_drop_p0s,
         enable_web_ui=parsed_args.web_ui_port > 0,
     )
 
