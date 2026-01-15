@@ -61,20 +61,95 @@ def extract_spans_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, An
     for event in events:
         log.debug(f"Event keys: {list(event.keys())}")
         event_spans = event.get("spans", [])
-        ml_app = event.get("ml_app", "")
-        tags = event.get("tags", [])
+        event_ml_app = event.get("ml_app", "")
+        event_tags = event.get("tags", [])
 
         for span in event_spans:
-            # Add ml_app if not present on span
-            if "ml_app" not in span and ml_app:
-                span["ml_app"] = ml_app
             # Merge top-level tags with span tags
-            if tags:
-                span_tags = span.get("tags", [])
-                span["tags"] = list(set(span_tags + tags))
+            span_tags = span.get("tags", [])
+            if event_tags:
+                span_tags = list(set(span_tags + event_tags))
+            span["tags"] = span_tags
+
+            # Remap SDK format to UI format
+            span = remap_sdk_span_to_ui_format(span, event_ml_app)
             spans.append(span)
 
     return spans
+
+
+def remap_sdk_span_to_ui_format(span: Dict[str, Any], event_ml_app: str = "") -> Dict[str, Any]:
+    """Remap span from SDK format to UI-expected format.
+
+    The Datadog backend does transformations when ingesting LLMObs data.
+    This function replicates those transformations:
+
+    SDK sends:
+    - span kind at: meta.span.kind
+    - ml_app in: tags array as "ml_app:value"
+    - service in: tags array as "service:value"
+    - env in: tags array as "env:value"
+
+    UI expects:
+    - span kind at: meta.span.kind (same, but we ensure it's there)
+    - ml_app at: top-level span.ml_app
+    - service at: top-level span.service
+    - env at: top-level span.env
+    """
+    tags = span.get("tags", [])
+
+    # Extract key fields from tags array
+    extracted = extract_fields_from_tags(tags)
+
+    # Set ml_app: prefer from tags, then from event level, then default
+    ml_app = extracted.get("ml_app") or event_ml_app or span.get("ml_app", "unknown")
+    span["ml_app"] = ml_app
+
+    # Set service and env from tags
+    if "service" not in span or not span["service"]:
+        span["service"] = extracted.get("service", "")
+    if "env" not in span or not span["env"]:
+        span["env"] = extracted.get("env", "")
+
+    # Ensure meta.span.kind exists and is accessible
+    # SDK sends: meta.span.kind
+    meta = span.get("meta", {})
+    span_meta = meta.get("span", {})
+    span_kind = span_meta.get("kind", "llm")
+
+    # Log the span kind for debugging
+    log.info(f"Remapped span: name={span.get('name')}, kind={span_kind}, ml_app={ml_app}")
+
+    # Ensure the span kind is in the expected location
+    if "meta" not in span:
+        span["meta"] = {}
+    if "span" not in span["meta"]:
+        span["meta"]["span"] = {}
+    span["meta"]["span"]["kind"] = span_kind
+
+    # Also store at _ui_kind for easy access
+    span["_ui_kind"] = span_kind
+    span["_ui_ml_app"] = ml_app
+
+    return span
+
+
+def extract_fields_from_tags(tags: List[str]) -> Dict[str, str]:
+    """Extract key fields from the tags array.
+
+    Tags are in format "key:value". Extract commonly needed fields.
+    """
+    result = {}
+    fields_to_extract = ["ml_app", "service", "env", "version", "source", "language"]
+
+    for tag in tags:
+        if not isinstance(tag, str) or ":" not in tag:
+            continue
+        key, value = tag.split(":", 1)
+        if key in fields_to_extract:
+            result[key] = value
+
+    return result
 
 
 def convert_span_to_event_platform_format(span: Dict[str, Any]) -> Dict[str, Any]:
@@ -115,8 +190,12 @@ def convert_span_to_event_platform_format(span: Dict[str, Any]) -> Dict[str, Any
     error_info = meta.get("error", {})
     has_error = 1 if status == "error" or error_info else 0
 
-    # Get span kind
-    span_kind = meta.get("kind", "llm")
+    # Get span kind from meta.span.kind (SDK format)
+    span_meta = meta.get("span", {})
+    span_kind = span_meta.get("kind", "llm")
+
+    # Get ml_app from remapped field
+    ml_app = span.get("ml_app", span.get("_ui_ml_app", "unknown"))
 
     # Get timestamps
     start_ns = span.get("start_ns", 0)
@@ -135,7 +214,7 @@ def convert_span_to_event_platform_format(span: Dict[str, Any]) -> Dict[str, Any
         # Basic span info
         "name": span.get("name", ""),
         "resource": span.get("name", ""),  # Usually same as name
-        "ml_app": span.get("ml_app", ""),
+        "ml_app": ml_app,
         "status": status,
         "error": has_error,
         "duration": duration_ns,
@@ -205,13 +284,9 @@ def convert_span_to_event_platform_format(span: Dict[str, Any]) -> Dict[str, Any
         },
     }
 
-    # Extract service/env from tags
-    for tag in span.get("tags", []):
-        if isinstance(tag, str):
-            if tag.startswith("service:"):
-                event["service"] = tag.split(":", 1)[1]
-            elif tag.startswith("env:"):
-                event["env"] = tag.split(":", 1)[1]
+    # Use remapped service/env if available
+    event["service"] = span.get("service", "")
+    event["env"] = span.get("env", "")
 
     return event
 
@@ -230,28 +305,31 @@ def build_event_platform_list_response(
 
     events = []
     for span in spans[:limit]:
-        # Debug log to see span structure
         meta = span.get("meta", {})
-        log.info(f"Processing span: name={span.get('name')}, meta keys={list(meta.keys())}, meta.kind={meta.get('kind', 'NOT_FOUND')}")
         metrics = span.get("metrics", {})
         span_id = span.get("span_id", str(uuid.uuid4()))
         trace_id = span.get("trace_id", "")
         status = span.get("status", "ok")
-        ml_app = span.get("ml_app", "")
         name = span.get("name", "")
         duration = span.get("duration", 0)
         start_ns = span.get("start_ns", int(time.time() * 1_000_000_000))
         tags = span.get("tags", [])
 
-        # Extract service and env from tags
-        service = ""
-        env = ""
-        for tag in tags:
-            if isinstance(tag, str):
-                if tag.startswith("service:"):
-                    service = tag.split(":", 1)[1]
-                elif tag.startswith("env:"):
-                    env = tag.split(":", 1)[1]
+        # Get span kind from meta.span.kind (SDK format)
+        # After remapping, this should be properly set
+        span_meta = meta.get("span", {})
+        span_kind = span_meta.get("kind", "llm")
+
+        # Get ml_app from remapped top-level field
+        # After remapping, ml_app is extracted from tags and set at top level
+        ml_app = span.get("ml_app", span.get("_ui_ml_app", "unknown"))
+
+        # Get service and env (remapped from tags)
+        service = span.get("service", "")
+        env = span.get("env", "")
+
+        # Debug log
+        log.info(f"Building event: name={name}, kind={span_kind}, ml_app={ml_app}")
 
         # Build tag object from tags array
         tag_obj = {}
@@ -273,9 +351,6 @@ def build_event_platform_list_response(
         # Timestamp as ISO string
         timestamp_ms = start_ns // 1_000_000
         timestamp_iso = datetime.utcfromtimestamp(timestamp_ms / 1000).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-
-        # Get span kind with fallback
-        span_kind = meta.get("kind", "llm")
 
         # Get model metadata
         model_metadata = meta.get("metadata", {})
@@ -641,21 +716,21 @@ class LLMObsEventPlatformAPI:
             span_id = found_span.get("span_id", str(uuid.uuid4()))
             trace_id = found_span.get("trace_id", "")
             status = found_span.get("status", "ok")
-            ml_app = found_span.get("ml_app", "")
             name = found_span.get("name", "")
             duration = found_span.get("duration", 0)
             start_ns = found_span.get("start_ns", int(time.time() * 1_000_000_000))
             tags = found_span.get("tags", [])
 
-            # Extract service and env from tags
-            service = ""
-            env = ""
-            for tag in tags:
-                if isinstance(tag, str):
-                    if tag.startswith("service:"):
-                        service = tag.split(":", 1)[1]
-                    elif tag.startswith("env:"):
-                        env = tag.split(":", 1)[1]
+            # Get span kind from meta.span.kind (SDK format)
+            span_meta = meta.get("span", {})
+            span_kind = span_meta.get("kind", "llm")
+
+            # Get ml_app from remapped top-level field
+            ml_app = found_span.get("ml_app", found_span.get("_ui_ml_app", "unknown"))
+
+            # Get service and env (remapped from tags)
+            service = found_span.get("service", "")
+            env = found_span.get("env", "")
 
             # Build tag object
             tag_obj = {}
@@ -667,8 +742,7 @@ class LLMObsEventPlatformAPI:
             timestamp_ms = start_ns // 1_000_000
             timestamp_iso = datetime.utcfromtimestamp(timestamp_ms / 1000).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
-            # Get span kind
-            span_kind = meta.get("kind", "llm")
+            log.info(f"fetch_one: name={name}, kind={span_kind}, ml_app={ml_app}")
 
             # Get model metadata
             model_metadata = meta.get("metadata", {})
@@ -803,23 +877,23 @@ class LLMObsEventPlatformAPI:
                 metrics = span.get("metrics", {})
                 tags = span.get("tags", [])
 
-                # Debug log span structure
-                log.info(f"Trace span: span_id={span_id}, name={span.get('name')}, meta.kind={meta.get('kind', 'NOT_FOUND')}")
+                # Get span kind from meta.span.kind (SDK format)
+                span_meta = meta.get("span", {})
+                span_kind = span_meta.get("kind", "llm")
 
-                # Extract service from tags
-                service = ""
-                for tag in tags:
-                    if isinstance(tag, str) and tag.startswith("service:"):
-                        service = tag.split(":", 1)[1]
-                        break
+                # Get ml_app from remapped top-level field
+                ml_app = span.get("ml_app", span.get("_ui_ml_app", "unknown"))
+
+                # Get service (remapped from tags)
+                service = span.get("service", "")
+
+                # Debug log
+                log.info(f"Trace span: span_id={span_id}, name={span.get('name')}, kind={span_kind}, ml_app={ml_app}")
 
                 # Determine root span (no parent or parent is "undefined")
                 parent_id = span.get("parent_id", "undefined")
                 if not root_id and (not parent_id or parent_id == "undefined"):
                     root_id = span_id
-
-                # Get span kind
-                span_kind = meta.get("kind", "llm")
 
                 # Get model metadata
                 model_metadata = meta.get("metadata", {})
@@ -836,10 +910,10 @@ class LLMObsEventPlatformAPI:
                     "start": span.get("start_ns", 0) // 1_000_000,  # Convert to ms
                     "duration": span.get("duration", 0),
                     "service": service,
-                    "ml_app": span.get("ml_app", ""),
+                    "ml_app": ml_app,
                     "kind": span_kind,  # Also at top level
                     "meta": {
-                        "ml_app": span.get("ml_app", ""),
+                        "ml_app": ml_app,
                         "kind": span_kind,  # Also directly in meta
                         "span": {
                             "kind": span_kind,
