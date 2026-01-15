@@ -80,6 +80,7 @@ from .tracerflare import v1_decode as v1_tracerflare_decode
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 from .vcr_proxy import proxy_request
+from .llmobs_event_platform import LLMObsEventPlatformAPI
 
 
 # Default ports
@@ -1682,6 +1683,12 @@ def make_app(
             ),
         ]
     )
+
+    # Add LLM Observability Event Platform API routes
+    # These provide Datadog Event Platform compatible endpoints for the Chrome extension
+    llmobs_event_platform_api = LLMObsEventPlatformAPI(agent)
+    app.add_routes(llmobs_event_platform_api.get_routes())
+
     checks = Checks(
         checks=[
             CheckMetaTracerVersionHeader,
