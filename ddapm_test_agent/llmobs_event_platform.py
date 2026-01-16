@@ -117,9 +117,6 @@ def remap_sdk_span_to_ui_format(span: Dict[str, Any], event_ml_app: str = "") ->
     span_meta = meta.get("span", {})
     span_kind = span_meta.get("kind", "llm")
 
-    # Log the span kind for debugging
-    log.info(f"Remapped span: name={span.get('name')}, kind={span_kind}, ml_app={ml_app}")
-
     # Ensure the span kind is in the expected location
     if "meta" not in span:
         span["meta"] = {}
@@ -152,60 +149,128 @@ def extract_fields_from_tags(tags: List[str]) -> Dict[str, str]:
     return result
 
 
-def parse_filter_query(query: str) -> List[Dict[str, str]]:
-    """Parse a filter query string into a list of filter conditions.
+def parse_filter_query(query: str) -> Dict[str, Any]:
+    """Parse a filter query string into filter conditions and free text search.
 
-    Query format: @field:value @field2:value2
-    Example: @ml_app:test-app @event_type:span @parent_id:undefined
+    Query format examples:
+    - @field:value @field2:value2 (facet filters)
+    - field:value (tag filters, without @)
+    - some search text (free text search)
+    - @ml_app:test-app service:mcp some search (combined)
 
-    Returns a list of dicts with 'field' and 'value' keys.
+    Returns a dict with:
+    - 'filters': list of dicts with 'field', 'value', 'type' keys
+    - 'text_search': free text search string
     """
     import re
 
-    filters = []
+    result = {
+        "filters": [],
+        "text_search": "",
+    }
+
     if not query:
-        return filters
+        return result
 
-    # Match @field:value patterns (value can contain hyphens, underscores, etc.)
-    pattern = r'@([\w.]+):([^\s]+)'
-    matches = re.findall(pattern, query)
+    # Work with a copy to extract parts
+    remaining = query
 
-    for field, value in matches:
-        filters.append({"field": field, "value": value})
+    # Match @field:value patterns (facet filters)
+    facet_pattern = r'@([\w.]+):([^\s]+)'
+    facet_matches = re.findall(facet_pattern, remaining)
+    for field, value in facet_matches:
+        result["filters"].append({"field": field, "value": value, "type": "facet"})
 
-    log.info(f"Parsed filter query: {query} -> {filters}")
-    return filters
+    # Remove matched facet filters from remaining
+    remaining = re.sub(facet_pattern, '', remaining)
+
+    # Match field:value patterns without @ (tag filters)
+    tag_pattern = r'(?<!\S)([\w.]+):([^\s]+)'
+    tag_matches = re.findall(tag_pattern, remaining)
+    for field, value in tag_matches:
+        result["filters"].append({"field": field, "value": value, "type": "tag"})
+
+    # Remove matched tag filters from remaining
+    remaining = re.sub(tag_pattern, '', remaining)
+
+    # Remaining text is free text search
+    text_search = remaining.strip()
+    if text_search:
+        result["text_search"] = text_search
+
+    log.info(f"Parsed filter query: {query} -> filters={result['filters']}, text_search='{result['text_search']}'")
+    return result
 
 
-def apply_filters(spans: List[Dict[str, Any]], filters: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-    """Apply filter conditions to a list of spans.
+def match_wildcard(value: str, pattern: str) -> bool:
+    """Match a value against a pattern with wildcard support.
+
+    Supports:
+    - Exact match: 'foo' matches 'foo'
+    - Prefix match: 'foo*' matches 'foobar', 'foo123'
+    - Suffix match: '*bar' matches 'foobar', '123bar'
+    - Contains match: '*foo*' matches 'xxxfooyyy'
+    - Single wildcard: '*' matches anything
+
+    Matching is case-insensitive.
+    """
+    value_lower = value.lower()
+    pattern_lower = pattern.lower()
+
+    # Single wildcard matches anything
+    if pattern_lower == "*":
+        return True
+
+    # Check for wildcard positions
+    starts_with_wildcard = pattern_lower.startswith("*")
+    ends_with_wildcard = pattern_lower.endswith("*")
+
+    if starts_with_wildcard and ends_with_wildcard:
+        # *contains* pattern
+        search_term = pattern_lower[1:-1]
+        return search_term in value_lower
+    elif starts_with_wildcard:
+        # *suffix pattern
+        suffix = pattern_lower[1:]
+        return value_lower.endswith(suffix)
+    elif ends_with_wildcard:
+        # prefix* pattern
+        prefix = pattern_lower[:-1]
+        return value_lower.startswith(prefix)
+    else:
+        # Exact match
+        return value_lower == pattern_lower
+
+
+def apply_filters(spans: List[Dict[str, Any]], parsed_query: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Apply filter conditions and text search to a list of spans.
 
     Supports filtering by:
-    - ml_app: matches span.ml_app
-    - event_type: matches span event type (always 'span' for LLMObs)
-    - parent_id: matches span.parent_id ('undefined' for root spans, '*' for any)
-    - meta.span.kind: matches span kind
-    - status: matches span status
-    - name: matches span name
-    - trace_id: matches span trace_id
-    - span_id: matches span span_id
+    - Facet filters (@field:value): ml_app, event_type, parent_id, meta.span.kind, status, name, etc.
+    - Tag filters (field:value): service, env, or any tag
+    - Text search: searches in span name, input, output content
 
     Special values:
     - '*' matches any value (wildcard)
     - 'undefined' for parent_id matches root spans (no parent)
     """
-    if not filters:
+    filters = parsed_query.get("filters", [])
+    text_search = parsed_query.get("text_search", "").lower()
+
+    if not filters and not text_search:
         return spans
 
     filtered = []
     for span in spans:
         matches_all = True
 
+        # Apply field filters
         for f in filters:
             field = f["field"]
             value = f["value"]
+            filter_type = f.get("type", "facet")
 
-            # Wildcard '*' matches anything
+            # Wildcard '*' alone matches anything
             if value == "*":
                 continue
 
@@ -217,16 +282,76 @@ def apply_filters(spans: List[Dict[str, Any]], filters: List[Dict[str, str]]) ->
                 matches_all = False
                 break
 
-            # String comparison (case-insensitive for some fields)
-            if str(span_value).lower() != str(value).lower():
+            # Use wildcard matching (supports *, prefix*, *suffix, *contains*)
+            if not match_wildcard(str(span_value), value):
                 matches_all = False
                 break
+
+        # Apply text search if filters matched
+        if matches_all and text_search:
+            matches_all = text_search_span(span, text_search)
 
         if matches_all:
             filtered.append(span)
 
-    log.info(f"Filtered {len(spans)} spans to {len(filtered)} spans")
+    log.info(f"Filtered {len(spans)} spans to {len(filtered)} spans (text_search='{text_search}')")
     return filtered
+
+
+def text_search_span(span: Dict[str, Any], search_text: str) -> bool:
+    """Check if a span matches the free text search.
+
+    Searches in:
+    - span name
+    - input value/messages
+    - output value/messages
+    - tags
+    """
+    search_lower = search_text.lower()
+
+    # Search in name
+    name = span.get("name", "")
+    if search_lower in name.lower():
+        return True
+
+    # Search in meta
+    meta = span.get("meta", {})
+
+    # Search in input
+    input_data = meta.get("input", {})
+    input_value = input_data.get("value", "")
+    if input_value and search_lower in str(input_value).lower():
+        return True
+
+    # Search in input messages
+    input_messages = input_data.get("messages", [])
+    for msg in input_messages:
+        if isinstance(msg, dict):
+            content = msg.get("content", "")
+            if content and search_lower in str(content).lower():
+                return True
+
+    # Search in output
+    output_data = meta.get("output", {})
+    output_value = output_data.get("value", "")
+    if output_value and search_lower in str(output_value).lower():
+        return True
+
+    # Search in output messages
+    output_messages = output_data.get("messages", [])
+    for msg in output_messages:
+        if isinstance(msg, dict):
+            content = msg.get("content", "")
+            if content and search_lower in str(content).lower():
+                return True
+
+    # Search in tags
+    tags = span.get("tags", [])
+    for tag in tags:
+        if isinstance(tag, str) and search_lower in tag.lower():
+            return True
+
+    return False
 
 
 def compute_children_ids(spans: List[Dict[str, Any]]) -> Dict[str, List[str]]:
@@ -672,9 +797,9 @@ class LLMObsEventPlatformAPI:
         return all_spans
 
     async def handle_logs_analytics_list(self, request: Request) -> web.Response:
-        """Handle POST /api/v1/logs-analytics/list endpoint.
+        """Handle POST /api/unstable/llm-obs-query-rewriter/list endpoint.
 
-        This is the main entry point for Event Platform list queries.
+        This is the main entry point for LLM Obs list queries.
         """
         # Add CORS headers for cross-origin requests from Datadog
         headers = {
@@ -716,8 +841,8 @@ class LLMObsEventPlatformAPI:
 
             # Apply filters if query is provided
             if query_str:
-                filters = parse_filter_query(query_str)
-                spans = apply_filters(spans, filters)
+                parsed_query = parse_filter_query(query_str)
+                spans = apply_filters(spans, parsed_query)
 
             # Generate request ID for multi-step queries
             request_id = str(uuid.uuid4())
@@ -731,7 +856,7 @@ class LLMObsEventPlatformAPI:
             return web.json_response(response, headers=headers)
 
         except Exception as e:
-            log.error(f"Error handling logs-analytics list: {e}")
+            log.error(f"Error handling llm-obs list: {e}")
             return web.json_response(
                 {"error": str(e)},
                 status=500,
@@ -739,7 +864,7 @@ class LLMObsEventPlatformAPI:
             )
 
     async def handle_logs_analytics_get(self, request: Request) -> web.Response:
-        """Handle GET /api/v1/logs-analytics/list/{requestId} endpoint.
+        """Handle GET /api/unstable/llm-obs-query-rewriter/list/{requestId} endpoint.
 
         This is for multi-step query polling.
         """
@@ -764,7 +889,7 @@ class LLMObsEventPlatformAPI:
                 return web.Response(status=410, headers=headers)  # Gone
 
         except Exception as e:
-            log.error(f"Error handling logs-analytics get: {e}")
+            log.error(f"Error handling llm-obs get: {e}")
             return web.json_response(
                 {"error": str(e)},
                 status=500,
@@ -772,7 +897,7 @@ class LLMObsEventPlatformAPI:
             )
 
     async def handle_aggregate(self, request: Request) -> web.Response:
-        """Handle POST /api/v1/logs-analytics/aggregate endpoint.
+        """Handle POST /api/unstable/llm-obs-query-rewriter/aggregate endpoint.
 
         Returns aggregated metrics for LLM Observability data.
         """
@@ -855,7 +980,7 @@ class LLMObsEventPlatformAPI:
             )
 
     async def handle_fetch_one(self, request: Request) -> web.Response:
-        """Handle POST /api/v1/logs-analytics/fetch_one endpoint.
+        """Handle POST /api/unstable/llm-obs-query-rewriter/fetch_one endpoint.
 
         Fetches a single event/span by ID for the detail view.
         """
