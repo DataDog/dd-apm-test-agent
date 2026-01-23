@@ -260,11 +260,7 @@ def _write_response_headers(response: Response, headers: Mapping[str, str]) -> N
 async def _request(
     cassette_file_path: str, cassette_exists: bool, request_kwargs: Dict[str, Any], vcr_ignore_headers: str
 ) -> Response:
-    """
-    Load a cassette from file if it exists, otherwise make a request and save the response.
-
-    If the cassette was created with the VCR package (YAML format), convert it to JSON format.
-    """
+    """Load a cassette from file if it exists, otherwise make a request and save the response."""
     logger.info(f"Making a request to {request_kwargs['url']} with method {request_kwargs['method']}")
 
     cassette: Optional[CassetteData] = None
