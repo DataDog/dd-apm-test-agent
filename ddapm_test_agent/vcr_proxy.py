@@ -289,7 +289,7 @@ async def _request(
         _write_cassette_file(cassette_file_path, request_kwargs, provider_response, vcr_ignore_headers)
 
         response = Response(body=provider_response.content, status=provider_response.status_code)
-        response_headers = provider_response.headers
+        response_headers = dict(provider_response.headers)
 
     _write_response_headers(response, response_headers)
 
