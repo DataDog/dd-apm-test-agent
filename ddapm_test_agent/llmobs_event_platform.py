@@ -52,7 +52,10 @@ class LLMObsEventPlatformAPI:
     def __init__(self, agent: Any):
         self.agent = agent
 
-    async def handle_logs_analytics_list(self, request: Request) -> web.Response:
+    async def handle_api_ui_event_platform_llmobs_facets(self, request: Request) -> web.Response:
+        return web.json_response({"data": []})
+
+    async def handle_api_v1_logs_analytics_list(self, request: Request) -> web.Response:
         return web.json_response(
             {
                 "data": [],
@@ -65,7 +68,7 @@ class LLMObsEventPlatformAPI:
             }
         )
 
-    async def handle_logs_analytics_get(self, request: Request) -> web.Response:
+    async def handle_api_v1_logs_analytics_list_get(self, request: Request) -> web.Response:
         return web.json_response(
             {
                 "data": [],
@@ -78,7 +81,7 @@ class LLMObsEventPlatformAPI:
             }
         )
 
-    async def handle_aggregate(self, request: Request) -> web.Response:
+    async def handle_api_v1_logs_analytics_aggregate(self, request: Request) -> web.Response:
         try:
             body = await request.json()
             log.debug(f"aggregate request: {body}")
@@ -99,10 +102,22 @@ class LLMObsEventPlatformAPI:
             }
         )
 
-    async def handle_facet_info(self, request: Request) -> web.Response:
+    async def handle_api_v1_logs_analytics_fetch_one(self, request: Request) -> web.Response:
+        return web.json_response(
+            {
+                "data": None,
+                "meta": {
+                    "status": "done",
+                    "request_id": "stub-request-id",
+                    "elapsed": 0,
+                },
+            }
+        )
+
+    async def handle_api_unstable_llm_obs_query_rewriter_facet_info(self, request: Request) -> web.Response:
         return web.json_response({"data": []})
 
-    async def handle_facet_range_info(self, request: Request) -> web.Response:
+    async def handle_api_unstable_llm_obs_query_rewriter_facet_range_info(self, request: Request) -> web.Response:
         try:
             body = await request.json()
             log.debug(f"facet_range_info request: {body}")
@@ -126,22 +141,7 @@ class LLMObsEventPlatformAPI:
             }
         )
 
-    async def handle_facets_list(self, request: Request) -> web.Response:
-        return web.json_response({"data": []})
-
-    async def handle_fetch_one(self, request: Request) -> web.Response:
-        return web.json_response(
-            {
-                "data": None,
-                "meta": {
-                    "status": "done",
-                    "request_id": "stub-request-id",
-                    "elapsed": 0,
-                },
-            }
-        )
-
-    async def handle_trace(self, request: Request) -> web.Response:
+    async def handle_api_ui_llm_obs_v1_trace(self, request: Request) -> web.Response:
         trace_id = request.match_info.get("trace_id", "")
         log.info(f"handle_trace called for trace_id={trace_id}")
 
@@ -154,7 +154,7 @@ class LLMObsEventPlatformAPI:
             }
         )
 
-    async def handle_query_scalar(self, request: Request) -> web.Response:
+    async def handle_api_ui_query_scalar(self, request: Request) -> web.Response:
         try:
             body = await request.json()
             log.debug(f"query/scalar request: {body}")
@@ -175,24 +175,31 @@ class LLMObsEventPlatformAPI:
     def get_routes(self) -> List[web.RouteDef]:
         """Return the routes for this API with CORS handling."""
         routes = [
-            # Event Platform facets endpoint
-            ("/api/ui/event-platform/llmobs/facets", "GET", self.handle_facets_list),
-            # LLM Obs Query Rewriter endpoints (unstable API)
-            ("/api/unstable/llm-obs-query-rewriter/list", "POST", self.handle_logs_analytics_list),
-            ("/api/unstable/llm-obs-query-rewriter/list/{request_id}", "GET", self.handle_logs_analytics_get),
-            ("/api/unstable/llm-obs-query-rewriter/aggregate", "POST", self.handle_aggregate),
-            ("/api/unstable/llm-obs-query-rewriter/facet_info", "POST", self.handle_facet_info),
-            ("/api/unstable/llm-obs-query-rewriter/facet_range_info", "POST", self.handle_facet_range_info),
-            ("/api/unstable/llm-obs-query-rewriter/fetch_one", "POST", self.handle_fetch_one),
-            # Logs Analytics endpoints (stable API)
-            ("/api/v1/logs-analytics/list", "POST", self.handle_logs_analytics_list),
-            ("/api/v1/logs-analytics/list/{request_id}", "GET", self.handle_logs_analytics_get),
-            ("/api/v1/logs-analytics/aggregate", "POST", self.handle_aggregate),
-            ("/api/v1/logs-analytics/fetch_one", "POST", self.handle_fetch_one),
-            # LLM Obs trace endpoint
-            ("/api/ui/llm-obs/v1/trace/{trace_id}", "GET", self.handle_trace),
-            # Query scalar endpoint (used by histogram visualizations)
-            ("/api/ui/query/scalar", "POST", self.handle_query_scalar),
+            ("/api/ui/event-platform/llmobs/facets", "GET", self.handle_api_ui_event_platform_llmobs_facets),
+            ("/api/unstable/llm-obs-query-rewriter/list", "POST", self.handle_api_v1_logs_analytics_list),
+            (
+                "/api/unstable/llm-obs-query-rewriter/list/{request_id}",
+                "GET",
+                self.handle_api_v1_logs_analytics_list_get,
+            ),
+            ("/api/unstable/llm-obs-query-rewriter/aggregate", "POST", self.handle_api_v1_logs_analytics_aggregate),
+            (
+                "/api/unstable/llm-obs-query-rewriter/facet_info",
+                "POST",
+                self.handle_api_unstable_llm_obs_query_rewriter_facet_info,
+            ),
+            (
+                "/api/unstable/llm-obs-query-rewriter/facet_range_info",
+                "POST",
+                self.handle_api_unstable_llm_obs_query_rewriter_facet_range_info,
+            ),
+            ("/api/unstable/llm-obs-query-rewriter/fetch_one", "POST", self.handle_api_v1_logs_analytics_fetch_one),
+            ("/api/v1/logs-analytics/list", "POST", self.handle_api_v1_logs_analytics_list),
+            ("/api/v1/logs-analytics/list/{request_id}", "GET", self.handle_api_v1_logs_analytics_list_get),
+            ("/api/v1/logs-analytics/aggregate", "POST", self.handle_api_v1_logs_analytics_aggregate),
+            ("/api/v1/logs-analytics/fetch_one", "POST", self.handle_api_v1_logs_analytics_fetch_one),
+            ("/api/ui/llm-obs/v1/trace/{trace_id}", "GET", self.handle_api_ui_llm_obs_v1_trace),
+            ("/api/ui/query/scalar", "POST", self.handle_api_ui_query_scalar),
         ]
 
         route_defs = []
