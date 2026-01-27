@@ -9,6 +9,7 @@ import pytest
 
 @pytest.fixture
 def llmobs_payload():
+    """A sample LLMObs payload matching the SDK format."""
     return {
         "ml_app": "test-app",
         "tags": ["env:test", "service:test-service"],
@@ -52,6 +53,7 @@ def llmobs_payload():
 
 
 async def _submit_llmobs_payload(agent, payload):
+    """Submit an LLMObs payload to the test agent (same format as SDK)."""
     data = gzip.compress(msgpack.packb(payload))
     return await agent.post(
         "/evp_proxy/v2/api/v2/llmobs",
