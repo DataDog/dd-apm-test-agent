@@ -53,6 +53,7 @@ from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
 from .integration import Integration
+from .llmobs_event_platform import LLMObsEventPlatformAPI
 from .logs import LOGS_ENDPOINT
 from .logs import OTLPLogsGRPCServicer
 from .logs import decode_logs_request
@@ -209,7 +210,7 @@ async def _prepare_and_send_request(data: bytes, request: Request, headers: Mapp
     log.info("Forwarding request to agent at %r", full_agent_url)
     log.debug(f"Using headers: {headers}")
 
-    (client_response, body) = await _forward_request(data, headers, full_agent_url)
+    client_response, body = await _forward_request(data, headers, full_agent_url)
     return web.Response(
         status=client_response.status,
         headers=client_response.headers,
@@ -881,6 +882,17 @@ class Agent:
         return web.HTTPAccepted()
 
     async def handle_info(self, request: Request) -> web.Response:
+        # CORS headers for cross-origin requests from Datadog UI
+        headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+        }
+
+        # Handle OPTIONS preflight
+        if request.method == "OPTIONS":
+            return web.Response(status=200, headers=headers)
+
         return web.json_response(
             {
                 "version": os.environ.get("TEST_AGENT_VERSION", "test"),
@@ -902,6 +914,7 @@ class Agent:
                 "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
                 "span_events": True,  # Advertise support for the top-level Span field for Span Events
             },
+            headers=headers,
         )
 
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5", "v0.7", "v1"]) -> web.Response:
@@ -1650,6 +1663,7 @@ def make_app(
             web.post("/evp_proxy/v2/api/v2/exposures", agent.handle_evp_proxy_v2_api_v2_exposures),
             web.post("/evp_proxy/v4/api/v2/errorsintake", agent.handle_evp_proxy_v4_api_v2_errorsintake),
             web.get("/info", agent.handle_info),
+            web.options("/info", agent.handle_info),
             web.get("/test/session/start", agent.handle_session_start),
             web.get("/test/session/clear", agent.handle_session_clear),
             web.get("/test/session/snapshot", agent.handle_snapshot),
@@ -1682,6 +1696,12 @@ def make_app(
             ),
         ]
     )
+
+    # Add LLM Observability Event Platform API routes
+    # These provide Datadog Event Platform compatible endpoints for local development
+    llmobs_event_platform_api = LLMObsEventPlatformAPI(agent)
+    app.add_routes(llmobs_event_platform_api.get_routes())
+
     checks = Checks(
         checks=[
             CheckMetaTracerVersionHeader,
