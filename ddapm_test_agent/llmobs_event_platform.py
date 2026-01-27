@@ -149,6 +149,51 @@ def extract_fields_from_tags(tags: List[str]) -> Dict[str, str]:
     return result
 
 
+def parse_duration_to_nanoseconds(duration_str: str) -> Optional[float]:
+    """Parse a duration string into nanoseconds.
+
+    Supports formats like:
+    - "5.5s" -> 5500000000 (seconds)
+    - "100ms" -> 100000000 (milliseconds)
+    - "50us" or "50μs" -> 50000 (microseconds)
+    - "1000ns" -> 1000 (nanoseconds)
+    - "1m" -> 60000000000 (minutes)
+    - "1h" -> 3600000000000 (hours)
+
+    Returns None if the string cannot be parsed.
+    """
+    import re
+
+    duration_str = duration_str.strip()
+
+    # Pattern to match number (including decimals) followed by unit
+    pattern = r'^([0-9]*\.?[0-9]+)(ns|μs|us|ms|s|m|h)$'
+    match = re.match(pattern, duration_str, re.IGNORECASE)
+
+    if not match:
+        # Try parsing as raw number (assume nanoseconds)
+        try:
+            return float(duration_str)
+        except ValueError:
+            return None
+
+    value = float(match.group(1))
+    unit = match.group(2).lower()
+
+    # Convert to nanoseconds
+    multipliers = {
+        'ns': 1,
+        'us': 1_000,
+        'μs': 1_000,
+        'ms': 1_000_000,
+        's': 1_000_000_000,
+        'm': 60_000_000_000,
+        'h': 3_600_000_000_000,
+    }
+
+    return value * multipliers.get(unit, 1)
+
+
 def parse_filter_query(query: str) -> Dict[str, Any]:
     """Parse a filter query string into filter conditions and free text search.
 
@@ -157,9 +202,15 @@ def parse_filter_query(query: str) -> Dict[str, Any]:
     - field:value (tag filters, without @)
     - some search text (free text search)
     - @ml_app:test-app service:mcp some search (combined)
+    - @duration:[5.5s TO 8.7s] (range filter)
+    - @duration:>=5.5s (comparison filter)
+    - @duration:<=8.7s (comparison filter)
+    - @duration:>5s @duration:<10s (multiple comparison filters)
 
     Returns a dict with:
     - 'filters': list of dicts with 'field', 'value', 'type' keys
+      For range filters: includes 'operator' key with 'range', 'gte', 'lte', 'gt', 'lt'
+      For range filters with [X TO Y]: includes 'min' and 'max' keys
     - 'text_search': free text search string
     """
     import re
@@ -175,10 +226,74 @@ def parse_filter_query(query: str) -> Dict[str, Any]:
     # Work with a copy to extract parts
     remaining = query
 
-    # Match @field:value patterns (facet filters)
-    facet_pattern = r'@([\w.]+):([^\s]+)'
+    # Match @field:[value1 TO value2] patterns (range filters)
+    range_pattern = r'@([\w.]+):\[([^\]]+)\s+TO\s+([^\]]+)\]'
+    range_matches = re.findall(range_pattern, remaining, re.IGNORECASE)
+    for field, min_val, max_val in range_matches:
+        filter_entry = {
+            "field": field,
+            "type": "facet",
+            "operator": "range",
+            "min_raw": min_val.strip(),
+            "max_raw": max_val.strip(),
+        }
+        # Parse duration values if this is a duration field
+        if field == "duration":
+            min_ns = parse_duration_to_nanoseconds(min_val.strip())
+            max_ns = parse_duration_to_nanoseconds(max_val.strip())
+            if min_ns is not None:
+                filter_entry["min"] = min_ns
+            if max_ns is not None:
+                filter_entry["max"] = max_ns
+        else:
+            # For non-duration fields, try to parse as numbers
+            try:
+                filter_entry["min"] = float(min_val.strip())
+            except ValueError:
+                filter_entry["min"] = min_val.strip()
+            try:
+                filter_entry["max"] = float(max_val.strip())
+            except ValueError:
+                filter_entry["max"] = max_val.strip()
+        result["filters"].append(filter_entry)
+
+    # Remove matched range filters from remaining
+    remaining = re.sub(range_pattern, '', remaining, flags=re.IGNORECASE)
+
+    # Match @field:>=value, @field:<=value, @field:>value, @field:<value patterns (comparison filters)
+    comparison_pattern = r'@([\w.]+):(>=|<=|>|<)([^\s]+)'
+    comparison_matches = re.findall(comparison_pattern, remaining)
+    for field, operator, value in comparison_matches:
+        op_map = {'>=': 'gte', '<=': 'lte', '>': 'gt', '<': 'lt'}
+        filter_entry = {
+            "field": field,
+            "type": "facet",
+            "operator": op_map[operator],
+            "value_raw": value,
+        }
+        # Parse duration values if this is a duration field
+        if field == "duration":
+            parsed_val = parse_duration_to_nanoseconds(value)
+            if parsed_val is not None:
+                filter_entry["value"] = parsed_val
+        else:
+            # For non-duration fields, try to parse as number
+            try:
+                filter_entry["value"] = float(value)
+            except ValueError:
+                filter_entry["value"] = value
+        result["filters"].append(filter_entry)
+
+    # Remove matched comparison filters from remaining
+    remaining = re.sub(comparison_pattern, '', remaining)
+
+    # Match @field:value patterns (facet filters) - but not ones with comparison operators
+    facet_pattern = r'@([\w.]+):([^\s\[]+)'
     facet_matches = re.findall(facet_pattern, remaining)
     for field, value in facet_matches:
+        # Skip if this looks like a comparison operator we missed
+        if value.startswith('>=') or value.startswith('<=') or value.startswith('>') or value.startswith('<'):
+            continue
         result["filters"].append({"field": field, "value": value, "type": "facet"})
 
     # Remove matched facet filters from remaining
@@ -248,6 +363,8 @@ def apply_filters(spans: List[Dict[str, Any]], parsed_query: Dict[str, Any]) -> 
     Supports filtering by:
     - Facet filters (@field:value): ml_app, event_type, parent_id, meta.span.kind, status, name, etc.
     - Tag filters (field:value): service, env, or any tag
+    - Range filters (@field:[min TO max]): for numeric fields like duration
+    - Comparison filters (@field:>=value, @field:<=value, @field:>value, @field:<value)
     - Text search: searches in span name, input, output content
 
     Special values:
@@ -267,15 +384,68 @@ def apply_filters(spans: List[Dict[str, Any]], parsed_query: Dict[str, Any]) -> 
         # Apply field filters
         for f in filters:
             field = f["field"]
-            value = f["value"]
+            operator = f.get("operator")
             filter_type = f.get("type", "facet")
+
+            # Get the span value for this field
+            span_value = get_span_field_value(span, field)
+
+            # Handle range filter: [min TO max]
+            if operator == "range":
+                if span_value is None:
+                    matches_all = False
+                    break
+                try:
+                    numeric_value = float(span_value)
+                    min_val = f.get("min")
+                    max_val = f.get("max")
+                    if min_val is not None and numeric_value < min_val:
+                        matches_all = False
+                        break
+                    if max_val is not None and numeric_value > max_val:
+                        matches_all = False
+                        break
+                except (ValueError, TypeError):
+                    matches_all = False
+                    break
+                continue
+
+            # Handle comparison filters: >=, <=, >, <
+            if operator in ("gte", "lte", "gt", "lt"):
+                if span_value is None:
+                    matches_all = False
+                    break
+                try:
+                    numeric_value = float(span_value)
+                    compare_value = f.get("value")
+                    if compare_value is None:
+                        matches_all = False
+                        break
+                    if operator == "gte" and not (numeric_value >= compare_value):
+                        matches_all = False
+                        break
+                    if operator == "lte" and not (numeric_value <= compare_value):
+                        matches_all = False
+                        break
+                    if operator == "gt" and not (numeric_value > compare_value):
+                        matches_all = False
+                        break
+                    if operator == "lt" and not (numeric_value < compare_value):
+                        matches_all = False
+                        break
+                except (ValueError, TypeError):
+                    matches_all = False
+                    break
+                continue
+
+            # Standard value filter
+            value = f.get("value")
+            if value is None:
+                continue
 
             # Wildcard '*' alone matches anything
             if value == "*":
                 continue
-
-            # Get the span value for this field
-            span_value = get_span_field_value(span, field)
 
             # Check if it matches
             if span_value is None:
@@ -283,7 +453,7 @@ def apply_filters(spans: List[Dict[str, Any]], parsed_query: Dict[str, Any]) -> 
                 break
 
             # Use wildcard matching (supports *, prefix*, *suffix, *contains*)
-            if not match_wildcard(str(span_value), value):
+            if not match_wildcard(str(span_value), str(value)):
                 matches_all = False
                 break
 
@@ -389,10 +559,11 @@ def compute_children_ids(spans: List[Dict[str, Any]]) -> Dict[str, List[str]]:
     return children_map
 
 
-def get_span_field_value(span: Dict[str, Any], field: str) -> Optional[str]:
+def get_span_field_value(span: Dict[str, Any], field: str) -> Optional[Any]:
     """Get the value of a field from a span for filtering.
 
-    Handles nested fields like meta.span.kind.
+    Handles nested fields like meta.span.kind, metrics.input_tokens, etc.
+    Also handles SDK format where some fields are nested differently than UI expects.
     """
     # Direct top-level fields
     if field == "ml_app":
@@ -417,11 +588,34 @@ def get_span_field_value(span: Dict[str, Any], field: str) -> Optional[str]:
         return span.get("service")
     elif field == "env":
         return span.get("env")
+    elif field == "duration":
+        return span.get("duration", 0)
 
-    # Nested fields with dot notation
+    # Special handling for model fields - UI expects meta.model_name but SDK has meta.metadata.model_name
+    if field == "meta.model_name":
+        meta = span.get("meta", {})
+        # Try direct path first, then SDK format
+        return meta.get("model_name") or meta.get("metadata", {}).get("model_name")
+    elif field == "meta.model_provider":
+        meta = span.get("meta", {})
+        # Try direct path first, then SDK format
+        return meta.get("model_provider") or meta.get("metadata", {}).get("model_provider")
+
+    # Nested fields with dot notation for meta
     if field.startswith("meta."):
         parts = field.split(".")
         value = span.get("meta", {})
+        for part in parts[1:]:
+            if isinstance(value, dict):
+                value = value.get(part)
+            else:
+                return None
+        return value
+
+    # Nested fields with dot notation for metrics
+    if field.startswith("metrics."):
+        parts = field.split(".")
+        value = span.get("metrics", {})
         for part in parts[1:]:
             if isinstance(value, dict):
                 value = value.get(part)
@@ -768,16 +962,44 @@ class LLMObsEventPlatformAPI:
         self.agent = agent
         # Store active multi-step query results
         self._query_results: Dict[str, Dict[str, Any]] = {}
+        # Cache for extracted spans (invalidated when request count changes)
+        self._spans_cache: List[Dict[str, Any]] = []
+        self._spans_cache_request_count: int = 0
+        # Pre-computed facet values cache
+        self._facet_values_cache: Dict[str, Dict[str, int]] = {}
+        self._facet_range_cache: Dict[str, Dict[str, float]] = {}
+
+    def _invalidate_cache_if_needed(self) -> bool:
+        """Check if cache needs to be invalidated due to new requests."""
+        current_count = len(self.agent._requests)
+        if current_count != self._spans_cache_request_count:
+            self._spans_cache = []
+            self._facet_values_cache = {}
+            self._facet_range_cache = {}
+            self._spans_cache_request_count = current_count
+            return True
+        return False
 
     def get_llmobs_spans(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get all LLMObs spans from stored requests."""
-        all_spans = []
-
-        # Get requests - either for a specific session or all
+        """Get all LLMObs spans from stored requests with caching."""
+        # For token-specific requests, don't use cache
         if token:
-            requests = self.agent._requests_by_session(token)
-        else:
-            requests = self.agent._requests
+            return self._fetch_spans_from_requests(self.agent._requests_by_session(token))
+
+        # Check if cache is still valid
+        self._invalidate_cache_if_needed()
+
+        # Return cached spans if available
+        if self._spans_cache:
+            return self._spans_cache
+
+        # Fetch and cache spans
+        self._spans_cache = self._fetch_spans_from_requests(self.agent._requests)
+        return self._spans_cache
+
+    def _fetch_spans_from_requests(self, requests) -> List[Dict[str, Any]]:
+        """Fetch spans from requests without caching."""
+        all_spans = []
 
         for req in requests:
             # Check if this is an LLMObs request
@@ -795,6 +1017,60 @@ class LLMObsEventPlatformAPI:
         all_spans.sort(key=lambda s: s.get("start_ns", 0), reverse=True)
 
         return all_spans
+
+    def get_facet_values(self, field_path: str, limit: int = 10) -> List[tuple]:
+        """Get facet values with caching."""
+        self._invalidate_cache_if_needed()
+
+        # Check cache
+        if field_path in self._facet_values_cache:
+            cached = self._facet_values_cache[field_path]
+            sorted_values = sorted(cached.items(), key=lambda x: -x[1])[:limit]
+            return sorted_values
+
+        # Compute facet values
+        spans = self.get_llmobs_spans()
+        value_counts: Dict[str, int] = {}
+
+        for span in spans:
+            value = get_span_field_value(span, field_path)
+            if value is not None:
+                value_str = str(value)
+                value_counts[value_str] = value_counts.get(value_str, 0) + 1
+
+        # Cache and return
+        self._facet_values_cache[field_path] = value_counts
+        sorted_values = sorted(value_counts.items(), key=lambda x: -x[1])[:limit]
+        return sorted_values
+
+    def get_facet_range(self, field_path: str) -> Dict[str, float]:
+        """Get facet range (min/max) with caching."""
+        self._invalidate_cache_if_needed()
+
+        # Check cache
+        if field_path in self._facet_range_cache:
+            return self._facet_range_cache[field_path]
+
+        # Compute range
+        spans = self.get_llmobs_spans()
+        values = []
+
+        for span in spans:
+            value = get_span_field_value(span, field_path)
+            if value is not None:
+                try:
+                    values.append(float(value))
+                except (ValueError, TypeError):
+                    pass
+
+        result = {
+            "min": min(values) if values else 0,
+            "max": max(values) if values else 0,
+        }
+
+        # Cache and return
+        self._facet_range_cache[field_path] = result
+        return result
 
     async def handle_logs_analytics_list(self, request: Request) -> web.Response:
         """Handle POST /api/unstable/llm-obs-query-rewriter/list endpoint.
@@ -947,7 +1223,10 @@ class LLMObsEventPlatformAPI:
             )
 
     async def handle_facet_info(self, request: Request) -> web.Response:
-        """Handle facet_info and facet_range_info endpoints."""
+        """Handle POST /api/unstable/llm-obs-query-rewriter/facet_info endpoint.
+
+        Returns facet values with counts for the specified facet path.
+        """
         headers = {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -958,21 +1237,415 @@ class LLMObsEventPlatformAPI:
             return web.Response(status=200, headers=headers)
 
         try:
-            # Return empty facet info - the UI will still work
+            body = await request.json()
+            log.debug(f"facet_info request: {json.dumps(body, indent=2)[:500]}")
+
+            facet_info = body.get("facet_info", {})
+            facet_path = facet_info.get("path", "")
+            limit = facet_info.get("limit", 10)
+            term_search = facet_info.get("termSearch", {}).get("query", "")
+
+            # Strip @ prefix for field lookup
+            field_path = facet_path.lstrip("@")
+
+            # Use cached facet values for fast response
+            sorted_values = self.get_facet_values(field_path, limit)
+
+            # Apply term search filter if provided
+            if term_search:
+                term_lower = term_search.lower()
+                sorted_values = [(v, c) for v, c in sorted_values if term_lower in v.lower()][:limit]
+
+            # Build response
+            fields = [{"field": value, "value": count} for value, count in sorted_values]
+
             response = {
                 "elapsed": 10,
                 "requestId": str(uuid.uuid4()),
                 "result": {
-                    "facets": [],
+                    "fields": fields,
                     "status": "done",
                 },
                 "status": "done",
             }
 
+            log.debug(f"facet_info response for {facet_path}: {len(fields)} values")
             return web.json_response(response, headers=headers)
 
         except Exception as e:
             log.error(f"Error handling facet info: {e}")
+            import traceback
+            traceback.print_exc()
+            return web.json_response(
+                {"error": str(e)},
+                status=500,
+                headers=headers,
+            )
+
+    async def handle_facet_range_info(self, request: Request) -> web.Response:
+        """Handle POST /api/unstable/llm-obs-query-rewriter/facet_range_info endpoint.
+
+        Returns min/max values for range facets like duration, tokens, cost.
+        """
+        headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-DD-Api-Key, X-DD-Application-Key, X-CSRF-Token, x-csrf-token, x-web-ui-version, X-Datadog-Trace-ID, X-Datadog-Parent-ID, X-Datadog-Origin, X-Datadog-Sampling-Priority, Accept, Origin, Referer",
+        }
+
+        if request.method == "OPTIONS":
+            return web.Response(status=200, headers=headers)
+
+        try:
+            body = await request.json()
+            log.debug(f"facet_range_info request: {json.dumps(body, indent=2)[:500]}")
+
+            facet_range_info = body.get("facet_range_info", {})
+            facet_path = facet_range_info.get("path", "")
+
+            # Strip @ prefix for field lookup
+            field_path = facet_path.lstrip("@")
+
+            # Use cached facet range for fast response
+            range_data = self.get_facet_range(field_path)
+
+            response = {
+                "elapsed": 10,
+                "requestId": str(uuid.uuid4()),
+                "result": {
+                    "min": range_data["min"],
+                    "max": range_data["max"],
+                    "status": "done",
+                },
+                "status": "done",
+            }
+
+            log.debug(f"facet_range_info response for {facet_path}: min={range_data['min']}, max={range_data['max']}")
+            return web.json_response(response, headers=headers)
+
+        except Exception as e:
+            log.error(f"Error handling facet range info: {e}")
+            import traceback
+            traceback.print_exc()
+            return web.json_response(
+                {"error": str(e)},
+                status=500,
+                headers=headers,
+            )
+
+    async def handle_facets_list(self, request: Request) -> web.Response:
+        """Handle GET /api/ui/event-platform/llmobs/facets endpoint.
+
+        Returns the list of available facets for the LLMObs explorer sidebar.
+        Format matches the Datadog backend response exactly.
+        """
+        headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-DD-Api-Key, X-DD-Application-Key, X-CSRF-Token, x-csrf-token, x-web-ui-version, Accept, Origin, Referer",
+        }
+
+        if request.method == "OPTIONS":
+            return web.Response(status=200, headers=headers)
+
+        try:
+            # Return facets matching the exact Datadog backend format
+            # Note: paths don't have @ prefix in the facets list response
+            facets = [
+                # Core span facets
+                {
+                    "id": "log_ml_app",
+                    "path": "ml_app",
+                    "name": "ML Application",
+                    "description": "ML Application",
+                    "source": "log",
+                    "type": "string",
+                    "facetType": "list",
+                    "values": [],
+                    "defaultValues": [],
+                    "groups": ["core"],
+                    "editable": False,
+                    "bounded": False,
+                    "bundled": True,
+                    "bundledAndUsed": True,
+                    "rumV2": False,
+                    "unit": {"family": "", "name": ""},
+                },
+                {
+                    "id": "log_status",
+                    "path": "status",
+                    "name": "Status",
+                    "description": "Denotes the status",
+                    "source": "log",
+                    "type": "string",
+                    "facetType": "list",
+                    "values": [],
+                    "defaultValues": [],
+                    "groups": ["core"],
+                    "editable": False,
+                    "bounded": False,
+                    "bundled": True,
+                    "bundledAndUsed": True,
+                    "rumV2": False,
+                    "unit": {"family": "", "name": ""},
+                },
+                {
+                    "id": "log_meta.span.kind",
+                    "path": "meta.span.kind",
+                    "name": "Span Kind",
+                    "description": "String representing the type of work unit handled by the span",
+                    "source": "log",
+                    "type": "string",
+                    "facetType": "list",
+                    "values": [],
+                    "defaultValues": [],
+                    "groups": ["llm"],
+                    "editable": False,
+                    "bounded": False,
+                    "bundled": True,
+                    "bundledAndUsed": True,
+                    "rumV2": False,
+                    "unit": {"family": "", "name": ""},
+                },
+                {
+                    "id": "log_name",
+                    "path": "name",
+                    "name": "Span Name",
+                    "description": "Name of the span event",
+                    "source": "log",
+                    "type": "string",
+                    "facetType": "list",
+                    "values": [],
+                    "defaultValues": [],
+                    "groups": ["llm"],
+                    "editable": False,
+                    "bounded": False,
+                    "bundled": True,
+                    "bundledAndUsed": True,
+                    "rumV2": False,
+                    "unit": {"family": "", "name": ""},
+                },
+                # Model facets
+                {
+                    "id": "log_meta.model_name",
+                    "path": "meta.model_name",
+                    "name": "Model Name",
+                    "description": "Model Name",
+                    "source": "log",
+                    "type": "string",
+                    "facetType": "list",
+                    "values": [],
+                    "defaultValues": [],
+                    "groups": ["llm"],
+                    "editable": False,
+                    "bounded": False,
+                    "bundled": True,
+                    "bundledAndUsed": True,
+                    "rumV2": False,
+                    "unit": {"family": "", "name": ""},
+                },
+                {
+                    "id": "log_meta.model_provider",
+                    "path": "meta.model_provider",
+                    "name": "Model Provider",
+                    "description": "Model Provider",
+                    "source": "log",
+                    "type": "string",
+                    "facetType": "list",
+                    "values": [],
+                    "defaultValues": [],
+                    "groups": ["llm"],
+                    "editable": False,
+                    "bounded": False,
+                    "bundled": True,
+                    "bundledAndUsed": True,
+                    "rumV2": False,
+                    "unit": {"family": "", "name": ""},
+                },
+                # Service/env facets
+                {
+                    "id": "tag_service",
+                    "path": "service",
+                    "name": "Service",
+                    "description": "Service name for this application.",
+                    "source": "tag",
+                    "type": "string",
+                    "facetType": "list",
+                    "values": [],
+                    "defaultValues": [],
+                    "groups": ["core"],
+                    "editable": False,
+                    "bounded": False,
+                    "bundled": True,
+                    "bundledAndUsed": True,
+                    "rumV2": False,
+                    "unit": {"family": "", "name": ""},
+                },
+                {
+                    "id": "tag_env",
+                    "path": "env",
+                    "name": "Env",
+                    "description": "Environment",
+                    "source": "tag",
+                    "type": "string",
+                    "facetType": "list",
+                    "values": [],
+                    "defaultValues": [],
+                    "groups": ["core"],
+                    "editable": False,
+                    "bounded": False,
+                    "bundled": True,
+                    "bundledAndUsed": True,
+                    "rumV2": False,
+                    "unit": {"family": "", "name": ""},
+                },
+                # Duration (range facet)
+                {
+                    "id": "log_duration",
+                    "path": "duration",
+                    "name": "Duration",
+                    "description": "Duration of the span event",
+                    "source": "log",
+                    "type": "double",
+                    "facetType": "range",
+                    "values": [],
+                    "defaultValues": [],
+                    "groups": ["core"],
+                    "editable": False,
+                    "bounded": False,
+                    "bundled": True,
+                    "bundledAndUsed": True,
+                    "rumV2": False,
+                    "unit": {"family": "time", "name": "nanosecond"},
+                },
+                # Token metrics (range facets)
+                {
+                    "id": "log_metrics.input_tokens",
+                    "path": "metrics.input_tokens",
+                    "name": "Input Tokens",
+                    "description": "",
+                    "source": "log",
+                    "type": "integer",
+                    "facetType": "range",
+                    "values": [],
+                    "defaultValues": [],
+                    "groups": ["cost"],
+                    "editable": False,
+                    "bounded": False,
+                    "bundled": True,
+                    "bundledAndUsed": True,
+                    "rumV2": False,
+                    "unit": {"family": "", "name": ""},
+                },
+                {
+                    "id": "log_metrics.output_tokens",
+                    "path": "metrics.output_tokens",
+                    "name": "Output Tokens",
+                    "description": "",
+                    "source": "log",
+                    "type": "integer",
+                    "facetType": "range",
+                    "values": [],
+                    "defaultValues": [],
+                    "groups": ["cost"],
+                    "editable": False,
+                    "bounded": False,
+                    "bundled": True,
+                    "bundledAndUsed": True,
+                    "rumV2": False,
+                    "unit": {"family": "", "name": ""},
+                },
+                {
+                    "id": "log_metrics.total_tokens",
+                    "path": "metrics.total_tokens",
+                    "name": "Total Tokens",
+                    "description": "",
+                    "source": "log",
+                    "type": "integer",
+                    "facetType": "range",
+                    "values": [],
+                    "defaultValues": [],
+                    "groups": ["cost"],
+                    "editable": False,
+                    "bounded": False,
+                    "bundled": True,
+                    "bundledAndUsed": True,
+                    "rumV2": False,
+                    "unit": {"family": "", "name": ""},
+                },
+                # Cost metrics (range facets)
+                {
+                    "id": "log_metrics.estimated_total_cost",
+                    "path": "metrics.estimated_total_cost",
+                    "name": "Estimated Total Cost",
+                    "description": "",
+                    "source": "log",
+                    "type": "integer",
+                    "facetType": "range",
+                    "values": [],
+                    "defaultValues": [],
+                    "groups": ["cost"],
+                    "editable": False,
+                    "bounded": False,
+                    "bundled": True,
+                    "bundledAndUsed": True,
+                    "rumV2": False,
+                    "unit": {"family": "money", "name": "nanodollar"},
+                },
+                # Session ID
+                {
+                    "id": "log_session_id",
+                    "path": "session_id",
+                    "name": "Session ID",
+                    "description": "Session ID",
+                    "source": "log",
+                    "type": "string",
+                    "facetType": "list",
+                    "values": [],
+                    "defaultValues": [],
+                    "groups": ["other"],
+                    "editable": False,
+                    "bounded": False,
+                    "bundled": True,
+                    "bundledAndUsed": True,
+                    "rumV2": False,
+                    "unit": {"family": "", "name": ""},
+                },
+                # Error type
+                {
+                    "id": "log_meta.error.type",
+                    "path": "meta.error.type",
+                    "name": "Error Type",
+                    "description": "Error Type",
+                    "source": "log",
+                    "type": "string",
+                    "facetType": "list",
+                    "values": [],
+                    "defaultValues": [],
+                    "groups": ["core"],
+                    "editable": False,
+                    "bounded": False,
+                    "bundled": True,
+                    "bundledAndUsed": True,
+                    "rumV2": False,
+                    "unit": {"family": "", "name": ""},
+                },
+            ]
+
+            # Wrap in the expected format: {"facets": {"llmobs": [...]}}
+            response = {
+                "facets": {
+                    "llmobs": facets,
+                }
+            }
+
+            log.info(f"Returning {len(facets)} facets")
+            return web.json_response(response, headers=headers)
+
+        except Exception as e:
+            log.error(f"Error handling facets list: {e}")
+            import traceback
+            traceback.print_exc()
             return web.json_response(
                 {"error": str(e)},
                 status=500,
@@ -1304,6 +1977,9 @@ class LLMObsEventPlatformAPI:
     def get_routes(self) -> List[web.RouteDef]:
         """Return the routes for this API."""
         return [
+            # Facets list endpoint (returns available facets for sidebar)
+            web.get("/api/ui/event-platform/llmobs/facets", self.handle_facets_list),
+            web.options("/api/ui/event-platform/llmobs/facets", self.handle_facets_list),
             # New LLM Obs query rewriter endpoints (used by Datadog UI)
             web.post("/api/unstable/llm-obs-query-rewriter/list", self.handle_logs_analytics_list),
             web.get("/api/unstable/llm-obs-query-rewriter/list/{request_id}", self.handle_logs_analytics_get),
@@ -1313,8 +1989,8 @@ class LLMObsEventPlatformAPI:
             web.options("/api/unstable/llm-obs-query-rewriter/aggregate", self.handle_aggregate),
             web.post("/api/unstable/llm-obs-query-rewriter/facet_info", self.handle_facet_info),
             web.options("/api/unstable/llm-obs-query-rewriter/facet_info", self.handle_facet_info),
-            web.post("/api/unstable/llm-obs-query-rewriter/facet_range_info", self.handle_facet_info),
-            web.options("/api/unstable/llm-obs-query-rewriter/facet_range_info", self.handle_facet_info),
+            web.post("/api/unstable/llm-obs-query-rewriter/facet_range_info", self.handle_facet_range_info),
+            web.options("/api/unstable/llm-obs-query-rewriter/facet_range_info", self.handle_facet_range_info),
             # Fetch one endpoint for detail view
             web.post("/api/unstable/llm-obs-query-rewriter/fetch_one", self.handle_fetch_one),
             web.options("/api/unstable/llm-obs-query-rewriter/fetch_one", self.handle_fetch_one),
