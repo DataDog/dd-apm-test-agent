@@ -7,12 +7,16 @@ import gzip
 import json
 import logging
 import time
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
 import uuid
-from typing import Any, Dict, List, Optional
 
-import msgpack
 from aiohttp import web
 from aiohttp.web import Request
+import msgpack
+
 
 log = logging.getLogger(__name__)
 
@@ -166,7 +170,7 @@ def parse_duration_to_nanoseconds(duration_str: str) -> Optional[float]:
     duration_str = duration_str.strip()
 
     # Pattern to match number (including decimals) followed by unit
-    pattern = r'^([0-9]*\.?[0-9]+)(ns|μs|us|ms|s|m|h)$'
+    pattern = r"^([0-9]*\.?[0-9]+)(ns|μs|us|ms|s|m|h)$"
     match = re.match(pattern, duration_str, re.IGNORECASE)
 
     if not match:
@@ -181,13 +185,13 @@ def parse_duration_to_nanoseconds(duration_str: str) -> Optional[float]:
 
     # Convert to nanoseconds
     multipliers = {
-        'ns': 1,
-        'us': 1_000,
-        'μs': 1_000,
-        'ms': 1_000_000,
-        's': 1_000_000_000,
-        'm': 60_000_000_000,
-        'h': 3_600_000_000_000,
+        "ns": 1,
+        "us": 1_000,
+        "μs": 1_000,
+        "ms": 1_000_000,
+        "s": 1_000_000_000,
+        "m": 60_000_000_000,
+        "h": 3_600_000_000_000,
     }
 
     return value * multipliers.get(unit, 1)
@@ -206,11 +210,7 @@ def parse_filter_query(query: str) -> Dict[str, Any]:
     - @duration:<=8.7s (comparison filter)
     - @duration:>5s @duration:<10s (multiple comparison filters)
 
-    Returns a dict with:
-    - 'filters': list of dicts with 'field', 'value', 'type' keys
-      For range filters: includes 'operator' key with 'range', 'gte', 'lte', 'gt', 'lt'
-      For range filters with [X TO Y]: includes 'min' and 'max' keys
-    - 'text_search': free text search string
+    Returns a dict with 'filters' (list of filter dicts) and 'text_search' (string).
     """
     import re
 
@@ -226,7 +226,7 @@ def parse_filter_query(query: str) -> Dict[str, Any]:
     remaining = query
 
     # Match @field:[value1 TO value2] patterns (range filters)
-    range_pattern = r'@([\w.]+):\[([^\]]+)\s+TO\s+([^\]]+)\]'
+    range_pattern = r"@([\w.]+):\[([^\]]+)\s+TO\s+([^\]]+)\]"
     range_matches = re.findall(range_pattern, remaining, re.IGNORECASE)
     for field, min_val, max_val in range_matches:
         filter_entry = {
@@ -257,13 +257,13 @@ def parse_filter_query(query: str) -> Dict[str, Any]:
         result["filters"].append(filter_entry)
 
     # Remove matched range filters from remaining
-    remaining = re.sub(range_pattern, '', remaining, flags=re.IGNORECASE)
+    remaining = re.sub(range_pattern, "", remaining, flags=re.IGNORECASE)
 
     # Match @field:>=value, @field:<=value, @field:>value, @field:<value patterns (comparison filters)
-    comparison_pattern = r'@([\w.]+):(>=|<=|>|<)([^\s]+)'
+    comparison_pattern = r"@([\w.]+):(>=|<=|>|<)([^\s]+)"
     comparison_matches = re.findall(comparison_pattern, remaining)
     for field, operator, value in comparison_matches:
-        op_map = {'>=': 'gte', '<=': 'lte', '>': 'gt', '<': 'lt'}
+        op_map = {">=": "gte", "<=": "lte", ">": "gt", "<": "lt"}
         filter_entry = {
             "field": field,
             "type": "facet",
@@ -284,28 +284,28 @@ def parse_filter_query(query: str) -> Dict[str, Any]:
         result["filters"].append(filter_entry)
 
     # Remove matched comparison filters from remaining
-    remaining = re.sub(comparison_pattern, '', remaining)
+    remaining = re.sub(comparison_pattern, "", remaining)
 
     # Match @field:value patterns (facet filters) - but not ones with comparison operators
-    facet_pattern = r'@([\w.]+):([^\s\[]+)'
+    facet_pattern = r"@([\w.]+):([^\s\[]+)"
     facet_matches = re.findall(facet_pattern, remaining)
     for field, value in facet_matches:
         # Skip if this looks like a comparison operator we missed
-        if value.startswith('>=') or value.startswith('<=') or value.startswith('>') or value.startswith('<'):
+        if value.startswith(">=") or value.startswith("<=") or value.startswith(">") or value.startswith("<"):
             continue
         result["filters"].append({"field": field, "value": value, "type": "facet"})
 
     # Remove matched facet filters from remaining
-    remaining = re.sub(facet_pattern, '', remaining)
+    remaining = re.sub(facet_pattern, "", remaining)
 
     # Match field:value patterns without @ (tag filters)
-    tag_pattern = r'(?<!\S)([\w.]+):([^\s]+)'
+    tag_pattern = r"(?<!\S)([\w.]+):([^\s]+)"
     tag_matches = re.findall(tag_pattern, remaining)
     for field, value in tag_matches:
         result["filters"].append({"field": field, "value": value, "type": "tag"})
 
     # Remove matched tag filters from remaining
-    remaining = re.sub(tag_pattern, '', remaining)
+    remaining = re.sub(tag_pattern, "", remaining)
 
     # Remaining text is free text search
     text_search = remaining.strip()
@@ -384,7 +384,6 @@ def apply_filters(spans: List[Dict[str, Any]], parsed_query: Dict[str, Any]) -> 
         for f in filters:
             field = f["field"]
             operator = f.get("operator")
-            filter_type = f.get("type", "facet")
 
             # Get the span value for this field
             span_value = get_span_field_value(span, field)
@@ -686,10 +685,8 @@ def convert_span_to_event_platform_format(span: Dict[str, Any]) -> Dict[str, Any
         "span_id": span.get("span_id"),
         "trace_id": span.get("trace_id"),
         "parent_id": span.get("parent_id"),
-
         # Event type
         "event_type": "span",
-
         # Basic span info
         "name": span.get("name", ""),
         "resource": span.get("name", ""),  # Usually same as name
@@ -698,29 +695,23 @@ def convert_span_to_event_platform_format(span: Dict[str, Any]) -> Dict[str, Any
         "error": has_error,
         "duration": duration_ns,
         "session_id": span.get("session_id"),
-
         # Timestamps
         "start": start_ns // 1_000_000,  # Milliseconds
         "end": (start_ns + duration_ns) // 1_000_000,  # Milliseconds
         "timestamp": start_ns // 1_000_000,  # Milliseconds for display
-
         # Tags as array of "key:value" strings
         "tags": span.get("tags", []),
-
         # Service/env (extract from tags)
         "service": "",
         "env": "",
-
         # Children and links (empty for now)
         "children_ids": [],
         "span_links": [],
-
         # Datadog internal fields - THIS IS WHERE ootb_status LIVES
         "_dd": {
             "ootb_status": "success" if status == "ok" else "error",
             "apm_trace_id": span.get("trace_id"),
         },
-
         # Meta structure matching BaseLLMSpan
         "meta": {
             "span": {
@@ -738,7 +729,6 @@ def convert_span_to_event_platform_format(span: Dict[str, Any]) -> Dict[str, Any
             "model_provider": meta.get("metadata", {}).get("model_provider", ""),
             "error": error_info if error_info else None,
         },
-
         # Metrics
         "metrics": {
             "input_tokens": metrics.get("input_tokens", 0),
@@ -748,7 +738,6 @@ def convert_span_to_event_platform_format(span: Dict[str, Any]) -> Dict[str, Any
             "estimated_output_cost": 0,
             "estimated_total_cost": 0,
         },
-
         # Evaluations (empty for now, can be populated later)
         "evaluations": {},
         "evaluation_assessments": {},
@@ -756,7 +745,6 @@ def convert_span_to_event_platform_format(span: Dict[str, Any]) -> Dict[str, Any
         "evaluation_skip_reasons": {},
         "evaluation_reasoning": {},
         "evaluation_tags": {},
-
         # Trace-level data (for aggregated cost display)
         "trace": {
             "estimated_total_cost": 0,
@@ -914,29 +902,31 @@ def build_event_platform_list_response(
             duration,
         ]
 
-        events.append({
-            "columns": columns,
-            "datadog.index": "llmobs",
-            "event": {
-                "custom": custom_data,
-                "discovery_timestamp": timestamp_ms,
-                "env": env,
-                "id": event_id,
-                "parent_id": span.get("parent_id", "undefined"),
-                "service": service,
-                "source": "integration",
-                "span_id": span_id,
-                "status": "info",
-                "tag": tag_obj,
-                "tags": tags,
-                "tiebreaker": hash(span_id) % 2147483647,
-                "timestamp": timestamp_iso,
-                "trace_id": trace_id,
-                "version": "",
-            },
-            "event_id": event_id,
-            "id": f"AwAAA{uuid.uuid4().hex[:40]}",
-        })
+        events.append(
+            {
+                "columns": columns,
+                "datadog.index": "llmobs",
+                "event": {
+                    "custom": custom_data,
+                    "discovery_timestamp": timestamp_ms,
+                    "env": env,
+                    "id": event_id,
+                    "parent_id": span.get("parent_id", "undefined"),
+                    "service": service,
+                    "source": "integration",
+                    "span_id": span_id,
+                    "status": "info",
+                    "tag": tag_obj,
+                    "tags": tags,
+                    "tiebreaker": hash(span_id) % 2147483647,
+                    "timestamp": timestamp_iso,
+                    "trace_id": trace_id,
+                    "version": "",
+                },
+                "event_id": event_id,
+                "id": f"AwAAA{uuid.uuid4().hex[:40]}",
+            }
+        )
 
     return {
         "elapsed": 23,
@@ -1198,13 +1188,7 @@ class LLMObsEventPlatformAPI:
                 "elapsed": 50,
                 "requestId": str(uuid.uuid4()),
                 "result": {
-                    "buckets": [
-                        {
-                            "computes": {
-                                "c0": len(spans)  # Total count
-                            }
-                        }
-                    ],
+                    "buckets": [{"computes": {"c0": len(spans)}}],  # Total count
                     "status": "done",
                 },
                 "status": "done",
@@ -1274,6 +1258,7 @@ class LLMObsEventPlatformAPI:
         except Exception as e:
             log.error(f"Error handling facet info: {e}")
             import traceback
+
             traceback.print_exc()
             return web.json_response(
                 {"error": str(e)},
@@ -1325,6 +1310,7 @@ class LLMObsEventPlatformAPI:
         except Exception as e:
             log.error(f"Error handling facet range info: {e}")
             import traceback
+
             traceback.print_exc()
             return web.json_response(
                 {"error": str(e)},
@@ -1644,6 +1630,7 @@ class LLMObsEventPlatformAPI:
         except Exception as e:
             log.error(f"Error handling facets list: {e}")
             import traceback
+
             traceback.print_exc()
             return web.json_response(
                 {"error": str(e)},
@@ -1807,6 +1794,7 @@ class LLMObsEventPlatformAPI:
         except Exception as e:
             log.error(f"Error handling fetch_one: {e}")
             import traceback
+
             traceback.print_exc()
             return web.json_response(
                 {"error": str(e)},
@@ -1886,7 +1874,9 @@ class LLMObsEventPlatformAPI:
                 span_links = span.get("span_links", [])
 
                 # Debug log
-                log.info(f"Trace span: span_id={span_id}, name={span.get('name')}, kind={span_kind}, ml_app={ml_app}, children={children_ids}")
+                log.info(
+                    f"Trace span: span_id={span_id}, name={span.get('name')}, kind={span_kind}, ml_app={ml_app}, children={children_ids}"
+                )
 
                 # Determine root span (no parent or parent is "undefined")
                 parent_id = span.get("parent_id", "undefined")
@@ -1966,6 +1956,7 @@ class LLMObsEventPlatformAPI:
         except Exception as e:
             log.error(f"Error handling trace: {e}")
             import traceback
+
             traceback.print_exc()
             return web.json_response(
                 {"error": str(e)},
