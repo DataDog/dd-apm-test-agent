@@ -7,6 +7,8 @@ import logging
 import re
 import time
 from typing import Any
+from typing import Awaitable
+from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -28,7 +30,9 @@ CORS_HEADERS = {
 }
 
 
-def with_cors(handler):
+def with_cors(
+    handler: Callable[[Request], Awaitable[web.Response]],
+) -> Callable[[Request], Awaitable[web.Response]]:
     """Wrap handler to add CORS headers and handle OPTIONS preflight."""
 
     async def wrapper(request: Request) -> web.Response:
