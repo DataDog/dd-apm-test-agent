@@ -152,48 +152,6 @@ async def test_llmobs_trace(agent, llmobs_payload):
     assert data["data"]["attributes"]["root_id"] is not None
 
 
-async def test_llmobs_facets(agent):
-    resp = await agent.get("/api/ui/event-platform/llmobs/facets")
-    assert resp.status == 200
-    data = await resp.json()
-    assert "facets" in data
-    assert "llmobs" in data["facets"]
-
-    facet_paths = [f["path"] for f in data["facets"]["llmobs"]]
-    assert "ml_app" in facet_paths
-    assert "status" in facet_paths
-    assert "meta.span.kind" in facet_paths
-
-
-async def test_llmobs_facet_info(agent, llmobs_payload):
-    await _submit_llmobs_payload(agent, llmobs_payload)
-
-    resp = await agent.post(
-        "/api/unstable/llm-obs-query-rewriter/facet_info?type=llmobs",
-        json={"facet_info": {"path": "@ml_app", "limit": 10}},
-    )
-    assert resp.status == 200
-    data = await resp.json()
-    assert data["status"] == "done"
-    fields = data["result"].get("fields", [])
-    values = [f["field"] for f in fields]
-    assert "test-app" in values
-
-
-async def test_llmobs_facet_range_info(agent, llmobs_payload):
-    await _submit_llmobs_payload(agent, llmobs_payload)
-
-    resp = await agent.post(
-        "/api/unstable/llm-obs-query-rewriter/facet_range_info?type=llmobs",
-        json={"facet_range_info": {"path": "@duration"}},
-    )
-    assert resp.status == 200
-    data = await resp.json()
-    assert data["status"] == "done"
-    assert data["result"]["min"] == 2_000_000_000
-    assert data["result"]["max"] == 5_000_000_000
-
-
 async def test_llmobs_aggregate(agent, llmobs_payload):
     await _submit_llmobs_payload(agent, llmobs_payload)
 

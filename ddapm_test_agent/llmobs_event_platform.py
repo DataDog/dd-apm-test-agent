@@ -29,82 +29,6 @@ CORS_HEADERS = {
 }
 
 
-def _make_facet(
-    path: str,
-    name: str,
-    groups: List[str],
-    source: str = "log",
-    facet_type: str = "list",
-    data_type: str = "string",
-    unit_family: str = "",
-    unit_name: str = "",
-    description: str = "",
-) -> Dict[str, Any]:
-    """Create a facet definition with standard defaults."""
-    prefix = "tag" if source == "tag" else "log"
-    return {
-        "id": f"{prefix}_{path}",
-        "path": path,
-        "name": name,
-        "description": description or name,
-        "source": source,
-        "type": data_type,
-        "facetType": facet_type,
-        "values": [],
-        "defaultValues": [],
-        "groups": groups,
-        "editable": False,
-        "bounded": False,
-        "bundled": True,
-        "bundledAndUsed": True,
-        "rumV2": False,
-        "unit": {"family": unit_family, "name": unit_name},
-    }
-
-
-# Facet definitions for LLMObs explorer sidebar
-LLMOBS_FACETS = [
-    _make_facet("ml_app", "ML Application", ["core"]),
-    _make_facet("status", "Status", ["core"], description="Denotes the status"),
-    _make_facet("meta.span.kind", "Span Kind", ["llm"], description="Type of work unit handled by the span"),
-    _make_facet("name", "Span Name", ["llm"], description="Name of the span event"),
-    _make_facet("meta.model_name", "Model Name", ["llm"]),
-    _make_facet("meta.model_provider", "Model Provider", ["llm"]),
-    _make_facet("service", "Service", ["core"], source="tag", description="Service name for this application."),
-    _make_facet("env", "Env", ["core"], source="tag", description="Environment"),
-    _make_facet(
-        "duration",
-        "Duration",
-        ["core"],
-        facet_type="range",
-        data_type="double",
-        unit_family="time",
-        unit_name="nanosecond",
-    ),
-    _make_facet(
-        "metrics.input_tokens", "Input Tokens", ["cost"], facet_type="range", data_type="integer", description=""
-    ),
-    _make_facet(
-        "metrics.output_tokens", "Output Tokens", ["cost"], facet_type="range", data_type="integer", description=""
-    ),
-    _make_facet(
-        "metrics.total_tokens", "Total Tokens", ["cost"], facet_type="range", data_type="integer", description=""
-    ),
-    _make_facet(
-        "metrics.estimated_total_cost",
-        "Estimated Total Cost",
-        ["cost"],
-        facet_type="range",
-        data_type="integer",
-        unit_family="money",
-        unit_name="nanodollar",
-        description="",
-    ),
-    _make_facet("session_id", "Session ID", ["other"]),
-    _make_facet("meta.error.type", "Error Type", ["core"]),
-]
-
-
 def decode_llmobs_payload(data: bytes, content_type: str) -> List[Dict[str, Any]]:
     """Decode LLMObs payload (gzip+msgpack or JSON)."""
     events = []
@@ -599,57 +523,18 @@ def build_event_platform_list_response(
 
 
 class LLMObsEventPlatformAPI:
-    """Handler for Event Platform API requests.
-
-    Provides endpoints that mimic Datadog's Event Platform API,
-    allowing the Chrome extension to redirect UI requests here.
-    """
+    """Handler for Event Platform API requests."""
 
     def __init__(self, agent: Any):
         self.agent = agent
-        # Store active multi-step query results
         self._query_results: Dict[str, Dict[str, Any]] = {}
-        # Cache for extracted spans (invalidated when request count changes)
-        self._spans_cache: List[Dict[str, Any]] = []
-        self._spans_cache_request_count: int = 0
-        # Pre-computed facet values cache
-        self._facet_values_cache: Dict[str, Dict[str, int]] = {}
-        self._facet_range_cache: Dict[str, Dict[str, float]] = {}
-
-    def _invalidate_cache_if_needed(self) -> bool:
-        """Check if cache needs to be invalidated due to new requests."""
-        current_count = len(self.agent._requests)
-        if current_count != self._spans_cache_request_count:
-            self._spans_cache = []
-            self._facet_values_cache = {}
-            self._facet_range_cache = {}
-            self._spans_cache_request_count = current_count
-            return True
-        return False
 
     def get_llmobs_spans(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get all LLMObs spans from stored requests with caching."""
-        # For token-specific requests, don't use cache
-        if token:
-            return self._fetch_spans_from_requests(self.agent._requests_by_session(token))
-
-        # Check if cache is still valid
-        self._invalidate_cache_if_needed()
-
-        # Return cached spans if available
-        if self._spans_cache:
-            return self._spans_cache
-
-        # Fetch and cache spans
-        self._spans_cache = self._fetch_spans_from_requests(self.agent._requests)
-        return self._spans_cache
-
-    def _fetch_spans_from_requests(self, requests) -> List[Dict[str, Any]]:
-        """Fetch spans from requests without caching."""
+        """Get all LLMObs spans from stored requests."""
+        requests = self.agent._requests_by_session(token) if token else self.agent._requests
         all_spans = []
 
         for req in requests:
-            # Check if this is an LLMObs request
             if req.path == "/evp_proxy/v2/api/v2/llmobs":
                 try:
                     data = self.agent._request_data(req)
@@ -660,64 +545,8 @@ class LLMObsEventPlatformAPI:
                 except Exception as e:
                     log.warning(f"Failed to extract spans from request: {e}")
 
-        # Sort by start time (most recent first)
         all_spans.sort(key=lambda s: s.get("start_ns", 0), reverse=True)
-
         return all_spans
-
-    def get_facet_values(self, field_path: str, limit: int = 10) -> List[tuple]:
-        """Get facet values with caching."""
-        self._invalidate_cache_if_needed()
-
-        # Check cache
-        if field_path in self._facet_values_cache:
-            cached = self._facet_values_cache[field_path]
-            sorted_values = sorted(cached.items(), key=lambda x: -x[1])[:limit]
-            return sorted_values
-
-        # Compute facet values
-        spans = self.get_llmobs_spans()
-        value_counts: Dict[str, int] = {}
-
-        for span in spans:
-            value = get_span_field_value(span, field_path)
-            if value is not None:
-                value_str = str(value)
-                value_counts[value_str] = value_counts.get(value_str, 0) + 1
-
-        # Cache and return
-        self._facet_values_cache[field_path] = value_counts
-        sorted_values = sorted(value_counts.items(), key=lambda x: -x[1])[:limit]
-        return sorted_values
-
-    def get_facet_range(self, field_path: str) -> Dict[str, float]:
-        """Get facet range (min/max) with caching."""
-        self._invalidate_cache_if_needed()
-
-        # Check cache
-        if field_path in self._facet_range_cache:
-            return self._facet_range_cache[field_path]
-
-        # Compute range
-        spans = self.get_llmobs_spans()
-        values = []
-
-        for span in spans:
-            value = get_span_field_value(span, field_path)
-            if value is not None:
-                try:
-                    values.append(float(value))
-                except (ValueError, TypeError):
-                    pass
-
-        result = {
-            "min": min(values) if values else 0,
-            "max": max(values) if values else 0,
-        }
-
-        # Cache and return
-        self._facet_range_cache[field_path] = result
-        return result
 
     async def handle_logs_analytics_list(self, request: Request) -> web.Response:
         """Handle POST /api/unstable/llm-obs-query-rewriter/list endpoint.
@@ -850,128 +679,6 @@ class LLMObsEventPlatformAPI:
                 status=500,
                 headers=headers,
             )
-
-    async def handle_facet_info(self, request: Request) -> web.Response:
-        """Handle POST /api/unstable/llm-obs-query-rewriter/facet_info endpoint.
-
-        Returns facet values with counts for the specified facet path.
-        """
-        headers = CORS_HEADERS
-
-        if request.method == "OPTIONS":
-            return web.Response(status=200, headers=headers)
-
-        try:
-            body = await request.json()
-            log.debug(f"facet_info request: {json.dumps(body, indent=2)[:500]}")
-
-            facet_info = body.get("facet_info", {})
-            facet_path = facet_info.get("path", "")
-            limit = facet_info.get("limit", 10)
-            term_search = facet_info.get("termSearch", {}).get("query", "")
-
-            # Strip @ prefix for field lookup
-            field_path = facet_path.lstrip("@")
-
-            # Use cached facet values for fast response
-            sorted_values = self.get_facet_values(field_path, limit)
-
-            # Apply term search filter if provided
-            if term_search:
-                term_lower = term_search.lower()
-                sorted_values = [(v, c) for v, c in sorted_values if term_lower in v.lower()][:limit]
-
-            # Build response
-            fields = [{"field": value, "value": count} for value, count in sorted_values]
-
-            response = {
-                "elapsed": 10,
-                "requestId": str(uuid.uuid4()),
-                "result": {
-                    "fields": fields,
-                    "status": "done",
-                },
-                "status": "done",
-            }
-
-            log.debug(f"facet_info response for {facet_path}: {len(fields)} values")
-            return web.json_response(response, headers=headers)
-
-        except Exception as e:
-            log.error(f"Error handling facet info: {e}")
-            import traceback
-
-            traceback.print_exc()
-            return web.json_response(
-                {"error": str(e)},
-                status=500,
-                headers=headers,
-            )
-
-    async def handle_facet_range_info(self, request: Request) -> web.Response:
-        """Handle POST /api/unstable/llm-obs-query-rewriter/facet_range_info endpoint.
-
-        Returns min/max values for range facets like duration, tokens, cost.
-        """
-        headers = CORS_HEADERS
-
-        if request.method == "OPTIONS":
-            return web.Response(status=200, headers=headers)
-
-        try:
-            body = await request.json()
-            log.debug(f"facet_range_info request: {json.dumps(body, indent=2)[:500]}")
-
-            facet_range_info = body.get("facet_range_info", {})
-            facet_path = facet_range_info.get("path", "")
-
-            # Strip @ prefix for field lookup
-            field_path = facet_path.lstrip("@")
-
-            # Use cached facet range for fast response
-            range_data = self.get_facet_range(field_path)
-
-            response = {
-                "elapsed": 10,
-                "requestId": str(uuid.uuid4()),
-                "result": {
-                    "min": range_data["min"],
-                    "max": range_data["max"],
-                    "status": "done",
-                },
-                "status": "done",
-            }
-
-            log.debug(f"facet_range_info response for {facet_path}: min={range_data['min']}, max={range_data['max']}")
-            return web.json_response(response, headers=headers)
-
-        except Exception as e:
-            log.error(f"Error handling facet range info: {e}")
-            import traceback
-
-            traceback.print_exc()
-            return web.json_response(
-                {"error": str(e)},
-                status=500,
-                headers=headers,
-            )
-
-    async def handle_facets_list(self, request: Request) -> web.Response:
-        """Handle GET /api/ui/event-platform/llmobs/facets endpoint.
-
-        Returns the list of available facets for the LLMObs explorer sidebar.
-        Format matches the Datadog backend response exactly.
-        """
-        headers = CORS_HEADERS
-
-        if request.method == "OPTIONS":
-            return web.Response(status=200, headers=headers)
-
-        try:
-            return web.json_response({"facets": {"llmobs": LLMOBS_FACETS}}, headers=headers)
-        except Exception as e:
-            log.error(f"Error handling facets list: {e}")
-            return web.json_response({"error": str(e)}, status=500, headers=headers)
 
     async def handle_fetch_one(self, request: Request) -> web.Response:
         """Handle POST /api/unstable/llm-obs-query-rewriter/fetch_one endpoint."""
@@ -1289,21 +996,13 @@ class LLMObsEventPlatformAPI:
     def get_routes(self) -> List[web.RouteDef]:
         """Return the routes for this API."""
         return [
-            # Facets list endpoint (returns available facets for sidebar)
-            web.get("/api/ui/event-platform/llmobs/facets", self.handle_facets_list),
-            web.options("/api/ui/event-platform/llmobs/facets", self.handle_facets_list),
-            # New LLM Obs query rewriter endpoints (used by Datadog UI)
+            # LLM Obs query rewriter endpoints (used by Datadog UI)
             web.post("/api/unstable/llm-obs-query-rewriter/list", self.handle_logs_analytics_list),
             web.get("/api/unstable/llm-obs-query-rewriter/list/{request_id}", self.handle_logs_analytics_get),
             web.options("/api/unstable/llm-obs-query-rewriter/list", self.handle_logs_analytics_list),
             web.options("/api/unstable/llm-obs-query-rewriter/list/{request_id}", self.handle_logs_analytics_get),
             web.post("/api/unstable/llm-obs-query-rewriter/aggregate", self.handle_aggregate),
             web.options("/api/unstable/llm-obs-query-rewriter/aggregate", self.handle_aggregate),
-            web.post("/api/unstable/llm-obs-query-rewriter/facet_info", self.handle_facet_info),
-            web.options("/api/unstable/llm-obs-query-rewriter/facet_info", self.handle_facet_info),
-            web.post("/api/unstable/llm-obs-query-rewriter/facet_range_info", self.handle_facet_range_info),
-            web.options("/api/unstable/llm-obs-query-rewriter/facet_range_info", self.handle_facet_range_info),
-            # Fetch one endpoint for detail view
             web.post("/api/unstable/llm-obs-query-rewriter/fetch_one", self.handle_fetch_one),
             web.options("/api/unstable/llm-obs-query-rewriter/fetch_one", self.handle_fetch_one),
             # Legacy logs-analytics endpoints (fallback)
