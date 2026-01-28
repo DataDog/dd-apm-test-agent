@@ -164,6 +164,34 @@ async def test_llmobs_aggregate(agent, llmobs_payload):
     assert data["status"] == "done"
 
 
+async def test_llmobs_facets(agent):
+    resp = await agent.get("/api/ui/event-platform/llmobs/facets")
+    assert resp.status == 200
+    data = await resp.json()
+    assert "facets" in data
+    assert "llmobs" in data["facets"]
+
+
+async def test_llmobs_facet_info(agent):
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/facet_info?type=llmobs",
+        json={"facet_info": {"path": "@ml_app", "limit": 10}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["status"] == "done"
+
+
+async def test_llmobs_facet_range_info(agent):
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/facet_range_info?type=llmobs",
+        json={"facet_range_info": {"path": "@duration"}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["status"] == "done"
+
+
 async def test_llmobs_cors_headers(agent):
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
