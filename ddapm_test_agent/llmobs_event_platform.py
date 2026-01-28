@@ -563,9 +563,11 @@ class LLMObsEventPlatformAPI:
     async def handle_logs_analytics_list(self, request: Request) -> web.Response:
         """Handle POST /api/unstable/llm-obs-query-rewriter/list endpoint."""
         try:
-            query_type = request.query.get("type", "")
-            if query_type != "llmobs":
-                return web.json_response({"error": "Only llmobs queries are supported"}, status=400)
+            # Only require type=llmobs for the query-rewriter endpoint
+            if "/llm-obs-query-rewriter/" in request.path:
+                query_type = request.query.get("type", "")
+                if query_type != "llmobs":
+                    return web.json_response({"error": "Only llmobs queries are supported"}, status=400)
 
             body = await request.json()
             list_params = body.get("list", {})
@@ -849,6 +851,21 @@ class LLMObsEventPlatformAPI:
             }
         )
 
+    async def handle_query_scalar(self, request: Request) -> web.Response:
+        """Handle POST /api/ui/query/scalar endpoint."""
+        return web.json_response(
+            {
+                "data": [
+                    {
+                        "type": "scalar_response",
+                        "attributes": {
+                            "columns": [],
+                        },
+                    }
+                ],
+            }
+        )
+
     def get_routes(self) -> List[web.RouteDef]:
         """Return the routes for this API (all handlers wrapped with CORS support)."""
         return [
@@ -872,4 +889,6 @@ class LLMObsEventPlatformAPI:
             web.route("*", "/api/v1/logs-analytics/fetch_one", with_cors(self.handle_fetch_one)),
             # LLM Obs trace endpoint
             web.route("*", "/api/ui/llm-obs/v1/trace/{trace_id}", with_cors(self.handle_trace)),
+            # Query scalar endpoint
+            web.route("*", "/api/ui/query/scalar", with_cors(self.handle_query_scalar)),
         ]

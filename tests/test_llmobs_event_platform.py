@@ -1,5 +1,3 @@
-"""Tests for LLM Observability Event Platform API endpoints."""
-
 import gzip
 import time
 
@@ -9,7 +7,6 @@ import pytest
 
 @pytest.fixture
 def llmobs_payload():
-    """A sample LLMObs payload matching the SDK format."""
     return {
         "ml_app": "test-app",
         "tags": ["env:test", "service:test-service"],
@@ -53,13 +50,102 @@ def llmobs_payload():
 
 
 async def _submit_llmobs_payload(agent, payload):
-    """Submit an LLMObs payload to the test agent (same format as SDK)."""
     data = gzip.compress(msgpack.packb(payload))
     return await agent.post(
         "/evp_proxy/v2/api/v2/llmobs",
         headers={"Content-Type": "application/msgpack", "Content-Encoding": "gzip"},
         data=data,
     )
+
+
+# Tests from master branch (testing empty/stub responses)
+
+
+async def test_llmobs_logs_analytics_list_cors_headers(agent):
+    resp = await agent.post(
+        "/api/v1/logs-analytics/list",
+        json={"query": "*"},
+    )
+    assert resp.status == 200
+    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+
+
+async def test_llmobs_logs_analytics_list_options(agent):
+    resp = await agent.options("/api/v1/logs-analytics/list")
+    assert resp.status == 200
+    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+    assert "POST" in resp.headers.get("Access-Control-Allow-Methods", "")
+    allowed_headers = resp.headers.get("Access-Control-Allow-Headers", "")
+    assert "x-csrf-token" in allowed_headers.lower()
+
+
+async def test_llmobs_aggregate_options(agent):
+    resp = await agent.options("/api/v1/logs-analytics/aggregate")
+    assert resp.status == 200
+    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+
+
+async def test_llmobs_facets_list(agent):
+    resp = await agent.get("/api/ui/event-platform/llmobs/facets")
+    assert resp.status == 200
+    data = await resp.json()
+    assert "facets" in data
+
+
+async def test_llmobs_facets_list_options(agent):
+    resp = await agent.options("/api/ui/event-platform/llmobs/facets")
+    assert resp.status == 200
+    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+
+
+async def test_llmobs_trace_options(agent):
+    resp = await agent.options("/api/ui/llm-obs/v1/trace/test-trace-id")
+    assert resp.status == 200
+    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+
+
+async def test_llmobs_query_rewriter_facet_info(agent):
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/facet_info",
+        json={"facet": "ml_app"},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["status"] == "done"
+
+
+async def test_llmobs_query_rewriter_facet_range_info(agent):
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/facet_range_info",
+        json={"facet_range_info": {"path": "@duration"}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["status"] == "done"
+    assert data["result"]["min"] == 0
+    assert data["result"]["max"] == 0
+
+
+async def test_query_scalar(agent):
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json={"data": []},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert "data" in data
+    assert len(data["data"]) == 1
+    assert data["data"][0]["type"] == "scalar_response"
+    assert data["data"][0]["attributes"]["columns"] == []
+
+
+async def test_query_scalar_options(agent):
+    resp = await agent.options("/api/ui/query/scalar")
+    assert resp.status == 200
+    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+
+
+# Functional tests (testing actual span data flow)
 
 
 async def test_llmobs_submit_spans(agent, llmobs_payload):
@@ -80,7 +166,6 @@ async def test_llmobs_list_empty(agent):
 
 async def test_llmobs_list_returns_spans(agent, llmobs_payload):
     await _submit_llmobs_payload(agent, llmobs_payload)
-
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
         json={"list": {"search": {"query": ""}, "limit": 50}},
@@ -93,7 +178,6 @@ async def test_llmobs_list_returns_spans(agent, llmobs_payload):
 
 async def test_llmobs_list_filter_by_span_kind(agent, llmobs_payload):
     await _submit_llmobs_payload(agent, llmobs_payload)
-
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
         json={"list": {"search": {"query": "@meta.span.kind:llm"}, "limit": 50}},
@@ -106,7 +190,6 @@ async def test_llmobs_list_filter_by_span_kind(agent, llmobs_payload):
 
 async def test_llmobs_list_filter_root_spans(agent, llmobs_payload):
     await _submit_llmobs_payload(agent, llmobs_payload)
-
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
         json={"list": {"search": {"query": "@parent_id:undefined"}, "limit": 50}},
@@ -119,7 +202,6 @@ async def test_llmobs_list_filter_root_spans(agent, llmobs_payload):
 
 async def test_llmobs_list_filter_by_duration(agent, llmobs_payload):
     await _submit_llmobs_payload(agent, llmobs_payload)
-
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
         json={"list": {"search": {"query": "@duration:>=3s"}, "limit": 50}},
@@ -132,7 +214,6 @@ async def test_llmobs_list_filter_by_duration(agent, llmobs_payload):
 
 async def test_llmobs_fetch_one(agent, llmobs_payload):
     await _submit_llmobs_payload(agent, llmobs_payload)
-
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/fetch_one?type=llmobs",
         json={"eventId": "span-root"},
@@ -144,7 +225,6 @@ async def test_llmobs_fetch_one(agent, llmobs_payload):
 
 async def test_llmobs_trace(agent, llmobs_payload):
     await _submit_llmobs_payload(agent, llmobs_payload)
-
     resp = await agent.get("/api/ui/llm-obs/v1/trace/trace-123")
     assert resp.status == 200
     data = await resp.json()
@@ -154,38 +234,9 @@ async def test_llmobs_trace(agent, llmobs_payload):
 
 async def test_llmobs_aggregate(agent, llmobs_payload):
     await _submit_llmobs_payload(agent, llmobs_payload)
-
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/aggregate?type=llmobs",
         json={},
-    )
-    assert resp.status == 200
-    data = await resp.json()
-    assert data["status"] == "done"
-
-
-async def test_llmobs_facets(agent):
-    resp = await agent.get("/api/ui/event-platform/llmobs/facets")
-    assert resp.status == 200
-    data = await resp.json()
-    assert "facets" in data
-    assert "llmobs" in data["facets"]
-
-
-async def test_llmobs_facet_info(agent):
-    resp = await agent.post(
-        "/api/unstable/llm-obs-query-rewriter/facet_info?type=llmobs",
-        json={"facet_info": {"path": "@ml_app", "limit": 10}},
-    )
-    assert resp.status == 200
-    data = await resp.json()
-    assert data["status"] == "done"
-
-
-async def test_llmobs_facet_range_info(agent):
-    resp = await agent.post(
-        "/api/unstable/llm-obs-query-rewriter/facet_range_info?type=llmobs",
-        json={"facet_range_info": {"path": "@duration"}},
     )
     assert resp.status == 200
     data = await resp.json()
