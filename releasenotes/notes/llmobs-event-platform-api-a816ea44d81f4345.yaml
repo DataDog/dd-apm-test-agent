@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    Add LLM Observability Event Platform API endpoints for local development.
+    Supports span querying, filtering, trace retrieval, and facet endpoints
+    to enable the Datadog UI to display locally collected LLMObs spans.
