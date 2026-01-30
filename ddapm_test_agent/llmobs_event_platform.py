@@ -12,11 +12,16 @@ from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import TYPE_CHECKING
 import uuid
 
 from aiohttp import web
 from aiohttp.web import Request
 import msgpack
+
+
+if TYPE_CHECKING:
+    from .agent import Agent
 
 log = logging.getLogger(__name__)
 
@@ -541,9 +546,10 @@ def build_event_platform_list_response(
 class LLMObsEventPlatformAPI:
     """Handler for Event Platform API requests."""
 
-    def __init__(self, agent: Any):
+    def __init__(self, agent: "Agent"):
         self.agent = agent
         self._query_results: Dict[str, Dict[str, Any]] = {}
+        self.decoded_llmobs_span_events: Dict[int, List[Dict[str, Any]]] = {}
 
     def get_llmobs_spans(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all LLMObs spans from stored requests."""
@@ -555,8 +561,13 @@ class LLMObsEventPlatformAPI:
                 try:
                     data = self.agent._request_data(req)
                     content_type = req.content_type or ""
-                    events = decode_llmobs_payload(data, content_type)
-                    spans = extract_spans_from_events(events)
+                    req_id = id(req)  # only brittle if agent requests are cleared
+                    if req_id not in self.decoded_llmobs_span_events:
+                        events = decode_llmobs_payload(data, content_type)
+                        spans = extract_spans_from_events(events)
+                        self.decoded_llmobs_span_events[req_id] = spans
+                    else:
+                        spans = self.decoded_llmobs_span_events[req_id]
                     all_spans.extend(spans)
                 except Exception as e:
                     log.warning(f"Failed to extract spans from request: {e}")
