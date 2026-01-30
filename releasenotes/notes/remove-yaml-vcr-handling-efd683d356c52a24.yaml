@@ -1,0 +1,4 @@
+---
+upgrade:
+  - |
+    vcr: Support for handling legacy yaml vcr cassettes has been removed. Only json cassettes are supported. To convert a legacy yaml cassette to json, use `ddapm-test-agent<2.0.0` before upgrading.
