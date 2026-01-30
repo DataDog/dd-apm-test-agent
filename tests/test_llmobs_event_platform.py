@@ -267,7 +267,7 @@ def _create_span_for_facet_test(
     ml_app: str = "test-app",
     span_kind: str = "llm",
     duration: int = 1000000000,
-):
+) -> dict:  # type: ignore[type-arg]
     """Create a span for facet testing."""
     return {
         "span_id": str(span_id),
