@@ -93,6 +93,16 @@ At the trace-level, proxying can also be disabled by including the `X-Datadog-Ag
 is handled, regardless of whether an agent URL is set.
 
 
+### LLM Observability Proxy
+
+The test agent provides a mechanism to dual ship LLM Observability events to Datadog, regardless of whether the Datadog agent is running.
+If using the Datadog agent, set the `DD_AGENT_URL` environment variable or `--agent-url` command-line argument to the URL of the Datadog agent (see [Proxy](#proxy) for more details).
+
+If not running a Datadog agent, set the `DD_SITE` environment variable or `--dd-site` command-line argument to the site of the Datadog instance to forward events to. Additionally, set the `DD_API_KEY` environment variable or `--dd-api-key` command-line argument to the API key to use for the Datadog instance.
+
+To disable LLM Observability event forwarding, set the `DISABLE_LLMOBS_DATA_FORWARDING` environment variable or `--disable-llmobs-data-forwarding` command-line argument to `true`.
+
+
 ### Snapshot testing
 
 The test agent provides a form of [characterization testing](https://en.wikipedia.org/wiki/Characterization_test) which

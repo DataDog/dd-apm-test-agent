@@ -137,6 +137,21 @@ def vcr_ignore_headers() -> Generator[str, None, None]:
 
 
 @pytest.fixture
+def dd_site() -> Generator[str, None, None]:
+    yield "datadoghq.com"
+
+
+@pytest.fixture
+def dd_api_key() -> Generator[str, None, None]:
+    yield "1234567890"
+
+
+@pytest.fixture
+def disable_llmobs_data_forwarding() -> Generator[bool, None, None]:
+    yield True
+
+
+@pytest.fixture
 async def agent_app(
     aiohttp_server,
     agent_enabled_checks,
@@ -155,6 +170,9 @@ async def agent_app(
     vcr_ci_mode,
     vcr_provider_map,
     vcr_ignore_headers,
+    dd_site,
+    dd_api_key,
+    disable_llmobs_data_forwarding,
 ):
     app = await aiohttp_server(
         make_app(
@@ -174,6 +192,9 @@ async def agent_app(
             vcr_ci_mode=vcr_ci_mode,
             vcr_provider_map=vcr_provider_map,
             vcr_ignore_headers=vcr_ignore_headers,
+            dd_site=dd_site,
+            dd_api_key=dd_api_key,
+            disable_llmobs_data_forwarding=disable_llmobs_data_forwarding,
         )
     )
     yield app

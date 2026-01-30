@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Forwards LLM Observability span events to Datadog by default. Uses either the configured ``--agent-url`` or the ``--dd-site`` and ``--dd-api-key`` command-line arguments.
+    This can be disabled by setting the ``DISABLE_LLMOBS_DATA_FORWARDING`` environment variable or ``--disable-llmobs-data-forwarding`` command-line argument to `true`.
