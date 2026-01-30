@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    LLM Observability: Add filter query support to facet_info and facet_range_info endpoints.
+    Facet values and ranges can now be computed from filtered spans using the search.query parameter.

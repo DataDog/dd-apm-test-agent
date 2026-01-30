@@ -834,26 +834,114 @@ class LLMObsEventPlatformAPI:
         return web.json_response({"facets": {"llmobs": []}})
 
     async def handle_facet_info(self, request: Request) -> web.Response:
-        """Handle POST /api/unstable/llm-obs-query-rewriter/facet_info endpoint (stub)."""
-        return web.json_response(
-            {
+        """Handle POST /api/unstable/llm-obs-query-rewriter/facet_info endpoint.
+
+        Returns facet values with counts for the specified facet path.
+        Supports optional search/filter query to compute values from filtered spans.
+        """
+        try:
+            body = await request.json()
+            log.debug(f"facet_info request: {json.dumps(body, indent=2)[:500]}")
+
+            facet_info = body.get("facet_info", {})
+            facet_path = facet_info.get("path", "")
+            limit = facet_info.get("limit", 10)
+            term_search = facet_info.get("termSearch", {}).get("query", "")
+            search_query = facet_info.get("search", {}).get("query", "")
+
+            # Strip @ prefix for field lookup
+            field_path = facet_path.lstrip("@")
+
+            # Get spans, optionally filtered by search query
+            spans = self.get_llmobs_spans()
+            if search_query:
+                parsed_query = parse_filter_query(search_query)
+                spans = apply_filters(spans, parsed_query)
+
+            # Compute facet values from spans
+            value_counts: Dict[str, int] = {}
+            for span in spans:
+                value = get_span_field_value(span, field_path)
+                if value is not None:
+                    value_str = str(value)
+                    value_counts[value_str] = value_counts.get(value_str, 0) + 1
+
+            # Sort by count descending and limit
+            sorted_values = sorted(value_counts.items(), key=lambda x: -x[1])[:limit]
+
+            # Apply term search filter if provided
+            if term_search:
+                term_lower = term_search.lower()
+                sorted_values = [(v, c) for v, c in sorted_values if term_lower in v.lower()][:limit]
+
+            # Build response
+            fields = [{"field": value, "value": count} for value, count in sorted_values]
+
+            response = {
                 "elapsed": 10,
                 "requestId": str(uuid.uuid4()),
-                "result": {"fields": [], "status": "done"},
+                "result": {"fields": fields, "status": "done"},
                 "status": "done",
             }
-        )
+
+            log.debug(f"facet_info response for {facet_path}: {len(fields)} values")
+            return web.json_response(response)
+
+        except Exception as e:
+            log.error(f"Error handling facet info: {e}")
+            return web.json_response({"error": str(e)}, status=500)
 
     async def handle_facet_range_info(self, request: Request) -> web.Response:
-        """Handle POST /api/unstable/llm-obs-query-rewriter/facet_range_info endpoint (stub)."""
-        return web.json_response(
-            {
+        """Handle POST /api/unstable/llm-obs-query-rewriter/facet_range_info endpoint.
+
+        Returns min/max values for range facets like duration, tokens, cost.
+        Supports optional search/filter query to compute range from filtered spans.
+        """
+        try:
+            body = await request.json()
+            log.debug(f"facet_range_info request: {json.dumps(body, indent=2)[:500]}")
+
+            facet_range_info = body.get("facet_range_info", {})
+            facet_path = facet_range_info.get("path", "")
+            search_query = facet_range_info.get("search", {}).get("query", "")
+
+            # Strip @ prefix for field lookup
+            field_path = facet_path.lstrip("@")
+
+            # Get spans, optionally filtered by search query
+            spans = self.get_llmobs_spans()
+            if search_query:
+                parsed_query = parse_filter_query(search_query)
+                spans = apply_filters(spans, parsed_query)
+
+            # Compute range from spans
+            values = []
+            for span in spans:
+                value = get_span_field_value(span, field_path)
+                if value is not None:
+                    try:
+                        values.append(float(value))
+                    except (ValueError, TypeError):
+                        pass
+
+            range_data = {
+                "min": min(values) if values else 0,
+                "max": max(values) if values else 0,
+            }
+
+            response = {
                 "elapsed": 10,
                 "requestId": str(uuid.uuid4()),
-                "result": {"min": 0, "max": 0, "status": "done"},
+                "result": {"min": range_data["min"], "max": range_data["max"], "status": "done"},
                 "status": "done",
             }
-        )
+
+            log.debug(f"facet_range_info response for {facet_path}: min={range_data['min']}, max={range_data['max']}")
+            return web.json_response(response)
+
+        except Exception as e:
+            log.error(f"Error handling facet range info: {e}")
+            return web.json_response({"error": str(e)}, status=500)
 
     async def handle_query_scalar(self, request: Request) -> web.Response:
         """Handle POST /api/ui/query/scalar endpoint."""

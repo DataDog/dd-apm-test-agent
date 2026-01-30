@@ -256,3 +256,103 @@ async def test_llmobs_options(agent):
     assert resp.status == 200
     assert resp.headers.get("Access-Control-Allow-Origin") == "*"
     assert "POST" in resp.headers.get("Access-Control-Allow-Methods", "")
+
+
+# Facet filter query tests
+
+
+def _create_span_for_facet_test(
+    span_id: int,
+    trace_id: int,
+    ml_app: str = "test-app",
+    span_kind: str = "llm",
+    duration: int = 1000000000,
+):
+    """Create a span for facet testing."""
+    return {
+        "span_id": str(span_id),
+        "trace_id": str(trace_id),
+        "parent_id": "0",
+        "name": "test-span",
+        "status": "ok",
+        "start_ns": int(time.time() * 1_000_000_000),
+        "duration": duration,
+        "tags": [f"ml_app:{ml_app}", "service:test", "env:test"],
+        "meta": {
+            "span": {"kind": span_kind},
+            "input": {"value": "test"},
+            "output": {"value": "test"},
+        },
+        "metrics": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+    }
+
+
+async def _submit_spans_for_facet_test(agent, spans):
+    """Submit spans for facet testing."""
+    payload = {"_dd.stage": "raw", "event_type": "span", "spans": spans}
+    data = gzip.compress(msgpack.packb(payload))
+    resp = await agent.post(
+        "/evp_proxy/v2/api/v2/llmobs",
+        headers={"Content-Type": "application/msgpack", "Content-Encoding": "gzip"},
+        data=data,
+    )
+    assert resp.status == 200
+    return resp
+
+
+async def test_facet_info_with_filter_query(agent):
+    """Test facet_info respects filter query when computing values."""
+    spans = [
+        _create_span_for_facet_test(1, 100, ml_app="app-1", span_kind="llm"),
+        _create_span_for_facet_test(2, 100, ml_app="app-1", span_kind="chain"),
+        _create_span_for_facet_test(3, 101, ml_app="app-2", span_kind="llm"),
+    ]
+    await _submit_spans_for_facet_test(agent, spans)
+
+    # Request facet info for ml_app, filtered by span_kind=llm
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/facet_info",
+        json={
+            "facet_info": {
+                "path": "@ml_app",
+                "limit": 10,
+                "search": {"query": "@meta.span.kind:llm"},
+            }
+        },
+    )
+    assert resp.status == 200
+
+    data = await resp.json()
+    fields = data["result"]["fields"]
+
+    # Should only count spans with kind=llm
+    field_map = {f["field"]: f["value"] for f in fields}
+    assert field_map.get("app-1") == 1  # Only 1 llm span in app-1
+    assert field_map.get("app-2") == 1  # 1 llm span in app-2
+
+
+async def test_facet_range_info_with_filter_query(agent):
+    """Test facet_range_info respects filter query."""
+    spans = [
+        _create_span_for_facet_test(1, 100, ml_app="app-1", duration=1000000000),
+        _create_span_for_facet_test(2, 100, ml_app="app-1", duration=2000000000),
+        _create_span_for_facet_test(3, 101, ml_app="app-2", duration=10000000000),
+    ]
+    await _submit_spans_for_facet_test(agent, spans)
+
+    # Request range for app-1 only
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/facet_range_info",
+        json={
+            "facet_range_info": {
+                "path": "@duration",
+                "search": {"query": "@ml_app:app-1"},
+            }
+        },
+    )
+    assert resp.status == 200
+
+    data = await resp.json()
+    # Should only include app-1 spans (1s and 2s)
+    assert data["result"]["min"] == 1000000000
+    assert data["result"]["max"] == 2000000000
