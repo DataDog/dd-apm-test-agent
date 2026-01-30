@@ -811,13 +811,19 @@ class Agent:
 
         dd_site = request.app["dd_site"]
         dd_api_key = request.app["dd_api_key"]
-        if dd_api_key is None:
+        agent_url = request.app["agent_url"]
+        headers = request.headers.copy()
+        if agent_url:
+            url = f"{agent_url}/evp_proxy/v2/api/v2/llmobs"  # use configured agent URL if provided
+        elif dd_api_key is None:
             log.error("No DD_API_KEY set to forward LLM Observability events to Datadog. Skipping forwarding.")
             return web.HTTPOk()
-
-        url = f"https://llmobs-intake.{dd_site}/api/v2/llmobs"
-        headers = request.headers.copy()
-        headers["DD-API-KEY"] = dd_api_key
+        elif not dd_site:
+            log.error("No DD_SITE set to forward LLM Observability events to Datadog. Skipping forwarding.")
+            return web.HTTPOk()
+        else:
+            url = f"https://llmobs-intake.{dd_site}/api/v2/llmobs"
+            headers["DD-API-KEY"] = dd_api_key
 
         async with ClientSession() as session:
             async with session.post(url, headers=headers, data=await request.read()) as resp:
