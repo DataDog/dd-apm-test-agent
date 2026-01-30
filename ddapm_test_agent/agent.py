@@ -806,6 +806,28 @@ class Agent:
             raise web.HTTPBadRequest(text=msg)
 
     async def handle_evp_proxy_v2_api_v2_llmobs(self, request: Request) -> web.Response:
+        if request.app["disable_llmobs_data_forwarding"]:
+            return web.HTTPOk()
+
+        dd_site = request.app["dd_site"]
+        dd_api_key = request.app["dd_api_key"]
+        if dd_api_key is None:
+            log.error("No DD_API_KEY set to forward LLM Observability events to Datadog. Skipping forwarding.")
+            return web.HTTPOk()
+
+        url = f"https://llmobs-intake.{dd_site}/api/v2/llmobs"
+        headers = request.headers.copy()
+        headers["DD-API-KEY"] = dd_api_key
+
+        async with ClientSession() as session:
+            async with session.post(url, headers=headers, data=await request.read()) as resp:
+                if not resp.ok:
+                    log.warning(
+                        f"Failed to forward LLM Observability events to Datadog: {resp.status} {await resp.text()}"
+                    )
+                else:
+                    log.info(f"Forwarded LLM Observability events to Datadog: {resp.status} {await resp.text()}")
+
         return web.HTTPOk()
 
     async def handle_evp_proxy_v2_llmobs_eval_metric(self, request: Request) -> web.Response:
@@ -1614,6 +1636,9 @@ def make_app(
     vcr_ci_mode: bool,
     vcr_provider_map: str,
     vcr_ignore_headers: str,
+    dd_site: str,
+    dd_api_key: str | None,
+    disable_llmobs_data_forwarding: bool,
     enable_web_ui: bool = False,
 ) -> web.Application:
     agent = Agent()
@@ -1727,6 +1752,9 @@ def make_app(
     app["snapshot_removed_attrs"] = snapshot_removed_attrs
     app["snapshot_regex_placeholders"] = snapshot_regex_placeholders
     app["vcr_cassettes_directory"] = vcr_cassettes_directory
+    app["dd_site"] = dd_site
+    app["dd_api_key"] = dd_api_key
+    app["disable_llmobs_data_forwarding"] = disable_llmobs_data_forwarding
     return app
 
 
@@ -2030,6 +2058,24 @@ def main(args: Optional[List[str]] = None) -> None:
         default=int(os.environ.get("MAX_REQUESTS", 200)),
         help="Maximum number of requests to keep in memory for the UI (default: 200). Older requests are discarded when limit is reached.",
     )
+    parser.add_argument(
+        "--dd-site",
+        type=str,
+        default=os.environ.get("DD_SITE", "datadoghq.com"),
+        help="Datadog site to use for the agent. Example: --dd-site=datadoghq.com",
+    )
+    parser.add_argument(
+        "--dd-api-key",
+        type=str,
+        default=os.environ.get("DD_API_KEY", ""),
+        help="Datadog API key to use for the agent. Example: --dd-api-key=1234567890",
+    )
+    parser.add_argument(
+        "--disable-llmobs-data-forwarding",
+        action="store_true",
+        default=os.environ.get("DISABLE_LLMOBS_DATA_FORWARDING", "").lower() in ("true", "1", "yes"),
+        help="Disable data forwarding to Datadog.",
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -2076,6 +2122,9 @@ def main(args: Optional[List[str]] = None) -> None:
         vcr_ci_mode=parsed_args.vcr_ci_mode,
         vcr_provider_map=parsed_args.vcr_provider_map,
         vcr_ignore_headers=parsed_args.vcr_ignore_headers,
+        dd_site=parsed_args.dd_site,
+        dd_api_key=parsed_args.dd_api_key,
+        disable_llmobs_data_forwarding=parsed_args.disable_llmobs_data_forwarding,
         enable_web_ui=parsed_args.web_ui_port > 0,
     )
 

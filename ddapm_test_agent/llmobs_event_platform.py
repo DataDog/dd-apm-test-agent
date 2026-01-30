@@ -18,6 +18,7 @@ from aiohttp import web
 from aiohttp.web import Request
 import msgpack
 
+
 log = logging.getLogger(__name__)
 
 # CORS headers for cross-origin requests from Datadog UI
