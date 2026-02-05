@@ -57,6 +57,7 @@ from .llmobs_event_platform import LLMObsEventPlatformAPI
 from .logs import LOGS_ENDPOINT
 from .logs import OTLPLogsGRPCServicer
 from .logs import decode_logs_request
+from .mcp_server import MCPServer
 from .metrics import METRICS_ENDPOINT
 from .metrics import OTLPMetricsGRPCServicer
 from .metrics import decode_metrics_request
@@ -1732,6 +1733,13 @@ def make_app(
     # These provide Datadog Event Platform compatible endpoints for local development
     llmobs_event_platform_api = LLMObsEventPlatformAPI(agent)
     app.add_routes(llmobs_event_platform_api.get_routes())
+
+    mcp_server = MCPServer(agent, llmobs_event_platform_api)
+    app.add_routes(
+        [
+            web.post("/mcp", mcp_server.handle_request),
+        ]
+    )
 
     checks = Checks(
         checks=[
