@@ -105,7 +105,7 @@ def remap_sdk_span_to_ui_format(span: Dict[str, Any], event_ml_app: str = "") ->
         span["env"] = extracted.get("env", "")
 
     meta = span.get("meta", {})
-    span_kind = meta.get("span", {}).get("kind", "llm")
+    span_kind = meta.get("span.kind") or meta.get("span", {}).get("kind", "llm")
 
     if "meta" not in span:
         span["meta"] = {}
@@ -205,15 +205,44 @@ def parse_filter_query(query: str) -> Dict[str, Any]:
         result["filters"].append(f)
     remaining = re.sub(r"@([\w.]+):(>=|<=|>|<)([^\s]+)", "", remaining)
 
-    # Facet filters: @field:value
+    # OR/AND filters with parentheses: @field:(value1 OR value2) or @field:(value1 AND value2)
+    for match in re.finditer(r"@([\w.]+):\(([^)]+)\)", remaining):
+        field = match.group(1)
+        values_str = match.group(2)
+        
+        # Check if it's an OR or AND operation
+        if re.search(r"\s+AND\s+", values_str, re.IGNORECASE):
+            # Split by AND (case-insensitive) and clean up each value
+            raw_values = re.split(r"\s+AND\s+", values_str, flags=re.IGNORECASE)
+            operator = "and"
+        else:
+            # Split by OR (case-insensitive) and clean up each value (default to OR)
+            raw_values = re.split(r"\s+OR\s+", values_str, flags=re.IGNORECASE)
+            operator = "or"
+        
+        values = []
+        for v in raw_values:
+            # Strip quotes and whitespace
+            v = v.strip().strip('"').strip("'")
+            if v:
+                values.append(v)
+        if values:
+            result["filters"].append({"field": field, "values": values, "type": "facet", "operator": operator})
+    remaining = re.sub(r"@([\w.]+):\([^)]+\)", "", remaining)
+
+    # Facet filters: @field:value (single value, may have parentheses/quotes)
     for field, value in re.findall(r"@([\w.]+):([^\s\[]+)", remaining):
         if not value.startswith((">=", "<=", ">", "<")):
-            result["filters"].append({"field": field, "value": value, "type": "facet"})
+            # Strip parentheses and quotes for cleaner matching
+            clean_value = value.strip("()").strip('"').strip("'")
+            result["filters"].append({"field": field, "value": clean_value, "type": "facet"})
     remaining = re.sub(r"@([\w.]+):([^\s\[]+)", "", remaining)
 
     # Tag filters: field:value (without @)
     for field, value in re.findall(r"(?<!\S)([\w.]+):([^\s]+)", remaining):
-        result["filters"].append({"field": field, "value": value, "type": "tag"})
+        # Strip parentheses and quotes
+        clean_value = value.strip("()").strip('"').strip("'")
+        result["filters"].append({"field": field, "value": clean_value, "type": "tag"})
     remaining = re.sub(r"(?<!\S)([\w.]+):([^\s]+)", "", remaining)
 
     result["text_search"] = remaining.strip()
@@ -286,6 +315,46 @@ def _span_matches_filters(span: Dict[str, Any], filters: List[Dict[str, Any]]) -
                     return False
             except (ValueError, TypeError):
                 return False
+
+        elif operator == "or":
+            # Match if ANY of the values match (OR logic)
+            values = f.get("values", [])
+            if not values:
+                continue
+            if span_value is None:
+                return False
+            # Check if any value matches
+            matched = False
+            for value in values:
+                if value == "*" or match_wildcard(str(span_value), str(value)):
+                    matched = True
+                    break
+            if not matched:
+                return False
+
+        elif operator == "and":
+            # Match if ALL of the values match (AND logic)
+            # Useful for checking multiple conditions or multi-value fields
+            values = f.get("values", [])
+            if not values:
+                continue
+            if span_value is None:
+                return False
+            # For single-value fields, check against tags array for multi-match
+            # or check if the value contains all search terms
+            span_value_str = str(span_value).lower()
+            tags = span.get("tags", [])
+            tags_str = " ".join(str(t).lower() for t in tags)
+            
+            # Check if all values match (either in the field value or in tags)
+            for value in values:
+                value_lower = str(value).lower()
+                if value != "*" and not (
+                    value_lower in span_value_str or 
+                    value_lower in tags_str or
+                    match_wildcard(str(span_value), str(value))
+                ):
+                    return False
 
         else:
             value = f.get("value")
