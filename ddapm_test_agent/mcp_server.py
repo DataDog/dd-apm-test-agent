@@ -223,6 +223,8 @@ class MCPServer:
         method: str = body["method"]
         request_id: str | None = body.get("id")
 
+        log.info(f"Handling MCP request for {method}")
+
         if method == "initialize":
             return self.initialize(request_id)
         elif method == "tools/list":
@@ -258,7 +260,6 @@ class MCPServer:
         )
 
     def tools_list(self, request_id: str | None) -> web.Response:
-        log.info(f"Tools list response: {[t.to_dict() for t in self.tools]}")
         return web.json_response(
             {
                 "jsonrpc": "2.0",
@@ -349,8 +350,6 @@ class MCPServer:
             num_tool_calls_range=num_tool_calls_range,
             num_retrieval_calls_range=num_retrieval_calls_range,
         )
-
-        log.info(f"Query string: {query_str}")
 
         llmobs_span_events = self.llmobs_event_platform_api.get_llmobs_spans()
 
