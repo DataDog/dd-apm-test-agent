@@ -245,6 +245,14 @@ To redact api keys, modify the `filter_headers` list in the `get_vcr` function i
 
 To have the vcr proxy throw a 404 error if a cassette is not found in CI mode to ensure that all cassettes are generated locally and committed, set the `VCR_CI_MODE` environment variable or the `--vcr-ci-mode` flag in the cli tool to `true` (this value defaults to `false`).
 
+### MCP Server
+
+The test agent provides an MCP server that can be used to query data from the test agent:
+
+- LLM Observability span events
+
+The MCP server can be accessed via the `/mcp` endpoint, so by default, the mcp server is accessible via `http://localhost:8126/mcp`. As configured, it is available at `http://localhost:{port}/mcp`.
+
 ## Configuration
 
 The test agent can be configured via command-line options or via environment variables.
