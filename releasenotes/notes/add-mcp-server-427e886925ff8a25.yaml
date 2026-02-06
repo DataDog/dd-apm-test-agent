@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    mcp server: Adds an MCP server that can be used to query llm observability span events collected by the test agent. This adds the testagent endpoint ``/mcp`` to serve these requests, so by default, the mcp server is accessible at ``http://localhost:8126/mcp``.
