@@ -19,6 +19,7 @@ import docstring_parser
 from . import _get_version
 from .llmobs_event_platform import LLMObsEventPlatformAPI
 from .llmobs_event_platform import apply_filters
+from .llmobs_event_platform import compute_children_ids
 from .llmobs_event_platform import parse_filter_query
 
 
@@ -85,8 +86,11 @@ def _type_to_json_schema(annotation: Any) -> Dict[str, Any]:
     return {"type": "string"}
 
 
-def build_query_str(
+def build_llmobs_query_str(
     free_text_search: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    span_id: Optional[str] = None,
+    parent_id: Optional[str] = None,
     span_kind: Optional[List[Literal["llm", "tool", "retrieval", "embedding", "agent", "task", "workflow"]]] = None,
     status: Optional[Literal["ok", "error"]] = None,
     model_provider: Optional[List[str]] = None,
@@ -102,6 +106,15 @@ def build_query_str(
     num_retrieval_calls_range: Optional[Tuple[int, int]] = None,
 ) -> str:
     query = []
+
+    if trace_id:
+        query.append(f"@trace_id:{trace_id}")
+
+    if span_id:
+        query.append(f"@span_id:{span_id}")
+
+    if parent_id:
+        query.append(f"@parent_id:{parent_id}")
 
     if span_kind:
         query.append(f"@meta.span.kind:({' OR '.join(span_kind)})")
@@ -157,10 +170,17 @@ class _Tool:
         description = func.__doc__
         if not description:
             raise ValueError(f"Function {self.name} must have a docstring")
-        self.description = description
 
         parameters = inspect.signature(func).parameters
         doc = docstring_parser.parse(description)
+
+        # Build description from short + long, excluding Args/Returns
+        parts = []
+        if doc.short_description:
+            parts.append(doc.short_description)
+        if doc.long_description:
+            parts.append(doc.long_description)
+        self.description = "\n".join(parts) if parts else doc.description
 
         arguments = {}
         required = []
@@ -300,6 +320,9 @@ class MCPServer:
         self,
         num_events: Optional[int] = 100,
         free_text_search: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        span_id: Optional[str] = None,
+        parent_id: Optional[str] = None,
         span_kind: Optional[List[Literal["llm", "tool", "retrieval", "embedding", "agent", "task", "workflow"]]] = None,
         status: Optional[Literal["ok", "error"]] = None,
         model_provider: Optional[List[str]] = None,
@@ -315,11 +338,15 @@ class MCPServer:
         num_retrieval_calls_range: Optional[Tuple[int, int]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Get all LLMObs span events from the test agent.
+        Get LLMObs span events from the test agent matching optional criteria.
+        To filter by "trace", set the parent_id to "undefined" (root spans represent traces).
 
         Args:
             num_events: The number of span events to return
             free_text_search: The free text search to apply to the input, output, metadata, or tags of the span events.
+            trace_id: The trace ID to filter by
+            span_id: The span ID to filter by
+            parent_id: The parent span ID to filter by (set to "undefined" to get root spans, representing traces)
             span_kind: A list of span kinds to filter by
             status: The status of the span to filter by (ok or error)
             model_provider: A list of model providers to filter by
@@ -333,9 +360,15 @@ class MCPServer:
             num_llm_calls_range: A range of number of LLM calls to filter by
             num_tool_calls_range: A range of number of tool calls to filter by
             num_retrieval_calls_range: A range of number of retrieval calls to filter by
+
+        Returns:
+            A list of LLM Observability span events matching the criteria query, enhanced with children_ids for each span
         """
-        query_str = build_query_str(
+        query_str = build_llmobs_query_str(
             free_text_search=free_text_search,
+            trace_id=trace_id,
+            span_id=span_id,
+            parent_id=parent_id,
             span_kind=span_kind,
             status=status,
             model_provider=model_provider,
@@ -351,9 +384,14 @@ class MCPServer:
             num_retrieval_calls_range=num_retrieval_calls_range,
         )
 
-        llmobs_span_events = self.llmobs_event_platform_api.get_llmobs_spans()
+        raw_llmobs_span_events = self.llmobs_event_platform_api.get_llmobs_spans()
+        children_map = compute_children_ids(raw_llmobs_span_events)
 
-        if query_str:
-            llmobs_span_events = apply_filters(llmobs_span_events, parse_filter_query(query_str))
+        filtered_llmobs_span_events = apply_filters(raw_llmobs_span_events, parse_filter_query(query_str))
+        filtered_llmobs_span_events = filtered_llmobs_span_events[:num_events]
 
-        return llmobs_span_events[:num_events]
+        for span in filtered_llmobs_span_events:
+            children_ids = children_map.get(span["span_id"], [])
+            span["children_ids"] = children_ids
+
+        return filtered_llmobs_span_events
