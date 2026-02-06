@@ -160,7 +160,7 @@ class _Tool:
         self.description = description
 
         parameters = inspect.signature(func).parameters
-        doc = docstring_parser.parse(func.__doc__)
+        doc = docstring_parser.parse(description)
 
         arguments = {}
         required = []
