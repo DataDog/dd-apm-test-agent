@@ -353,7 +353,7 @@ class MCPServer:
         log.info(f"Query string: {query_str}")
 
         llmobs_span_events = self.llmobs_event_platform_api.get_llmobs_spans()
-        
+
         if query_str:
             llmobs_span_events = apply_filters(llmobs_span_events, parse_filter_query(query_str))
 

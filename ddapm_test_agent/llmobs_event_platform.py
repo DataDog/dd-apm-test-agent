@@ -209,7 +209,7 @@ def parse_filter_query(query: str) -> Dict[str, Any]:
     for match in re.finditer(r"@([\w.]+):\(([^)]+)\)", remaining):
         field = match.group(1)
         values_str = match.group(2)
-        
+
         # Check if it's an OR or AND operation
         if re.search(r"\s+AND\s+", values_str, re.IGNORECASE):
             # Split by AND (case-insensitive) and clean up each value
@@ -219,7 +219,7 @@ def parse_filter_query(query: str) -> Dict[str, Any]:
             # Split by OR (case-insensitive) and clean up each value (default to OR)
             raw_values = re.split(r"\s+OR\s+", values_str, flags=re.IGNORECASE)
             operator = "or"
-        
+
         values = []
         for v in raw_values:
             # Strip quotes and whitespace
@@ -345,14 +345,14 @@ def _span_matches_filters(span: Dict[str, Any], filters: List[Dict[str, Any]]) -
             span_value_str = str(span_value).lower()
             tags = span.get("tags", [])
             tags_str = " ".join(str(t).lower() for t in tags)
-            
+
             # Check if all values match (either in the field value or in tags)
             for value in values:
                 value_lower = str(value).lower()
                 if value != "*" and not (
-                    value_lower in span_value_str or 
-                    value_lower in tags_str or
-                    match_wildcard(str(span_value), str(value))
+                    value_lower in span_value_str
+                    or value_lower in tags_str
+                    or match_wildcard(str(span_value), str(value))
                 ):
                     return False
 
