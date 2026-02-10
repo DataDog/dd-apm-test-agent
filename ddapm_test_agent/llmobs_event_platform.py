@@ -22,6 +22,7 @@ import msgpack
 
 if TYPE_CHECKING:
     from .agent import Agent
+    from .claude_hooks import ClaudeHooksAPI
 
 log = logging.getLogger(__name__)
 
@@ -551,6 +552,11 @@ class LLMObsEventPlatformAPI:
         self.agent = agent
         self._query_results: Dict[str, Dict[str, Any]] = {}
         self.decoded_llmobs_span_events: Dict[int, List[Dict[str, Any]]] = {}
+        self._claude_hooks_api: Optional["ClaudeHooksAPI"] = None
+
+    def set_claude_hooks_api(self, api: "ClaudeHooksAPI") -> None:
+        """Wire up the Claude hooks API so its spans appear in LLMObs queries."""
+        self._claude_hooks_api = api
 
     def get_llmobs_spans(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all LLMObs spans from stored requests."""
@@ -572,6 +578,9 @@ class LLMObsEventPlatformAPI:
                     all_spans.extend(spans)
                 except Exception as e:
                     log.warning(f"Failed to extract spans from request: {e}")
+
+        if self._claude_hooks_api:
+            all_spans.extend(self._claude_hooks_api._assembled_spans)
 
         all_spans.sort(key=lambda s: s.get("start_ns", 0), reverse=True)
         return all_spans

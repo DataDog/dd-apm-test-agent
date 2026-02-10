@@ -53,6 +53,9 @@ from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
 from .integration import Integration
+from .claude_hooks import ClaudeHooksAPI
+from .claude_link_tracker import ClaudeLinkTracker
+from .claude_proxy import ClaudeProxyAPI
 from .llmobs_event_platform import LLMObsEventPlatformAPI
 from .logs import LOGS_ENDPOINT
 from .logs import OTLPLogsGRPCServicer
@@ -1732,6 +1735,20 @@ def make_app(
     # These provide Datadog Event Platform compatible endpoints for local development
     llmobs_event_platform_api = LLMObsEventPlatformAPI(agent)
     app.add_routes(llmobs_event_platform_api.get_routes())
+
+    # Add Claude Code hooks and proxy routes with shared link tracker
+    claude_link_tracker = ClaudeLinkTracker()
+    claude_hooks_api = ClaudeHooksAPI(link_tracker=claude_link_tracker)
+    app.add_routes(claude_hooks_api.get_routes())
+    llmobs_event_platform_api.set_claude_hooks_api(claude_hooks_api)
+
+    claude_proxy_api = ClaudeProxyAPI(hooks_api=claude_hooks_api, link_tracker=claude_link_tracker)
+    app.add_routes(claude_proxy_api.get_routes())
+
+    async def _cleanup_claude_proxy(app: web.Application) -> None:
+        await claude_proxy_api.close()
+
+    app.on_cleanup.append(_cleanup_claude_proxy)
 
     checks = Checks(
         checks=[

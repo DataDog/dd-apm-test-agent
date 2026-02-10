@@ -103,6 +103,148 @@ If not running a Datadog agent, set the `DD_SITE` environment variable or `--dd-
 To disable LLM Observability event forwarding, set the `DISABLE_LLMOBS_DATA_FORWARDING` environment variable or `--disable-llmobs-data-forwarding` command-line argument to `true`.
 
 
+### Claude Code Hooks
+
+The test agent can receive [Claude Code hook](https://docs.claude.com/en/docs/claude-code/hooks) events and assemble them into LLM Observability traces. This allows you to view Claude Code sessions as observable traces in the web UI.
+
+#### Setup
+
+1. Start the test agent with the web UI enabled:
+
+```bash
+ddapm-test-agent --port=8126 --web-ui-port=8080
+```
+
+2. Add the following hooks to your Claude Code settings file (`~/.claude/settings.json`):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/ddapm_test_agent/static/claude_hook.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/ddapm_test_agent/static/claude_hook.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/ddapm_test_agent/static/claude_hook.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/ddapm_test_agent/static/claude_hook.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/ddapm_test_agent/static/claude_hook.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/ddapm_test_agent/static/claude_hook.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/ddapm_test_agent/static/claude_hook.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/ddapm_test_agent/static/claude_hook.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/ddapm_test_agent/static/claude_hook.sh",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Replace `/path/to/ddapm_test_agent/static/claude_hook.sh` with the actual path to the hook script. If installed via pip, you can find it with:
+
+```bash
+python -c "import ddapm_test_agent; print(ddapm_test_agent.__path__[0] + '/static/claude_hook.sh')"
+```
+
+By default the hook script sends events to `http://localhost:8126`. Set the `DD_TEST_AGENT_URL` environment variable to override this.
+
+3. Use Claude Code normally. Each session produces a trace with tool and subagent spans visible in the web UI at `http://localhost:8080`.
+
+#### Diagnostic endpoints
+
+- `GET /claude/hooks/sessions` — list tracked sessions
+- `GET /claude/hooks/spans` — return all assembled spans
+- `GET /claude/hooks/raw` — return all raw received hook events
+
+
 ### Snapshot testing
 
 The test agent provides a form of [characterization testing](https://en.wikipedia.org/wiki/Characterization_test) which
