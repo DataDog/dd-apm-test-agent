@@ -57,6 +57,9 @@ setup(
     extras_require={
         "testing": testing_deps,
     },
+    data_files=[
+        (".", ["ddapm-test-agent.pth"]),
+    ],
     # Required for mypy compatibility, see
     # https://mypy.readthedocs.io/en/stable/installed_packages.html#making-pep-561-compatible-packages
     zip_safe=False,
