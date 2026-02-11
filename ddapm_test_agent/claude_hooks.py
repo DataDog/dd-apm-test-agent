@@ -4,6 +4,7 @@ Receives Claude Code lifecycle hook events via HTTP and assembles them
 into LLMObs-format spans that can be queried through the Event Platform APIs.
 """
 
+import gzip
 import json
 import logging
 import os
@@ -15,8 +16,11 @@ from typing import List
 from typing import Optional
 from typing import Set
 
+from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
+
+import msgpack
 
 from .claude_link_tracker import ClaudeLinkTracker
 from .llmobs_event_platform import with_cors
@@ -139,6 +143,11 @@ class ClaudeHooksAPI:
         self._assembled_spans: List[Dict[str, Any]] = []
         self._raw_events: List[Dict[str, Any]] = []
         self._link_tracker = link_tracker
+        self._app: Optional[web.Application] = None
+
+    def set_app(self, app: web.Application) -> None:
+        """Set the aiohttp app reference for backend forwarding."""
+        self._app = app
 
     def _get_or_create_session(self, session_id: str) -> SessionState:
         """Get existing session or create a new one."""
@@ -474,6 +483,60 @@ class ClaudeHooksAPI:
         else:
             log.debug("Unhandled hook event: %s", hook_event_name)
 
+    async def _forward_trace_to_backend(self, session_id: str) -> None:
+        """Forward all assembled spans for a session's trace to the backend via the EVP proxy path."""
+        app = self._app
+        if not app:
+            return
+
+        session = self._sessions.get(session_id)
+        if not session:
+            return
+
+        trace_id = session.trace_id
+        spans = [s for s in self._assembled_spans if s.get("trace_id") == trace_id]
+        if not spans:
+            return
+
+        dd_site = app.get("dd_site", "")
+        dd_api_key = app.get("dd_api_key")
+        agent_url = app.get("agent_url", "")
+        disable_forwarding = app.get("disable_llmobs_data_forwarding", False)
+
+        if disable_forwarding:
+            return
+
+        if agent_url:
+            url = f"{agent_url}/evp_proxy/v2/api/v2/llmobs"
+            headers: Dict[str, str] = {"Content-Type": "application/msgpack", "Content-Encoding": "gzip"}
+        elif dd_api_key and dd_site:
+            url = f"https://llmobs-intake.{dd_site}/api/v2/llmobs"
+            headers = {
+                "Content-Type": "application/msgpack",
+                "Content-Encoding": "gzip",
+                "DD-API-KEY": dd_api_key,
+            }
+        else:
+            log.debug("No DD_API_KEY/DD_SITE or agent URL configured — skipping LLMObs forwarding for Claude hooks")
+            return
+
+        payload = {
+            "_dd.stage": "raw",
+            "event_type": "span",
+            "spans": spans,
+        }
+        data = gzip.compress(msgpack.packb(payload))
+
+        try:
+            async with ClientSession() as http_session:
+                async with http_session.post(url, headers=headers, data=data) as resp:
+                    if not resp.ok:
+                        log.warning("Failed to forward Claude hooks spans: %s %s", resp.status, await resp.text())
+                    else:
+                        log.info("Forwarded %d Claude hooks spans for trace %s", len(spans), trace_id)
+        except Exception as e:
+            log.warning("Error forwarding Claude hooks spans: %s", e)
+
     async def handle_hook(self, request: Request) -> web.Response:
         """Handle POST /claude/hooks — receives hook JSON and dispatches by event name."""
         try:
@@ -487,6 +550,12 @@ class ClaudeHooksAPI:
 
         self._raw_events.append(body)
         self._dispatch_hook(body)
+
+        # Forward completed traces to the backend
+        hook_event_name = body.get("hook_event_name", "")
+        if hook_event_name in ("Stop", "SessionEnd"):
+            await self._forward_trace_to_backend(session_id)
+
         return web.json_response({"status": "ok"})
 
     async def handle_sessions(self, request: Request) -> web.Response:

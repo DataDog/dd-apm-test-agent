@@ -1739,6 +1739,7 @@ def make_app(
     # Add Claude Code hooks and proxy routes with shared link tracker
     claude_link_tracker = ClaudeLinkTracker()
     claude_hooks_api = ClaudeHooksAPI(link_tracker=claude_link_tracker)
+    claude_hooks_api.set_app(app)
     app.add_routes(claude_hooks_api.get_routes())
     llmobs_event_platform_api.set_claude_hooks_api(claude_hooks_api)
 
