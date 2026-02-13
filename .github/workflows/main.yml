@@ -47,7 +47,7 @@ jobs:
       - name: Run tests (Unix - riot)
         if: runner.os != 'Windows'
         run: |
-          riot run --pass-env -p ${{ matrix.python-version}} test
+          pip install setuptools && riot run --pass-env -p ${{ matrix.python-version}} test
   cassettes-size:
     runs-on: ubuntu-latest
     steps:
