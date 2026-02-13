@@ -57,6 +57,9 @@ class SessionState:
         # Deferred agent spans waiting for PostToolUse(Task) to provide their output.
         # Keyed by tool_use_id of the Task tool that spawned the subagent.
         self.deferred_agent_spans: Dict[str, Dict[str, Any]] = {}
+        # Task tool_use_ids that have already been claimed by a SubagentStart,
+        # so they are not matched again when a second SubagentStart fires.
+        self.claimed_task_tools: Set[str] = set()
 
 
 _MAX_UINT_64 = (1 << 64) - 1
@@ -178,7 +181,11 @@ class ClaudeHooksAPI:
         log.info("Claude session started: %s (model=%s)", session_id, model)
 
     def _handle_user_prompt_submit(self, session_id: str, body: Dict[str, Any]) -> None:
-        """Handle UserPromptSubmit hook event — starts a new trace for each user turn."""
+        """Handle UserPromptSubmit hook event — starts a new trace for each user turn.
+
+        Emits a preliminary root span eagerly so the execution graph can render
+        before Stop fires.  The root span is updated in-place by _handle_stop.
+        """
         session = self._get_or_create_session(session_id)
 
         # If the previous turn's root span was emitted, start a fresh trace
@@ -192,11 +199,35 @@ class ClaudeHooksAPI:
             session.agent_span_stack = []
             session.pending_tools = {}
             session.deferred_agent_spans = {}
+            session.claimed_task_tools = set()
             session.root_span_emitted = False
 
         prompt = body.get("user_prompt", body.get("prompt", ""))
         if prompt:
             session.user_prompts.append(prompt)
+
+        # Emit a preliminary root span so the trace has a root node immediately
+        root_span: Dict[str, Any] = {
+            "span_id": session.root_span_id,
+            "trace_id": session.trace_id,
+            "parent_id": "undefined",
+            "name": "claude-code-session",
+            "status": "ok",
+            "start_ns": session.start_ns,
+            "duration": 0,
+            "ml_app": "claude-code",
+            "service": "claude-code",
+            "env": "local",
+            "tags": ["source:claude-code-hooks"],
+            "meta": {
+                "span": {"kind": "agent"},
+                "input": {"value": prompt},
+                "output": {"value": ""},
+            },
+            "metrics": {},
+        }
+        self._assembled_spans.append(root_span)
+        session._root_span_ref = root_span  # type: ignore[attr-defined]
 
     def _handle_pre_tool_use(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle PreToolUse hook event — creates a pending tool span."""
@@ -233,6 +264,8 @@ class ClaudeHooksAPI:
         now_ns = int(time.time() * 1_000_000_000)
 
         pending = session.pending_tools.pop(tool_use_id, None)
+        # Clean up claimed_task_tools so the set doesn't grow unbounded
+        session.claimed_task_tools.discard(tool_use_id)
         if pending:
             span_id = pending.span_id
             parent_id = pending.parent_id
@@ -329,12 +362,15 @@ class ClaudeHooksAPI:
         agent_name = body.get("agent_type", body.get("agent_name", "subagent"))
 
         # Find the pending "Task" tool that spawned this subagent.
+        # Skip Task tools already claimed by a previous SubagentStart so that
+        # when multiple Task tools are pending, each subagent gets its own.
         task_tool_use_id = ""
         task_tool_input: Any = None
         for tid, pending in session.pending_tools.items():
-            if pending.tool_name == "Task":
+            if pending.tool_name == "Task" and tid not in session.claimed_task_tools:
                 task_tool_use_id = tid
                 task_tool_input = pending.tool_input
+                session.claimed_task_tools.add(tid)
                 break
 
         session.agent_span_stack.append(
@@ -401,8 +437,26 @@ class ClaudeHooksAPI:
             }
             self._assembled_spans.append(span)
 
+    def _compute_token_usage(self, trace_id: str) -> Dict[str, int]:
+        """Sum token metrics from all LLM spans in the given trace."""
+        total_input = 0
+        total_output = 0
+        for span in self._assembled_spans:
+            if span.get("trace_id") != trace_id:
+                continue
+            if span.get("meta", {}).get("span", {}).get("kind") != "llm":
+                continue
+            metrics = span.get("metrics", {})
+            total_input += metrics.get("input_tokens", 0)
+            total_output += metrics.get("output_tokens", 0)
+        return {
+            "input_tokens": total_input,
+            "output_tokens": total_output,
+            "total_tokens": total_input + total_output,
+        }
+
     def _handle_stop(self, session_id: str, body: Dict[str, Any]) -> None:
-        """Handle Stop / SessionEnd hook event — finalizes the session root span."""
+        """Handle Stop / SessionEnd hook event — updates the eagerly-emitted root span with final data."""
         session = self._sessions.get(session_id)
         if not session:
             log.warning("Stop event for unknown session %s", session_id)
@@ -427,33 +481,59 @@ class ClaudeHooksAPI:
             "guardrails": [],
         }
 
-        span = {
-            "span_id": session.root_span_id,
-            "trace_id": session.trace_id,
-            "parent_id": "undefined",
-            "name": "claude-code-session",
-            "status": "ok",
-            "start_ns": session.start_ns,
-            "duration": duration,
-            "ml_app": "claude-code",
-            "service": "claude-code",
-            "env": "local",
-            "tags": ["source:claude-code-hooks"],
-            "meta": {
-                "span": {"kind": "agent"},
-                "input": {"value": input_value},
-                "output": {"value": output_value},
+        # Find the eagerly-emitted root span and update it in-place
+        root_span: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
+        if not root_span:
+            # Fallback: search _assembled_spans
+            root_span = next(
+                (s for s in self._assembled_spans if s.get("span_id") == session.root_span_id),
+                None,
+            )
+        # Compute aggregate token usage from LLM spans in this trace
+        token_usage = self._compute_token_usage(session.trace_id)
+
+        if root_span:
+            root_span["duration"] = duration
+            root_span["meta"]["input"]["value"] = input_value
+            root_span["meta"]["output"]["value"] = output_value
+            root_span["meta"]["model_name"] = session.model
+            root_span["meta"]["model_provider"] = "anthropic"
+            root_span["meta"]["metadata"] = {
+                "agent_manifest": agent_manifest,
                 "model_name": session.model,
                 "model_provider": "anthropic",
-                "metadata": {
-                    "agent_manifest": agent_manifest,
+            }
+            root_span["metrics"] = token_usage
+        else:
+            # No eagerly-emitted root span found — create one as fallback
+            root_span = {
+                "span_id": session.root_span_id,
+                "trace_id": session.trace_id,
+                "parent_id": "undefined",
+                "name": "claude-code-session",
+                "status": "ok",
+                "start_ns": session.start_ns,
+                "duration": duration,
+                "ml_app": "claude-code",
+                "service": "claude-code",
+                "env": "local",
+                "tags": ["source:claude-code-hooks"],
+                "meta": {
+                    "span": {"kind": "agent"},
+                    "input": {"value": input_value},
+                    "output": {"value": output_value},
                     "model_name": session.model,
                     "model_provider": "anthropic",
+                    "metadata": {
+                        "agent_manifest": agent_manifest,
+                        "model_name": session.model,
+                        "model_provider": "anthropic",
+                    },
                 },
-            },
-            "metrics": {},
-        }
-        self._assembled_spans.append(span)
+                "metrics": token_usage,
+            }
+            self._assembled_spans.append(root_span)
+
         session.root_span_emitted = True
 
     def _handle_notification(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -482,6 +562,54 @@ class ClaudeHooksAPI:
             handler(session_id, body)
         else:
             log.debug("Unhandled hook event: %s", hook_event_name)
+
+    async def _forward_span_update(self, spans: List[Dict[str, Any]]) -> None:
+        """Forward span updates to the DD backend via the update endpoint."""
+        app = self._app
+        if not app:
+            return
+
+        if not spans:
+            return
+
+        dd_site = app.get("dd_site", "")
+        dd_api_key = app.get("dd_api_key")
+        agent_url = app.get("agent_url", "")
+        disable_forwarding = app.get("disable_llmobs_data_forwarding", False)
+
+        if disable_forwarding:
+            return
+
+        if agent_url:
+            url = f"{agent_url}/evp_proxy/v2/api/v2/llmobs"
+            headers: Dict[str, str] = {"Content-Type": "application/msgpack", "Content-Encoding": "gzip"}
+        elif dd_api_key and dd_site:
+            url = f"https://llmobs-intake.{dd_site}/api/v2/llmobs"
+            headers = {
+                "Content-Type": "application/msgpack",
+                "Content-Encoding": "gzip",
+                "DD-API-KEY": dd_api_key,
+            }
+        else:
+            log.debug("No DD_API_KEY/DD_SITE or agent URL configured — skipping LLMObs update forwarding")
+            return
+
+        payload = {
+            "_dd.stage": "raw",
+            "event_type": "span",
+            "spans": spans,
+        }
+        data = gzip.compress(msgpack.packb(payload))
+
+        try:
+            async with ClientSession() as http_session:
+                async with http_session.post(url, headers=headers, data=data) as resp:
+                    if not resp.ok:
+                        log.warning("Failed to forward span update: %s %s", resp.status, await resp.text())
+                    else:
+                        log.info("Forwarded %d span updates", len(spans))
+        except Exception as e:
+            log.warning("Error forwarding span update: %s", e)
 
     async def _forward_trace_to_backend(self, session_id: str) -> None:
         """Forward all assembled spans for a session's trace to the backend via the EVP proxy path."""
@@ -551,8 +679,12 @@ class ClaudeHooksAPI:
         self._raw_events.append(body)
         self._dispatch_hook(body)
 
-        # Forward completed traces to the backend
         hook_event_name = body.get("hook_event_name", "")
+
+        # Forward completed traces to the backend (includes the now-updated root span).
+        # The eager root span is only used locally so the test agent UI has a root node
+        # immediately; we don't forward it on UserPromptSubmit because the DD backend
+        # doesn't deduplicate by span_id and would create a duplicate entry.
         if hook_event_name in ("Stop", "SessionEnd"):
             await self._forward_trace_to_backend(session_id)
 

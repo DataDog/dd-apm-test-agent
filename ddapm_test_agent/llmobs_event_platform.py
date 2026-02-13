@@ -51,6 +51,15 @@ def with_cors(
     return wrapper
 
 
+def _deep_merge(source: Dict[str, Any], target: Dict[str, Any]) -> None:
+    """Recursively merge source into target. Overwrites non-dict values."""
+    for key, value in source.items():
+        if key in target and isinstance(target[key], dict) and isinstance(value, dict):
+            _deep_merge(value, target[key])
+        else:
+            target[key] = value
+
+
 def decode_llmobs_payload(data: bytes, content_type: str) -> List[Dict[str, Any]]:
     """Decode LLMObs payload (gzip+msgpack or JSON)."""
     events = []
@@ -584,6 +593,31 @@ class LLMObsEventPlatformAPI:
 
         all_spans.sort(key=lambda s: s.get("start_ns", 0), reverse=True)
         return all_spans
+
+    def update_spans(self, update_data: bytes, content_type: str) -> int:
+        """Update existing spans by span_id. Accepts same payload format as creation."""
+        events = decode_llmobs_payload(update_data, content_type)
+        update_span_list = extract_spans_from_events(events)
+
+        # Build index of all existing spans (stored requests + hooks assembled)
+        all_spans = self.get_llmobs_spans()
+        span_index = {s.get("span_id"): s for s in all_spans}
+
+        updated = 0
+        for update in update_span_list:
+            sid = update.get("span_id")
+            existing = span_index.get(sid)
+            if existing:
+                _deep_merge(update, existing)
+                updated += 1
+        return updated
+
+    async def handle_llmobs_update(self, request: Request) -> web.Response:
+        """Handle POST /evp_proxy/v2/api/v2/llmobs/update — update existing spans."""
+        data = await request.read()
+        content_type = request.content_type or ""
+        updated = self.update_spans(data, content_type)
+        return web.json_response({"updated": updated})
 
     async def handle_logs_analytics_list(self, request: Request) -> web.Response:
         """Handle POST /api/unstable/llm-obs-query-rewriter/list endpoint."""
