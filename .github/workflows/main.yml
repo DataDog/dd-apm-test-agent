@@ -34,7 +34,7 @@ jobs:
         if: runner.os != 'Windows'
         run: pip install --upgrade 'pip<24.1'
       - name: install deps
-        run: pip install .[testing]
+        run: pip install 'setuptools<78' && pip install .[testing]
       - name: install pip-tools
         if: runner.os != 'Windows'
         run: pip install 'pip-tools>=7.4.0'
@@ -47,7 +47,7 @@ jobs:
       - name: Run tests (Unix - riot)
         if: runner.os != 'Windows'
         run: |
-          riot run --pass-env -p ${{ matrix.python-version}} test
+          pip install 'setuptools<78' && riot run --pass-env -p ${{ matrix.python-version}} test
   cassettes-size:
     runs-on: ubuntu-latest
     steps:
