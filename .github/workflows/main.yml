@@ -34,7 +34,7 @@ jobs:
         if: runner.os != 'Windows'
         run: pip install --upgrade 'pip<24.1'
       - name: install deps
-        run: pip install .[testing]
+        run: pip install setuptools && pip install .[testing]
       - name: install pip-tools
         if: runner.os != 'Windows'
         run: pip install 'pip-tools>=7.4.0'
