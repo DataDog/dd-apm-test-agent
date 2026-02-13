@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Include metadata field in LLM Observability event platform responses.
