@@ -105,7 +105,7 @@ To disable LLM Observability event forwarding, set the `DISABLE_LLMOBS_DATA_FORW
 
 ### Claude Code Hooks
 
-The test agent can receive [Claude Code hook](https://docs.claude.com/en/docs/claude-code/hooks) events and assemble them into LLM Observability traces. This allows you to view Claude Code sessions as observable traces in the web UI.
+The test agent can receive [Claude Code hook](https://docs.claude.com/en/docs/claude-code/hooks) events and assemble them into LLM Observability traces.
 
 See [`.claude/setup-hooks.md`](.claude/setup-hooks.md) for full setup instructions (also usable as a Claude Code prompt to automate the setup).
 

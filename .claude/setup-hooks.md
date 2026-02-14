@@ -1,6 +1,6 @@
 # Setting up Claude Code Hooks with dd-apm-test-agent
 
-Follow these steps to configure Claude Code to send hook events to the dd-apm-test-agent. This enables LLM Observability traces for your Claude Code sessions — you can view tool calls, subagent spans, and LLM invocations in the web UI.
+Follow these steps to configure Claude Code to send hook events to the dd-apm-test-agent. This enables LLM Observability traces for your Claude Code sessions — you can view tool calls, subagent spans, and LLM invocations.
 
 ## Prerequisites
 
@@ -9,10 +9,10 @@ Follow these steps to configure Claude Code to send hook events to the dd-apm-te
 
 ## Step 1: Start the test agent
 
-Run the test agent with the web UI and API proxy enabled:
+Run the test agent:
 
 ```bash
-docker run --rm -p 8126:8126 -p 8080:8080 ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest --web-ui-port=8080
+docker run --rm -p 8126:8126 ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
 ```
 
 Verify it's running:
@@ -153,8 +153,6 @@ Start a new Claude Code session. Each user turn produces a trace with:
 - Subagent spans for Task tool delegations
 - Span links connecting LLM outputs to tool inputs and vice versa
 
-View traces in the web UI at `http://localhost:8080`.
-
 ## Customization
 
 ### Different host or port
@@ -163,13 +161,13 @@ Replace `http://localhost:8126` in both the `ANTHROPIC_BASE_URL` env var and the
 
 ### Forwarding to Datadog
 
-To also forward LLM Observability data to Datadog, start the agent with:
+To forward LLM Observability data to Datadog, start the agent with:
 
 ```bash
-docker run --rm -p 8126:8126 -p 8080:8080 \
+docker run --rm -p 8126:8126 \
   -e DD_API_KEY=<your-api-key> \
   -e DD_SITE=datadoghq.com \
-  ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest --web-ui-port=8080
+  ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
 ```
 
 ### Disabling the proxy
