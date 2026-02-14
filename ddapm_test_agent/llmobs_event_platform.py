@@ -437,7 +437,7 @@ def build_event_platform_list_response(
         span_links = span.get("span_links", [])
         tag_obj = _tags_to_dict(tags)
 
-        event_id = f"AZ{uuid.uuid4().hex[:20]}"
+        event_id = span_id
         timestamp_ms = start_ns // 1_000_000
         timestamp_iso = datetime.utcfromtimestamp(timestamp_ms / 1000).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 

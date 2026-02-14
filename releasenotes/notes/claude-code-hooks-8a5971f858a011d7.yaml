@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    Add Claude Code hooks integration that receives Claude Code lifecycle events
+    and assembles them into LLM Observability traces, enabling visibility into
+    Claude Code sessions through the web UI.
