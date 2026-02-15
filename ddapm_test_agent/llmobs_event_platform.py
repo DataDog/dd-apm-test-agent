@@ -553,7 +553,7 @@ def build_event_platform_list_response(
                     "version": "",
                 },
                 "event_id": event_id,
-                "id": f"AwAAA{uuid.uuid4().hex[:40]}",
+                "id": event_id,
             }
         )
 
@@ -563,6 +563,7 @@ def build_event_platform_list_response(
         "requestId": request_id,
         "result": {
             "events": events,
+            "count": len(events),
         },
         "status": "done",
         "type": "status",
@@ -652,6 +653,12 @@ class LLMObsEventPlatformAPI:
             if query_str:
                 spans = apply_filters(spans, parse_filter_query(query_str))
 
+            # Handle sort order (default is descending by start_ns from get_llmobs_spans)
+            sort_params = list_params.get("sort", {})
+            sort_order = sort_params.get("time", {}).get("order", "desc") if isinstance(sort_params, dict) else "desc"
+            if sort_order == "asc":
+                spans = list(reversed(spans))
+
             request_id = str(uuid.uuid4())
             response = build_event_platform_list_response(spans, request_id, limit)
             self._query_results[request_id] = response
@@ -692,7 +699,7 @@ class LLMObsEventPlatformAPI:
         """Handle POST /api/unstable/llm-obs-query-rewriter/fetch_one endpoint."""
         try:
             body = await request.json()
-            event_id = body.get("eventId", "")
+            event_id = body.get("eventId", "") or body.get("fetch_one", {}).get("id", "")
             spans = self.get_llmobs_spans()
 
             found_span = None
