@@ -34,7 +34,8 @@ def decode_metrics_request(request_body: bytes, content_type: str) -> Dict[str, 
 
 
 def protobuf_to_dict(pb_obj: Any) -> Dict[str, Any]:
-    return MessageToDict(pb_obj, preserving_proto_field_name=True)
+    result: Dict[str, Any] = MessageToDict(pb_obj, preserving_proto_field_name=True)
+    return result
 
 
 class OTLPMetricsGRPCServicer(MetricsServiceServicer):

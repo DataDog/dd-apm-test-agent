@@ -53,6 +53,9 @@ from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
 from .integration import Integration
+from .claude_hooks import ClaudeHooksAPI
+from .claude_link_tracker import ClaudeLinkTracker
+from .claude_proxy import ClaudeProxyAPI
 from .llmobs_event_platform import LLMObsEventPlatformAPI
 from .logs import LOGS_ENDPOINT
 from .logs import OTLPLogsGRPCServicer
@@ -833,6 +836,43 @@ class Agent:
                     )
                 else:
                     log.info(f"Forwarded LLM Observability events to Datadog: {resp.status} {await resp.text()}")
+
+        return web.HTTPOk()
+
+    async def handle_evp_proxy_v2_api_v2_llmobs_update(self, request: Request) -> web.Response:
+        """Forward span updates to DD backend, then update local stored spans."""
+        data = await request.read()
+        content_type = request.content_type or ""
+
+        # Forward to DD backend (same logic as handle_evp_proxy_v2_api_v2_llmobs)
+        if not request.app["disable_llmobs_data_forwarding"]:
+            dd_site = request.app["dd_site"]
+            dd_api_key = request.app["dd_api_key"]
+            agent_url = request.app["agent_url"]
+            headers = dict(request.headers)
+            if agent_url:
+                url = f"{agent_url}/evp_proxy/v2/api/v2/llmobs"
+            elif dd_api_key and dd_site:
+                url = f"https://llmobs-intake.{dd_site}/api/v2/llmobs"
+                headers["DD-API-KEY"] = dd_api_key
+            else:
+                url = ""
+
+            if url:
+                try:
+                    async with ClientSession() as session:
+                        async with session.post(url, headers=headers, data=data) as resp:
+                            if not resp.ok:
+                                log.warning("Failed to forward LLMObs update: %s %s", resp.status, await resp.text())
+                            else:
+                                log.info("Forwarded LLMObs span update: %s", resp.status)
+                except Exception as e:
+                    log.warning("Error forwarding LLMObs span update: %s", e)
+
+        # Update local stored spans
+        llmobs_api = request.app.get("llmobs_event_platform_api")
+        if llmobs_api:
+            llmobs_api.update_spans(data, content_type)
 
         return web.HTTPOk()
 
@@ -1689,6 +1729,7 @@ def make_app(
             web.post("/profiling/v1/input", agent.handle_v1_profiling),
             web.post("/tracer_flare/v1", agent.handle_v1_tracer_flare),
             web.post("/evp_proxy/v2/api/v2/llmobs", agent.handle_evp_proxy_v2_api_v2_llmobs),
+            web.post("/evp_proxy/v2/api/v2/llmobs/update", agent.handle_evp_proxy_v2_api_v2_llmobs_update),
             web.post("/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric", agent.handle_evp_proxy_v2_llmobs_eval_metric),
             web.post("/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric", agent.handle_evp_proxy_v2_llmobs_eval_metric),
             web.post("/evp_proxy/v2/api/v2/exposures", agent.handle_evp_proxy_v2_api_v2_exposures),
@@ -1731,7 +1772,23 @@ def make_app(
     # Add LLM Observability Event Platform API routes
     # These provide Datadog Event Platform compatible endpoints for local development
     llmobs_event_platform_api = LLMObsEventPlatformAPI(agent)
+    app["llmobs_event_platform_api"] = llmobs_event_platform_api
     app.add_routes(llmobs_event_platform_api.get_routes())
+
+    # Add Claude Code hooks and proxy routes with shared link tracker
+    claude_link_tracker = ClaudeLinkTracker()
+    claude_hooks_api = ClaudeHooksAPI(link_tracker=claude_link_tracker)
+    claude_hooks_api.set_app(app)
+    app.add_routes(claude_hooks_api.get_routes())
+    llmobs_event_platform_api.set_claude_hooks_api(claude_hooks_api)
+
+    claude_proxy_api = ClaudeProxyAPI(hooks_api=claude_hooks_api, link_tracker=claude_link_tracker)
+    app.add_routes(claude_proxy_api.get_routes())
+
+    async def _cleanup_claude_proxy(app: web.Application) -> None:
+        await claude_proxy_api.close()
+
+    app.on_cleanup.append(_cleanup_claude_proxy)
 
     checks = Checks(
         checks=[
