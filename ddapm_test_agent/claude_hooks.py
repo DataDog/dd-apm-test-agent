@@ -183,6 +183,53 @@ class ClaudeHooksAPI:
             session.model = model
         log.info("Claude session started: %s (model=%s)", session_id, model)
 
+    def _finalize_interrupted_turn(self, session: SessionState) -> None:
+        """Finalize an in-progress turn that was interrupted (e.g. user Ctrl+C).
+
+        Called when a new UserPromptSubmit or SessionEnd arrives but the previous
+        turn's Stop hook never fired.  Updates all in-progress spans with their
+        current duration so the trace is complete.
+        """
+        now_ns = int(time.time() * 1_000_000_000)
+        duration = now_ns - session.start_ns
+
+        # Finalize any in-progress subagent spans on the stack
+        while session.agent_span_stack:
+            agent_info = session.agent_span_stack.pop()
+            span_ref = agent_info.get("_span_ref")
+            if span_ref:
+                span_ref["duration"] = now_ns - agent_info["start_ns"]
+                span_ref["status"] = "error"
+                span_ref["meta"]["error"] = {"message": "interrupted"}
+
+        # Clear pending tools (they'll never get a PostToolUse)
+        session.pending_tools.clear()
+        session.deferred_agent_spans.clear()
+        session.claimed_task_tools.clear()
+
+        # Finalize the root span
+        root_span: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
+        if not root_span:
+            root_span = next(
+                (s for s in self._assembled_spans if s.get("span_id") == session.root_span_id),
+                None,
+            )
+
+        token_usage = self._compute_token_usage(session.trace_id)
+        input_value = "\n\n".join(session.user_prompts) if session.user_prompts else ""
+
+        if root_span:
+            root_span["duration"] = duration
+            root_span["status"] = "error"
+            root_span["meta"]["input"]["value"] = input_value
+            root_span["meta"]["error"] = {"message": "interrupted by user"}
+            root_span["meta"]["model_name"] = session.model
+            root_span["meta"]["model_provider"] = "anthropic"
+            root_span["metrics"] = token_usage
+
+        session.root_span_emitted = True
+        log.info("Finalized interrupted turn for session %s (trace %s)", session.session_id, session.trace_id)
+
     def _handle_user_prompt_submit(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle UserPromptSubmit hook event — starts a new trace for each user turn.
 
@@ -190,6 +237,11 @@ class ClaudeHooksAPI:
         before Stop fires.  The root span is updated in-place by _handle_stop.
         """
         session = self._get_or_create_session(session_id)
+
+        # If the previous turn was never finalized (Stop never fired, e.g. Ctrl+C),
+        # finalize it as interrupted before starting the new turn.
+        if not session.root_span_emitted and getattr(session, "_root_span_ref", None) is not None:
+            self._finalize_interrupted_turn(session)
 
         # If the previous turn's root span was emitted, start a fresh trace
         if session.root_span_emitted:
@@ -590,6 +642,19 @@ class ClaudeHooksAPI:
 
         session.root_span_emitted = True
 
+    def _handle_session_end(self, session_id: str, body: Dict[str, Any]) -> None:
+        """Handle SessionEnd hook event.
+
+        If the current turn was already finalized by Stop, this is a no-op.
+        If Stop never fired (e.g. user Ctrl+C), finalize the turn as interrupted.
+        """
+        session = self._sessions.get(session_id)
+        if not session:
+            return
+
+        if not session.root_span_emitted:
+            self._finalize_interrupted_turn(session)
+
     def _handle_notification(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle Notification hook event — logged but no span emitted."""
         log.info("Claude notification for session %s: %s", session_id, body.get("message", ""))
@@ -607,7 +672,7 @@ class ClaudeHooksAPI:
             "SubagentStart": self._handle_subagent_start,
             "SubagentStop": self._handle_subagent_stop,
             "Stop": self._handle_stop,
-            "SessionEnd": self._handle_stop,
+            "SessionEnd": self._handle_session_end,
             "Notification": self._handle_notification,
         }
 
