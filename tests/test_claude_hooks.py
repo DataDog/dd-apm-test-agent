@@ -47,7 +47,7 @@ async def test_hook_session_creates_agent_span(agent):
     assert len(root_spans) == 1
 
     root = root_spans[0]
-    assert root["name"] == "claude-code-session"
+    assert root["name"] == "claude-code-request"
     assert root["meta"]["span"]["kind"] == "agent"
     assert root["duration"] > 0
     assert root["trace_id"]
