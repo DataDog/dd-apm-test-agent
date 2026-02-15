@@ -285,11 +285,10 @@ class ClaudeHooksAPI:
 
         output_str = str(tool_output)[:4096] if tool_output else ""
 
-        # Check if this Task tool has a deferred agent span to emit instead
+        # Check if this Task tool has a deferred agent span to update instead
         deferred = session.deferred_agent_spans.pop(tool_use_id, None)
         if deferred:
-            # Emit the AGENT span with the Task tool's I/O and span links.
-            # The agent span replaces the Task tool span in the linking chain.
+            # Update the eagerly-emitted AGENT span with the Task tool's I/O and span links.
             agent_span_id = deferred["span_id"]
 
             span_links = []
@@ -299,28 +298,37 @@ class ClaudeHooksAPI:
                 )
                 span_links = [link.to_dict() for link in links]
 
-            span = {
-                "span_id": agent_span_id,
-                "trace_id": deferred["trace_id"],
-                "parent_id": deferred["parent_id"],
-                "name": deferred["name"],
-                "status": "ok",
-                "start_ns": deferred["start_ns"],
-                "duration": deferred["duration"],
-                "ml_app": "claude-code",
-                "service": "claude-code",
-                "env": "local",
-                "session_id": session.session_id,
-                "tags": [f"ml_app:claude-code", f"session_id:{session.session_id}", "service:claude-code", "env:local", "source:claude-code-hooks", "language:python", f"hostname:{_HOSTNAME}"],
-                "meta": {
-                    "span": {"kind": "agent"},
-                    "input": {"value": input_value},
-                    "output": {"value": output_str},
-                },
-                "metrics": {},
-                "span_links": span_links,
-            }
-            self._assembled_spans.append(span)
+            span_ref = deferred.get("_span_ref")
+            if span_ref:
+                # Update the preliminary span in-place
+                span_ref["duration"] = deferred["duration"]
+                span_ref["meta"]["input"] = {"value": input_value}
+                span_ref["meta"]["output"] = {"value": output_str}
+                span_ref["span_links"] = span_links
+            else:
+                # Fallback: no preliminary span — append a new one
+                span = {
+                    "span_id": agent_span_id,
+                    "trace_id": deferred["trace_id"],
+                    "parent_id": deferred["parent_id"],
+                    "name": deferred["name"],
+                    "status": "ok",
+                    "start_ns": deferred["start_ns"],
+                    "duration": deferred["duration"],
+                    "ml_app": "claude-code",
+                    "service": "claude-code",
+                    "env": "local",
+                    "session_id": session.session_id,
+                    "tags": [f"ml_app:claude-code", f"session_id:{session.session_id}", "service:claude-code", "env:local", "source:claude-code-hooks", "language:python", f"hostname:{_HOSTNAME}"],
+                    "meta": {
+                        "span": {"kind": "agent"},
+                        "input": {"value": input_value},
+                        "output": {"value": output_str},
+                    },
+                    "metrics": {},
+                    "span_links": span_links,
+                }
+                self._assembled_spans.append(span)
             return
 
         # Normal tool span
@@ -357,6 +365,10 @@ class ClaudeHooksAPI:
     def _handle_subagent_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SubagentStart hook event — pushes a new agent onto the stack.
 
+        Emits a preliminary agent span immediately so the UI can show the
+        in-progress subagent.  The span is updated in-place by _handle_subagent_stop
+        (or _handle_post_tool_use for Task-spawned subagents).
+
         If a pending "Task" tool exists, captures its tool_use_id and input so the
         agent span can absorb the Task tool's I/O and span links.
         """
@@ -379,6 +391,29 @@ class ClaudeHooksAPI:
                 session.claimed_task_tools.add(tid)
                 break
 
+        # Emit a preliminary agent span so the trace shows the subagent immediately
+        preliminary_span: Dict[str, Any] = {
+            "span_id": span_id,
+            "trace_id": session.trace_id,
+            "parent_id": parent_id,
+            "name": agent_name,
+            "status": "ok",
+            "start_ns": now_ns,
+            "duration": 0,
+            "ml_app": "claude-code",
+            "service": "claude-code",
+            "env": "local",
+            "session_id": session.session_id,
+            "tags": [f"ml_app:claude-code", f"session_id:{session.session_id}", "service:claude-code", "env:local", "source:claude-code-hooks", "language:python", f"hostname:{_HOSTNAME}"],
+            "meta": {
+                "span": {"kind": "agent"},
+                "input": {},
+                "output": {},
+            },
+            "metrics": {},
+        }
+        self._assembled_spans.append(preliminary_span)
+
         session.agent_span_stack.append(
             {
                 "span_id": span_id,
@@ -387,15 +422,16 @@ class ClaudeHooksAPI:
                 "start_ns": now_ns,
                 "task_tool_use_id": task_tool_use_id,
                 "task_tool_input": task_tool_input,
+                "_span_ref": preliminary_span,
             }
         )
 
     def _handle_subagent_stop(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SubagentStop hook event — pops the agent stack.
 
-        If the agent was spawned by a Task tool, defers span emission until
+        Updates the eagerly-emitted agent span in-place with final duration.
+        If the agent was spawned by a Task tool, defers the final update until
         PostToolUse(Task) fires so the agent span can include the Task's output.
-        Otherwise emits the agent span immediately.
         """
         session = self._get_or_create_session(session_id)
         now_ns = int(time.time() * 1_000_000_000)
@@ -409,9 +445,13 @@ class ClaudeHooksAPI:
 
         task_tool_use_id = agent_info.get("task_tool_use_id", "")
         task_tool_input = agent_info.get("task_tool_input")
+        span_ref = agent_info.get("_span_ref")
 
         if task_tool_use_id:
-            # Defer emission — PostToolUse(Task) will provide the output and emit
+            # Defer final update — PostToolUse(Task) will set I/O and span links.
+            # Update duration on the preliminary span so the UI shows progress.
+            if span_ref:
+                span_ref["duration"] = duration
             session.deferred_agent_spans[task_tool_use_id] = {
                 "span_id": agent_info["span_id"],
                 "trace_id": session.trace_id,
@@ -420,29 +460,35 @@ class ClaudeHooksAPI:
                 "start_ns": agent_info["start_ns"],
                 "duration": duration,
                 "input": str(task_tool_input) if task_tool_input else "",
+                "_span_ref": span_ref,
             }
         else:
-            span = {
-                "span_id": agent_info["span_id"],
-                "trace_id": session.trace_id,
-                "parent_id": agent_info["parent_id"],
-                "name": agent_info["name"],
-                "status": "ok",
-                "start_ns": agent_info["start_ns"],
-                "duration": duration,
-                "ml_app": "claude-code",
-                "service": "claude-code",
-                "env": "local",
-                "session_id": session.session_id,
-                "tags": [f"ml_app:claude-code", f"session_id:{session.session_id}", "service:claude-code", "env:local", "source:claude-code-hooks", "language:python", f"hostname:{_HOSTNAME}"],
-                "meta": {
-                    "span": {"kind": "agent"},
-                    "input": {},
-                    "output": {},
-                },
-                "metrics": {},
-            }
-            self._assembled_spans.append(span)
+            # Update the eagerly-emitted span in-place
+            if span_ref:
+                span_ref["duration"] = duration
+            else:
+                # Fallback: no preliminary span (shouldn't happen)
+                span = {
+                    "span_id": agent_info["span_id"],
+                    "trace_id": session.trace_id,
+                    "parent_id": agent_info["parent_id"],
+                    "name": agent_info["name"],
+                    "status": "ok",
+                    "start_ns": agent_info["start_ns"],
+                    "duration": duration,
+                    "ml_app": "claude-code",
+                    "service": "claude-code",
+                    "env": "local",
+                    "session_id": session.session_id,
+                    "tags": [f"ml_app:claude-code", f"session_id:{session.session_id}", "service:claude-code", "env:local", "source:claude-code-hooks", "language:python", f"hostname:{_HOSTNAME}"],
+                    "meta": {
+                        "span": {"kind": "agent"},
+                        "input": {},
+                        "output": {},
+                    },
+                    "metrics": {},
+                }
+                self._assembled_spans.append(span)
 
     def _compute_token_usage(self, trace_id: str) -> Dict[str, int]:
         """Sum token metrics from all LLM spans in the given trace."""
