@@ -157,7 +157,15 @@ docker run --rm -p 8126:8126 \
 
 If they don't have an API key, they can create one at https://app.datadoghq.com/organization-settings/api-keys. If they prefer local-only mode, skip this step.
 
-## Step 4: Use Claude Code
+## Step 4: View traces
+
+Direct the user to open the local dev experience in their browser to view traces:
+
+https://app-30bd13e67e6cba3b6c36f48da9908a7a.datadoghq.com/llm/traces?devLocal=true
+
+This connects to the local test agent and displays traces as they arrive.
+
+## Step 5: Use Claude Code
 
 Start a new Claude Code session. Each user turn produces a trace with:
 - A root agent span for the session turn
