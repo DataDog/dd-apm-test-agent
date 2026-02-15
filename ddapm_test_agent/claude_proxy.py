@@ -11,6 +11,7 @@ Usage:
 
 import json
 import logging
+import socket
 import time
 from typing import Any
 from typing import Dict
@@ -31,6 +32,8 @@ from .llmobs_event_platform import with_cors
 
 
 log = logging.getLogger(__name__)
+
+_HOSTNAME = socket.gethostname()
 
 ANTHROPIC_API_BASE = "https://api.anthropic.com"
 
@@ -349,6 +352,9 @@ class ClaudeProxyAPI:
         input_messages = _format_input_messages(request_body)
         output_messages = _format_output_messages(content_blocks)
 
+        # Attach session_id so LLM spans can be grouped with the session
+        session_id = session.session_id if session else ""
+
         span: Dict[str, Any] = {
             "span_id": span_id,
             "trace_id": trace_id,
@@ -360,7 +366,8 @@ class ClaudeProxyAPI:
             "ml_app": "claude-code",
             "service": "claude-code",
             "env": "local",
-            "tags": ["source:claude-code-proxy"],
+            "session_id": session_id,
+            "tags": [f"ml_app:claude-code", "service:claude-code", "env:local", "source:claude-code-proxy", "language:python", f"hostname:{_HOSTNAME}"] + ([f"session_id:{session_id}"] if session_id else []),
             "meta": {
                 "span": {"kind": "llm"},
                 "model_name": model,

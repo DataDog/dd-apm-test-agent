@@ -102,7 +102,7 @@ def extract_spans_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, An
 
 
 def remap_sdk_span_to_ui_format(span: Dict[str, Any], event_ml_app: str = "") -> Dict[str, Any]:
-    """Remap span from SDK format to UI-expected format (extract ml_app, service, env from tags)."""
+    """Remap span from SDK format to UI-expected format (extract ml_app, service, env, session_id from tags)."""
     tags = span.get("tags", [])
     extracted = extract_fields_from_tags(tags)
 
@@ -113,6 +113,14 @@ def remap_sdk_span_to_ui_format(span: Dict[str, Any], event_ml_app: str = "") ->
         span["service"] = extracted.get("service", "")
     if "env" not in span or not span["env"]:
         span["env"] = extracted.get("env", "")
+
+    # session_id: prefer top-level field, fall back to tag extraction
+    if "session_id" not in span or not span["session_id"]:
+        span["session_id"] = extracted.get("session_id", "")
+
+    # hostname: prefer top-level field, fall back to tag extraction
+    if "hostname" not in span or not span["hostname"]:
+        span["hostname"] = extracted.get("hostname", "")
 
     meta = span.get("meta", {})
     span_kind = meta.get("span", {}).get("kind", "llm")
@@ -129,9 +137,9 @@ def remap_sdk_span_to_ui_format(span: Dict[str, Any], event_ml_app: str = "") ->
 
 
 def extract_fields_from_tags(tags: List[str]) -> Dict[str, str]:
-    """Extract ml_app, service, env, etc. from tags array."""
+    """Extract ml_app, service, env, session_id, etc. from tags array."""
     result = {}
-    fields_to_extract = ["ml_app", "service", "env", "version", "source", "language"]
+    fields_to_extract = ["ml_app", "service", "env", "version", "source", "language", "session_id", "hostname"]
     for tag in tags:
         if not isinstance(tag, str) or ":" not in tag:
             continue
@@ -363,6 +371,8 @@ def get_span_field_value(span: Dict[str, Any], field: str) -> Optional[Any]:
         "service": lambda s: s.get("service"),
         "env": lambda s: s.get("env"),
         "duration": lambda s: s.get("duration", 0),
+        "session_id": lambda s: s.get("session_id", ""),
+        "hostname": lambda s: s.get("hostname", ""),
     }
     if field in direct_fields:
         return direct_fields[field](span)
@@ -424,6 +434,7 @@ def build_event_platform_list_response(
         metrics = span.get("metrics", {})
         span_id = span.get("span_id", str(uuid.uuid4()))
         trace_id = span.get("trace_id", "")
+        session_id = span.get("session_id", "")
         status = span.get("status", "ok")
         name = span.get("name", "")
         duration = span.get("duration", 0)
@@ -436,6 +447,9 @@ def build_event_platform_list_response(
         children_ids = children_map.get(span_id, [])
         span_links = span.get("span_links", [])
         tag_obj = _tags_to_dict(tags)
+        # Ensure session_id is always in the tag dict for the web-ui
+        if session_id and "session_id" not in tag_obj:
+            tag_obj["session_id"] = session_id
 
         event_id = span_id
         timestamp_ms = start_ns // 1_000_000
@@ -491,6 +505,7 @@ def build_event_platform_list_response(
             "parent_id": span.get("parent_id", "undefined"),
             "children_ids": children_ids,  # Computed from parent relationships
             "span_links": span_links,  # From SDK for agentic execution graph
+            "session_id": session_id,
             "span_id": span_id,
             "start_ns": start_ns,
             "status": status,
@@ -697,6 +712,7 @@ class LLMObsEventPlatformAPI:
             metrics = found_span.get("metrics", {})
             span_id = found_span.get("span_id", str(uuid.uuid4()))
             trace_id = found_span.get("trace_id", "")
+            session_id = found_span.get("session_id", "")
             status = found_span.get("status", "ok")
             name = found_span.get("name", "")
             duration = found_span.get("duration", 0)
@@ -712,6 +728,9 @@ class LLMObsEventPlatformAPI:
                 if isinstance(tag, str) and ":" in tag:
                     k, v = tag.split(":", 1)
                     tag_obj[k] = v
+            # Ensure session_id is always in the tag dict for the web-ui
+            if session_id and "session_id" not in tag_obj:
+                tag_obj["session_id"] = session_id
 
             timestamp_ms = start_ns // 1_000_000
             timestamp_iso = datetime.utcfromtimestamp(timestamp_ms / 1000).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -748,6 +767,7 @@ class LLMObsEventPlatformAPI:
                 "ml_app": ml_app,
                 "name": name,
                 "parent_id": found_span.get("parent_id", "undefined"),
+                "session_id": session_id,
                 "span_id": span_id,
                 "start_ns": start_ns,
                 "status": status,
@@ -812,6 +832,7 @@ class LLMObsEventPlatformAPI:
 
             for span in trace_spans:
                 span_id = span.get("span_id", "")
+                session_id = span.get("session_id", "")
                 meta = span.get("meta", {})
                 metrics = span.get("metrics", {})
                 tags = span.get("tags", [])
@@ -835,6 +856,7 @@ class LLMObsEventPlatformAPI:
                 spans_dict[span_id] = {
                     "trace_id": span.get("trace_id", ""),
                     "span_id": span_id,
+                    "session_id": session_id,
                     "parent_id": parent_id,
                     "children_ids": children_ids,
                     "span_links": span_links,
