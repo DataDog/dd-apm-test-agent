@@ -73,6 +73,8 @@ def _extract_response_from_sse(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     model = ""
     input_tokens = 0
     output_tokens = 0
+    cache_read_input_tokens = 0
+    cache_creation_input_tokens = 0
     stop_reason = ""
     content_blocks: List[Dict[str, Any]] = []
     block_builders: Dict[int, Dict[str, Any]] = {}
@@ -86,6 +88,8 @@ def _extract_response_from_sse(events: List[Dict[str, Any]]) -> Dict[str, Any]:
             model = msg.get("model", "")
             usage = msg.get("usage", {})
             input_tokens = usage.get("input_tokens", 0)
+            cache_read_input_tokens = usage.get("cache_read_input_tokens", 0)
+            cache_creation_input_tokens = usage.get("cache_creation_input_tokens", 0)
 
         elif event_type == "content_block_start":
             index = data.get("index", 0)
@@ -162,6 +166,8 @@ def _extract_response_from_sse(events: List[Dict[str, Any]]) -> Dict[str, Any]:
         "stop_reason": stop_reason,
         "usage": {
             "input_tokens": input_tokens,
+            "cache_read_input_tokens": cache_read_input_tokens,
+            "cache_creation_input_tokens": cache_creation_input_tokens,
             "output_tokens": output_tokens,
         },
     }
@@ -302,6 +308,13 @@ class ClaudeProxyAPI:
         usage = response_data.get("usage", {})
         content_blocks = response_data.get("content", [])
 
+        # Anthropic prompt caching: input_tokens only counts non-cached tokens.
+        # Total input = input_tokens + cache_read + cache_creation.
+        raw_input_tokens = usage.get("input_tokens", 0)
+        cache_read = usage.get("cache_read_input_tokens", 0)
+        cache_creation = usage.get("cache_creation_input_tokens", 0)
+        total_input_tokens = raw_input_tokens + cache_read + cache_creation
+
         # Re-resolve session if we didn't have one at request time
         # (hooks may have fired while the upstream call was in flight)
         if not session:
@@ -380,9 +393,12 @@ class ClaudeProxyAPI:
                 },
             },
             "metrics": {
-                "input_tokens": usage.get("input_tokens", 0),
+                "input_tokens": total_input_tokens,
                 "output_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+                "total_tokens": total_input_tokens + usage.get("output_tokens", 0),
+                "cache_read_input_tokens": cache_read,
+                "cache_write_input_tokens": cache_creation,
+                "non_cached_input_tokens": raw_input_tokens,
             },
             "span_links": [link.to_dict() for link in span_links],
         }
