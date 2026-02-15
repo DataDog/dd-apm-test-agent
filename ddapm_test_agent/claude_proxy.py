@@ -132,27 +132,33 @@ def _extract_response_from_sse(events: List[Dict[str, Any]]) -> Dict[str, Any]:
             builder = block_builders.pop(index, None)
             if builder:
                 if builder["type"] == "text":
-                    content_blocks.append({
-                        "type": "text",
-                        "text": "".join(builder.get("text_parts", [])),
-                    })
+                    content_blocks.append(
+                        {
+                            "type": "text",
+                            "text": "".join(builder.get("text_parts", [])),
+                        }
+                    )
                 elif builder["type"] == "tool_use":
                     input_json_str = "".join(builder.get("input_json_parts", []))
                     try:
                         input_data = json.loads(input_json_str) if input_json_str else {}
                     except json.JSONDecodeError:
                         input_data = input_json_str
-                    content_blocks.append({
-                        "type": "tool_use",
-                        "id": builder.get("id", ""),
-                        "name": builder.get("name", ""),
-                        "input": input_data,
-                    })
+                    content_blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": builder.get("id", ""),
+                            "name": builder.get("name", ""),
+                            "input": input_data,
+                        }
+                    )
                 elif builder["type"] == "thinking":
-                    content_blocks.append({
-                        "type": "thinking",
-                        "thinking": "".join(builder.get("thinking_parts", [])),
-                    })
+                    content_blocks.append(
+                        {
+                            "type": "thinking",
+                            "thinking": "".join(builder.get("thinking_parts", [])),
+                        }
+                    )
 
         elif event_type == "message_delta":
             delta = data.get("delta", {})
@@ -225,16 +231,20 @@ def _format_output_messages(content_blocks: List[Dict[str, Any]]) -> List[Dict[s
         if btype == "text":
             messages.append({"role": "assistant", "content": block.get("text", "")})
         elif btype == "tool_use":
-            messages.append({
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{
-                    "name": block.get("name", ""),
-                    "arguments": block.get("input", {}),
-                    "tool_id": block.get("id", ""),
-                    "type": "tool_use",
-                }],
-            })
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "name": block.get("name", ""),
+                            "arguments": block.get("input", {}),
+                            "tool_id": block.get("id", ""),
+                            "type": "tool_use",
+                        }
+                    ],
+                }
+            )
     return messages
 
 
@@ -380,7 +390,15 @@ class ClaudeProxyAPI:
             "service": "claude-code",
             "env": "local",
             "session_id": session_id,
-            "tags": [f"ml_app:claude-code", "service:claude-code", "env:local", "source:claude-code-proxy", "language:python", f"hostname:{_HOSTNAME}"] + ([f"session_id:{session_id}"] if session_id else []),
+            "tags": [
+                "ml_app:claude-code",
+                "service:claude-code",
+                "env:local",
+                "source:claude-code-proxy",
+                "language:python",
+                f"hostname:{_HOSTNAME}",
+            ]
+            + ([f"session_id:{session_id}"] if session_id else []),
             "meta": {
                 "span": {"kind": "llm"},
                 "model_name": model,
@@ -404,7 +422,7 @@ class ClaudeProxyAPI:
         }
         return span
 
-    async def handle_proxy(self, request: Request) -> web.Response:
+    async def handle_proxy(self, request: Request) -> web.StreamResponse:
         """Proxy an Anthropic API request, creating an LLM span."""
         path = request.match_info.get("path", "")
         target_url = f"{ANTHROPIC_API_BASE}/{path}"
@@ -422,11 +440,7 @@ class ClaudeProxyAPI:
 
         is_streaming = request_body.get("stream", False)
 
-        headers = {
-            key: value
-            for key, value in request.headers.items()
-            if key.lower() not in SKIP_REQUEST_HEADERS
-        }
+        headers = {key: value for key, value in request.headers.items() if key.lower() not in SKIP_REQUEST_HEADERS}
 
         start_ns = int(time.time() * 1_000_000_000)
         session = self._get_active_session()
@@ -441,13 +455,9 @@ class ClaudeProxyAPI:
                 data=body_bytes,
             ) as upstream_resp:
                 if is_streaming:
-                    return await self._handle_streaming(
-                        request, upstream_resp, request_body, session, start_ns
-                    )
+                    return await self._handle_streaming(request, upstream_resp, request_body, session, start_ns)
                 else:
-                    return await self._handle_non_streaming(
-                        upstream_resp, request_body, session, start_ns
-                    )
+                    return await self._handle_non_streaming(upstream_resp, request_body, session, start_ns)
         except Exception as e:
             log.error("Proxy error forwarding to %s: %s", target_url, e)
             return web.json_response(

@@ -20,7 +20,6 @@ from typing import Set
 from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
-
 import msgpack
 
 from .claude_link_tracker import ClaudeLinkTracker
@@ -172,7 +171,7 @@ class ClaudeHooksAPI:
     def _current_parent_id(self, session: SessionState) -> str:
         """Return the span_id of the current active agent (top of stack), or root."""
         if session.agent_span_stack:
-            return session.agent_span_stack[-1]["span_id"]
+            return str(session.agent_span_stack[-1]["span_id"])
         return session.root_span_id
 
     def _handle_session_start(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -274,7 +273,15 @@ class ClaudeHooksAPI:
             "service": "claude-code",
             "env": "local",
             "session_id": session.session_id,
-            "tags": [f"ml_app:claude-code", f"session_id:{session.session_id}", "service:claude-code", "env:local", "source:claude-code-hooks", "language:python", f"hostname:{_HOSTNAME}"],
+            "tags": [
+                "ml_app:claude-code",
+                f"session_id:{session.session_id}",
+                "service:claude-code",
+                "env:local",
+                "source:claude-code-hooks",
+                "language:python",
+                f"hostname:{_HOSTNAME}",
+            ],
             "meta": {
                 "span": {"kind": "agent"},
                 "input": {"value": prompt},
@@ -371,7 +378,15 @@ class ClaudeHooksAPI:
                     "service": "claude-code",
                     "env": "local",
                     "session_id": session.session_id,
-                    "tags": [f"ml_app:claude-code", f"session_id:{session.session_id}", "service:claude-code", "env:local", "source:claude-code-hooks", "language:python", f"hostname:{_HOSTNAME}"],
+                    "tags": [
+                        "ml_app:claude-code",
+                        f"session_id:{session.session_id}",
+                        "service:claude-code",
+                        "env:local",
+                        "source:claude-code-hooks",
+                        "language:python",
+                        f"hostname:{_HOSTNAME}",
+                    ],
                     "meta": {
                         "span": {"kind": "agent"},
                         "input": {"value": input_value},
@@ -403,7 +418,15 @@ class ClaudeHooksAPI:
             "service": "claude-code",
             "env": "local",
             "session_id": session.session_id,
-            "tags": [f"ml_app:claude-code", f"session_id:{session.session_id}", "service:claude-code", "env:local", "source:claude-code-hooks", "language:python", f"hostname:{_HOSTNAME}"],
+            "tags": [
+                "ml_app:claude-code",
+                f"session_id:{session.session_id}",
+                "service:claude-code",
+                "env:local",
+                "source:claude-code-hooks",
+                "language:python",
+                f"hostname:{_HOSTNAME}",
+            ],
             "meta": {
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},
@@ -456,7 +479,15 @@ class ClaudeHooksAPI:
             "service": "claude-code",
             "env": "local",
             "session_id": session.session_id,
-            "tags": [f"ml_app:claude-code", f"session_id:{session.session_id}", "service:claude-code", "env:local", "source:claude-code-hooks", "language:python", f"hostname:{_HOSTNAME}"],
+            "tags": [
+                "ml_app:claude-code",
+                f"session_id:{session.session_id}",
+                "service:claude-code",
+                "env:local",
+                "source:claude-code-hooks",
+                "language:python",
+                f"hostname:{_HOSTNAME}",
+            ],
             "meta": {
                 "span": {"kind": "agent"},
                 "input": {},
@@ -532,7 +563,15 @@ class ClaudeHooksAPI:
                     "service": "claude-code",
                     "env": "local",
                     "session_id": session.session_id,
-                    "tags": [f"ml_app:claude-code", f"session_id:{session.session_id}", "service:claude-code", "env:local", "source:claude-code-hooks", "language:python", f"hostname:{_HOSTNAME}"],
+                    "tags": [
+                        "ml_app:claude-code",
+                        f"session_id:{session.session_id}",
+                        "service:claude-code",
+                        "env:local",
+                        "source:claude-code-hooks",
+                        "language:python",
+                        f"hostname:{_HOSTNAME}",
+                    ],
                     "meta": {
                         "span": {"kind": "agent"},
                         "input": {},
@@ -623,7 +662,15 @@ class ClaudeHooksAPI:
                 "service": "claude-code",
                 "env": "local",
                 "session_id": session.session_id,
-                "tags": [f"ml_app:claude-code", f"session_id:{session.session_id}", "service:claude-code", "env:local", "source:claude-code-hooks", "language:python", f"hostname:{_HOSTNAME}"],
+                "tags": [
+                    "ml_app:claude-code",
+                    f"session_id:{session.session_id}",
+                    "service:claude-code",
+                    "env:local",
+                    "source:claude-code-hooks",
+                    "language:python",
+                    f"hostname:{_HOSTNAME}",
+                ],
                 "meta": {
                     "span": {"kind": "agent"},
                     "input": {"value": input_value},

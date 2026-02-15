@@ -37,11 +37,11 @@ CORS_HEADERS = {
 
 
 def with_cors(
-    handler: Callable[[Request], Awaitable[web.Response]],
-) -> Callable[[Request], Awaitable[web.Response]]:
+    handler: Callable[[Request], Awaitable[web.StreamResponse]],
+) -> Callable[[Request], Awaitable[web.StreamResponse]]:
     """Wrap handler to add CORS headers and handle OPTIONS preflight."""
 
-    async def wrapper(request: Request) -> web.Response:
+    async def wrapper(request: Request) -> web.StreamResponse:
         if request.method == "OPTIONS":
             return web.Response(status=200, headers=CORS_HEADERS)
         response = await handler(request)

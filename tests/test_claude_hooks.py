@@ -1,9 +1,6 @@
 import json
 import os
 import tempfile
-import time
-
-import pytest
 
 
 async def _post_hook(agent, event):

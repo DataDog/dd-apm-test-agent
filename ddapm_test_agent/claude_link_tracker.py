@@ -12,6 +12,7 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
+
 log = logging.getLogger(__name__)
 
 
@@ -54,19 +55,18 @@ class TrackedToolCall:
 
 
 class ClaudeLinkTracker:
-    """Tracks tool_use_id correlations between LLM and tool spans.
+    """Track tool_use_id correlations between LLM and tool spans.
 
     The linking flow:
-    1. Proxy sees LLM response with tool_use blocks -> on_llm_tool_choice()
-       Stores {tool_use_id -> llm_span context}
 
-    2. Hook fires PostToolUse with tool_use_id -> on_tool_call()
-       Creates LLM.output -> Tool.input link on the tool span
-       Stores {tool_use_id -> tool_span context}
-
-    3. Proxy sees next LLM request with tool_result blocks -> on_tool_call_output_used()
-       Creates Tool.output -> LLM.input link on the LLM span
-       Consumes the tracked tool call
+    1. Proxy sees LLM response with tool_use blocks -> ``on_llm_tool_choice()``
+       stores ``{tool_use_id -> llm_span context}``.
+    2. Hook fires PostToolUse with tool_use_id -> ``on_tool_call()``
+       creates LLM.output -> Tool.input link on the tool span and
+       stores ``{tool_use_id -> tool_span context}``.
+    3. Proxy sees next LLM request with tool_result blocks -> ``on_tool_call_output_used()``
+       creates Tool.output -> LLM.input link on the LLM span and
+       consumes the tracked tool call.
     """
 
     def __init__(self) -> None:
@@ -80,7 +80,7 @@ class ClaudeLinkTracker:
         llm_span_id: str,
         llm_trace_id: str,
     ) -> None:
-        """Called when an LLM response contains a tool_use block."""
+        """Record an LLM response tool_use block for span linking."""
         self._tool_calls[tool_use_id] = TrackedToolCall(
             tool_use_id=tool_use_id,
             tool_name=tool_name,
@@ -93,10 +93,10 @@ class ClaudeLinkTracker:
     def on_tool_call(
         self, tool_use_id: str, tool_span_id: str, tool_trace_id: str, tool_parent_id: str
     ) -> List[SpanLink]:
-        """Called when a tool span finishes (from PostToolUse hook).
+        """Create span links for a finished tool span (from PostToolUse hook).
 
-        Returns span links to add to the tool span (LLM.output -> Tool.input).
-        Also stores the tool span's parent_id so the proxy can use it to determine
+        Return span links to add to the tool span (LLM.output -> Tool.input).
+        Also store the tool span's parent_id so the proxy can use it to determine
         the correct parent for subsequent LLM spans (handles concurrent subagents).
         """
         tc = self._tool_calls.get(tool_use_id)
@@ -118,25 +118,28 @@ class ClaudeLinkTracker:
         ]
 
     def on_tool_call_output_used(self, tool_use_id: str) -> Tuple[List[SpanLink], Optional[str]]:
-        """Called when an LLM request contains a tool_result block.
+        """Create span links for an LLM request containing tool_result blocks.
 
-        Returns (span_links, parent_id_hint):
-        - span_links: Tool.output -> LLM.input links for the LLM span
-        - parent_id_hint: the parent of the tool span that produced this result,
-          allowing the proxy to assign the correct parent even with concurrent subagents
-
-        Consumes the tracked tool call.
+        Return ``(span_links, parent_id_hint)`` where *span_links* are
+        Tool.output -> LLM.input links for the LLM span and *parent_id_hint*
+        is the parent of the tool span that produced this result (allowing the
+        proxy to assign the correct parent even with concurrent subagents).
+        Consume the tracked tool call.
         """
         tc = self._tool_calls.pop(tool_use_id, None)
         if not tc or not tc.tool_span_id:
             return [], None
 
-        log.debug("Linking Tool(%s).output -> LLM.input via %s (parent hint: %s)",
-                  tc.tool_span_id, tool_use_id, tc.tool_parent_id)
+        log.debug(
+            "Linking Tool(%s).output -> LLM.input via %s (parent hint: %s)",
+            tc.tool_span_id,
+            tool_use_id,
+            tc.tool_parent_id,
+        )
         links = [
             SpanLink(
                 span_id=tc.tool_span_id,
-                trace_id=tc.tool_trace_id,
+                trace_id=tc.tool_trace_id or "",
                 from_io="output",
                 to_io="input",
             )
