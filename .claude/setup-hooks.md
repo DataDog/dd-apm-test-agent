@@ -161,9 +161,9 @@ If they don't have an API key, they can create one at https://app.datadoghq.com/
 
 Direct the user to open the local dev experience in their browser to view traces:
 
-https://app-30bd13e67e6cba3b6c36f48da9908a7a.datadoghq.com/llm/traces?devLocal=true
+https://app-30bd13e67e6cba3b6c36f48da9908a7a.datadoghq.com/llm/traces?devLocal=true&enable-rum
 
-This connects to the local test agent and displays traces as they arrive.
+This connects to the local test agent and displays traces as they arrive. The `enable-rum` query parameter enables RUM data collection on hash links (it's disabled by default). This only needs to be added once — it persists in localStorage for subsequent visits.
 
 ## Step 5: Use Claude Code
 
