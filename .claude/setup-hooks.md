@@ -144,7 +144,28 @@ Add the following to `~/.claude/settings.json`. If the file already exists, merg
 - **`env.ANTHROPIC_BASE_URL`**: Routes all Claude API calls through the test agent's proxy, enabling LLM span capture (token counts, model info, input/output messages, and span linking between LLM calls and tool calls).
 - **`hooks`**: Each hook fires a curl command that POSTs the hook event JSON (read from stdin via `-d @-`) to the test agent. The `--max-time 2` timeout and `|| true` ensure hooks never block Claude Code, even if the agent is down.
 
-## Step 3: Use Claude Code
+## Step 3: Forward traces to Datadog (optional)
+
+Ask the user if they would like to forward traces to Datadog to persist them and get additional features like cost estimation. If they do, ask them for their `DD_API_KEY` and restart the test agent with the key:
+
+```bash
+docker run --rm -p 8126:8126 \
+  -e DD_API_KEY=<their-api-key> \
+  -e DD_SITE=datadoghq.com \
+  ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
+```
+
+If they don't have an API key, they can create one at https://app.datadoghq.com/organization-settings/api-keys. If they prefer local-only mode, skip this step.
+
+## Step 4: View traces
+
+Direct the user to open the local dev experience in their browser to view traces:
+
+https://app-30bd13e67e6cba3b6c36f48da9908a7a.datadoghq.com/llm/traces?devLocal=true
+
+This connects to the local test agent and displays traces as they arrive.
+
+## Step 5: Use Claude Code
 
 Start a new Claude Code session. Each user turn produces a trace with:
 - A root agent span for the session turn
