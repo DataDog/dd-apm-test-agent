@@ -599,6 +599,45 @@ class ClaudeHooksAPI:
             "total_tokens": total_input + total_output,
         }
 
+    def _compute_context_delta(self, trace_id: str) -> Optional[Dict[str, Any]]:
+        """Compare context usage between the first and last LLM spans in a trace.
+
+        Filters to spans matching the last span's model so that utility calls
+        (e.g. haiku summarization) are excluded from the comparison.
+        """
+        all_llm_spans = sorted(
+            [
+                s
+                for s in self._assembled_spans
+                if s.get("trace_id") == trace_id and s.get("meta", {}).get("span", {}).get("kind") == "llm"
+            ],
+            key=lambda s: s.get("start_ns", 0),
+        )
+        if not all_llm_spans:
+            return None
+        # Use the last span's model as the primary model, filtering out utility calls
+        primary_model = all_llm_spans[-1].get("meta", {}).get("model_name", "")
+        llm_spans = [s for s in all_llm_spans if s.get("meta", {}).get("model_name", "") == primary_model]
+        if len(llm_spans) < 2:
+            return None
+        first_cb = llm_spans[0].get("meta", {}).get("metadata", {}).get("context_breakdown", {})
+        last_cb = llm_spans[-1].get("meta", {}).get("metadata", {}).get("context_breakdown", {})
+        first_tokens = first_cb.get("total_input_tokens", 0)
+        last_tokens = last_cb.get("total_input_tokens", 0)
+        window = last_cb.get("context_window_size", 200000)
+        first_sections = first_cb.get("sections", [])
+        last_sections = last_cb.get("sections", [])
+        return {
+            "first_input_tokens": first_tokens,
+            "last_input_tokens": last_tokens,
+            "delta_tokens": last_tokens - first_tokens,
+            "context_window_size": window,
+            "first_usage_pct": round(first_tokens / window * 100, 1) if window else 0,
+            "last_usage_pct": round(last_tokens / window * 100, 1) if window else 0,
+            "first_sections": first_sections,
+            "last_sections": last_sections,
+        }
+
     def _handle_stop(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle Stop / SessionEnd hook event — updates the eagerly-emitted root span with final data."""
         session = self._sessions.get(session_id)
@@ -635,6 +674,7 @@ class ClaudeHooksAPI:
             )
         # Compute aggregate token usage from LLM spans in this trace
         token_usage = self._compute_token_usage(session.trace_id)
+        context_delta = self._compute_context_delta(session.trace_id)
 
         if root_span:
             root_span["duration"] = duration
@@ -646,6 +686,7 @@ class ClaudeHooksAPI:
                 "agent_manifest": agent_manifest,
                 "model_name": session.model,
                 "model_provider": "anthropic",
+                "context_delta": context_delta,
             }
             root_span["metrics"] = token_usage
         else:
@@ -681,6 +722,7 @@ class ClaudeHooksAPI:
                         "agent_manifest": agent_manifest,
                         "model_name": session.model,
                         "model_provider": "anthropic",
+                        "context_delta": context_delta,
                     },
                 },
                 "metrics": token_usage,
