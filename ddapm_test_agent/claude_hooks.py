@@ -4,6 +4,7 @@ Receives Claude Code lifecycle hook events via HTTP and assembles them
 into LLMObs-format spans that can be queried through the Event Platform APIs.
 """
 
+import getpass
 import gzip
 import json
 import logging
@@ -29,6 +30,7 @@ from .llmobs_event_platform import with_cors
 log = logging.getLogger(__name__)
 
 _HOSTNAME = socket.gethostname()
+_USERNAME = getpass.getuser()
 
 
 class PendingToolSpan:
@@ -716,6 +718,7 @@ class ClaudeHooksAPI:
                     "source:claude-code-hooks",
                     "language:python",
                     f"hostname:{_HOSTNAME}",
+                    f"user_name:{_USERNAME}",
                 ],
                 "meta": {
                     "span": {"kind": "agent"},

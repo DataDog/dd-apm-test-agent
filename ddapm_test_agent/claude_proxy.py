@@ -9,6 +9,7 @@ Usage:
     environment to route all API calls through this proxy.
 """
 
+import getpass
 import json
 import logging
 import socket
@@ -34,6 +35,7 @@ from .llmobs_event_platform import with_cors
 log = logging.getLogger(__name__)
 
 _HOSTNAME = socket.gethostname()
+_USERNAME = getpass.getuser()
 
 ANTHROPIC_API_BASE = "https://api.anthropic.com"
 
@@ -496,6 +498,7 @@ class ClaudeProxyAPI:
                 "source:claude-code-proxy",
                 "language:python",
                 f"hostname:{_HOSTNAME}",
+                f"user_name:{_USERNAME}",
             ]
             + ([f"session_id:{session_id}"] if session_id else []),
             "meta": {
