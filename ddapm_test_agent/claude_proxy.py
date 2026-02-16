@@ -377,6 +377,26 @@ class ClaudeProxyAPI:
         log.info("Re-parented %d orphan LLM spans into trace %s", len(self._orphan_spans), session.trace_id)
         self._orphan_spans.clear()
 
+    @staticmethod
+    def _extract_conversation_title(session: SessionState, content_blocks: List[Dict[str, Any]]) -> None:
+        """Detect the haiku summarization response and store the title on the session."""
+        for block in content_blocks:
+            if block.get("type") != "text":
+                continue
+            text = block.get("text", "").strip()
+            if not text.startswith("{"):
+                continue
+            try:
+                data = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if "title" in data and "isNewTopic" in data:
+                title = data["title"]
+                if isinstance(title, str) and title:
+                    session.conversation_title = title
+                    log.info("Conversation title: %s", title)
+                return
+
     def _create_llm_span(
         self,
         session: Optional[SessionState],
@@ -446,6 +466,10 @@ class ClaudeProxyAPI:
 
         input_messages = _format_input_messages(request_body)
         output_messages = _format_output_messages(content_blocks)
+
+        # Detect haiku summarization call and extract conversation title
+        if session:
+            self._extract_conversation_title(session, content_blocks)
 
         # Compute context breakdown for the UI
         context_breakdown = _compute_context_breakdown(request_body, total_input_tokens, model)

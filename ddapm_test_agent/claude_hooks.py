@@ -62,6 +62,7 @@ class SessionState:
         # Task tool_use_ids that have already been claimed by a SubagentStart,
         # so they are not matched again when a second SubagentStart fires.
         self.claimed_task_tools: Set[str] = set()
+        self.conversation_title: str = ""
 
 
 _MAX_UINT_64 = (1 << 64) - 1
@@ -254,6 +255,7 @@ class ClaudeHooksAPI:
             session.pending_tools = {}
             session.deferred_agent_spans = {}
             session.claimed_task_tools = set()
+            session.conversation_title = ""
             session.root_span_emitted = False
 
         prompt = body.get("user_prompt", body.get("prompt", ""))
@@ -676,7 +678,10 @@ class ClaudeHooksAPI:
         token_usage = self._compute_token_usage(session.trace_id)
         context_delta = self._compute_context_delta(session.trace_id)
 
+        root_span_name = session.conversation_title or "claude-code-request"
+
         if root_span:
+            root_span["name"] = root_span_name
             root_span["duration"] = duration
             root_span["meta"]["input"]["value"] = input_value
             root_span["meta"]["output"]["value"] = output_value
@@ -695,7 +700,7 @@ class ClaudeHooksAPI:
                 "span_id": session.root_span_id,
                 "trace_id": session.trace_id,
                 "parent_id": "undefined",
-                "name": "claude-code-request",
+                "name": root_span_name,
                 "status": "ok",
                 "start_ns": session.start_ns,
                 "duration": duration,
