@@ -31,7 +31,7 @@ from .llmobs_event_platform import with_cors
 log = logging.getLogger(__name__)
 
 _HOSTNAME = socket.gethostname()
-_USERNAME = getpass.getuser()
+_USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 
 
 class PendingToolSpan:
