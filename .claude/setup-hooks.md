@@ -12,8 +12,10 @@ Follow these steps to configure Claude Code to send hook events to the dd-apm-te
 Run the test agent:
 
 ```bash
-docker run --rm --pull always -p 8126:8126 ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
+docker run --rm --pull always -p 8126:8126 -e HOST_USER="$USER" ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
 ```
+
+The `HOST_USER` env var passes your username into the container so spans are tagged with `user_name:<you>` instead of `root`.
 
 Verify it's running:
 
@@ -150,6 +152,7 @@ Ask the user if they would like to forward traces to Datadog to persist them and
 
 ```bash
 docker run --rm -p 8126:8126 \
+  -e HOST_USER="$USER" \
   -e DD_API_KEY=<their-api-key> \
   -e DD_SITE=datadoghq.com \
   ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
@@ -186,6 +189,7 @@ To forward LLM Observability data to Datadog, start the agent with:
 
 ```bash
 docker run --rm -p 8126:8126 \
+  -e HOST_USER="$USER" \
   -e DD_API_KEY=<your-api-key> \
   -e DD_SITE=datadoghq.com \
   ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
