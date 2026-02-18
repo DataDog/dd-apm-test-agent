@@ -4,6 +4,7 @@ Receives Claude Code lifecycle hook events via HTTP and assembles them
 into LLMObs-format spans that can be queried through the Event Platform APIs.
 """
 
+import asyncio
 import getpass
 import gzip
 import json
@@ -893,6 +894,11 @@ class ClaudeHooksAPI:
             return web.json_response({"error": "missing session_id"}, status=400)
 
         self._raw_events.append(body)
+
+        # wait for the transcript to be fully flushed before dispatching the hook
+        if body.get("hook_event_name") == "Stop":
+            await asyncio.sleep(1.0)
+
         self._dispatch_hook(body)
 
         hook_event_name = body.get("hook_event_name", "")

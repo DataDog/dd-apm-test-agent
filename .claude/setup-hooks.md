@@ -12,7 +12,7 @@ Follow these steps to configure Claude Code to send hook events to the dd-apm-te
 Run the test agent:
 
 ```bash
-docker run --rm -p 8126:8126 ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
+docker run --rm --pull-always -p 8126:8126 ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
 ```
 
 Verify it's running:
