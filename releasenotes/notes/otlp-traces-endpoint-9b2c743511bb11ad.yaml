@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    OTLP: Add support for OpenTelemetry Protocol (OTLP) traces via HTTP endpoint `/v1/traces` on port 4318 and GRPC server on port 4317.
+    The endpoint accepts both application/json and application/x-protobuf content types.
+    Session endpoint `/test/session/traces` allows retrieval of captured traces for validation.
