@@ -49,10 +49,10 @@ def llmobs_payload():
     }
 
 
-async def _submit_llmobs_payload(agent, payload):
+async def _submit_llmobs_payload(agent, payload, path="/evp_proxy/v2/api/v2/llmobs"):
     data = gzip.compress(msgpack.packb(payload))
     return await agent.post(
-        "/evp_proxy/v2/api/v2/llmobs",
+        path,
         headers={"Content-Type": "application/msgpack", "Content-Encoding": "gzip"},
         data=data,
     )
@@ -166,6 +166,18 @@ async def test_llmobs_list_empty(agent):
 
 async def test_llmobs_list_returns_spans(agent, llmobs_payload):
     await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["status"] == "done"
+    assert data["hitCount"] == 2
+
+
+async def test_llmobs_list_returns_spans_v4(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload, path="/evp_proxy/v4/api/v2/llmobs")
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
         json={"list": {"search": {"query": ""}, "limit": 50}},
