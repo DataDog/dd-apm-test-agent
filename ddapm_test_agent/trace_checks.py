@@ -135,6 +135,22 @@ The ``peer.service`` tag is correctly set for Client / Producer spans.
             )
 
 
+class CheckMetaEventsIsValidJSON(Check):
+    name = "meta_events_is_valid_json"
+    description = "meta.events must contain valid JSON when present"
+
+    def check(self, span: Span) -> None:
+        meta = span.get("meta", {})
+        if "events" not in meta:
+            return
+        try:
+            parsed = json.loads(meta["events"])
+            if not isinstance(parsed, list):
+                self.fail(f"meta.events is not a JSON array: {type(parsed)}")
+        except (json.JSONDecodeError, TypeError) as e:
+            self.fail(f"meta.events is not valid JSON: {e}")
+
+
 class CheckTraceDDService(Check):
     name = "trace_dd_service"
     description = """

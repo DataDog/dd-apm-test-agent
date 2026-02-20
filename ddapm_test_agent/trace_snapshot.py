@@ -31,6 +31,15 @@ from .trace import trace_id as get_trace_id
 log = logging.getLogger(__name__)
 
 
+def _normalize_meta_events(events_json_str: str) -> str:
+    """Parse meta.events, sort attribute keys, re-encode as canonical JSON."""
+    events = json.loads(events_json_str)
+    for event in events:
+        if "attributes" in event:
+            event["attributes"] = dict(sorted(event["attributes"].items()))
+    return json.dumps(events, separators=(",", ": "))
+
+
 DEFAULT_SNAPSHOT_IGNORES = "span_id,trace_id,parent_id,duration,start,metrics.system.pid,metrics.system.process_id,metrics.process_id,metrics._dd.tracer_kr,meta.runtime-id,span_links.trace_id_high,span_events.time_unix_nano,meta.pathway.hash,meta._dd.p.tid"
 
 
@@ -51,6 +60,13 @@ def _normalize_span_for_comparison(span: Span) -> Span:
 
     if normalized.get("service") is None:
         normalized["service"] = ""
+
+    if "meta" in normalized and "events" in normalized["meta"]:
+        try:
+            normalized["meta"] = dict(normalized["meta"])
+            normalized["meta"]["events"] = _normalize_meta_events(normalized["meta"]["events"])
+        except (json.JSONDecodeError, TypeError):
+            pass  # leave as-is; the check will catch invalid JSON separately
 
     return cast(Span, normalized)
 
@@ -514,8 +530,19 @@ def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
     ]
     for k in order:
         if k in s:
-            if k in ["meta", "metrics"]:
-                # Sort the meta and metrics dictionaries alphanumerically
+            if k == "meta":
+                ordered_meta: OrderedDictType[str, Any] = OrderedDict()
+                for mk, mv in sorted(s[k].items(), key=operator.itemgetter(0)):  # type: ignore
+                    if mk == "events":
+                        try:
+                            ordered_meta[mk] = _normalize_meta_events(mv)  # type: ignore
+                        except (json.JSONDecodeError, TypeError):
+                            ordered_meta[mk] = mv  # type: ignore
+                    else:
+                        ordered_meta[mk] = mv  # type: ignore
+                d[k] = ordered_meta  # type: ignore
+            elif k == "metrics":
+                # Sort the metrics dictionary alphanumerically
                 d[k] = OrderedDict(sorted(s[k].items(), key=operator.itemgetter(0)))  # type: ignore
             else:
                 d[k] = s[k]  # type: ignore

@@ -73,6 +73,7 @@ from .trace import decode_v05 as trace_decode_v05
 from .trace import decode_v07 as trace_decode_v07
 from .trace import pprint_trace
 from .trace import v04TracePayload
+from .trace_checks import CheckMetaEventsIsValidJSON
 from .trace_checks import CheckMetaTracerVersionHeader
 from .trace_checks import CheckTraceContentLength
 from .trace_checks import CheckTraceCountHeader
@@ -1023,11 +1024,12 @@ class Agent:
                     except ValueError:
                         log.info("Chunk %d could not be displayed (might be incomplete).", i)
 
-                    # perform peer service check on span
+                    # perform per-span checks
                     for span in trace:
                         await checks.check(
                             "trace_peer_service", span=span, dd_config_env=request.get("_dd_trace_env_variables", {})
                         )
+                        await checks.check("meta_events_is_valid_json", span=span)
 
                     await checks.check(
                         "trace_dd_service", trace=trace, dd_config_env=request.get("_dd_trace_env_variables", {})
@@ -1798,6 +1800,7 @@ def make_app(
             CheckTraceStallAsync,
             CheckTracePeerService,
             CheckTraceDDService,
+            CheckMetaEventsIsValidJSON,
         ],
         enabled=enabled_checks,
     )
