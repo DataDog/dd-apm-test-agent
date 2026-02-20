@@ -180,3 +180,20 @@ class TestOTLPClient(TestClient):
                 return metrics
             time.sleep(0.1)
         raise ValueError("Number (%r) of metrics not available from test agent, got %r" % (num, len(metrics)))
+
+    def traces(self, clear: bool = False, **kwargs: Any) -> List[Any]:
+        resp = self._session.get(self._url("/test/session/traces"), **kwargs)
+        if clear:
+            self.clear()
+        return cast(List[Any], resp.json())
+
+    def wait_for_num_traces(self, num: int, clear: bool = False, wait_loops: int = 30) -> List[Any]:
+        """Wait for `num` traces to be received from the test agent."""
+        for _ in range(wait_loops):
+            traces = self.traces(clear=False)
+            if len(traces) == num:
+                if clear:
+                    self.clear()
+                return traces
+            time.sleep(0.1)
+        raise ValueError("Number (%r) of traces not available from test agent, got %r" % (num, len(traces)))
