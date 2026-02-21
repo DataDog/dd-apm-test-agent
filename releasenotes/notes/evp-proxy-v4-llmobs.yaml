@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    Add support for ``/evp_proxy/v4/api/v2/llmobs`` and ``/evp_proxy/v4/api/v2/llmobs/update``
+    endpoints. Requests are handled by the same logic as the v2 llmobs endpoints (stored,
+    forwarded when configured, and included in LLM Observability query-rewriter results).
