@@ -592,7 +592,7 @@ class LLMObsEventPlatformAPI:
         all_spans = []
 
         for req in requests:
-            if req.path == "/evp_proxy/v2/api/v2/llmobs":
+            if req.path in ("/evp_proxy/v2/api/v2/llmobs", "/evp_proxy/v4/api/v2/llmobs"):
                 try:
                     data = self.agent._request_data(req)
                     content_type = req.content_type or ""
