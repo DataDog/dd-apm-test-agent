@@ -1,3 +1,4 @@
+import json
 import platform
 import time
 
@@ -121,3 +122,41 @@ async def test_trace_stall(
     assert resp.status == 200, await resp.text()
     end = time.monotonic_ns()
     assert (end - start) / 1e9 >= 0.8
+
+
+@pytest.mark.parametrize("agent_enabled_checks", [["meta_events_is_valid_json"], []])
+async def test_meta_events_is_valid_json_invalid(agent, agent_enabled_checks):
+    """A span with invalid JSON in meta.events should fail the check when enabled."""
+    s = span(meta={"events": "not valid json"})
+    resp = await v04_trace(agent, [[s]], "msgpack")
+    if "meta_events_is_valid_json" in agent_enabled_checks:
+        assert resp.status == 400, await resp.text()
+        assert "Check 'meta_events_is_valid_json' failed" in await resp.text()
+    else:
+        assert resp.status == 200, await resp.text()
+
+
+@pytest.mark.parametrize("agent_enabled_checks", [["meta_events_is_valid_json"]])
+async def test_meta_events_is_valid_json_not_array(agent, agent_enabled_checks):
+    """meta.events must be a JSON array, not an object or scalar."""
+    s = span(meta={"events": json.dumps({"name": "not-an-array"})})
+    resp = await v04_trace(agent, [[s]], "msgpack")
+    assert resp.status == 400, await resp.text()
+    assert "meta.events is not a JSON array" in await resp.text()
+
+
+@pytest.mark.parametrize("agent_enabled_checks", [["meta_events_is_valid_json"]])
+async def test_meta_events_is_valid_json_valid(agent, agent_enabled_checks):
+    """A span with valid JSON array in meta.events should pass the check."""
+    events = [{"name": "my.event", "time_unix_nano": 1234, "attributes": {"key": "val"}}]
+    s = span(meta={"events": json.dumps(events)})
+    resp = await v04_trace(agent, [[s]], "msgpack")
+    assert resp.status == 200, await resp.text()
+
+
+@pytest.mark.parametrize("agent_enabled_checks", [["meta_events_is_valid_json"]])
+async def test_meta_events_is_valid_json_missing(agent, agent_enabled_checks):
+    """A span without meta.events should pass the check silently."""
+    s = span()
+    resp = await v04_trace(agent, [[s]], "msgpack")
+    assert resp.status == 200, await resp.text()

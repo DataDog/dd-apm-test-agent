@@ -792,6 +792,91 @@ async def test_snapshot_trace_differences_removed_start(agent, expected_traces, 
         assert resp.status == 200, resp_text
 
 
+def test_normalize_meta_events_sorts_attribute_keys():
+    """_normalize_meta_events sorts attribute keys within each event."""
+    events = [{"name": "evt", "time_unix_nano": 1, "attributes": {"z": "last", "a": "first", "m": "mid"}}]
+    result = trace_snapshot._normalize_meta_events(json.dumps(events))
+    parsed = json.loads(result)
+    assert list(parsed[0]["attributes"].keys()) == ["a", "m", "z"]
+
+
+def test_normalize_meta_events_no_attributes():
+    """_normalize_meta_events leaves events without attributes unchanged."""
+    events = [{"name": "evt", "time_unix_nano": 1}]
+    result = trace_snapshot._normalize_meta_events(json.dumps(events))
+    parsed = json.loads(result)
+    assert parsed == events
+
+
+def test_normalize_meta_events_multiple_events():
+    """_normalize_meta_events handles multiple events correctly."""
+    events = [
+        {"name": "e1", "time_unix_nano": 1, "attributes": {"b": 2, "a": 1}},
+        {"name": "e2", "time_unix_nano": 2, "attributes": {"y": "y", "x": "x"}},
+    ]
+    result = trace_snapshot._normalize_meta_events(json.dumps(events))
+    parsed = json.loads(result)
+    assert list(parsed[0]["attributes"].keys()) == ["a", "b"]
+    assert list(parsed[1]["attributes"].keys()) == ["x", "y"]
+
+
+def test_normalize_meta_events_already_sorted():
+    """_normalize_meta_events is idempotent when keys are already sorted."""
+    events = [{"name": "evt", "time_unix_nano": 1, "attributes": {"a": 1, "b": 2, "c": 3}}]
+    raw = json.dumps(events)
+    result = trace_snapshot._normalize_meta_events(raw)
+    assert json.loads(result) == json.loads(raw)
+
+
+@pytest.mark.parametrize("snapshot_ci_mode", [False])
+async def test_snapshot_meta_events_attribute_order_independent(agent, snapshot_ci_mode):
+    """Snapshot comparison succeeds when meta.events attribute key order differs."""
+    events_v1 = [{"name": "evt", "time_unix_nano": 100, "attributes": {"a": "1", "b": "2"}}]
+    events_v2 = [{"name": "evt", "time_unix_nano": 100, "attributes": {"b": "2", "a": "1"}}]
+
+    span_v1 = {
+        "name": "s",
+        "span_id": 1,
+        "trace_id": 1,
+        "parent_id": 0,
+        "resource": "/",
+        "duration": 1,
+        "type": "web",
+        "error": 0,
+        "meta": {"events": json.dumps(events_v1)},
+        "metrics": {},
+    }
+
+    span_v2 = {
+        "name": "s",
+        "span_id": 1,
+        "trace_id": 1,
+        "parent_id": 0,
+        "resource": "/",
+        "duration": 1,
+        "type": "web",
+        "error": 0,
+        "meta": {"events": json.dumps(events_v2)},
+        "metrics": {},
+    }
+
+    # Generate snapshot from v1 ordering
+    resp = await v04_trace(agent, [[span_v1]], token="test_events_order")
+    assert resp.status == 200, await resp.text()
+    resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test_events_order"})
+    assert resp.status == 200, await resp.text()
+
+    # Clear and send v2 ordering (different attribute key order)
+    resp = await agent.get("/test/session/clear", params={"test_session_token": "test_events_order"})
+    assert resp.status == 200, await resp.text()
+    resp = await v04_trace(agent, [[span_v2]], token="test_events_order")
+    assert resp.status == 200, await resp.text()
+
+    # Should pass despite different attribute key ordering
+    resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test_events_order"})
+    assert resp.status == 200, await resp.text()
+
+
 @pytest.mark.parametrize("snapshot_removed_attrs", [{"span_id"}])
 async def test_removed_attributes_fails_span_id(agent, tmp_path, snapshot_removed_attrs, do_reference_v04_http_trace):
     resp = await do_reference_v04_http_trace(token="test_case")

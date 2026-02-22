@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    Add a new ``meta_events_is_valid_json`` check that validates ``meta.events``
+    contains a valid JSON array when present. Normalize ``meta.events`` attribute
+    key ordering during snapshot generation and comparison to ensure snapshot tests
+    pass regardless of the iteration order of tracer-side hash maps.
