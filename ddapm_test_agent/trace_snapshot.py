@@ -61,10 +61,12 @@ def _normalize_span_for_comparison(span: Span) -> Span:
     if normalized.get("service") is None:
         normalized["service"] = ""
 
-    if "meta" in normalized and "events" in normalized["meta"]:
+    span_meta = span.get("meta")
+    if span_meta is not None and "events" in span_meta:
         try:
-            normalized["meta"] = dict(normalized["meta"])
-            normalized["meta"]["events"] = _normalize_meta_events(normalized["meta"]["events"])
+            new_meta = dict(span_meta)
+            new_meta["events"] = _normalize_meta_events(span_meta["events"])
+            normalized["meta"] = new_meta
         except (json.JSONDecodeError, TypeError):
             pass  # leave as-is; the check will catch invalid JSON separately
 
@@ -535,12 +537,12 @@ def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
                 for mk, mv in sorted(s[k].items(), key=operator.itemgetter(0)):  # type: ignore
                     if mk == "events":
                         try:
-                            ordered_meta[mk] = _normalize_meta_events(mv)  # type: ignore
+                            ordered_meta[mk] = _normalize_meta_events(mv)
                         except (json.JSONDecodeError, TypeError):
-                            ordered_meta[mk] = mv  # type: ignore
+                            ordered_meta[mk] = mv
                     else:
-                        ordered_meta[mk] = mv  # type: ignore
-                d[k] = ordered_meta  # type: ignore
+                        ordered_meta[mk] = mv
+                d[k] = ordered_meta
             elif k == "metrics":
                 # Sort the metrics dictionary alphanumerically
                 d[k] = OrderedDict(sorted(s[k].items(), key=operator.itemgetter(0)))  # type: ignore
@@ -554,12 +556,12 @@ def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
     if "span_links" in d:
         for link in d["span_links"]:
             if "attributes" in link:
-                link["attributes"] = OrderedDict(sorted(link["attributes"].items(), key=operator.itemgetter(0)))
+                link["attributes"] = OrderedDict(sorted(link["attributes"].items(), key=operator.itemgetter(0)))  # type: ignore
 
     if "span_events" in d:
         for event in d["span_events"]:
             if "attributes" in event:
-                event["attributes"] = OrderedDict(sorted(event["attributes"].items(), key=operator.itemgetter(0)))
+                event["attributes"] = OrderedDict(sorted(event["attributes"].items(), key=operator.itemgetter(0)))  # type: ignore
 
     for k in ["meta", "metrics"]:
         if k in d and len(d[k]) == 0:
