@@ -103,6 +103,13 @@ If not running a Datadog agent, set the `DD_SITE` environment variable or `--dd-
 To disable LLM Observability event forwarding, set the `DISABLE_LLMOBS_DATA_FORWARDING` environment variable or `--disable-llmobs-data-forwarding` command-line argument to `true`.
 
 
+### Claude Code Hooks
+
+The test agent can receive [Claude Code hook](https://docs.claude.com/en/docs/claude-code/hooks) events and assemble them into LLM Observability traces.
+
+See [`.claude/setup-hooks.md`](.claude/setup-hooks.md) for full setup instructions (also usable as a Claude Code prompt to automate the setup).
+
+
 ### Snapshot testing
 
 The test agent provides a form of [characterization testing](https://en.wikipedia.org/wiki/Characterization_test) which

@@ -31,6 +31,15 @@ from .trace import trace_id as get_trace_id
 log = logging.getLogger(__name__)
 
 
+def _normalize_meta_events(events_json_str: str) -> str:
+    """Parse meta.events, sort attribute keys, re-encode as canonical JSON."""
+    events = json.loads(events_json_str)
+    for event in events:
+        if "attributes" in event:
+            event["attributes"] = dict(sorted(event["attributes"].items()))
+    return json.dumps(events, separators=(",", ": "))
+
+
 DEFAULT_SNAPSHOT_IGNORES = "span_id,trace_id,parent_id,duration,start,metrics.system.pid,metrics.system.process_id,metrics.process_id,metrics._dd.tracer_kr,meta.runtime-id,span_links.trace_id_high,span_events.time_unix_nano,meta.pathway.hash,meta._dd.p.tid"
 
 
@@ -51,6 +60,15 @@ def _normalize_span_for_comparison(span: Span) -> Span:
 
     if normalized.get("service") is None:
         normalized["service"] = ""
+
+    span_meta = span.get("meta")
+    if span_meta is not None and "events" in span_meta:
+        try:
+            new_meta = dict(span_meta)
+            new_meta["events"] = _normalize_meta_events(span_meta["events"])
+            normalized["meta"] = new_meta
+        except (json.JSONDecodeError, TypeError):
+            pass  # leave as-is; the check will catch invalid JSON separately
 
     return cast(Span, normalized)
 
@@ -514,8 +532,19 @@ def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
     ]
     for k in order:
         if k in s:
-            if k in ["meta", "metrics"]:
-                # Sort the meta and metrics dictionaries alphanumerically
+            if k == "meta":
+                ordered_meta: OrderedDictType[str, Any] = OrderedDict()
+                for mk, mv in sorted(s[k].items(), key=operator.itemgetter(0)):  # type: ignore
+                    if mk == "events":
+                        try:
+                            ordered_meta[mk] = _normalize_meta_events(mv)
+                        except (json.JSONDecodeError, TypeError):
+                            ordered_meta[mk] = mv
+                    else:
+                        ordered_meta[mk] = mv
+                d[k] = ordered_meta
+            elif k == "metrics":
+                # Sort the metrics dictionary alphanumerically
                 d[k] = OrderedDict(sorted(s[k].items(), key=operator.itemgetter(0)))  # type: ignore
             else:
                 d[k] = s[k]  # type: ignore
@@ -527,12 +556,12 @@ def _ordered_span(s: Span) -> OrderedDictType[str, TopLevelSpanValue]:
     if "span_links" in d:
         for link in d["span_links"]:
             if "attributes" in link:
-                link["attributes"] = OrderedDict(sorted(link["attributes"].items(), key=operator.itemgetter(0)))
+                link["attributes"] = OrderedDict(sorted(link["attributes"].items(), key=operator.itemgetter(0)))  # type: ignore
 
     if "span_events" in d:
         for event in d["span_events"]:
             if "attributes" in event:
-                event["attributes"] = OrderedDict(sorted(event["attributes"].items(), key=operator.itemgetter(0)))
+                event["attributes"] = OrderedDict(sorted(event["attributes"].items(), key=operator.itemgetter(0)))  # type: ignore
 
     for k in ["meta", "metrics"]:
         if k in d and len(d[k]) == 0:

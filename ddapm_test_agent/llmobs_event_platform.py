@@ -22,6 +22,7 @@ import msgpack
 
 if TYPE_CHECKING:
     from .agent import Agent
+    from .claude_hooks import ClaudeHooksAPI
 
 log = logging.getLogger(__name__)
 
@@ -36,11 +37,11 @@ CORS_HEADERS = {
 
 
 def with_cors(
-    handler: Callable[[Request], Awaitable[web.Response]],
-) -> Callable[[Request], Awaitable[web.Response]]:
+    handler: Callable[[Request], Awaitable[web.StreamResponse]],
+) -> Callable[[Request], Awaitable[web.StreamResponse]]:
     """Wrap handler to add CORS headers and handle OPTIONS preflight."""
 
-    async def wrapper(request: Request) -> web.Response:
+    async def wrapper(request: Request) -> web.StreamResponse:
         if request.method == "OPTIONS":
             return web.Response(status=200, headers=CORS_HEADERS)
         response = await handler(request)
@@ -48,6 +49,15 @@ def with_cors(
         return response
 
     return wrapper
+
+
+def _deep_merge(source: Dict[str, Any], target: Dict[str, Any]) -> None:
+    """Recursively merge source into target. Overwrites non-dict values."""
+    for key, value in source.items():
+        if key in target and isinstance(target[key], dict) and isinstance(value, dict):
+            _deep_merge(value, target[key])
+        else:
+            target[key] = value
 
 
 def decode_llmobs_payload(data: bytes, content_type: str) -> List[Dict[str, Any]]:
@@ -92,7 +102,7 @@ def extract_spans_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, An
 
 
 def remap_sdk_span_to_ui_format(span: Dict[str, Any], event_ml_app: str = "") -> Dict[str, Any]:
-    """Remap span from SDK format to UI-expected format (extract ml_app, service, env from tags)."""
+    """Remap span from SDK format to UI-expected format (extract ml_app, service, env, session_id from tags)."""
     tags = span.get("tags", [])
     extracted = extract_fields_from_tags(tags)
 
@@ -103,6 +113,14 @@ def remap_sdk_span_to_ui_format(span: Dict[str, Any], event_ml_app: str = "") ->
         span["service"] = extracted.get("service", "")
     if "env" not in span or not span["env"]:
         span["env"] = extracted.get("env", "")
+
+    # session_id: prefer top-level field, fall back to tag extraction
+    if "session_id" not in span or not span["session_id"]:
+        span["session_id"] = extracted.get("session_id", "")
+
+    # hostname: prefer top-level field, fall back to tag extraction
+    if "hostname" not in span or not span["hostname"]:
+        span["hostname"] = extracted.get("hostname", "")
 
     meta = span.get("meta", {})
     span_kind = meta.get("span", {}).get("kind", "llm")
@@ -119,9 +137,9 @@ def remap_sdk_span_to_ui_format(span: Dict[str, Any], event_ml_app: str = "") ->
 
 
 def extract_fields_from_tags(tags: List[str]) -> Dict[str, str]:
-    """Extract ml_app, service, env, etc. from tags array."""
+    """Extract ml_app, service, env, session_id, etc. from tags array."""
     result = {}
-    fields_to_extract = ["ml_app", "service", "env", "version", "source", "language"]
+    fields_to_extract = ["ml_app", "service", "env", "version", "source", "language", "session_id", "hostname"]
     for tag in tags:
         if not isinstance(tag, str) or ":" not in tag:
             continue
@@ -353,6 +371,8 @@ def get_span_field_value(span: Dict[str, Any], field: str) -> Optional[Any]:
         "service": lambda s: s.get("service"),
         "env": lambda s: s.get("env"),
         "duration": lambda s: s.get("duration", 0),
+        "session_id": lambda s: s.get("session_id", ""),
+        "hostname": lambda s: s.get("hostname", ""),
     }
     if field in direct_fields:
         return direct_fields[field](span)
@@ -414,6 +434,7 @@ def build_event_platform_list_response(
         metrics = span.get("metrics", {})
         span_id = span.get("span_id", str(uuid.uuid4()))
         trace_id = span.get("trace_id", "")
+        session_id = span.get("session_id", "")
         status = span.get("status", "ok")
         name = span.get("name", "")
         duration = span.get("duration", 0)
@@ -426,8 +447,11 @@ def build_event_platform_list_response(
         children_ids = children_map.get(span_id, [])
         span_links = span.get("span_links", [])
         tag_obj = _tags_to_dict(tags)
+        # Ensure session_id is always in the tag dict for the web-ui
+        if session_id and "session_id" not in tag_obj:
+            tag_obj["session_id"] = session_id
 
-        event_id = f"AZ{uuid.uuid4().hex[:20]}"
+        event_id = span_id
         timestamp_ms = start_ns // 1_000_000
         timestamp_iso = datetime.utcfromtimestamp(timestamp_ms / 1000).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
@@ -463,6 +487,7 @@ def build_event_platform_list_response(
                 "input": meta.get("input", {}),
                 "output": meta.get("output", {}),
                 "error": meta.get("error") if status == "error" else None,
+                "metadata": meta.get("metadata", {}),
                 "model_name": model_name,
                 "model_provider": model_provider,
             },
@@ -470,6 +495,9 @@ def build_event_platform_list_response(
                 "input_tokens": metrics.get("input_tokens", 0),
                 "output_tokens": metrics.get("output_tokens", 0),
                 "total_tokens": metrics.get("total_tokens", 0),
+                "cache_read_input_tokens": metrics.get("cache_read_input_tokens", 0),
+                "cache_write_input_tokens": metrics.get("cache_write_input_tokens", 0),
+                "non_cached_input_tokens": metrics.get("non_cached_input_tokens", 0),
                 "estimated_input_cost": 0,
                 "estimated_output_cost": 0,
                 "estimated_total_cost": 0,
@@ -480,6 +508,7 @@ def build_event_platform_list_response(
             "parent_id": span.get("parent_id", "undefined"),
             "children_ids": children_ids,  # Computed from parent relationships
             "span_links": span_links,  # From SDK for agentic execution graph
+            "session_id": session_id,
             "span_id": span_id,
             "start_ns": start_ns,
             "status": status,
@@ -527,7 +556,7 @@ def build_event_platform_list_response(
                     "version": "",
                 },
                 "event_id": event_id,
-                "id": f"AwAAA{uuid.uuid4().hex[:40]}",
+                "id": event_id,
             }
         )
 
@@ -537,6 +566,7 @@ def build_event_platform_list_response(
         "requestId": request_id,
         "result": {
             "events": events,
+            "count": len(events),
         },
         "status": "done",
         "type": "status",
@@ -550,6 +580,11 @@ class LLMObsEventPlatformAPI:
         self.agent = agent
         self._query_results: Dict[str, Dict[str, Any]] = {}
         self.decoded_llmobs_span_events: Dict[int, List[Dict[str, Any]]] = {}
+        self._claude_hooks_api: Optional["ClaudeHooksAPI"] = None
+
+    def set_claude_hooks_api(self, api: "ClaudeHooksAPI") -> None:
+        """Wire up the Claude hooks API so its spans appear in LLMObs queries."""
+        self._claude_hooks_api = api
 
     def get_llmobs_spans(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all LLMObs spans from stored requests."""
@@ -557,7 +592,7 @@ class LLMObsEventPlatformAPI:
         all_spans = []
 
         for req in requests:
-            if req.path == "/evp_proxy/v2/api/v2/llmobs":
+            if req.path in ("/evp_proxy/v2/api/v2/llmobs", "/evp_proxy/v4/api/v2/llmobs"):
                 try:
                     data = self.agent._request_data(req)
                     content_type = req.content_type or ""
@@ -572,8 +607,36 @@ class LLMObsEventPlatformAPI:
                 except Exception as e:
                     log.warning(f"Failed to extract spans from request: {e}")
 
+        if self._claude_hooks_api:
+            all_spans.extend(self._claude_hooks_api._assembled_spans)
+
         all_spans.sort(key=lambda s: s.get("start_ns", 0), reverse=True)
         return all_spans
+
+    def update_spans(self, update_data: bytes, content_type: str) -> int:
+        """Update existing spans by span_id. Accepts same payload format as creation."""
+        events = decode_llmobs_payload(update_data, content_type)
+        update_span_list = extract_spans_from_events(events)
+
+        # Build index of all existing spans (stored requests + hooks assembled)
+        all_spans = self.get_llmobs_spans()
+        span_index = {s.get("span_id"): s for s in all_spans}
+
+        updated = 0
+        for update in update_span_list:
+            sid = update.get("span_id")
+            existing = span_index.get(sid)
+            if existing:
+                _deep_merge(update, existing)
+                updated += 1
+        return updated
+
+    async def handle_llmobs_update(self, request: Request) -> web.Response:
+        """Handle POST /evp_proxy/v2/api/v2/llmobs/update — update existing spans."""
+        data = await request.read()
+        content_type = request.content_type or ""
+        updated = self.update_spans(data, content_type)
+        return web.json_response({"updated": updated})
 
     async def handle_logs_analytics_list(self, request: Request) -> web.Response:
         """Handle POST /api/unstable/llm-obs-query-rewriter/list endpoint."""
@@ -592,6 +655,12 @@ class LLMObsEventPlatformAPI:
             spans = self.get_llmobs_spans()
             if query_str:
                 spans = apply_filters(spans, parse_filter_query(query_str))
+
+            # Handle sort order (default is descending by start_ns from get_llmobs_spans)
+            sort_params = list_params.get("sort", {})
+            sort_order = sort_params.get("time", {}).get("order", "desc") if isinstance(sort_params, dict) else "desc"
+            if sort_order == "asc":
+                spans = list(reversed(spans))
 
             request_id = str(uuid.uuid4())
             response = build_event_platform_list_response(spans, request_id, limit)
@@ -633,7 +702,7 @@ class LLMObsEventPlatformAPI:
         """Handle POST /api/unstable/llm-obs-query-rewriter/fetch_one endpoint."""
         try:
             body = await request.json()
-            event_id = body.get("eventId", "")
+            event_id = body.get("eventId", "") or body.get("fetch_one", {}).get("id", "")
             spans = self.get_llmobs_spans()
 
             found_span = None
@@ -653,6 +722,7 @@ class LLMObsEventPlatformAPI:
             metrics = found_span.get("metrics", {})
             span_id = found_span.get("span_id", str(uuid.uuid4()))
             trace_id = found_span.get("trace_id", "")
+            session_id = found_span.get("session_id", "")
             status = found_span.get("status", "ok")
             name = found_span.get("name", "")
             duration = found_span.get("duration", 0)
@@ -668,6 +738,9 @@ class LLMObsEventPlatformAPI:
                 if isinstance(tag, str) and ":" in tag:
                     k, v = tag.split(":", 1)
                     tag_obj[k] = v
+            # Ensure session_id is always in the tag dict for the web-ui
+            if session_id and "session_id" not in tag_obj:
+                tag_obj["session_id"] = session_id
 
             timestamp_ms = start_ns // 1_000_000
             timestamp_iso = datetime.utcfromtimestamp(timestamp_ms / 1000).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -692,6 +765,7 @@ class LLMObsEventPlatformAPI:
                     "input": meta.get("input", {}),
                     "output": meta.get("output", {}),
                     "error": meta.get("error") if status == "error" else None,
+                    "metadata": meta.get("metadata", {}),
                     "model_name": model_name,
                     "model_provider": model_provider,
                 },
@@ -699,10 +773,14 @@ class LLMObsEventPlatformAPI:
                     "input_tokens": metrics.get("input_tokens", 0),
                     "output_tokens": metrics.get("output_tokens", 0),
                     "total_tokens": metrics.get("total_tokens", 0),
+                    "cache_read_input_tokens": metrics.get("cache_read_input_tokens", 0),
+                    "cache_write_input_tokens": metrics.get("cache_write_input_tokens", 0),
+                    "non_cached_input_tokens": metrics.get("non_cached_input_tokens", 0),
                 },
                 "ml_app": ml_app,
                 "name": name,
                 "parent_id": found_span.get("parent_id", "undefined"),
+                "session_id": session_id,
                 "span_id": span_id,
                 "start_ns": start_ns,
                 "status": status,
@@ -767,6 +845,7 @@ class LLMObsEventPlatformAPI:
 
             for span in trace_spans:
                 span_id = span.get("span_id", "")
+                session_id = span.get("session_id", "")
                 meta = span.get("meta", {})
                 metrics = span.get("metrics", {})
                 tags = span.get("tags", [])
@@ -790,6 +869,7 @@ class LLMObsEventPlatformAPI:
                 spans_dict[span_id] = {
                     "trace_id": span.get("trace_id", ""),
                     "span_id": span_id,
+                    "session_id": session_id,
                     "parent_id": parent_id,
                     "children_ids": children_ids,
                     "span_links": span_links,
@@ -813,6 +893,7 @@ class LLMObsEventPlatformAPI:
                         "input": meta.get("input", {}),
                         "output": meta.get("output", {}),
                         "expected_output": {},
+                        "metadata": meta.get("metadata", {}),
                         "model_name": model_name,
                         "model_provider": model_provider,
                     },
