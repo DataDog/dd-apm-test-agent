@@ -558,6 +558,12 @@ curl -X GET 'http://0.0.0.0:8126/test/integrations/tested_versions'
 
 Mimics the pipeline_stats endpoint of the agent, but always returns OK, and logs a line everytime it's called.
 
+### /v1/traces (HTTP)
+
+Accepts OpenTelemetry Protocol (OTLP) v1.7.0 traces in protobuf format via HTTP. This endpoint validates and decodes OTLP traces payloads for testing OpenTelemetry trace exporters and libraries.
+
+The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and `Content-Type: application/json` and stores the decoded logs for retrieval via the `/test/session/traces` endpoint.
+
 ### /v1/logs (HTTP)
 
 Accepts OpenTelemetry Protocol (OTLP) v1.7.0 logs in protobuf format via HTTP. This endpoint validates and decodes OTLP logs payloads for testing OpenTelemetry logs exporters and libraries.
@@ -570,22 +576,22 @@ Accepts OpenTelemetry Protocol (OTLP) v1.7.0 metrics in protobuf format via HTTP
 
 The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-protobuf` and `Content-Type: application/json` and stores the decoded metrics for retrieval via the `/test/session/metrics` endpoint.
 
-### OTLP Logs and Metrics via GRPC
+### OTLP Logs, Metrics, and Traces via GRPC
 
-OTLP logs and metrics can also be sent via GRPC using the OpenTelemetry `LogsService.Export` and `MetricsService.Export` methods respectively. The GRPC server implements the standard OTLP service interfaces and forwards all requests to the HTTP server, ensuring consistent processing and session management.
+OTLP logs and metrics can also be sent via GRPC using the OpenTelemetry `LogsService.Export`, `MetricsService.Export`, and `TraceService.Export` methods respectively. The GRPC server implements the standard OTLP service interfaces and forwards all requests to the HTTP server, ensuring consistent processing and session management.
 
 **Note:** OTLP endpoints are served on separate ports from the main APM endpoints (default: 8126):
 - **HTTP**: Port 4318 (default) - Use `--otlp-http-port` to configure
 - **GRPC**: Port 4317 (default) - Use `--otlp-grpc-port` to configure
 
-Both protocols store decoded data for retrieval via the `/test/session/logs` and `/test/session/metrics` HTTP endpoints respectively.
+Both protocols store decoded data for retrieval via the `/test/session/logs`, `/test/session/metrics`, and `/test/session/traces` HTTP endpoints respectively.
 
 GRPC Client → GRPC Server → HTTP POST → HTTP Server → Agent Storage
                     ↓                                      ↓
             (forwards protobuf)                    (session management)
                     ↓                                      ↓
                    HTTP                              Retrievable via
-                Response                     /test/session/{logs,metrics}
+                Response                     /test/session/{logs,metrics,traces}
 
 ### /tracer_flare/v1
 
