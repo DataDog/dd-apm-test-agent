@@ -178,6 +178,12 @@ class ClaudeHooksAPI:
             return str(session.agent_span_stack[-1]["span_id"])
         return session.root_span_id
 
+    def _current_span_ref(self, session: SessionState) -> Optional[Dict[str, Any]]:
+        """Return the span dict of the current active agent (top of stack), or root."""
+        if session.agent_span_stack:
+            return session.agent_span_stack[-1].get("_span_ref")
+        return getattr(session, "_root_span_ref", None)
+
     def _handle_session_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SessionStart hook event."""
         session = self._get_or_create_session(session_id)
@@ -757,6 +763,26 @@ class ClaudeHooksAPI:
         """Handle Notification hook event — logged but no span emitted."""
         log.info("Claude notification for session %s: %s", session_id, body.get("message", ""))
 
+    def _handle_pre_compact(self, session_id: str, body: Dict[str, Any]) -> None:
+        """Handle PreCompact hook event — marks the current active span with compaction metadata.
+
+        Fires before Claude Code runs a context compaction operation.
+        trigger is 'manual' (user ran /compact) or 'auto' (context window full).
+        """
+        trigger = body.get("trigger", "")
+        custom_instructions = body.get("custom_instructions", "")
+        session = self._sessions.get(session_id)
+        if not session:
+            return
+        span_ref = self._current_span_ref(session)
+        if span_ref is None:
+            return
+        dd = span_ref.setdefault("meta", {}).setdefault("metadata", {}).setdefault("_dd", {})
+        dd["compaction"] = {
+            "trigger": trigger,
+            "custom_instructions": custom_instructions,
+        }
+
     def _dispatch_hook(self, body: Dict[str, Any]) -> None:
         """Dispatch a hook event to the appropriate handler."""
         session_id = body.get("session_id", "")
@@ -772,6 +798,7 @@ class ClaudeHooksAPI:
             "Stop": self._handle_stop,
             "SessionEnd": self._handle_session_end,
             "Notification": self._handle_notification,
+            "PreCompact": self._handle_pre_compact,
         }
 
         handler = handlers.get(hook_event_name)
