@@ -53,66 +53,13 @@ def _get_context_limit(model: str) -> int:
     return 200_000  # all current Claude models
 
 
-def _compute_context_breakdown(request_body: Dict[str, Any], total_input_tokens: int, model: str) -> Dict[str, Any]:
-    """Estimate how input tokens are distributed across request sections.
-
-    Serializes each section to JSON, measures byte lengths, and distributes
-    the real total_input_tokens proportionally.
-    """
-    sections_raw: Dict[str, Any] = {}
-
-    # System prompt
-    system = request_body.get("system")
-    if system:
-        sections_raw["system"] = system
-
-    # Tool definitions
-    tools = request_body.get("tools")
-    if tools:
-        sections_raw["tools"] = tools
-
-    # Split messages by role
-    user_msgs: List[Dict[str, Any]] = []
-    assistant_msgs: List[Dict[str, Any]] = []
-    for msg in request_body.get("messages", []):
-        role = msg.get("role", "")
-        if role == "user":
-            user_msgs.append(msg)
-        elif role == "assistant":
-            assistant_msgs.append(msg)
-
-    if user_msgs:
-        sections_raw["user_messages"] = user_msgs
-    if assistant_msgs:
-        sections_raw["assistant_messages"] = assistant_msgs
-
-    # Measure byte lengths
-    section_bytes: Dict[str, int] = {}
-    for name, data in sections_raw.items():
-        section_bytes[name] = len(json.dumps(data, separators=(",", ":")))
-
-    total_bytes = sum(section_bytes.values())
-    if total_bytes == 0:
-        total_bytes = 1  # avoid division by zero
-
-    # Distribute tokens proportionally
+def _compute_context_breakdown(total_input_tokens: int, model: str) -> Dict[str, Any]:
     context_window_size = _get_context_limit(model)
-    sections: List[Dict[str, Any]] = []
-    for name in ["system", "tools", "user_messages", "assistant_messages"]:
-        if name not in section_bytes:
-            continue
-        proportion = section_bytes[name] / total_bytes
-        tokens = round(total_input_tokens * proportion)
-        pct = round(tokens / total_input_tokens * 100, 1) if total_input_tokens > 0 else 0.0
-        sections.append({"name": name, "tokens": tokens, "pct": pct})
-
     context_usage_pct = round(total_input_tokens / context_window_size * 100, 1) if context_window_size > 0 else 0.0
-
     return {
         "context_window_size": context_window_size,
         "total_input_tokens": total_input_tokens,
         "context_usage_pct": context_usage_pct,
-        "sections": sections,
     }
 
 
@@ -475,7 +422,7 @@ class ClaudeProxyAPI:
             self._extract_conversation_title(session, content_blocks)
 
         # Compute context breakdown for the UI
-        context_breakdown = _compute_context_breakdown(request_body, total_input_tokens, model)
+        context_breakdown = _compute_context_breakdown(total_input_tokens, model)
 
         # Attach session_id so LLM spans can be grouped with the session
         session_id = session.session_id if session else ""

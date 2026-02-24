@@ -629,15 +629,25 @@ class ClaudeHooksAPI:
         # Use the last span's model as the primary model, filtering out utility calls
         primary_model = all_llm_spans[-1].get("meta", {}).get("model_name", "")
         llm_spans = [s for s in all_llm_spans if s.get("meta", {}).get("model_name", "") == primary_model]
-        if len(llm_spans) < 2:
+        if len(llm_spans) == 0:
             return None
+        if len(llm_spans) == 1:
+            cb = llm_spans[0].get("meta", {}).get("metadata", {}).get("context_breakdown", {})
+            tokens = cb.get("total_input_tokens", 0)
+            window = cb.get("context_window_size", 200000)
+            return {
+                "first_input_tokens": 0,
+                "last_input_tokens": tokens,
+                "delta_tokens": tokens,
+                "context_window_size": window,
+                "first_usage_pct": 0.0,
+                "last_usage_pct": round(tokens / window * 100, 1) if window else 0.0,
+            }
         first_cb = llm_spans[0].get("meta", {}).get("metadata", {}).get("context_breakdown", {})
         last_cb = llm_spans[-1].get("meta", {}).get("metadata", {}).get("context_breakdown", {})
         first_tokens = first_cb.get("total_input_tokens", 0)
         last_tokens = last_cb.get("total_input_tokens", 0)
         window = last_cb.get("context_window_size", 200000)
-        first_sections = first_cb.get("sections", [])
-        last_sections = last_cb.get("sections", [])
         return {
             "first_input_tokens": first_tokens,
             "last_input_tokens": last_tokens,
@@ -645,8 +655,6 @@ class ClaudeHooksAPI:
             "context_window_size": window,
             "first_usage_pct": round(first_tokens / window * 100, 1) if window else 0,
             "last_usage_pct": round(last_tokens / window * 100, 1) if window else 0,
-            "first_sections": first_sections,
-            "last_sections": last_sections,
         }
 
     def _handle_stop(self, session_id: str, body: Dict[str, Any]) -> None:
