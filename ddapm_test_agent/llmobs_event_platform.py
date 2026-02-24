@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 # Allowed CORS origins: Datadog UI domains and localhost for local development
 _ALLOWED_ORIGIN_PATTERN = re.compile(
-    r"^https?://(localhost(:\d+)?|127\.0\.0\.1(:\d+)?|[\w.-]+\.datadoghq\.(com|eu)|[\w.-]+\.ddog-gov\.com)$"
+    r"^https?://(localhost(:\d+)?|127\.0\.0\.1(:\d+)?|[\w.-]+\.datadoghq\.(com|eu)|[\w.-]+\.ddog-gov\.com|[\w.-]+\.datad0g\.com)$"
 )
 
 _CORS_ALLOW_METHODS = "GET, POST, OPTIONS"
