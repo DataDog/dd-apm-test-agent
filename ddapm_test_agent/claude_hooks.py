@@ -704,12 +704,14 @@ class ClaudeHooksAPI:
             root_span["meta"]["output"]["value"] = output_value
             root_span["meta"]["model_name"] = session.model
             root_span["meta"]["model_provider"] = "anthropic"
-            root_span["meta"]["metadata"] = {
-                "agent_manifest": agent_manifest,
-                "model_name": session.model,
-                "model_provider": "anthropic",
-                "context_delta": context_delta,
-            }
+            root_span["meta"].setdefault("metadata", {}).update(
+                {
+                    "agent_manifest": agent_manifest,
+                    "model_name": session.model,
+                    "model_provider": "anthropic",
+                    "context_delta": context_delta,
+                }
+            )
             root_span["metrics"] = token_usage
         else:
             # No eagerly-emitted root span found — create one as fallback
