@@ -33,6 +33,15 @@ log = logging.getLogger(__name__)
 _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 
+MODEL_CONTEXT_LIMITS: Dict[str, int] = {}  # empty; default fallback handles all models
+
+
+def _get_context_limit(model: str) -> int:
+    """Return the context window size for a given model."""
+    if model in MODEL_CONTEXT_LIMITS:
+        return MODEL_CONTEXT_LIMITS[model]
+    return 200_000  # all current Claude models
+
 
 class PendingToolSpan:
     """Tracks a tool invocation between PreToolUse and PostToolUse."""
@@ -611,10 +620,10 @@ class ClaudeHooksAPI:
         }
 
     def _compute_context_delta(self, trace_id: str) -> Optional[Dict[str, Any]]:
-        """Compare context usage between the first and last LLM spans in a trace.
+        """Return context usage from the last LLM span in the trace.
 
-        Filters to spans matching the last span's model so that utility calls
-        (e.g. haiku summarization) are excluded from the comparison.
+        Filters to the primary model (last span's model) to exclude utility
+        calls (e.g. haiku summarization).
         """
         all_llm_spans = sorted(
             [
@@ -626,35 +635,16 @@ class ClaudeHooksAPI:
         )
         if not all_llm_spans:
             return None
-        # Use the last span's model as the primary model, filtering out utility calls
         primary_model = all_llm_spans[-1].get("meta", {}).get("model_name", "")
         llm_spans = [s for s in all_llm_spans if s.get("meta", {}).get("model_name", "") == primary_model]
-        if len(llm_spans) == 0:
+        if not llm_spans:
             return None
-        if len(llm_spans) == 1:
-            cb = llm_spans[0].get("meta", {}).get("metadata", {}).get("context_breakdown", {})
-            tokens = cb.get("total_input_tokens", 0)
-            window = cb.get("context_window_size", 200000)
-            return {
-                "first_input_tokens": 0,
-                "last_input_tokens": tokens,
-                "delta_tokens": tokens,
-                "context_window_size": window,
-                "first_usage_pct": 0.0,
-                "last_usage_pct": round(tokens / window * 100, 1) if window else 0.0,
-            }
-        first_cb = llm_spans[0].get("meta", {}).get("metadata", {}).get("context_breakdown", {})
-        last_cb = llm_spans[-1].get("meta", {}).get("metadata", {}).get("context_breakdown", {})
-        first_tokens = first_cb.get("total_input_tokens", 0)
-        last_tokens = last_cb.get("total_input_tokens", 0)
-        window = last_cb.get("context_window_size", 200000)
+        last_input_tokens = llm_spans[-1].get("metrics", {}).get("input_tokens", 0)
+        window = _get_context_limit(primary_model)
         return {
-            "first_input_tokens": first_tokens,
-            "last_input_tokens": last_tokens,
-            "delta_tokens": last_tokens - first_tokens,
+            "last_input_tokens": last_input_tokens,
             "context_window_size": window,
-            "first_usage_pct": round(first_tokens / window * 100, 1) if window else 0,
-            "last_usage_pct": round(last_tokens / window * 100, 1) if window else 0,
+            "context_usage_pct": round(last_input_tokens / window * 100, 1) if window else 0.0,
         }
 
     def _handle_stop(self, session_id: str, body: Dict[str, Any]) -> None:

@@ -43,25 +43,6 @@ ANTHROPIC_API_BASE = "https://api.anthropic.com"
 SKIP_REQUEST_HEADERS = {"host", "transfer-encoding", "content-length"}
 SKIP_RESPONSE_HEADERS = {"content-length", "transfer-encoding", "content-encoding", "connection"}
 
-MODEL_CONTEXT_LIMITS: Dict[str, int] = {}  # empty; default fallback handles all models
-
-
-def _get_context_limit(model: str) -> int:
-    """Return the context window size for a given model."""
-    if model in MODEL_CONTEXT_LIMITS:
-        return MODEL_CONTEXT_LIMITS[model]
-    return 200_000  # all current Claude models
-
-
-def _compute_context_breakdown(total_input_tokens: int, model: str) -> Dict[str, Any]:
-    context_window_size = _get_context_limit(model)
-    context_usage_pct = round(total_input_tokens / context_window_size * 100, 1) if context_window_size > 0 else 0.0
-    return {
-        "context_window_size": context_window_size,
-        "total_input_tokens": total_input_tokens,
-        "context_usage_pct": context_usage_pct,
-    }
-
 
 def _parse_sse_events(raw: bytes) -> List[Dict[str, Any]]:
     """Parse raw SSE bytes into a list of {event, data} dicts."""
@@ -421,9 +402,6 @@ class ClaudeProxyAPI:
         if session:
             self._extract_conversation_title(session, content_blocks)
 
-        # Compute context breakdown for the UI
-        context_breakdown = _compute_context_breakdown(total_input_tokens, model)
-
         # Attach session_id so LLM spans can be grouped with the session
         session_id = session.session_id if session else ""
 
@@ -458,7 +436,6 @@ class ClaudeProxyAPI:
                 "metadata": {
                     "stop_reason": response_data.get("stop_reason", ""),
                     "stream": request_body.get("stream", False),
-                    "context_breakdown": context_breakdown,
                 },
             },
             "metrics": {
