@@ -1,0 +1,6 @@
+---
+security:
+  - |
+    Restrict CORS Access-Control-Allow-Origin from wildcard (*) to an
+    allowlist of Datadog UI domains and localhost to prevent arbitrary
+    websites from reading local trace data.

@@ -1062,12 +1062,16 @@ class Agent:
         return web.HTTPAccepted()
 
     async def handle_info(self, request: Request) -> web.Response:
-        # CORS headers for cross-origin requests from Datadog UI
-        headers = {
-            "Access-Control-Allow-Origin": "*",
+        from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
+
+        headers: Dict[str, str] = {
             "Access-Control-Allow-Methods": "GET, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type",
+            "Vary": "Origin",
         }
+        origin = request.headers.get("Origin", "")
+        if _ALLOWED_ORIGIN_PATTERN.match(origin):
+            headers["Access-Control-Allow-Origin"] = origin
 
         # Handle OPTIONS preflight
         if request.method == "OPTIONS":
