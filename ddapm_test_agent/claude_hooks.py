@@ -778,10 +778,10 @@ class ClaudeHooksAPI:
         if span_ref is None:
             return
         dd = span_ref.setdefault("meta", {}).setdefault("metadata", {}).setdefault("_dd", {})
-        dd["compaction"] = {
+        dd.setdefault("compactions", []).append({
             "trigger": trigger,
             "custom_instructions": custom_instructions,
-        }
+        })
 
     def _dispatch_hook(self, body: Dict[str, Any]) -> None:
         """Dispatch a hook event to the appropriate handler."""
