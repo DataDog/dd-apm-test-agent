@@ -559,8 +559,8 @@ class ClaudeHooksAPI:
 
         context_delta = self._compute_context_delta(
             session.trace_id,
+            agent_info["span_id"],
             start_input_tokens=0,
-            since_ns=agent_info["start_ns"],
         )
 
         if task_tool_use_id:
@@ -733,7 +733,9 @@ class ClaudeHooksAPI:
             )
         # Compute aggregate token usage from LLM spans in this trace
         token_usage = self._compute_token_usage(session.trace_id)
-        context_delta = self._compute_context_delta(session.trace_id, session.last_known_input_tokens)
+        context_delta = self._compute_context_delta(
+            session.trace_id, session.root_span_id, session.last_known_input_tokens
+        )
         if context_delta:
             session.last_known_input_tokens = context_delta["last_input_tokens"]
 
