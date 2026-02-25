@@ -15,8 +15,12 @@ The parser builds an Abstract Syntax Tree (AST) that can be evaluated against sp
 """
 
 import re
-from typing import Any, Dict, List, Optional
-
+from typing import Any
+from typing import Callable
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Tuple
 
 # ============================================================================
 # AST Node Classes
@@ -26,7 +30,7 @@ from typing import Any, Dict, List, Optional
 class QueryNode:
     """Base class for query AST nodes."""
 
-    def evaluate(self, span: Dict[str, Any], span_matcher) -> bool:
+    def evaluate(self, span: Dict[str, Any], span_matcher: Any) -> bool:
         """Evaluate this node against a span.
 
         Args:
@@ -42,20 +46,20 @@ class FilterNode(QueryNode):
     def __init__(self, filter_dict: Dict[str, Any]):
         self.filter = filter_dict
 
-    def evaluate(self, span: Dict[str, Any], span_matcher) -> bool:
+    def evaluate(self, span: Dict[str, Any], span_matcher: Any) -> bool:
         """Evaluate a single filter against a span."""
         field = self.filter["field"]
         filter_type = self.filter.get("type", "facet")
         operator = self.filter.get("operator")
-        is_negated = self.filter.get("not", False)
+        is_negated = bool(self.filter.get("not", False))
 
         # Handle existence queries
         if operator == "exists":
-            result = span_matcher.field_exists(span, field)
+            result = bool(span_matcher.field_exists(span, field))
             return not result if is_negated else result
 
         if operator == "missing":
-            result = not span_matcher.field_exists(span, field)
+            result = not bool(span_matcher.field_exists(span, field))
             return not result if is_negated else result
 
         # Get span field value
@@ -80,7 +84,7 @@ class FilterNode(QueryNode):
 
         return not result if is_negated else result
 
-    def _match_range(self, span_value) -> bool:
+    def _match_range(self, span_value: Any) -> bool:
         """Match range operator."""
         try:
             num = float(span_value)
@@ -92,7 +96,7 @@ class FilterNode(QueryNode):
         except (ValueError, TypeError):
             return False
 
-    def _match_comparison(self, span_value, operator: str) -> bool:
+    def _match_comparison(self, span_value: Any, operator: str) -> bool:
         """Match comparison operators (>, <, >=, <=)."""
         if self.filter.get("value") is None:
             return False
@@ -100,28 +104,28 @@ class FilterNode(QueryNode):
             num = float(span_value)
             cmp = self.filter["value"]
             if operator == "gte":
-                return num >= cmp
+                return bool(num >= cmp)
             elif operator == "lte":
-                return num <= cmp
+                return bool(num <= cmp)
             elif operator == "gt":
-                return num > cmp
+                return bool(num > cmp)
             elif operator == "lt":
-                return num < cmp
+                return bool(num < cmp)
             return False
         except (ValueError, TypeError):
             return False
 
-    def _match_in(self, span_value) -> bool:
+    def _match_in(self, span_value: Any) -> bool:
         """Match IN operator."""
         values = self.filter.get("values", [])
         return str(span_value) in values
 
-    def _match_wildcard(self, span_value, span_matcher) -> bool:
+    def _match_wildcard(self, span_value: Any, span_matcher: Any) -> bool:
         """Match wildcard pattern."""
         value = self.filter.get("value")
         if value is None or value == "*":
             return True
-        return span_matcher.match_wildcard(str(span_value), str(value))
+        return bool(span_matcher.match_wildcard(str(span_value), str(value)))
 
 
 class BooleanNode(QueryNode):
@@ -131,7 +135,7 @@ class BooleanNode(QueryNode):
         self.operator = operator.upper()  # "AND" or "OR"
         self.children = children
 
-    def evaluate(self, span: Dict[str, Any], span_matcher) -> bool:
+    def evaluate(self, span: Dict[str, Any], span_matcher: Any) -> bool:
         """Evaluate boolean operation."""
         if self.operator == "AND":
             # Short-circuit: return False on first False
@@ -149,7 +153,7 @@ class NotNode(QueryNode):
     def __init__(self, child: QueryNode):
         self.child = child
 
-    def evaluate(self, span: Dict[str, Any], span_matcher) -> bool:
+    def evaluate(self, span: Dict[str, Any], span_matcher: Any) -> bool:
         """Evaluate NOT operation."""
         return not self.child.evaluate(span, span_matcher)
 
@@ -262,7 +266,9 @@ def tokenize_query(query: str) -> List[str]:
 # ============================================================================
 
 
-def parse_query_to_ast(query: str, duration_parser=None) -> Optional[QueryNode]:
+def parse_query_to_ast(
+    query: str, duration_parser: Optional[Callable[[str], Optional[float]]] = None
+) -> Optional[QueryNode]:
     """Parse query string into an AST.
 
     Operator precedence (highest to lowest):
@@ -294,7 +300,9 @@ def parse_query_to_ast(query: str, duration_parser=None) -> Optional[QueryNode]:
     return ast
 
 
-def _parse_or(tokens: List[str], pos: int, duration_parser) -> tuple[Optional[QueryNode], int]:
+def _parse_or(
+    tokens: List[str], pos: int, duration_parser: Optional[Callable[[str], Optional[float]]]
+) -> Tuple[Optional[QueryNode], int]:
     """Parse OR expression (lowest precedence)."""
     left, pos = _parse_and(tokens, pos, duration_parser)
     if left is None:
@@ -314,7 +322,9 @@ def _parse_or(tokens: List[str], pos: int, duration_parser) -> tuple[Optional[Qu
     return BooleanNode("OR", or_operands), pos
 
 
-def _parse_and(tokens: List[str], pos: int, duration_parser) -> tuple[Optional[QueryNode], int]:
+def _parse_and(
+    tokens: List[str], pos: int, duration_parser: Optional[Callable[[str], Optional[float]]]
+) -> Tuple[Optional[QueryNode], int]:
     """Parse AND expression (medium precedence).
 
     Supports both explicit AND and implicit AND (adjacent terms).
@@ -347,7 +357,9 @@ def _parse_and(tokens: List[str], pos: int, duration_parser) -> tuple[Optional[Q
     return BooleanNode("AND", and_operands), pos
 
 
-def _parse_not(tokens: List[str], pos: int, duration_parser) -> tuple[Optional[QueryNode], int]:
+def _parse_not(
+    tokens: List[str], pos: int, duration_parser: Optional[Callable[[str], Optional[float]]]
+) -> Tuple[Optional[QueryNode], int]:
     """Parse NOT expression (high precedence)."""
     if pos >= len(tokens):
         return None, pos
@@ -363,7 +375,9 @@ def _parse_not(tokens: List[str], pos: int, duration_parser) -> tuple[Optional[Q
     return _parse_primary(tokens, pos, duration_parser)
 
 
-def _parse_primary(tokens: List[str], pos: int, duration_parser) -> tuple[Optional[QueryNode], int]:
+def _parse_primary(
+    tokens: List[str], pos: int, duration_parser: Optional[Callable[[str], Optional[float]]]
+) -> Tuple[Optional[QueryNode], int]:
     """Parse primary expression (parentheses or filter)."""
     if pos >= len(tokens):
         return None, pos
@@ -381,13 +395,13 @@ def _parse_primary(tokens: List[str], pos: int, duration_parser) -> tuple[Option
     # Handle _exists_ and _missing_
     if token.startswith("_exists_:"):
         field = token[9:].lstrip("@")
-        filter_dict = {"field": field, "type": "exists", "operator": "exists"}
-        return FilterNode(filter_dict), pos + 1
+        exists_filter_dict: Dict[str, Any] = {"field": field, "type": "exists", "operator": "exists"}
+        return FilterNode(exists_filter_dict), pos + 1
 
     if token.startswith("_missing_:"):
         field = token[10:].lstrip("@")
-        filter_dict = {"field": field, "type": "missing", "operator": "missing"}
-        return FilterNode(filter_dict), pos + 1
+        missing_filter_dict: Dict[str, Any] = {"field": field, "type": "missing", "operator": "missing"}
+        return FilterNode(missing_filter_dict), pos + 1
 
     # Check for IN operator first: @field IN [val1, val2, ...]
     if pos + 2 < len(tokens) and tokens[pos + 1].upper() == "IN":
@@ -403,15 +417,15 @@ def _parse_primary(tokens: List[str], pos: int, duration_parser) -> tuple[Option
 
             # Parse values
             values_str = values_token[1:-1]
-            values = [v.strip().strip('"\'') for v in values_str.split(",")]
+            values = [v.strip().strip("\"'") for v in values_str.split(",")]
 
-            filter_dict = {
+            in_filter_dict: Dict[str, Any] = {
                 "field": field,
                 "type": filter_type,
                 "operator": "in",
-                "values": values
+                "values": values,
             }
-            return FilterNode(filter_dict), pos + 3
+            return FilterNode(in_filter_dict), pos + 3
 
     # Try to parse as filter
     filter_dict = _parse_filter_token(token, tokens, pos, duration_parser)
@@ -423,7 +437,7 @@ def _parse_primary(tokens: List[str], pos: int, duration_parser) -> tuple[Option
 
 
 def _parse_filter_token(
-    token: str, tokens: List[str], pos: int, duration_parser
+    token: str, tokens: List[str], pos: int, duration_parser: Optional[Callable[[str], Optional[float]]]
 ) -> Optional[Dict[str, Any]]:
     """Parse a single filter token into a filter dictionary.
 

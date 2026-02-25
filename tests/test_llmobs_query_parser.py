@@ -1,8 +1,9 @@
 """Tests for LLM Observability Query Parser with Boolean Logic."""
 
 import pytest
-from ddapm_test_agent.llmobs_event_platform import parse_filter_query, apply_filters
 
+from ddapm_test_agent.llmobs_event_platform import apply_filters
+from ddapm_test_agent.llmobs_event_platform import parse_filter_query
 
 # ============================================================================
 # Test Fixtures

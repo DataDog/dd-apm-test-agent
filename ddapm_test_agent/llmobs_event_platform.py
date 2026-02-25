@@ -21,7 +21,6 @@ import msgpack
 
 from . import llmobs_query_parser
 
-
 if TYPE_CHECKING:
     from .agent import Agent
     from .claude_hooks import ClaudeHooksAPI
