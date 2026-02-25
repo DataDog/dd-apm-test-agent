@@ -75,6 +75,9 @@ class SessionState:
         # so they are not matched again when a second SubagentStart fires.
         self.claimed_task_tools: Set[str] = set()
         self.conversation_title: str = ""
+        # Persists across turns so each turn's context_delta reflects growth from
+        # the previous turn's final context size.  Not reset between turns.
+        self.last_known_input_tokens: int = 0
 
 
 _MAX_UINT_64 = (1 << 64) - 1
@@ -378,12 +381,15 @@ class ClaudeHooksAPI:
                 span_links = [link.to_dict() for link in links]
 
             span_ref = deferred.get("_span_ref")
+            context_delta = deferred.get("context_delta")
             if span_ref:
                 # Update the preliminary span in-place
                 span_ref["duration"] = deferred["duration"]
                 span_ref["meta"]["input"] = {"value": input_value}
                 span_ref["meta"]["output"] = {"value": output_str}
                 span_ref["span_links"] = span_links
+                if context_delta:
+                    span_ref["meta"].setdefault("metadata", {})["context_delta"] = context_delta
             else:
                 # Fallback: no preliminary span — append a new one
                 span = {
@@ -411,6 +417,7 @@ class ClaudeHooksAPI:
                         "span": {"kind": "agent"},
                         "input": {"value": input_value},
                         "output": {"value": output_str},
+                        **({"metadata": {"context_delta": context_delta}} if context_delta else {}),
                     },
                     "metrics": {},
                     "span_links": span_links,
@@ -550,6 +557,12 @@ class ClaudeHooksAPI:
         task_tool_input = agent_info.get("task_tool_input")
         span_ref = agent_info.get("_span_ref")
 
+        context_delta = self._compute_context_delta(
+            session.trace_id,
+            start_input_tokens=0,
+            since_ns=agent_info["start_ns"],
+        )
+
         if task_tool_use_id:
             # Defer final update — PostToolUse(Task) will set I/O and span links.
             # Update duration on the preliminary span so the UI shows progress.
@@ -563,12 +576,15 @@ class ClaudeHooksAPI:
                 "start_ns": agent_info["start_ns"],
                 "duration": duration,
                 "input": str(task_tool_input) if task_tool_input else "",
+                "context_delta": context_delta,
                 "_span_ref": span_ref,
             }
         else:
             # Update the eagerly-emitted span in-place
             if span_ref:
                 span_ref["duration"] = duration
+                if context_delta:
+                    span_ref["meta"].setdefault("metadata", {})["context_delta"] = context_delta
             else:
                 # Fallback: no preliminary span (shouldn't happen)
                 span = {
@@ -596,6 +612,7 @@ class ClaudeHooksAPI:
                         "span": {"kind": "agent"},
                         "input": {},
                         "output": {},
+                        **({"metadata": {"context_delta": context_delta}} if context_delta else {}),
                     },
                     "metrics": {},
                 }
@@ -619,31 +636,64 @@ class ClaudeHooksAPI:
             "total_tokens": total_input + total_output,
         }
 
-    def _compute_context_delta(self, trace_id: str) -> Optional[Dict[str, Any]]:
-        """Return context usage from the last LLM span in the trace.
+    def _get_last_input_tokens(self, trace_id: str, parent_span_id: str) -> int:
+        """Return input_tokens from the most recent LLM span whose parent is parent_span_id.
 
-        Filters to the primary model (last span's model) to exclude utility
-        calls (e.g. haiku summarization).
+        Using parent_id rather than a time range ensures correctness when multiple
+        subagents run in parallel, since their LLM spans would otherwise interleave.
+        Returns 0 if no qualifying spans exist.
         """
-        all_llm_spans = sorted(
+        llm_spans = sorted(
             [
                 s
                 for s in self._assembled_spans
-                if s.get("trace_id") == trace_id and s.get("meta", {}).get("span", {}).get("kind") == "llm"
+                if s.get("trace_id") == trace_id
+                and s.get("meta", {}).get("span", {}).get("kind") == "llm"
+                and s.get("parent_id") == parent_span_id
             ],
             key=lambda s: s.get("start_ns", 0),
         )
-        if not all_llm_spans:
-            return None
-        primary_model = all_llm_spans[-1].get("meta", {}).get("model_name", "")
-        llm_spans = [s for s in all_llm_spans if s.get("meta", {}).get("model_name", "") == primary_model]
+        if not llm_spans:
+            return 0
+        return llm_spans[-1].get("metrics", {}).get("input_tokens", 0)
+
+    def _compute_context_delta(
+        self, trace_id: str, parent_span_id: str, start_input_tokens: int = 0
+    ) -> Optional[Dict[str, Any]]:
+        """Return context delta for an agent span.
+
+        parent_span_id: only consider LLM spans whose parent is this span.
+          - Root agent: session.root_span_id
+          - Subagent:   agent_info["span_id"]
+          Using parent_id is reliable even when multiple subagents run in parallel,
+          since time-based filtering would incorrectly interleave their LLM spans.
+        start_input_tokens: context size at the beginning of this span.
+          - Root agent: session.last_known_input_tokens (persists across turns)
+          - Subagent:   0 (each subagent has its own fresh context window)
+        """
+        llm_spans = sorted(
+            [
+                s
+                for s in self._assembled_spans
+                if s.get("trace_id") == trace_id
+                and s.get("meta", {}).get("span", {}).get("kind") == "llm"
+                and s.get("parent_id") == parent_span_id
+            ],
+            key=lambda s: s.get("start_ns", 0),
+        )
         if not llm_spans:
             return None
-        last_input_tokens = llm_spans[-1].get("metrics", {}).get("input_tokens", 0)
+        last_span = llm_spans[-1]
+        last_input_tokens = last_span.get("metrics", {}).get("input_tokens", 0)
+        primary_model = last_span.get("meta", {}).get("model_name", "")
         window = _get_context_limit(primary_model)
+        delta_tokens = max(last_input_tokens - start_input_tokens, 0)
         return {
+            "start_input_tokens": start_input_tokens,
             "last_input_tokens": last_input_tokens,
+            "delta_tokens": delta_tokens,
             "context_window_size": window,
+            "start_usage_pct": round(start_input_tokens / window * 100, 1) if window else 0.0,
             "context_usage_pct": round(last_input_tokens / window * 100, 1) if window else 0.0,
         }
 
@@ -683,7 +733,9 @@ class ClaudeHooksAPI:
             )
         # Compute aggregate token usage from LLM spans in this trace
         token_usage = self._compute_token_usage(session.trace_id)
-        context_delta = self._compute_context_delta(session.trace_id)
+        context_delta = self._compute_context_delta(session.trace_id, session.last_known_input_tokens)
+        if context_delta:
+            session.last_known_input_tokens = context_delta["last_input_tokens"]
 
         root_span_name = session.conversation_title or "claude-code-request"
 
