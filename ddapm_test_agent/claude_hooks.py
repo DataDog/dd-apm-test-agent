@@ -18,6 +18,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Set
+from urllib.parse import urlparse
 
 from aiohttp import ClientSession
 from aiohttp import web
@@ -142,6 +143,59 @@ def _read_console_output(transcript_path: str) -> str:
     except Exception as e:
         log.debug("Failed to read transcript %s: %s", transcript_path, e)
         return ""
+
+
+def _extract_intent(tool_name: str, tool_input: Any) -> str:
+    """Extract a concise human-readable intent from tool input."""
+    if not isinstance(tool_input, dict):
+        return ""
+
+    def _g(key: str) -> str:
+        return str(tool_input.get(key, ""))
+
+    if tool_name == "Bash":
+        desc = _g("description")
+        if desc:
+            return desc
+        cmd = _g("command")
+        return cmd[:80] + "..." if len(cmd) > 80 else cmd
+
+    if tool_name in ("Read", "Write", "Edit"):
+        return os.path.basename(_g("file_path"))
+
+    if tool_name == "Glob":
+        return _g("pattern")
+
+    if tool_name == "Grep":
+        pattern = _g("pattern")
+        path = _g("path")
+        if path:
+            return f'"{pattern}" in {os.path.basename(path)}'
+        return f'"{pattern}"'
+
+    if tool_name == "Task":
+        return _g("description")
+
+    if tool_name == "WebFetch":
+        url = _g("url")
+        if url:
+            return urlparse(url).hostname or ""
+        return ""
+
+    if tool_name == "WebSearch":
+        return _g("query")
+
+    if tool_name == "TaskCreate":
+        return _g("subject")
+
+    if tool_name == "TaskUpdate":
+        return _g("status")
+
+    for key in ("description", "query", "pattern", "file_path", "command", "subject"):
+        val = _g(key)
+        if val:
+            return val[:80] + "..." if len(val) > 80 else val
+    return ""
 
 
 class ClaudeHooksAPI:
@@ -340,12 +394,16 @@ class ClaudeHooksAPI:
             start_ns = pending.start_ns
             input_value = str(pending.tool_input) if pending.tool_input else ""
             actual_tool_name = pending.tool_name
+            tool_input_dict = pending.tool_input if isinstance(pending.tool_input, dict) else {}
         else:
             span_id = _format_span_id()
             parent_id = self._current_parent_id(session)
             start_ns = now_ns
             input_value = ""
             actual_tool_name = tool_name
+            tool_input_dict = {}
+
+        intent = _extract_intent(actual_tool_name, tool_input_dict)
 
         output_str = str(tool_output)[:4096] if tool_output else ""
 
@@ -411,11 +469,13 @@ class ClaudeHooksAPI:
             links = self._link_tracker.on_tool_call(tool_use_id, span_id, session.trace_id, parent_id)
             span_links = [link.to_dict() for link in links]
 
+        span_name = f"{actual_tool_name} - {intent}" if intent else actual_tool_name
+
         span = {
             "span_id": span_id,
             "trace_id": session.trace_id,
             "parent_id": parent_id,
-            "name": actual_tool_name,
+            "name": span_name,
             "status": "ok",
             "start_ns": start_ns,
             "duration": duration,
@@ -431,6 +491,7 @@ class ClaudeHooksAPI:
                 "source:claude-code-hooks",
                 "language:python",
                 f"hostname:{_HOSTNAME}",
+                f"tool_name:{actual_tool_name}",
             ],
             "meta": {
                 "span": {"kind": "tool"},
@@ -470,6 +531,13 @@ class ClaudeHooksAPI:
                 task_tool_input = pending.tool_input
                 session.claimed_task_tools.add(tid)
                 break
+
+        # Enrich agent name with the Task tool's description if available
+        task_desc = ""
+        if isinstance(task_tool_input, dict):
+            task_desc = task_tool_input.get("description", "")
+        if task_desc:
+            agent_name = f"{agent_name} - {task_desc}"
 
         # Emit a preliminary agent span so the trace shows the subagent immediately
         preliminary_span: Dict[str, Any] = {
@@ -534,6 +602,18 @@ class ClaudeHooksAPI:
         task_tool_use_id = agent_info.get("task_tool_use_id", "")
         task_tool_input = agent_info.get("task_tool_input")
         span_ref = agent_info.get("_span_ref")
+
+        # If SubagentStart fired before PreToolUse(Task), retry the match now.
+        if not task_tool_use_id:
+            for tid, pending in session.pending_tools.items():
+                if pending.tool_name == "Task" and tid not in session.claimed_task_tools:
+                    task_tool_use_id = tid
+                    task_tool_input = pending.tool_input
+                    session.claimed_task_tools.add(tid)
+                    desc = _extract_intent("Task", task_tool_input)
+                    if desc and span_ref:
+                        span_ref["name"] = f"{agent_info['name']} - {desc}"
+                    break
 
         if task_tool_use_id:
             # Defer final update — PostToolUse(Task) will set I/O and span links.
