@@ -238,6 +238,13 @@ def tokenize_query(query: str) -> List[str]:
             i += 1
             continue
 
+        # Handle - as NOT operator when at the start of a new token
+        # e.g. "-env:dev" should tokenize as ["-", "env:dev"] not ["-env:dev"]
+        if char == "-" and not current:
+            tokens.append("-")
+            i += 1
+            continue
+
         current.append(char)
         i += 1
 
