@@ -136,6 +136,17 @@ Add the following to `~/.claude/settings.json`. If the file already exists, merg
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s --max-time 2 -X POST -H 'Content-Type: application/json' -d @- http://localhost:8126/claude/hooks >/dev/null 2>&1 || true",
+            "async": true
+          }
+        ]
+      }
     ]
   }
 }

@@ -33,6 +33,15 @@ log = logging.getLogger(__name__)
 _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 
+MODEL_CONTEXT_LIMITS: Dict[str, int] = {}  # empty; default fallback handles all models
+
+
+def _get_context_limit(model: str) -> int:
+    """Return the context window size for a given model."""
+    if model in MODEL_CONTEXT_LIMITS:
+        return MODEL_CONTEXT_LIMITS[model]
+    return 200_000  # all current Claude models
+
 
 class PendingToolSpan:
     """Tracks a tool invocation between PreToolUse and PostToolUse."""
@@ -66,6 +75,9 @@ class SessionState:
         # so they are not matched again when a second SubagentStart fires.
         self.claimed_task_tools: Set[str] = set()
         self.conversation_title: str = ""
+        # Persists across turns so each turn's context_delta reflects growth from
+        # the previous turn's final context size.  Not reset between turns.
+        self.last_known_input_tokens: int = 0
 
 
 _MAX_UINT_64 = (1 << 64) - 1
@@ -177,6 +189,12 @@ class ClaudeHooksAPI:
         if session.agent_span_stack:
             return str(session.agent_span_stack[-1]["span_id"])
         return session.root_span_id
+
+    def _current_span_ref(self, session: SessionState) -> Optional[Dict[str, Any]]:
+        """Return the span dict of the current active agent (top of stack), or root."""
+        if session.agent_span_stack:
+            return session.agent_span_stack[-1].get("_span_ref")
+        return getattr(session, "_root_span_ref", None)
 
     def _handle_session_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SessionStart hook event."""
@@ -363,12 +381,15 @@ class ClaudeHooksAPI:
                 span_links = [link.to_dict() for link in links]
 
             span_ref = deferred.get("_span_ref")
+            context_delta = deferred.get("context_delta")
             if span_ref:
                 # Update the preliminary span in-place
                 span_ref["duration"] = deferred["duration"]
                 span_ref["meta"]["input"] = {"value": input_value}
                 span_ref["meta"]["output"] = {"value": output_str}
                 span_ref["span_links"] = span_links
+                if context_delta:
+                    span_ref["meta"].setdefault("metadata", {})["context_delta"] = context_delta
             else:
                 # Fallback: no preliminary span — append a new one
                 span = {
@@ -396,6 +417,7 @@ class ClaudeHooksAPI:
                         "span": {"kind": "agent"},
                         "input": {"value": input_value},
                         "output": {"value": output_str},
+                        **({"metadata": {"context_delta": context_delta}} if context_delta else {}),
                     },
                     "metrics": {},
                     "span_links": span_links,
@@ -535,6 +557,12 @@ class ClaudeHooksAPI:
         task_tool_input = agent_info.get("task_tool_input")
         span_ref = agent_info.get("_span_ref")
 
+        context_delta = self._compute_context_delta(
+            session.trace_id,
+            agent_info["span_id"],
+            start_input_tokens=0,
+        )
+
         if task_tool_use_id:
             # Defer final update — PostToolUse(Task) will set I/O and span links.
             # Update duration on the preliminary span so the UI shows progress.
@@ -548,12 +576,15 @@ class ClaudeHooksAPI:
                 "start_ns": agent_info["start_ns"],
                 "duration": duration,
                 "input": str(task_tool_input) if task_tool_input else "",
+                "context_delta": context_delta,
                 "_span_ref": span_ref,
             }
         else:
             # Update the eagerly-emitted span in-place
             if span_ref:
                 span_ref["duration"] = duration
+                if context_delta:
+                    span_ref["meta"].setdefault("metadata", {})["context_delta"] = context_delta
             else:
                 # Fallback: no preliminary span (shouldn't happen)
                 span = {
@@ -581,6 +612,7 @@ class ClaudeHooksAPI:
                         "span": {"kind": "agent"},
                         "input": {},
                         "output": {},
+                        **({"metadata": {"context_delta": context_delta}} if context_delta else {}),
                     },
                     "metrics": {},
                 }
@@ -604,43 +636,65 @@ class ClaudeHooksAPI:
             "total_tokens": total_input + total_output,
         }
 
-    def _compute_context_delta(self, trace_id: str) -> Optional[Dict[str, Any]]:
-        """Compare context usage between the first and last LLM spans in a trace.
+    def _get_last_input_tokens(self, trace_id: str, parent_span_id: str) -> int:
+        """Return input_tokens from the most recent LLM span whose parent is parent_span_id.
 
-        Filters to spans matching the last span's model so that utility calls
-        (e.g. haiku summarization) are excluded from the comparison.
+        Using parent_id rather than a time range ensures correctness when multiple
+        subagents run in parallel, since their LLM spans would otherwise interleave.
+        Returns 0 if no qualifying spans exist.
         """
-        all_llm_spans = sorted(
+        llm_spans = sorted(
             [
                 s
                 for s in self._assembled_spans
-                if s.get("trace_id") == trace_id and s.get("meta", {}).get("span", {}).get("kind") == "llm"
+                if s.get("trace_id") == trace_id
+                and s.get("meta", {}).get("span", {}).get("kind") == "llm"
+                and s.get("parent_id") == parent_span_id
             ],
             key=lambda s: s.get("start_ns", 0),
         )
-        if not all_llm_spans:
+        if not llm_spans:
+            return 0
+        return llm_spans[-1].get("metrics", {}).get("input_tokens", 0)
+
+    def _compute_context_delta(
+        self, trace_id: str, parent_span_id: str, start_input_tokens: int = 0
+    ) -> Optional[Dict[str, Any]]:
+        """Return context delta for an agent span.
+
+        parent_span_id: only consider LLM spans whose parent is this span.
+          - Root agent: session.root_span_id
+          - Subagent:   agent_info["span_id"]
+          Using parent_id is reliable even when multiple subagents run in parallel,
+          since time-based filtering would incorrectly interleave their LLM spans.
+        start_input_tokens: context size at the beginning of this span.
+          - Root agent: session.last_known_input_tokens (persists across turns)
+          - Subagent:   0 (each subagent has its own fresh context window)
+        """
+        llm_spans = sorted(
+            [
+                s
+                for s in self._assembled_spans
+                if s.get("trace_id") == trace_id
+                and s.get("meta", {}).get("span", {}).get("kind") == "llm"
+                and s.get("parent_id") == parent_span_id
+            ],
+            key=lambda s: s.get("start_ns", 0),
+        )
+        if not llm_spans:
             return None
-        # Use the last span's model as the primary model, filtering out utility calls
-        primary_model = all_llm_spans[-1].get("meta", {}).get("model_name", "")
-        llm_spans = [s for s in all_llm_spans if s.get("meta", {}).get("model_name", "") == primary_model]
-        if len(llm_spans) < 2:
-            return None
-        first_cb = llm_spans[0].get("meta", {}).get("metadata", {}).get("context_breakdown", {})
-        last_cb = llm_spans[-1].get("meta", {}).get("metadata", {}).get("context_breakdown", {})
-        first_tokens = first_cb.get("total_input_tokens", 0)
-        last_tokens = last_cb.get("total_input_tokens", 0)
-        window = last_cb.get("context_window_size", 200000)
-        first_sections = first_cb.get("sections", [])
-        last_sections = last_cb.get("sections", [])
+        last_span = llm_spans[-1]
+        last_input_tokens = last_span.get("metrics", {}).get("input_tokens", 0)
+        primary_model = last_span.get("meta", {}).get("model_name", "")
+        window = _get_context_limit(primary_model)
+        delta_tokens = max(last_input_tokens - start_input_tokens, 0)
         return {
-            "first_input_tokens": first_tokens,
-            "last_input_tokens": last_tokens,
-            "delta_tokens": last_tokens - first_tokens,
+            "start_input_tokens": start_input_tokens,
+            "last_input_tokens": last_input_tokens,
+            "delta_tokens": delta_tokens,
             "context_window_size": window,
-            "first_usage_pct": round(first_tokens / window * 100, 1) if window else 0,
-            "last_usage_pct": round(last_tokens / window * 100, 1) if window else 0,
-            "first_sections": first_sections,
-            "last_sections": last_sections,
+            "start_usage_pct": round(start_input_tokens / window * 100, 1) if window else 0.0,
+            "context_usage_pct": round(last_input_tokens / window * 100, 1) if window else 0.0,
         }
 
     def _handle_stop(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -679,7 +733,11 @@ class ClaudeHooksAPI:
             )
         # Compute aggregate token usage from LLM spans in this trace
         token_usage = self._compute_token_usage(session.trace_id)
-        context_delta = self._compute_context_delta(session.trace_id)
+        context_delta = self._compute_context_delta(
+            session.trace_id, session.root_span_id, session.last_known_input_tokens
+        )
+        if context_delta:
+            session.last_known_input_tokens = context_delta["last_input_tokens"]
 
         root_span_name = session.conversation_title or "claude-code-request"
 
@@ -690,12 +748,14 @@ class ClaudeHooksAPI:
             root_span["meta"]["output"]["value"] = output_value
             root_span["meta"]["model_name"] = session.model
             root_span["meta"]["model_provider"] = "anthropic"
-            root_span["meta"]["metadata"] = {
-                "agent_manifest": agent_manifest,
-                "model_name": session.model,
-                "model_provider": "anthropic",
-                "context_delta": context_delta,
-            }
+            root_span["meta"].setdefault("metadata", {}).update(
+                {
+                    "agent_manifest": agent_manifest,
+                    "model_name": session.model,
+                    "model_provider": "anthropic",
+                    "context_delta": context_delta,
+                }
+            )
             root_span["metrics"] = token_usage
         else:
             # No eagerly-emitted root span found — create one as fallback
@@ -757,6 +817,26 @@ class ClaudeHooksAPI:
         """Handle Notification hook event — logged but no span emitted."""
         log.info("Claude notification for session %s: %s", session_id, body.get("message", ""))
 
+    def _handle_pre_compact(self, session_id: str, body: Dict[str, Any]) -> None:
+        """Handle PreCompact hook event — marks the current active span with compaction metadata.
+
+        Fires before Claude Code runs a context compaction operation.
+        trigger is 'manual' (user ran /compact) or 'auto' (context window full).
+        """
+        trigger = body.get("trigger", "")
+        custom_instructions = body.get("custom_instructions", "")
+        session = self._sessions.get(session_id)
+        if not session:
+            return
+        span_ref = self._current_span_ref(session)
+        if span_ref is None:
+            return
+        dd = span_ref.setdefault("meta", {}).setdefault("metadata", {}).setdefault("_dd", {})
+        dd.setdefault("compactions", []).append({
+            "trigger": trigger,
+            "custom_instructions": custom_instructions,
+        })
+
     def _dispatch_hook(self, body: Dict[str, Any]) -> None:
         """Dispatch a hook event to the appropriate handler."""
         session_id = body.get("session_id", "")
@@ -772,6 +852,7 @@ class ClaudeHooksAPI:
             "Stop": self._handle_stop,
             "SessionEnd": self._handle_session_end,
             "Notification": self._handle_notification,
+            "PreCompact": self._handle_pre_compact,
         }
 
         handler = handlers.get(hook_event_name)
