@@ -389,7 +389,7 @@ class ClaudeHooksAPI:
                 span_ref["meta"]["output"] = {"value": output_str}
                 span_ref["span_links"] = span_links
                 if context_delta:
-                    span_ref["meta"].setdefault("metadata", {})["context_delta"] = context_delta
+                    span_ref["meta"].setdefault("metadata", {}).setdefault("_dd", {})["context_delta"] = context_delta
             else:
                 # Fallback: no preliminary span — append a new one
                 span = {
@@ -417,7 +417,7 @@ class ClaudeHooksAPI:
                         "span": {"kind": "agent"},
                         "input": {"value": input_value},
                         "output": {"value": output_str},
-                        **({"metadata": {"context_delta": context_delta}} if context_delta else {}),
+                        **({"metadata": {"_dd": {"context_delta": context_delta}}} if context_delta else {}),
                     },
                     "metrics": {},
                     "span_links": span_links,
@@ -584,7 +584,7 @@ class ClaudeHooksAPI:
             if span_ref:
                 span_ref["duration"] = duration
                 if context_delta:
-                    span_ref["meta"].setdefault("metadata", {})["context_delta"] = context_delta
+                    span_ref["meta"].setdefault("metadata", {}).setdefault("_dd", {})["context_delta"] = context_delta
             else:
                 # Fallback: no preliminary span (shouldn't happen)
                 span = {
@@ -612,7 +612,7 @@ class ClaudeHooksAPI:
                         "span": {"kind": "agent"},
                         "input": {},
                         "output": {},
-                        **({"metadata": {"context_delta": context_delta}} if context_delta else {}),
+                        **({"metadata": {"_dd": {"context_delta": context_delta}}} if context_delta else {}),
                     },
                     "metrics": {},
                 }
@@ -639,8 +639,6 @@ class ClaudeHooksAPI:
     def _get_last_input_tokens(self, trace_id: str, parent_span_id: str) -> int:
         """Return input_tokens from the most recent LLM span whose parent is parent_span_id.
 
-        Using parent_id rather than a time range ensures correctness when multiple
-        subagents run in parallel, since their LLM spans would otherwise interleave.
         Returns 0 if no qualifying spans exist.
         """
         llm_spans = sorted(
@@ -663,10 +661,6 @@ class ClaudeHooksAPI:
         """Return context delta for an agent span.
 
         parent_span_id: only consider LLM spans whose parent is this span.
-          - Root agent: session.root_span_id
-          - Subagent:   agent_info["span_id"]
-          Using parent_id is reliable even when multiple subagents run in parallel,
-          since time-based filtering would incorrectly interleave their LLM spans.
         start_input_tokens: context size at the beginning of this span.
           - Root agent: session.last_known_input_tokens (persists across turns)
           - Subagent:   0 (each subagent has its own fresh context window)
@@ -748,14 +742,16 @@ class ClaudeHooksAPI:
             root_span["meta"]["output"]["value"] = output_value
             root_span["meta"]["model_name"] = session.model
             root_span["meta"]["model_provider"] = "anthropic"
-            root_span["meta"].setdefault("metadata", {}).update(
+            root_meta = root_span["meta"].setdefault("metadata", {})
+            root_meta.update(
                 {
                     "agent_manifest": agent_manifest,
                     "model_name": session.model,
                     "model_provider": "anthropic",
-                    "context_delta": context_delta,
                 }
             )
+            if context_delta:
+                root_meta.setdefault("_dd", {})["context_delta"] = context_delta
             root_span["metrics"] = token_usage
         else:
             # No eagerly-emitted root span found — create one as fallback
@@ -791,7 +787,7 @@ class ClaudeHooksAPI:
                         "agent_manifest": agent_manifest,
                         "model_name": session.model,
                         "model_provider": "anthropic",
-                        "context_delta": context_delta,
+                        **({"_dd": {"context_delta": context_delta}} if context_delta else {}),
                     },
                 },
                 "metrics": token_usage,
