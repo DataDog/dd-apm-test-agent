@@ -56,7 +56,7 @@ stays off) instead of sending traffic to the wrong endpoint.
 
 ## Slash commands
 
-- `/llmobs-status` - Check agent health, proxy config, session count, and overall observability status
+- `/dd-llmobs:llmobs-status` - Check agent health, proxy config, session count, and overall observability status
 
 ## Viewing traces
 
@@ -69,8 +69,8 @@ https://app-30bd13e67e6cba3b6c36f48da9908a7a.datadoghq.com/llm/traces?devLocal=t
 - **Agent not starting**: Check that Docker is installed and running. Run `docker ps` to verify.
 - **Port conflict**: Run `lsof -i :8126` to check what's using the port. Port 8126 is also used by the Datadog agent.
   If a non-dd-llmobs service owns the port, the plugin will enter degraded mode and skip proxy setup.
-- **No LLM spans**: Run `/llmobs-status` to diagnose. Check that the agent is reachable on :8126.
-- **Use `/llmobs-status`**: The status command checks agent health, proxy config, and reports the current observability mode.
+- **No LLM spans**: Run `/dd-llmobs:llmobs-status` to diagnose. Check that the agent is reachable on :8126.
+- **Use `/dd-llmobs:llmobs-status`**: The status command checks agent health, proxy config, and reports the current observability mode.
 
 ## Uninstalling
 
