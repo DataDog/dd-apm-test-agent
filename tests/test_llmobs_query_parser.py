@@ -342,15 +342,14 @@ def test_slow_requests_query(sample_spans):
 
 
 def test_model_filtering_query(sample_spans):
-    """Test: Find spans using old models or specific providers."""
-    query = "(@meta.model_name:gpt-3* OR @meta.model_name:text*) AND env:prod OR env:staging"
+    """Test: Find spans using old models in prod or staging environments."""
+    query = "(@meta.model_name:gpt-3* OR @meta.model_name:text*) AND (env:prod OR env:staging)"
     parsed = parse_filter_query(query)
     result = apply_filters(sample_spans, parsed)
 
-    # This should match span-2 (gpt-3.5-turbo in staging)
-    assert len(result) >= 1
-    span_ids = [s["span_id"] for s in result]
-    assert "span-2" in span_ids
+    # Only span-2 matches: gpt-3.5-turbo in staging (span-4 has text* but is env:dev)
+    assert len(result) == 1
+    assert result[0]["span_id"] == "span-2"
 
 
 def test_cost_analysis_query(sample_spans):
