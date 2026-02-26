@@ -3,6 +3,6 @@
     "description": "Datadog LLM Observability for Claude Code",
     "author": {
         "name": "LLM Observability",
-        "email": "team-llmobs@datadoghq.com"
+        "email": "llmobs@datadoghq.com"
     }
 }

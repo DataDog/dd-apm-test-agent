@@ -5,7 +5,7 @@
   },
   "owner": {
     "name": "LLM Observability",
-    "email": "team-llmobs@datadoghq.com"
+    "email": "llmobs@datadoghq.com"
   },
   "plugins": [
     { "name": "dd-llmobs", "source": "./plugin/dd-llmobs" }
