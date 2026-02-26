@@ -2,18 +2,20 @@
 set -e
 
 AGENT_PORT=8126
-AGENT_INFO_URL="http://localhost:${AGENT_PORT}/info"
+AGENT_SESSIONS_URL="http://localhost:${AGENT_PORT}/claude/hooks/sessions"
 DOCKER_IMAGE="ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Check if our test agent is already running (dev mode)
-if curl -sf --max-time 2 "${AGENT_INFO_URL}" >/dev/null 2>&1; then
-    info_resp=$(curl -sf --max-time 2 "${AGENT_INFO_URL}" 2>/dev/null || true)
-    if echo "${info_resp}" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'endpoints' in d" 2>/dev/null; then
-        echo "[dd-llmobs] Agent already running on :${AGENT_PORT} (dev mode)" >&2
-    else
-        echo "[dd-llmobs] WARNING: port ${AGENT_PORT} is occupied but does not look like our test agent" >&2
-    fi
+# Check if a compatible dd-llmobs agent is already running (dev mode)
+if curl -sf --max-time 2 "${AGENT_SESSIONS_URL}" >/dev/null 2>&1; then
+    echo "[dd-llmobs] Agent already running on :${AGENT_PORT} (dev mode)" >&2
+    exec python3 "${SCRIPT_DIR}/mcp_passthrough.py"
+fi
+
+# If some other process already owns the port, stay up in safe degraded mode.
+if command -v lsof >/dev/null 2>&1 && lsof -iTCP:"${AGENT_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "[dd-llmobs] WARNING: port ${AGENT_PORT} is occupied by a non-dd-llmobs service" >&2
+    echo "[dd-llmobs] Running in degraded mode" >&2
     exec python3 "${SCRIPT_DIR}/mcp_passthrough.py"
 fi
 

@@ -4,14 +4,22 @@ import os
 import sys
 import urllib.request
 
-PROXY_URL = "http://localhost:8126/claude/proxy"
+AGENT_PORT = 8126
+PROXY_URL = f"http://localhost:{AGENT_PORT}/claude/proxy"
+SESSIONS_URL = f"http://localhost:{AGENT_PORT}/claude/hooks/sessions"
 CLAUDE_ENV_FILE = os.environ.get("CLAUDE_ENV_FILE", "")
 SETTINGS = os.path.expanduser("~/.claude/settings.json")
 
-# Only configure proxy if the agent is actually reachable
+# Only configure proxy when a compatible dd-llmobs endpoint is present.
 try:
-    urllib.request.urlopen("http://localhost:8126/info", timeout=2)
+    with urllib.request.urlopen(SESSIONS_URL, timeout=2) as response:
+        if response.status != 200:
+            raise RuntimeError("unexpected status")
 except Exception:
+    print(
+        f"[dd-llmobs] Proxy disabled: compatible dd-llmobs agent not detected on :{AGENT_PORT}.",
+        file=sys.stderr,
+    )
     sys.exit(0)
 
 # Set ANTHROPIC_BASE_URL for the current session via CLAUDE_ENV_FILE

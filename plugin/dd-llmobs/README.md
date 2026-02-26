@@ -49,7 +49,10 @@ If you're developing the test agent locally, run it from source before starting 
 ddapm-test-agent --port 8126
 ```
 
-The plugin detects that port 8126 is already occupied and becomes a passthrough MCP server. All hooks fire against your local agent. No Docker container is started.
+The plugin validates `GET /claude/hooks/sessions` before enabling passthrough and proxy mode. If your local
+`ddapm-test-agent` is already running on 8126, the plugin becomes a passthrough MCP server and no Docker container is
+started. If another service occupies 8126, the plugin stays in a safe degraded mode (Claude keeps working, observability
+stays off) instead of sending traffic to the wrong endpoint.
 
 ## Slash commands
 
@@ -65,6 +68,7 @@ https://app-30bd13e67e6cba3b6c36f48da9908a7a.datadoghq.com/llm/traces?devLocal=t
 
 - **Agent not starting**: Check that Docker is installed and running. Run `docker ps` to verify.
 - **Port conflict**: Run `lsof -i :8126` to check what's using the port. Port 8126 is also used by the Datadog agent.
+  If a non-dd-llmobs service owns the port, the plugin will enter degraded mode and skip proxy setup.
 - **No LLM spans**: Run `/llmobs-status` to diagnose. Check that the agent is reachable on :8126.
 - **Use `/llmobs-status`**: The status command checks agent health, proxy config, and reports the current observability mode.
 
