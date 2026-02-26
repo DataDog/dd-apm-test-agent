@@ -9,6 +9,58 @@ Follow these steps to configure Claude Code to send hook events to the dd-apm-te
 
 ## Step 1: Start the test agent
 
+### Check for port conflicts
+
+Before starting the test agent, check if one is already running:
+
+```bash
+curl -s http://localhost:8126/info
+```
+
+If this returns a JSON response where the `version` field contains `"test"` (e.g. `"version": "test"`), the test agent is already running. **Skip ahead to Step 2** — no need to start another one.
+
+Note: The regular Datadog Agent also listens on port 8126 and has an `/info` endpoint, but it returns a numeric version like `"7.45.0"`. Checking for `"test"` in the version field reliably distinguishes the test agent from the Datadog Agent.
+
+If curl fails, returns nothing, or the version does not contain `"test"`, check whether another process is using port 8126:
+
+```bash
+lsof -i :8126 -sTCP:LISTEN
+```
+
+If the command produces no output, the port is free — proceed to the `docker run` command below.
+
+If a process is listed, note its name and PID from the output. Inform the user:
+
+> Port 8126 is currently in use by `<process name>` (PID `<pid>`). The test agent needs this port to receive traces and hook events.
+>
+> **Note:** If the conflicting process is the Datadog Agent, stopping it will prevent APM traces, metrics, and other telemetry from being submitted to datadoghq.com while it is stopped.
+>
+> Do you want to stop `<process name>` so the test agent can start?
+
+**Wait for explicit user confirmation before proceeding.** Do not stop the process without a "Yes."
+
+After the user confirms, stop the process and verify the port is free:
+
+```bash
+kill <pid>
+```
+
+Then re-check:
+
+```bash
+lsof -i :8126 -sTCP:LISTEN
+```
+
+If the process is still listening after a few seconds, inform the user and ask whether to force-kill it:
+
+```bash
+kill -9 <pid>
+```
+
+Once the port is free, proceed to start the test agent.
+
+### Start the container
+
 Run the test agent:
 
 ```bash
