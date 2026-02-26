@@ -2,9 +2,16 @@
 import json
 import os
 import sys
+import urllib.request
 
 SETTINGS = os.path.expanduser("~/.claude/settings.json")
 PROXY_URL = "http://localhost:8126/claude/proxy"
+
+# Only configure proxy if the agent is actually reachable
+try:
+    urllib.request.urlopen("http://localhost:8126/info", timeout=2)
+except Exception:
+    sys.exit(0)
 
 os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
 
