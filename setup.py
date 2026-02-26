@@ -52,6 +52,7 @@ setup(
             "ddapm-test-agent-fmt=ddapm_test_agent.fmt:main",
             "ddapm-test-agent-session-start=ddapm_test_agent.cmd:main_session_start",
             "ddapm-test-agent-snapshot=ddapm_test_agent.cmd:main_snapshot",
+            "ddapm-test-agent-mcp=ddapm_test_agent.mcp_wrapper:main",
         ]
     },
     extras_require={

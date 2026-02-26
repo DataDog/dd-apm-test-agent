@@ -1,5 +1,17 @@
 # Setting up Claude Code Hooks with dd-apm-test-agent
 
+## Recommended: Use the Plugin
+
+The easiest way to set up LLM Observability is the Claude Code plugin:
+
+1. Run `/plugin marketplace add DataDog/dd-apm-test-agent` in Claude Code
+2. Run `/plugin install dd-llmobs@dd-apm-test-agent`
+3. Restart Claude Code once
+
+The plugin handles Docker, hooks, and proxy configuration automatically. The manual setup below is for custom configurations only.
+
+---
+
 Follow these steps to configure Claude Code to send hook events to the dd-apm-test-agent. This enables LLM Observability traces for your Claude Code sessions — you can view tool calls, subagent spans, and LLM invocations.
 
 ## Prerequisites
