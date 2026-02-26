@@ -19,23 +19,16 @@ if command -v lsof >/dev/null 2>&1 && lsof -iTCP:"${AGENT_PORT}" -sTCP:LISTEN >/
     exec python3 "${SCRIPT_DIR}/mcp_passthrough.py"
 fi
 
-# Try Docker
-if command -v docker >/dev/null 2>&1; then
-    echo "[dd-llmobs] Starting agent via Docker" >&2
-    exec docker run --rm -i \
-        -p "${AGENT_PORT}:8126" \
-        -e HOST_USER \
-        -e DD_API_KEY \
-        -e DD_SITE \
-        "${DOCKER_IMAGE}" \
-        ddapm-test-agent-mcp
+if ! command -v docker >/dev/null 2>&1; then
+    echo "[dd-llmobs] ERROR: Docker not found. Install Docker to use this plugin." >&2
+    exit 1
 fi
 
-# Try local binary
-if command -v ddapm-test-agent-mcp >/dev/null 2>&1; then
-    echo "[dd-llmobs] Starting agent via local binary" >&2
-    exec ddapm-test-agent-mcp
-fi
-
-echo "[dd-llmobs] ERROR: Cannot start agent. Install Docker or ddapm-test-agent." >&2
-exit 1
+echo "[dd-llmobs] Starting agent via Docker" >&2
+exec docker run --rm -i \
+    -p "${AGENT_PORT}:8126" \
+    -e HOST_USER \
+    -e DD_API_KEY \
+    -e DD_SITE \
+    "${DOCKER_IMAGE}" \
+    ddapm-test-agent-mcp
