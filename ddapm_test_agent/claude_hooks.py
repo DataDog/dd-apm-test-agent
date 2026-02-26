@@ -78,6 +78,9 @@ class SessionState:
         # Persists across turns so each turn's context_delta reflects growth from
         # the previous turn's final context size.  Not reset between turns.
         self.last_known_input_tokens: int = 0
+        self.pending_permission_at_ns: Optional[int] = None
+        # Running total of permission wait ms across the entire turn (all tools, incl. subagents).
+        self.accumulated_permission_wait_ms: int = 0
 
 
 _MAX_UINT_64 = (1 << 64) - 1
@@ -428,6 +431,12 @@ class ClaudeHooksAPI:
         # Normal tool span
         duration = now_ns - start_ns
 
+        estimated_permission_wait_ms: Optional[int] = None
+        if session.pending_permission_at_ns is not None:
+            estimated_permission_wait_ms = (now_ns - session.pending_permission_at_ns) // 1_000_000
+            session.pending_permission_at_ns = None
+            session.accumulated_permission_wait_ms += estimated_permission_wait_ms
+
         span_links = []
         if self._link_tracker:
             links = self._link_tracker.on_tool_call(tool_use_id, span_id, session.trace_id, parent_id)
@@ -462,6 +471,8 @@ class ClaudeHooksAPI:
             "metrics": {},
             "span_links": span_links,
         }
+        if estimated_permission_wait_ms is not None:
+            span["meta"].setdefault("metadata", {}).setdefault("_dd", {})["estimated_permission_wait_ms"] = estimated_permission_wait_ms
         self._assembled_spans.append(span)
 
     def _handle_subagent_start(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -563,11 +574,17 @@ class ClaudeHooksAPI:
             start_input_tokens=0,
         )
 
+        estimated_perm_wait = self._sum_estimated_permission_wait_ms(
+            parent_id=str(agent_info["span_id"])
+        )
+
         if task_tool_use_id:
             # Defer final update — PostToolUse(Task) will set I/O and span links.
             # Update duration on the preliminary span so the UI shows progress.
             if span_ref:
                 span_ref["duration"] = duration
+                if estimated_perm_wait > 0:
+                    span_ref["meta"].setdefault("metadata", {}).setdefault("_dd", {})["estimated_permission_wait_ms"] = estimated_perm_wait
             session.deferred_agent_spans[task_tool_use_id] = {
                 "span_id": agent_info["span_id"],
                 "trace_id": session.trace_id,
@@ -585,6 +602,8 @@ class ClaudeHooksAPI:
                 span_ref["duration"] = duration
                 if context_delta:
                     span_ref["meta"].setdefault("metadata", {}).setdefault("_dd", {})["context_delta"] = context_delta
+                if estimated_perm_wait > 0:
+                    span_ref["meta"].setdefault("metadata", {}).setdefault("_dd", {})["estimated_permission_wait_ms"] = estimated_perm_wait
             else:
                 # Fallback: no preliminary span (shouldn't happen)
                 span = {
@@ -735,6 +754,8 @@ class ClaudeHooksAPI:
 
         root_span_name = session.conversation_title or "claude-code-request"
 
+        estimated_permission_wait_ms = session.accumulated_permission_wait_ms
+
         if root_span:
             root_span["name"] = root_span_name
             root_span["duration"] = duration
@@ -752,6 +773,8 @@ class ClaudeHooksAPI:
             )
             if context_delta:
                 root_meta.setdefault("_dd", {})["context_delta"] = context_delta
+            if estimated_permission_wait_ms > 0:
+                root_meta.setdefault("_dd", {})["estimated_permission_wait_ms"] = estimated_permission_wait_ms
             root_span["metrics"] = token_usage
         else:
             # No eagerly-emitted root span found — create one as fallback
@@ -787,7 +810,10 @@ class ClaudeHooksAPI:
                         "agent_manifest": agent_manifest,
                         "model_name": session.model,
                         "model_provider": "anthropic",
-                        **({"_dd": {"context_delta": context_delta}} if context_delta else {}),
+                        **({"_dd": {
+                            **({"context_delta": context_delta} if context_delta else {}),
+                            **({"estimated_permission_wait_ms": estimated_permission_wait_ms} if estimated_permission_wait_ms > 0 else {}),
+                        }} if context_delta or estimated_permission_wait_ms > 0 else {}),
                     },
                 },
                 "metrics": token_usage,
@@ -833,6 +859,29 @@ class ClaudeHooksAPI:
             "custom_instructions": custom_instructions,
         })
 
+    def _sum_estimated_permission_wait_ms(self, *, parent_id: str) -> int:
+        """Sum estimated_permission_wait_ms from tool spans that are direct children of parent_id.
+
+        Used by _handle_subagent_stop to aggregate permission wait onto each agent span.
+        """
+        total = 0
+        for s in self._assembled_spans:
+            if s.get("meta", {}).get("span", {}).get("kind") != "tool":
+                continue
+            if str(s.get("parent_id")) != str(parent_id):
+                continue
+            total += s.get("meta", {}).get("metadata", {}).get("_dd", {}).get("estimated_permission_wait_ms", 0)
+        return total
+
+    def _handle_permission_request(self, session_id: str, body: Dict[str, Any]) -> None:
+        """Handle PermissionRequest hook — records when the permission dialog appeared.
+
+        PermissionRequest fires when the dialog is shown to the user.
+        The next PostToolUse for the same session computes the elapsed time.
+        """
+        session = self._get_or_create_session(session_id)
+        session.pending_permission_at_ns = int(time.time() * 1_000_000_000)
+
     def _dispatch_hook(self, body: Dict[str, Any]) -> None:
         """Dispatch a hook event to the appropriate handler."""
         session_id = body.get("session_id", "")
@@ -849,6 +898,7 @@ class ClaudeHooksAPI:
             "SessionEnd": self._handle_session_end,
             "Notification": self._handle_notification,
             "PreCompact": self._handle_pre_compact,
+            "PermissionRequest": self._handle_permission_request,
         }
 
         handler = handlers.get(hook_event_name)
