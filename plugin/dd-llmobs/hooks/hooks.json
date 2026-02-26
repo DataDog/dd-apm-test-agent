@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/configure-proxy.sh"
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/configure-proxy.py"
           },
           {
             "type": "command",
