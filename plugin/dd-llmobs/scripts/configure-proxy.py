@@ -34,16 +34,9 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     data = {}
 
-hooks = data.get("hooks", {})
-for event_hooks in hooks.values():
-    if isinstance(event_hooks, list):
-        for entry in event_hooks:
-            cmds = [entry] if isinstance(entry, str) else (entry if isinstance(entry, list) else [])
-            for cmd in cmds:
-                if isinstance(cmd, str) and ":8126" in cmd:
-                    print(
-                        "[dd-llmobs] WARNING: ~/.claude/settings.json has manual hooks posting to :8126."
-                        " These will duplicate plugin hooks. Remove the hooks section to avoid double-counting.",
-                        file=sys.stderr,
-                    )
-                    break
+if "http://localhost:8126/claude/hooks" in json.dumps(data.get("hooks", {})):
+    print(
+        "[dd-llmobs] WARNING: ~/.claude/settings.json has manual hooks posting to :8126."
+        " These will duplicate plugin hooks. Remove the hooks section to avoid double-counting.",
+        file=sys.stderr,
+    )
