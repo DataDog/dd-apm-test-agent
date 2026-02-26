@@ -22,16 +22,7 @@ For local development:
 claude --plugin-dir ./plugin/dd-llmobs
 ```
 
-## First session behavior
-
-On the first session after install:
-
-1. The MCP server starts the agent (via Docker) automatically
-2. Hooks fire immediately - tool calls, agent spans, and user prompts are captured
-3. `configure-proxy.sh` adds `ANTHROPIC_BASE_URL` to `~/.claude/settings.json`
-4. A message says: "Restart Claude Code once for full LLM span capture"
-
-After one restart, full observability is active - including LLM spans with token metrics, model info, input/output messages, and span linking. This restart is a one-time event.
+That's it. Full observability is active immediately - no restart needed.
 
 ## Environment variables
 
@@ -42,18 +33,6 @@ Set them in your shell profile (`~/.zshrc` or `~/.bashrc`):
 ```bash
 export DD_API_KEY="your-api-key-here"
 export DD_SITE="datadoghq.com"  # optional, defaults to datad0g.com
-```
-
-Or add them to `~/.claude/settings.json` under `env` (alongside `ANTHROPIC_BASE_URL`):
-
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://localhost:8126/claude/proxy",
-    "DD_API_KEY": "your-api-key-here",
-    "DD_SITE": "datadoghq.com"
-  }
-}
 ```
 
 | Variable | Required | Default | Description |
@@ -86,29 +65,9 @@ https://app-30bd13e67e6cba3b6c36f48da9908a7a.datadoghq.com/llm/traces?devLocal=t
 
 - **Agent not starting**: Check that Docker is installed and running. Run `docker ps` to verify.
 - **Port conflict**: Run `lsof -i :8126` to check what's using the port. Port 8126 is also used by the Datadog agent.
-- **No LLM spans after restart**: Verify `ANTHROPIC_BASE_URL` is set in `~/.claude/settings.json` with `cat ~/.claude/settings.json`.
+- **No LLM spans**: Run `/llmobs-status` to diagnose. Check that the agent is reachable on :8126.
 - **Use `/llmobs-status`**: The status command checks agent health, proxy config, and reports the current observability mode.
 
 ## Uninstalling
 
-Before uninstalling the plugin, remove `ANTHROPIC_BASE_URL` from settings:
-
-```bash
-python3 -c "
-import json, os
-path = os.path.expanduser('~/.claude/settings.json')
-with open(path) as f:
-    data = json.load(f)
-env = data.get('env', {})
-env.pop('ANTHROPIC_BASE_URL', None)
-if not env:
-    data.pop('env', None)
-else:
-    data['env'] = env
-with open(path, 'w') as f:
-    json.dump(data, f, indent=2)
-    f.write('\n')
-"
-```
-
-Then uninstall the plugin. If you skip this step, Claude Code will fail on next start (it will try to route API calls through a proxy that no longer exists).
+Just uninstall the plugin. The proxy is configured per-session via `CLAUDE_ENV_FILE` (not persisted to settings.json), so there is nothing to clean up.

@@ -4,8 +4,9 @@ import os
 import sys
 import urllib.request
 
-SETTINGS = os.path.expanduser("~/.claude/settings.json")
 PROXY_URL = "http://localhost:8126/claude/proxy"
+CLAUDE_ENV_FILE = os.environ.get("CLAUDE_ENV_FILE", "")
+SETTINGS = os.path.expanduser("~/.claude/settings.json")
 
 # Only configure proxy if the agent is actually reachable
 try:
@@ -13,15 +14,18 @@ try:
 except Exception:
     sys.exit(0)
 
-os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+# Set ANTHROPIC_BASE_URL for the current session via CLAUDE_ENV_FILE
+if CLAUDE_ENV_FILE:
+    with open(CLAUDE_ENV_FILE, "a") as f:
+        f.write(f"export ANTHROPIC_BASE_URL={PROXY_URL}\n")
 
+# Check for duplicate hooks from old manual config
 try:
     with open(SETTINGS) as f:
         data = json.load(f)
 except (FileNotFoundError, json.JSONDecodeError):
     data = {}
 
-# Check for duplicate hooks from old manual config
 hooks = data.get("hooks", {})
 for event_hooks in hooks.values():
     if isinstance(event_hooks, list):
@@ -35,19 +39,3 @@ for event_hooks in hooks.values():
                         file=sys.stderr,
                     )
                     break
-
-# Skip if already configured
-env = data.get("env", {})
-if env.get("ANTHROPIC_BASE_URL") == PROXY_URL:
-    sys.exit(0)
-
-# Add ANTHROPIC_BASE_URL
-if "env" not in data:
-    data["env"] = {}
-data["env"]["ANTHROPIC_BASE_URL"] = PROXY_URL
-
-with open(SETTINGS, "w") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-
-print("[dd-llmobs] Proxy configured. Restart Claude Code once for full LLM span capture.", file=sys.stderr)

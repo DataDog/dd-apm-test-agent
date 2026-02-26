@@ -6,9 +6,8 @@ The easiest way to set up LLM Observability is the Claude Code plugin:
 
 1. Run `/plugin marketplace add DataDog/dd-apm-test-agent` in Claude Code
 2. Run `/plugin install dd-llmobs@dd-apm-test-agent`
-3. Restart Claude Code once
 
-The plugin handles Docker, hooks, and proxy configuration automatically. The manual setup below is for custom configurations only.
+That's it. Full observability is active immediately - no restart needed. The plugin handles Docker, hooks, and proxy configuration automatically. The manual setup below is for custom configurations only.
 
 ---
 

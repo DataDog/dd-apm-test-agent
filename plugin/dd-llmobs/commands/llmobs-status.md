@@ -28,13 +28,19 @@ curl -sf http://localhost:8126/claude/hooks/sessions
 
 Report the number of sessions recorded.
 
-### 3. Proxy Config
+### 3. Proxy Active
 
-Read `~/.claude/settings.json` and check whether `env.ANTHROPIC_BASE_URL` is set to `http://localhost:8126/claude/proxy`.
+Only if the agent is running, check if LLM spans exist:
+
+```bash
+curl -sf http://localhost:8126/claude/hooks/spans
+```
+
+If there are spans with `meta.span.kind == "llm"`, the proxy is active and capturing LLM data. If only hook-based spans exist (agent, tool), the proxy is not active.
 
 ### 4. Duplicate Hooks Check
 
-While reading `~/.claude/settings.json`, check if there is also a `hooks` key containing curl commands that post to `:8126`. This is old manual config that should be removed to avoid double-counting events. Warn the user if found.
+Read `~/.claude/settings.json` and check if there is a `hooks` key containing curl commands that post to `:8126`. This is old manual config that should be removed to avoid double-counting events. Warn the user if found.
 
 ### 5. Docker Container
 
@@ -54,7 +60,7 @@ LLM Observability Status
 
 Agent:     running (v7.x.x)
 Sessions:  3 recorded
-Proxy:     configured (ANTHROPIC_BASE_URL set)
+Proxy:     active (22 LLM spans captured)
 Docker:    container abc123 up 5 minutes
 Hooks:     no duplicates detected
 
@@ -65,15 +71,11 @@ Status: Full observability
 
 Based on the checks, report exactly one of:
 
-- **"Full observability"** - agent running AND proxy configured (ANTHROPIC_BASE_URL present in settings.json AND Claude Code was restarted after it was configured)
-- **"Hooks-only mode (restart needed for full observability)"** - agent running, ANTHROPIC_BASE_URL was just configured this session by configure-proxy.sh
-- **"Hooks-only mode (proxy not configured)"** - agent running but no ANTHROPIC_BASE_URL in settings.json
+- **"Full observability"** - agent running AND LLM spans present (proxy is active)
+- **"Hooks-only mode"** - agent running but no LLM spans (proxy not active - agent may not be reachable from configure-proxy.py)
 - **"Agent not running"** - nothing responding on :8126
-
-To distinguish "full observability" from "restart needed": if the proxy is configured and LLM spans exist in `curl -sf http://localhost:8126/claude/hooks/spans`, the proxy is active. If only hook events exist but no LLM spans, a restart is still needed.
 
 ## Error Handling
 
 - **Agent not responding**: Report "Agent not running" and suggest checking that the plugin MCP server started correctly or that Docker is running.
 - **Docker not installed**: Skip the Docker check, note it was skipped.
-- **settings.json missing**: Report proxy as not configured.
