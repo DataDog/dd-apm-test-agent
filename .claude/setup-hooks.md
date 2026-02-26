@@ -77,13 +77,10 @@ curl -s http://localhost:8126/info | head -c 100
 
 ## Step 2: Configure Claude Code hooks
 
-Add the following to `~/.claude/settings.json`. If the file already exists, merge the `hooks` key into the existing config. If an `env` key already exists, merge the `ANTHROPIC_BASE_URL` entry into it.
+Add the following to `~/.claude/settings.json`. If the file already exists, merge the `hooks` key into the existing config.
 
 ```json
 {
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://localhost:8126/claude/proxy"
-  },
   "hooks": {
     "PreToolUse": [
       {
@@ -195,8 +192,9 @@ Add the following to `~/.claude/settings.json`. If the file already exists, merg
 
 ### What this does
 
-- **`env.ANTHROPIC_BASE_URL`**: Routes all Claude API calls through the test agent's proxy, enabling LLM span capture (token counts, model info, input/output messages, and span linking between LLM calls and tool calls).
 - **`hooks`**: Each hook fires a curl command that POSTs the hook event JSON (read from stdin via `-d @-`) to the test agent. The `--max-time 2` timeout and `|| true` ensure hooks never block Claude Code, even if the agent is down.
+
+The hooks alone capture tool and agent spans. To also capture LLM spans (token counts, model info, input/output messages, and span links), set the `ANTHROPIC_BASE_URL` environment variable when launching Claude Code (see Step 5).
 
 ## Step 3: Forward traces to Datadog (optional)
 
@@ -222,18 +220,26 @@ This connects to the local test agent and displays traces as they arrive. The `e
 
 ## Step 5: Use Claude Code
 
-Start a new Claude Code session. Each user turn produces a trace with:
+Start a new Claude Code session with the proxy enabled:
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:8126/claude/proxy claude
+```
+
+This routes API calls through the test agent's proxy for full LLM span capture. Each user turn produces a trace with:
 - A root agent span for the session turn
 - LLM spans for each Anthropic API call (with token metrics)
 - Tool spans for each tool invocation
 - Subagent spans for Task tool delegations
 - Span links connecting LLM outputs to tool inputs and vice versa
 
+Without the `ANTHROPIC_BASE_URL` env var, hooks still capture tool and agent spans, but LLM spans and span links won't be included. When the test agent is stopped, launching `claude` normally works without any cleanup — the hooks fail silently.
+
 ## Customization
 
 ### Different host or port
 
-Replace `http://localhost:8126` in both the `ANTHROPIC_BASE_URL` env var and the hook curl commands with your test agent's URL.
+Replace `http://localhost:8126` in both the `ANTHROPIC_BASE_URL` launch env var and the hook curl commands in `settings.json` with your test agent's URL.
 
 ### Forwarding to Datadog
 
@@ -249,7 +255,7 @@ docker run --rm -p 8126:8126 \
 
 ### Disabling the proxy
 
-If you only want hook-based tracing without LLM span capture, remove the `env.ANTHROPIC_BASE_URL` entry. You will still get tool and agent spans but not LLM spans or span links.
+If you only want hook-based tracing without LLM span capture, launch `claude` without the `ANTHROPIC_BASE_URL` env var. You will still get tool and agent spans but not LLM spans or span links.
 
 ## Diagnostic endpoints
 
@@ -261,6 +267,6 @@ If you only want hook-based tracing without LLM span capture, remove the `env.AN
 
 **Hooks not sending events**: Verify the agent is running with `curl http://localhost:8126/info`. Check that `~/.claude/settings.json` is valid JSON. Start a new Claude Code session after changing settings.
 
-**No LLM spans**: Ensure `ANTHROPIC_BASE_URL` is set in the `env` section. The proxy must be reachable at that URL for LLM span capture to work.
+**No LLM spans**: Ensure you launched Claude with `ANTHROPIC_BASE_URL=http://localhost:8126/claude/proxy claude`. The proxy must be reachable at that URL for LLM span capture to work.
 
 **Missing spans**: Some events (like Stop) may arrive after the session ends. Check `GET /claude/hooks/raw` to see all received events.
