@@ -26,7 +26,7 @@ class TestMcpFraming:
             _read_mcp_message(stream=buf)
 
     def test_unicode_content(self) -> None:
-        msg: Dict[str, Any] = {"jsonrpc": "2.0", "id": 1, "result": {"text": "hello \u00e9\u00e8\u00ea"}}
+        msg = {"jsonrpc": "2.0", "id": 1, "result": {"text": "hello \u00e9\u00e8\u00ea"}}
         buf = io.BytesIO()
         _write_mcp_message(msg, stream=buf)
         buf.seek(0)
