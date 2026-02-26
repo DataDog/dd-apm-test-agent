@@ -10,6 +10,7 @@ This module implements a query parser that supports:
 - Wildcards: * (zero or more chars), ? (exactly one char)
 - Existence queries: _exists_:field, _missing_:field
 - IN operator: @field IN [val1, val2, val3]
+- Free text search: plain words or "quoted phrases" matched across name, tags, and input/output
 
 The parser builds an Abstract Syntax Tree (AST) that can be evaluated against spans.
 """
@@ -51,16 +52,13 @@ class FilterNode(QueryNode):
         field = self.filter["field"]
         filter_type = self.filter.get("type", "facet")
         operator = self.filter.get("operator")
-        is_negated = bool(self.filter.get("not", False))
 
         # Handle existence queries
         if operator == "exists":
-            result = bool(span_matcher.field_exists(span, field))
-            return not result if is_negated else result
+            return bool(span_matcher.field_exists(span, field))
 
         if operator == "missing":
-            result = not bool(span_matcher.field_exists(span, field))
-            return not result if is_negated else result
+            return not bool(span_matcher.field_exists(span, field))
 
         # Get span field value
         if filter_type == "tag":
@@ -69,20 +67,18 @@ class FilterNode(QueryNode):
             span_value = span_matcher.get_field_value(span, field)
 
         if span_value is None:
-            return is_negated  # No value: fail match (or succeed if negated)
+            return False  # No value: fail match
 
         # Handle different operators
         if operator == "range":
-            result = self._match_range(span_value)
+            return self._match_range(span_value)
         elif operator in ("gte", "lte", "gt", "lt"):
-            result = self._match_comparison(span_value, operator)
+            return self._match_comparison(span_value, operator)
         elif operator == "in":
-            result = self._match_in(span_value)
+            return self._match_in(span_value)
         else:
             # Default: wildcard matching
-            result = self._match_wildcard(span_value, span_matcher)
-
-        return not result if is_negated else result
+            return self._match_wildcard(span_value, span_matcher)
 
     def _match_range(self, span_value: Any) -> bool:
         """Match range operator."""
@@ -109,9 +105,8 @@ class FilterNode(QueryNode):
                 return bool(num <= cmp)
             elif operator == "gt":
                 return bool(num > cmp)
-            elif operator == "lt":
+            else:  # operator == "lt"
                 return bool(num < cmp)
-            return False
         except (ValueError, TypeError):
             return False
 
@@ -140,11 +135,8 @@ class BooleanNode(QueryNode):
         if self.operator == "AND":
             # Short-circuit: return False on first False
             return all(child.evaluate(span, span_matcher) for child in self.children)
-        elif self.operator == "OR":
-            # Short-circuit: return True on first True
+        else:  # "OR": short-circuit: return True on first True
             return any(child.evaluate(span, span_matcher) for child in self.children)
-        else:
-            return False
 
 
 class NotNode(QueryNode):
@@ -156,6 +148,17 @@ class NotNode(QueryNode):
     def evaluate(self, span: Dict[str, Any], span_matcher: Any) -> bool:
         """Evaluate NOT operation."""
         return not self.child.evaluate(span, span_matcher)
+
+
+class FreeTextNode(QueryNode):
+    """Leaf node representing a free text search term."""
+
+    def __init__(self, text: str):
+        self.text = text
+
+    def evaluate(self, span: Dict[str, Any], span_matcher: Any) -> bool:
+        """Evaluate free text search against a span."""
+        return bool(span_matcher.text_search(span, self.text))
 
 
 # ============================================================================
@@ -428,16 +431,24 @@ def _parse_primary(
             return FilterNode(in_filter_dict), pos + 3
 
     # Try to parse as filter
-    filter_dict = _parse_filter_token(token, tokens, pos, duration_parser)
+    filter_dict = _parse_filter_token(token, duration_parser)
     if filter_dict:
         return FilterNode(filter_dict), pos + 1
 
-    # Skip unknown token
+    # Tokens starting with @ were intended as attribute filters — don't fall through to free text
+    if token.startswith("@"):
+        return None, pos + 1
+
+    # Treat as free text search term (plain word or "quoted phrase")
+    text = token.strip('"')
+    if text:
+        return FreeTextNode(text), pos + 1
+
     return None, pos + 1
 
 
 def _parse_filter_token(
-    token: str, tokens: List[str], pos: int, duration_parser: Optional[Callable[[str], Optional[float]]]
+    token: str, duration_parser: Optional[Callable[[str], Optional[float]]]
 ) -> Optional[Dict[str, Any]]:
     """Parse a single filter token into a filter dictionary.
 
@@ -564,37 +575,24 @@ def match_wildcard(value: str, pattern: str, case_sensitive: bool = True) -> boo
     if pattern.endswith("*") and "*" not in pattern[:-1] and "?" not in pattern:
         return value.startswith(pattern[:-1])
 
-    # Slow path: recursive matching with both * and ?
-    return _match_wildcard_recursive(value, pattern, 0, 0)
+    # General case: DP matching for patterns with both * and ?
+    return _match_wildcard_dp(value, pattern)
 
 
-def _match_wildcard_recursive(value: str, pattern: str, v_idx: int, p_idx: int) -> bool:
-    """Recursively match wildcard pattern."""
-    # Base case: both exhausted
-    if v_idx == len(value) and p_idx == len(pattern):
-        return True
-
-    # Pattern exhausted but value remains
-    if p_idx == len(pattern):
-        return False
-
-    # Handle * wildcard
-    if pattern[p_idx] == "*":
-        # Try matching * with 0 characters, 1 character, 2 characters, etc.
-        for i in range(v_idx, len(value) + 1):
-            if _match_wildcard_recursive(value, pattern, i, p_idx + 1):
-                return True
-        return False
-
-    # Handle ? wildcard
-    if pattern[p_idx] == "?":
-        # ? must match exactly one character
-        if v_idx >= len(value):
-            return False
-        return _match_wildcard_recursive(value, pattern, v_idx + 1, p_idx + 1)
-
-    # Handle literal character
-    if v_idx >= len(value) or value[v_idx] != pattern[p_idx]:
-        return False
-
-    return _match_wildcard_recursive(value, pattern, v_idx + 1, p_idx + 1)
+def _match_wildcard_dp(value: str, pattern: str) -> bool:
+    """Match wildcard pattern using dynamic programming (O(V*P) time)."""
+    V, P = len(value), len(pattern)
+    # dp[i][j] = True if value[:i] matches pattern[:j]
+    dp = [[False] * (P + 1) for _ in range(V + 1)]
+    dp[0][0] = True
+    # A pattern of all *s can match an empty value
+    for j in range(1, P + 1):
+        if pattern[j - 1] == "*":
+            dp[0][j] = dp[0][j - 1]
+    for i in range(1, V + 1):
+        for j in range(1, P + 1):
+            if pattern[j - 1] == "*":
+                dp[i][j] = dp[i - 1][j] or dp[i][j - 1]
+            elif pattern[j - 1] == "?" or pattern[j - 1] == value[i - 1]:
+                dp[i][j] = dp[i - 1][j - 1]
+    return dp[V][P]

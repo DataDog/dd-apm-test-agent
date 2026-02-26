@@ -208,6 +208,10 @@ class SpanMatcher:
         """Match wildcard pattern (supports * and ?, case-sensitive by default)."""
         return llmobs_query_parser.match_wildcard(value, pattern, case_sensitive=True)
 
+    def text_search(self, span: Dict[str, Any], text: str) -> bool:
+        """Check if span matches free text search."""
+        return text_search_span(span, text)
+
 
 # Global span matcher instance
 _span_matcher = SpanMatcher()
@@ -232,9 +236,11 @@ def parse_filter_query(query: str) -> Dict[str, Any]:
         - Existence: _exists_:field, _missing_:field
         - IN operator: @field IN [val1, val2, val3]
     """
-    result: Dict[str, Any] = {"ast": None, "filters": [], "text_search": ""}
+    result: Dict[str, Any] = {"ast": None, "filters": [], "text_search": "", "has_query": False}
     if not query:
         return result
+
+    result["has_query"] = bool(query.strip())
 
     # Parse query into AST using new parser
     ast = llmobs_query_parser.parse_query_to_ast(query, duration_parser=parse_duration_to_nanoseconds)
@@ -286,9 +292,9 @@ def apply_filters(spans: List[Dict[str, Any]], parsed_query: Dict[str, Any]) -> 
     if not ast and filters:
         return _apply_filters_legacy(spans, filters, text_search)
 
-    # If no query at all, return all spans
+    # If no query at all, return all spans; if a query was given but produced no AST, return none
     if not ast and not text_search:
-        return spans
+        return [] if parsed_query.get("has_query") else spans
 
     # Filter using AST evaluation
     filtered = []

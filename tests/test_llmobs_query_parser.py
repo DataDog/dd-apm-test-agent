@@ -430,3 +430,85 @@ def test_case_sensitive_wildcard(sample_spans):
 
     # Should not match "gpt-4" or "gpt-3.5-turbo" (case-sensitive)
     assert len(result) == 0
+
+
+# ============================================================================
+# Test Free Text Search
+# ============================================================================
+
+
+def test_free_text_matches_name(sample_spans):
+    query = "agent"
+    parsed = parse_filter_query(query)
+    result = apply_filters(sample_spans, parsed)
+
+    assert len(result) == 1
+    assert result[0]["name"] == "agent-workflow"
+
+
+def test_free_text_matches_tag(sample_spans):
+    query = "staging"
+    parsed = parse_filter_query(query)
+    result = apply_filters(sample_spans, parsed)
+
+    assert len(result) == 1
+    assert result[0]["span_id"] == "span-2"
+
+
+def test_free_text_no_match(sample_spans):
+    query = "nonexistent"
+    parsed = parse_filter_query(query)
+    result = apply_filters(sample_spans, parsed)
+
+    assert len(result) == 0
+
+
+def test_free_text_quoted_phrase(sample_spans):
+    query = '"llm-call"'
+    parsed = parse_filter_query(query)
+    result = apply_filters(sample_spans, parsed)
+
+    assert len(result) == 2
+    names = {s["name"] for s in result}
+    assert names == {"llm-call-1", "llm-call-2"}
+
+
+def test_free_text_combined_with_filter(sample_spans):
+    query = "llm-call @status:error"
+    parsed = parse_filter_query(query)
+    result = apply_filters(sample_spans, parsed)
+
+    assert len(result) == 1
+    assert result[0]["span_id"] == "span-2"
+
+
+def test_free_text_case_insensitive(sample_spans):
+    query = "AGENT"
+    parsed = parse_filter_query(query)
+    result = apply_filters(sample_spans, parsed)
+
+    assert len(result) == 1
+    assert result[0]["name"] == "agent-workflow"
+
+
+# ============================================================================
+# Test Malformed Queries
+# ============================================================================
+
+
+def test_malformed_at_token_no_colon(sample_spans):
+    """Tokens starting with @ but missing : should not fall through to free text search."""
+    query = "@model_name"  # Missing colon — intended as filter, not free text
+    parsed = parse_filter_query(query)
+    result = apply_filters(sample_spans, parsed)
+
+    assert len(result) == 0
+
+
+def test_malformed_at_token_in_and(sample_spans):
+    """Malformed @ token in AND expression should produce no results, not silently widen."""
+    query = "@model_name gpt-4"  # Missing colon — space instead of :
+    parsed = parse_filter_query(query)
+    result = apply_filters(sample_spans, parsed)
+
+    assert len(result) == 0
