@@ -19,6 +19,7 @@ from aiohttp import web
 from aiohttp.web import Request
 import msgpack
 
+from . import llmobs_query_parser
 
 if TYPE_CHECKING:
     from .agent import Agent
@@ -193,90 +194,145 @@ def parse_duration_to_nanoseconds(duration_str: str) -> Optional[float]:
     return value * DURATION_MULTIPLIERS.get(unit, 1)
 
 
+# ============================================================================
+# Span Matcher Helper - Provides methods for AST evaluation
+# ============================================================================
+
+
+class SpanMatcher:
+    """Helper class for AST query evaluation against spans."""
+
+    def get_field_value(self, span: Dict[str, Any], field: str) -> Optional[Any]:
+        """Get a field value from a span (facet/attribute)."""
+        return get_span_field_value(span, field)
+
+    def get_tag_value(self, span: Dict[str, Any], field: str) -> Optional[str]:
+        """Get a tag value from a span."""
+        for tag in span.get("tags", []):
+            if isinstance(tag, str) and tag.startswith(f"{field}:"):
+                return tag.split(":", 1)[1]
+        return None
+
+    def field_exists(self, span: Dict[str, Any], field: str) -> bool:
+        """Check if a field exists in the span."""
+        value = self.get_field_value(span, field)
+        if value is not None:
+            return True
+        # Also check tags
+        return self.get_tag_value(span, field) is not None
+
+    def match_wildcard(self, value: str, pattern: str) -> bool:
+        """Match wildcard pattern (supports * and ?, case-sensitive by default)."""
+        return llmobs_query_parser.match_wildcard(value, pattern, case_sensitive=True)
+
+    def text_search(self, span: Dict[str, Any], text: str) -> bool:
+        """Check if span matches free text search."""
+        return text_search_span(span, text)
+
+
+# Global span matcher instance
+_span_matcher = SpanMatcher()
+
+
 def parse_filter_query(query: str) -> Dict[str, Any]:
-    """Parse filter query string into filters and text search."""
-    result: Dict[str, Any] = {"filters": [], "text_search": ""}
+    """Parse filter query string into AST and text search.
+
+    Returns a dict with:
+        - "ast": QueryNode AST for structured queries (supports AND/OR/NOT)
+        - "text_search": Free text search string (remaining unmatched text)
+        - "filters": Legacy filter list (empty for backward compatibility)
+
+    Supports full Datadog query syntax:
+        - Boolean operators: AND, OR, NOT
+        - Parentheses grouping: (expr1 OR expr2) AND expr3
+        - Attributes: @field:value
+        - Tags: field:value
+        - Ranges: @field:[min TO max]
+        - Comparisons: @field:>value, @field:>=value, etc.
+        - Wildcards: * (zero or more), ? (exactly one char)
+        - Existence: _exists_:field, _missing_:field
+        - IN operator: @field IN [val1, val2, val3]
+    """
+    result: Dict[str, Any] = {"ast": None, "filters": [], "text_search": "", "has_query": False}
     if not query:
         return result
 
-    remaining = query
+    result["has_query"] = bool(query.strip())
 
-    # Range filters: @field:[min TO max]
-    for field, min_val, max_val in re.findall(r"@([\w.]+):\[([^\]]+)\s+TO\s+([^\]]+)\]", remaining, re.IGNORECASE):
-        f: Dict[str, Any] = {"field": field, "type": "facet", "operator": "range"}
-        if field == "duration":
-            min_ns, max_ns = parse_duration_to_nanoseconds(min_val.strip()), parse_duration_to_nanoseconds(
-                max_val.strip()
-            )
-            if min_ns is not None:
-                f["min"] = min_ns
-            if max_ns is not None:
-                f["max"] = max_ns
-        else:
-            try:
-                f["min"] = float(min_val.strip())
-            except ValueError:
-                f["min"] = min_val.strip()
-            try:
-                f["max"] = float(max_val.strip())
-            except ValueError:
-                f["max"] = max_val.strip()
-        result["filters"].append(f)
-    remaining = re.sub(r"@([\w.]+):\[([^\]]+)\s+TO\s+([^\]]+)\]", "", remaining, flags=re.IGNORECASE)
+    # Parse query into AST using new parser
+    ast = llmobs_query_parser.parse_query_to_ast(query, duration_parser=parse_duration_to_nanoseconds)
+    result["ast"] = ast
 
-    # Comparison filters: @field:>=value, @field:<=value, etc.
-    op_map = {">=": "gte", "<=": "lte", ">": "gt", "<": "lt"}
-    for field, op, value in re.findall(r"@([\w.]+):(>=|<=|>|<)([^\s]+)", remaining):
-        f = {"field": field, "type": "facet", "operator": op_map[op]}
-        if field == "duration":
-            parsed = parse_duration_to_nanoseconds(value)
-            if parsed is not None:
-                f["value"] = parsed
-        else:
-            try:
-                f["value"] = float(value)
-            except ValueError:
-                f["value"] = value
-        result["filters"].append(f)
-    remaining = re.sub(r"@([\w.]+):(>=|<=|>|<)([^\s]+)", "", remaining)
+    # Text search is no longer extracted - all structured queries go through AST
+    # For backward compatibility, text_search remains empty
+    result["text_search"] = ""
 
-    # Facet filters: @field:value
-    for field, value in re.findall(r"@([\w.]+):([^\s\[]+)", remaining):
-        if not value.startswith((">=", "<=", ">", "<")):
-            result["filters"].append({"field": field, "value": value, "type": "facet"})
-    remaining = re.sub(r"@([\w.]+):([^\s\[]+)", "", remaining)
-
-    # Tag filters: field:value (without @)
-    for field, value in re.findall(r"(?<!\S)([\w.]+):([^\s]+)", remaining):
-        result["filters"].append({"field": field, "value": value, "type": "tag"})
-    remaining = re.sub(r"(?<!\S)([\w.]+):([^\s]+)", "", remaining)
-
-    result["text_search"] = remaining.strip()
     return result
 
 
-def match_wildcard(value: str, pattern: str) -> bool:
-    """Match value against pattern with wildcard support (*). Case-insensitive."""
-    v, p = value.lower(), pattern.lower()
-    if p == "*":
-        return True
-    if p.startswith("*") and p.endswith("*"):
-        return p[1:-1] in v
-    if p.startswith("*"):
-        return v.endswith(p[1:])
-    if p.endswith("*"):
-        return v.startswith(p[:-1])
-    return v == p
+def match_wildcard(value: str, pattern: str, case_sensitive: bool = True) -> bool:
+    """Match value against pattern with wildcard support.
+
+    Supports:
+    - * : matches zero or more characters
+    - ? : matches exactly one character
+
+    Args:
+        value: The value to match
+        pattern: The pattern with wildcards
+        case_sensitive: Whether matching is case-sensitive (default: True)
+
+    Examples:
+        >>> match_wildcard("gpt-4", "gpt*")
+        True
+        >>> match_wildcard("user1", "user?")
+        True
+    """
+    return llmobs_query_parser.match_wildcard(value, pattern, case_sensitive=case_sensitive)
 
 
 def apply_filters(spans: List[Dict[str, Any]], parsed_query: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Apply filter conditions and text search to spans."""
-    filters = parsed_query.get("filters", [])
+    """Apply filter conditions to spans using AST evaluation.
+
+    Args:
+        spans: List of spans to filter
+        parsed_query: Parsed query dict with "ast" and "text_search" keys
+
+    Returns:
+        Filtered list of spans matching the query
+    """
+    ast = parsed_query.get("ast")
     text_search = parsed_query.get("text_search", "").lower()
 
-    if not filters and not text_search:
-        return spans
+    # Legacy support: if no AST but has filters list, use old method
+    filters = parsed_query.get("filters", [])
+    if not ast and filters:
+        return _apply_filters_legacy(spans, filters, text_search)
 
+    # If no query at all, return all spans; if a query was given but produced no AST, return none
+    if not ast and not text_search:
+        return [] if parsed_query.get("has_query") else spans
+
+    # Filter using AST evaluation
+    filtered = []
+    for span in spans:
+        # Evaluate AST against span
+        if ast and not ast.evaluate(span, _span_matcher):
+            continue
+
+        # Apply text search if present
+        if text_search and not text_search_span(span, text_search):
+            continue
+
+        filtered.append(span)
+
+    return filtered
+
+
+def _apply_filters_legacy(
+    spans: List[Dict[str, Any]], filters: List[Dict[str, Any]], text_search: str
+) -> List[Dict[str, Any]]:
+    """Legacy filter application for backward compatibility."""
     filtered = []
     for span in spans:
         if not _span_matches_filters(span, filters):
