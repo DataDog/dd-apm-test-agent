@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Minimal MCP server that responds to initialize/tools/list/ping and blocks on stdin."""
 import json
 import sys
