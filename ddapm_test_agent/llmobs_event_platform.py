@@ -27,14 +27,30 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# CORS headers for cross-origin requests from Datadog UI
-CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-DD-Api-Key, X-DD-Application-Key, "
+# Allowed CORS origins: Datadog UI domains and localhost for local development
+_ALLOWED_ORIGIN_PATTERN = re.compile(
+    r"^https?://(localhost(:\d+)?|127\.0\.0\.1(:\d+)?|[\w.-]+\.datadoghq\.(com|eu)|[\w.-]+\.ddog-gov\.com|[\w.-]+\.datad0g\.com)$"
+)
+
+_CORS_ALLOW_METHODS = "GET, POST, OPTIONS"
+_CORS_ALLOW_HEADERS = (
+    "Content-Type, Authorization, X-DD-Api-Key, X-DD-Application-Key, "
     "X-CSRF-Token, x-csrf-token, x-web-ui-version, X-Datadog-Trace-ID, "
-    "X-Datadog-Parent-ID, X-Datadog-Origin, X-Datadog-Sampling-Priority, Accept, Origin, Referer",
-}
+    "X-Datadog-Parent-ID, X-Datadog-Origin, X-Datadog-Sampling-Priority, Accept, Origin, Referer"
+)
+
+
+def _cors_headers(request: Request) -> Dict[str, str]:
+    """Build CORS headers, only allowing known origins."""
+    headers: Dict[str, str] = {
+        "Access-Control-Allow-Methods": _CORS_ALLOW_METHODS,
+        "Access-Control-Allow-Headers": _CORS_ALLOW_HEADERS,
+        "Vary": "Origin",
+    }
+    origin = request.headers.get("Origin", "")
+    if _ALLOWED_ORIGIN_PATTERN.match(origin):
+        headers["Access-Control-Allow-Origin"] = origin
+    return headers
 
 
 def with_cors(
@@ -43,10 +59,11 @@ def with_cors(
     """Wrap handler to add CORS headers and handle OPTIONS preflight."""
 
     async def wrapper(request: Request) -> web.StreamResponse:
+        headers = _cors_headers(request)
         if request.method == "OPTIONS":
-            return web.Response(status=200, headers=CORS_HEADERS)
+            return web.Response(status=200, headers=headers)
         response = await handler(request)
-        response.headers.update(CORS_HEADERS)
+        response.headers.update(headers)
         return response
 
     return wrapper

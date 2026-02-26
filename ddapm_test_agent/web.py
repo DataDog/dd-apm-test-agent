@@ -1116,15 +1116,22 @@ class WebUI:
 
     async def handle_requests_sse(self, request: web.Request) -> StreamResponse:
         """Handle Server-Sent Events for real-time request updates"""
+        from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
+
+        sse_headers: Dict[str, str] = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Vary": "Origin",
+        }
+        origin = request.headers.get("Origin", "")
+        if _ALLOWED_ORIGIN_PATTERN.match(origin):
+            sse_headers["Access-Control-Allow-Origin"] = origin
+
         response = StreamResponse(
             status=200,
             reason="OK",
-            headers={
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "Access-Control-Allow-Origin": "*",
-            },
+            headers=sse_headers,
         )
 
         await response.prepare(request)
