@@ -1,0 +1,8 @@
+{
+    "name": "dd-llmobs",
+    "description": "Datadog LLM Observability for Claude Code",
+    "author": {
+        "name": "LLM Observability",
+        "email": "llmobs@datadoghq.com"
+    }
+}
