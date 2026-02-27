@@ -25,7 +25,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 echo "[dd-llmobs] Starting agent via Docker" >&2
-exec docker run --rm -i \
+exec docker run --rm -i --pull always \
     -p "${AGENT_PORT}:8126" \
     -e HOST_USER \
     -e DD_API_KEY \
