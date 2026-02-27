@@ -79,8 +79,6 @@ class SessionState:
         # the previous turn's final context size.  Not reset between turns.
         self.last_known_input_tokens: int = 0
         self.pending_permission_at_ns: Optional[int] = None
-        # Running total of permission wait ms across the entire turn (all tools, incl. subagents).
-        self.accumulated_permission_wait_ms: int = 0
 
 
 _MAX_UINT_64 = (1 << 64) - 1
@@ -216,6 +214,10 @@ class ClaudeHooksAPI:
         """
         now_ns = int(time.time() * 1_000_000_000)
         duration = now_ns - session.start_ns
+
+        # Discard any pending permission wait — the turn was interrupted so we don't
+        # want it bleeding into the next turn's accumulated total.
+        session.pending_permission_at_ns = None
 
         # Finalize any in-progress subagent spans on the stack
         while session.agent_span_stack:
@@ -370,6 +372,11 @@ class ClaudeHooksAPI:
 
         output_str = str(tool_output)[:4096] if tool_output else ""
 
+        estimated_permission_wait_ms: Optional[int] = None
+        if session.pending_permission_at_ns is not None:
+            estimated_permission_wait_ms = (now_ns - session.pending_permission_at_ns) // 1_000_000
+            session.pending_permission_at_ns = None
+
         # Check if this Task tool has a deferred agent span to update instead
         deferred = session.deferred_agent_spans.pop(tool_use_id, None)
         if deferred:
@@ -430,12 +437,6 @@ class ClaudeHooksAPI:
 
         # Normal tool span
         duration = now_ns - start_ns
-
-        estimated_permission_wait_ms: Optional[int] = None
-        if session.pending_permission_at_ns is not None:
-            estimated_permission_wait_ms = (now_ns - session.pending_permission_at_ns) // 1_000_000
-            session.pending_permission_at_ns = None
-            session.accumulated_permission_wait_ms += estimated_permission_wait_ms
 
         span_links = []
         if self._link_tracker:
@@ -655,25 +656,6 @@ class ClaudeHooksAPI:
             "total_tokens": total_input + total_output,
         }
 
-    def _get_last_input_tokens(self, trace_id: str, parent_span_id: str) -> int:
-        """Return input_tokens from the most recent LLM span whose parent is parent_span_id.
-
-        Returns 0 if no qualifying spans exist.
-        """
-        llm_spans = sorted(
-            [
-                s
-                for s in self._assembled_spans
-                if s.get("trace_id") == trace_id
-                and s.get("meta", {}).get("span", {}).get("kind") == "llm"
-                and s.get("parent_id") == parent_span_id
-            ],
-            key=lambda s: s.get("start_ns", 0),
-        )
-        if not llm_spans:
-            return 0
-        return llm_spans[-1].get("metrics", {}).get("input_tokens", 0)
-
     def _compute_context_delta(
         self, trace_id: str, parent_span_id: str, start_input_tokens: int = 0
     ) -> Optional[Dict[str, Any]]:
@@ -754,7 +736,9 @@ class ClaudeHooksAPI:
 
         root_span_name = session.conversation_title or "claude-code-request"
 
-        estimated_permission_wait_ms = session.accumulated_permission_wait_ms
+        estimated_permission_wait_ms = self._sum_estimated_permission_wait_ms(
+            trace_id=session.trace_id
+        )
 
         if root_span:
             root_span["name"] = root_span_name
@@ -859,16 +843,19 @@ class ClaudeHooksAPI:
             "custom_instructions": custom_instructions,
         })
 
-    def _sum_estimated_permission_wait_ms(self, *, parent_id: str) -> int:
-        """Sum estimated_permission_wait_ms from tool spans that are direct children of parent_id.
+    def _sum_estimated_permission_wait_ms(self, *, parent_id: Optional[str] = None, trace_id: Optional[str] = None) -> int:
+        """Sum estimated_permission_wait_ms from tool spans.
 
-        Used by _handle_subagent_stop to aggregate permission wait onto each agent span.
+        If trace_id is provided, sums across all tool spans in the trace (all descendants).
+        If parent_id is provided, sums only direct children of that span.
         """
         total = 0
         for s in self._assembled_spans:
             if s.get("meta", {}).get("span", {}).get("kind") != "tool":
                 continue
-            if str(s.get("parent_id")) != str(parent_id):
+            if trace_id is not None and s.get("trace_id") != trace_id:
+                continue
+            if parent_id is not None and str(s.get("parent_id")) != str(parent_id):
                 continue
             total += s.get("meta", {}).get("metadata", {}).get("_dd", {}).get("estimated_permission_wait_ms", 0)
         return total
@@ -877,7 +864,9 @@ class ClaudeHooksAPI:
         """Handle PermissionRequest hook — records when the permission dialog appeared.
 
         PermissionRequest fires when the dialog is shown to the user.
-        The next PostToolUse for the same session computes the elapsed time.
+        If the next hook is PostToolUse, the elapsed time is computed there and tagged on
+        the tool span. Otherwise it is consumed in _dispatch_hook and accumulated on the
+        session without span-level tagging.
         """
         session = self._get_or_create_session(session_id)
         session.pending_permission_at_ns = int(time.time() * 1_000_000_000)
@@ -886,6 +875,14 @@ class ClaudeHooksAPI:
         """Dispatch a hook event to the appropriate handler."""
         session_id = body.get("session_id", "")
         hook_event_name = body.get("hook_event_name", "")
+
+        # Consume any pending permission wait before dispatching non-PostToolUse hooks.
+        # PostToolUse is excluded so its normal path can tag the tool span directly.
+        if hook_event_name != "PostToolUse":
+            session = self._sessions.get(session_id)
+            if session and session.pending_permission_at_ns is not None:
+                now_ns = int(time.time() * 1_000_000_000)
+                session.pending_permission_at_ns = None
 
         handlers: Dict[str, Any] = {
             "SessionStart": self._handle_session_start,
