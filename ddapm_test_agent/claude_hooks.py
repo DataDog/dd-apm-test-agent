@@ -218,6 +218,9 @@ class ClaudeHooksAPI:
         # Discard any pending permission wait — the turn was interrupted so we don't
         # want it bleeding into the next turn's accumulated total.
         session.pending_permission_at_ns = None
+        root_span_ref: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
+        if root_span_ref is not None and root_span_ref["duration"] == -1:
+            root_span_ref["duration"] = 0
 
         # Finalize any in-progress subagent spans on the stack
         while session.agent_span_stack:
@@ -376,6 +379,9 @@ class ClaudeHooksAPI:
         if session.pending_permission_at_ns is not None:
             estimated_permission_wait_ms = (now_ns - session.pending_permission_at_ns) // 1_000_000
             session.pending_permission_at_ns = None
+            root_span_ref: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
+            if root_span_ref is not None and root_span_ref["duration"] == -1:
+                root_span_ref["duration"] = 0
 
         # Check if this Task tool has a deferred agent span to update instead
         deferred = session.deferred_agent_spans.pop(tool_use_id, None)
@@ -870,19 +876,14 @@ class ClaudeHooksAPI:
         """
         session = self._get_or_create_session(session_id)
         session.pending_permission_at_ns = int(time.time() * 1_000_000_000)
+        root_span: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
+        if root_span is not None:
+            root_span["duration"] = -1
 
     def _dispatch_hook(self, body: Dict[str, Any]) -> None:
         """Dispatch a hook event to the appropriate handler."""
         session_id = body.get("session_id", "")
         hook_event_name = body.get("hook_event_name", "")
-
-        # Consume any pending permission wait before dispatching non-PostToolUse hooks.
-        # PostToolUse is excluded so its normal path can tag the tool span directly.
-        if hook_event_name != "PostToolUse":
-            session = self._sessions.get(session_id)
-            if session and session.pending_permission_at_ns is not None:
-                now_ns = int(time.time() * 1_000_000_000)
-                session.pending_permission_at_ns = None
 
         handlers: Dict[str, Any] = {
             "SessionStart": self._handle_session_start,
