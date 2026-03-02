@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    claude hooks: Enrich tool and subagent span names with human-readable intent extracted from tool input (e.g., "Read - claude_hooks.py" instead of "Read"). Adds ``tool_name`` tag for faceting.

@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Update claude setup hooks to avoid some failure cases:
+      - Check if test agent is already running before attempting to start a new container.
+      - Add port conflict detection to warn users when port 8126 is occupied by the Datadog Agent or another process.
+      - Move ANTHROPIC_BASE_URL from settings.json to a per-session environment variable to prevent Claude from breaking if the test agent stops between sessions.

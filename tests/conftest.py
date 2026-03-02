@@ -27,6 +27,7 @@ import grpc.aio as grpc_aio
 import msgpack
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import LogsServiceStub
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import MetricsServiceStub
+from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import TraceServiceStub
 import pytest
 
 from ddapm_test_agent.agent import DEFAULT_OTLP_GRPC_PORT
@@ -38,6 +39,7 @@ from ddapm_test_agent.apmtelemetry import TelemetryEvent
 from ddapm_test_agent.client import TestOTLPClient
 from ddapm_test_agent.logs import LOGS_ENDPOINT
 from ddapm_test_agent.metrics import METRICS_ENDPOINT
+from ddapm_test_agent.traces_otlp import TRACES_ENDPOINT
 from ddapm_test_agent.trace import Span
 from ddapm_test_agent.trace import Trace
 from ddapm_test_agent.trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
@@ -807,15 +809,17 @@ def otlp_test_client(otlp_http_url):
     client.clear()
 
 
-@pytest.fixture(params=["logs", "metrics"])
+@pytest.fixture(params=["logs", "metrics", "traces"])
 async def otlp_grpc_client(request):
-    """GRPC client that can connect to either logs or metrics service."""
+    """GRPC client that can connect to logs, metrics, or traces service."""
     channel = grpc_aio.insecure_channel(f"127.0.0.1:{DEFAULT_OTLP_GRPC_PORT}")
 
     if request.param == "logs":
         stub = LogsServiceStub(channel)
     elif request.param == "metrics":
         stub = MetricsServiceStub(channel)
+    elif request.param == "traces":
+        stub = TraceServiceStub(channel)
     else:
         raise ValueError(f"Unknown service type: {request.param}")
 
@@ -847,8 +851,19 @@ async def otlp_metrics_grpc_client():
 
 
 @pytest.fixture
+async def otlp_traces_grpc_client():
+    """GRPC client specifically for traces service."""
+    channel = grpc_aio.insecure_channel(f"127.0.0.1:{DEFAULT_OTLP_GRPC_PORT}")
+    stub = TraceServiceStub(channel)
+
+    yield stub
+
+    await channel.close()
+
+
+@pytest.fixture
 async def grpc_client_with_failure_type(agent_app, available_port, aiohttp_server, request):
-    """GRPC server with configurable HTTP backend failure scenarios for both logs and metrics."""
+    """GRPC server with configurable HTTP backend failure scenarios for logs, metrics, and traces."""
     grpc_port = int(available_port)
 
     # Require explicit tuple of (failure_type, service_type)
@@ -857,10 +872,10 @@ async def grpc_client_with_failure_type(agent_app, available_port, aiohttp_serve
         raise ValueError("grpc_client_with_failure_type requires a tuple of (failure_type, service_type)")
 
     failure_type, service_type = param
-    if service_type not in ["logs", "metrics"]:
-        raise ValueError(f"service_type must be 'logs' or 'metrics', got: {service_type}")
+    if service_type not in ["logs", "metrics", "traces"]:
+        raise ValueError(f"service_type must be 'logs', 'metrics', or 'traces', got: {service_type}")
 
-    endpoint = LOGS_ENDPOINT if service_type == "logs" else METRICS_ENDPOINT
+    endpoint = LOGS_ENDPOINT if service_type == "logs" else METRICS_ENDPOINT if service_type == "metrics" else TRACES_ENDPOINT
 
     http_handlers = {
         "http_400": lambda _: web.HTTPBadRequest(text="invalid"),
@@ -884,6 +899,8 @@ async def grpc_client_with_failure_type(agent_app, available_port, aiohttp_serve
         stub = LogsServiceStub(channel)
     elif service_type == "metrics":
         stub = MetricsServiceStub(channel)
+    elif service_type == "traces":
+        stub = TraceServiceStub(channel)
     else:
         raise ValueError(f"Unknown service_type: {service_type}")
 

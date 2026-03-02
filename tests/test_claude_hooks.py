@@ -98,7 +98,7 @@ async def test_hook_tool_use_creates_tool_span(agent):
     assert len(tool_spans) == 1
 
     tool = tool_spans[0]
-    assert tool["name"] == "Bash"
+    assert tool["name"] == "Bash - ls"
     assert tool["duration"] >= 0
     assert "ls" in tool["meta"]["input"]["value"]
     assert "file1.txt" in tool["meta"]["output"]["value"]

@@ -60,29 +60,43 @@ async def _submit_llmobs_payload(agent, payload, path="/evp_proxy/v2/api/v2/llmo
 
 # Tests from master branch (testing empty/stub responses)
 
+_TEST_ORIGIN = "https://app.datadoghq.com"
+_TEST_ORIGIN_HEADERS = {"Origin": _TEST_ORIGIN}
+
 
 async def test_llmobs_logs_analytics_list_cors_headers(agent):
     resp = await agent.post(
         "/api/v1/logs-analytics/list",
         json={"query": "*"},
+        headers=_TEST_ORIGIN_HEADERS,
     )
     assert resp.status == 200
-    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+    assert resp.headers.get("Access-Control-Allow-Origin") == _TEST_ORIGIN
+
+
+async def test_llmobs_logs_analytics_list_cors_rejects_unknown_origin(agent):
+    resp = await agent.post(
+        "/api/v1/logs-analytics/list",
+        json={"query": "*"},
+        headers={"Origin": "https://evil.example.com"},
+    )
+    assert resp.status == 200
+    assert "Access-Control-Allow-Origin" not in resp.headers
 
 
 async def test_llmobs_logs_analytics_list_options(agent):
-    resp = await agent.options("/api/v1/logs-analytics/list")
+    resp = await agent.options("/api/v1/logs-analytics/list", headers=_TEST_ORIGIN_HEADERS)
     assert resp.status == 200
-    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+    assert resp.headers.get("Access-Control-Allow-Origin") == _TEST_ORIGIN
     assert "POST" in resp.headers.get("Access-Control-Allow-Methods", "")
     allowed_headers = resp.headers.get("Access-Control-Allow-Headers", "")
     assert "x-csrf-token" in allowed_headers.lower()
 
 
 async def test_llmobs_aggregate_options(agent):
-    resp = await agent.options("/api/v1/logs-analytics/aggregate")
+    resp = await agent.options("/api/v1/logs-analytics/aggregate", headers=_TEST_ORIGIN_HEADERS)
     assert resp.status == 200
-    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+    assert resp.headers.get("Access-Control-Allow-Origin") == _TEST_ORIGIN
 
 
 async def test_llmobs_facets_list(agent):
@@ -93,15 +107,15 @@ async def test_llmobs_facets_list(agent):
 
 
 async def test_llmobs_facets_list_options(agent):
-    resp = await agent.options("/api/ui/event-platform/llmobs/facets")
+    resp = await agent.options("/api/ui/event-platform/llmobs/facets", headers=_TEST_ORIGIN_HEADERS)
     assert resp.status == 200
-    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+    assert resp.headers.get("Access-Control-Allow-Origin") == _TEST_ORIGIN
 
 
 async def test_llmobs_trace_options(agent):
-    resp = await agent.options("/api/ui/llm-obs/v1/trace/test-trace-id")
+    resp = await agent.options("/api/ui/llm-obs/v1/trace/test-trace-id", headers=_TEST_ORIGIN_HEADERS)
     assert resp.status == 200
-    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+    assert resp.headers.get("Access-Control-Allow-Origin") == _TEST_ORIGIN
 
 
 async def test_llmobs_query_rewriter_facet_info(agent):
@@ -140,9 +154,9 @@ async def test_query_scalar(agent):
 
 
 async def test_query_scalar_options(agent):
-    resp = await agent.options("/api/ui/query/scalar")
+    resp = await agent.options("/api/ui/query/scalar", headers=_TEST_ORIGIN_HEADERS)
     assert resp.status == 200
-    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+    assert resp.headers.get("Access-Control-Allow-Origin") == _TEST_ORIGIN
 
 
 # Functional tests (testing actual span data flow)
@@ -259,14 +273,15 @@ async def test_llmobs_cors_headers(agent):
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
         json={},
+        headers=_TEST_ORIGIN_HEADERS,
     )
-    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+    assert resp.headers.get("Access-Control-Allow-Origin") == _TEST_ORIGIN
 
 
 async def test_llmobs_options(agent):
-    resp = await agent.options("/api/unstable/llm-obs-query-rewriter/list")
+    resp = await agent.options("/api/unstable/llm-obs-query-rewriter/list", headers=_TEST_ORIGIN_HEADERS)
     assert resp.status == 200
-    assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+    assert resp.headers.get("Access-Control-Allow-Origin") == _TEST_ORIGIN
     assert "POST" in resp.headers.get("Access-Control-Allow-Methods", "")
 
 
