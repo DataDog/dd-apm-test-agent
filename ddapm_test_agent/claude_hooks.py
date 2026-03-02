@@ -652,7 +652,7 @@ class ClaudeHooksAPI:
         context_delta = self._compute_context_delta(
             session.trace_id,
             agent_info["span_id"],
-            start_input_tokens=0,
+            first_input_tokens=0,
         )
 
         estimated_perm_wait = self._sum_estimated_permission_wait_ms(
@@ -752,12 +752,12 @@ class ClaudeHooksAPI:
         }
 
     def _compute_context_delta(
-        self, trace_id: str, parent_span_id: str, start_input_tokens: int = 0
+        self, trace_id: str, parent_span_id: str, first_input_tokens: int = 0
     ) -> Optional[Dict[str, Any]]:
         """Return context delta for an agent span.
 
         parent_span_id: only consider LLM spans whose parent is this span.
-        start_input_tokens: context size at the beginning of this span.
+        first_input_tokens: context size at the beginning of this span.
           - Root agent: session.last_known_input_tokens (persists across turns)
           - Subagent:   0 (each subagent has its own fresh context window)
         """
@@ -780,13 +780,13 @@ class ClaudeHooksAPI:
         last_input_tokens = last_span.get("metrics", {}).get("input_tokens", 0)
         primary_model = last_span.get("meta", {}).get("model_name", "")
         window = _get_context_limit(primary_model)
-        delta_tokens = max(last_input_tokens - start_input_tokens, 0)
+        delta_tokens = max(last_input_tokens - first_input_tokens, 0)
         return {
-            "start_input_tokens": start_input_tokens,
+            "first_input_tokens": first_input_tokens,
             "last_input_tokens": last_input_tokens,
             "delta_tokens": delta_tokens,
             "context_window_size": window,
-            "first_usage_pct": round(start_input_tokens / window * 100, 1) if window else 0.0,
+            "first_usage_pct": round(first_input_tokens / window * 100, 1) if window else 0.0,
             "last_usage_pct": round(last_input_tokens / window * 100, 1) if window else 0.0,
         }
 
