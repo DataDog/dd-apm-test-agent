@@ -77,8 +77,9 @@ class SessionState:
         self.claimed_task_tools: Set[str] = set()
         self.conversation_title: str = ""
         # Persists across turns so each turn's context_delta reflects growth from
-        # the previous turn's final context size.  Not reset between turns.
+        # the previous turn's final context size.
         self.last_known_input_tokens: int = 0
+        # Tracks the time when the permission dialog appeared, so we can compute the elapsed time.
         self.pending_permission_at_ns: Optional[int] = None
 
 
@@ -250,6 +251,10 @@ class ClaudeHooksAPI:
         if session.agent_span_stack:
             return session.agent_span_stack[-1].get("_span_ref")
         return getattr(session, "_root_span_ref", None)
+
+    def _set_hidden_metadata(self, span: Dict[str, Any], **kwargs: Any) -> None:
+        """Merge key-value pairs into span['meta']['metadata']['_dd'], preserving existing values."""
+        span["meta"].setdefault("metadata", {}).setdefault("_dd", {}).update(kwargs)
 
     def _handle_session_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SessionStart hook event."""
@@ -463,7 +468,7 @@ class ClaudeHooksAPI:
                 span_ref["meta"]["output"] = {"value": output_str}
                 span_ref["span_links"] = span_links
                 if context_delta:
-                    span_ref["meta"].setdefault("metadata", {}).setdefault("_dd", {})["context_delta"] = context_delta
+                    self._set_hidden_metadata(span_ref, context_delta=context_delta)
             else:
                 # Fallback: no preliminary span — append a new one
                 span = {
@@ -491,11 +496,12 @@ class ClaudeHooksAPI:
                         "span": {"kind": "agent"},
                         "input": {"value": input_value},
                         "output": {"value": output_str},
-                        **({"metadata": {"_dd": {"context_delta": context_delta}}} if context_delta else {}),
                     },
                     "metrics": {},
                     "span_links": span_links,
                 }
+                if context_delta:
+                    self._set_hidden_metadata(span, context_delta=context_delta)
                 self._assembled_spans.append(span)
             return
 
@@ -540,7 +546,7 @@ class ClaudeHooksAPI:
             "span_links": span_links,
         }
         if estimated_permission_wait_ms is not None:
-            span["meta"].setdefault("metadata", {}).setdefault("_dd", {})["estimated_permission_wait_ms"] = estimated_permission_wait_ms
+            self._set_hidden_metadata(span, estimated_permission_wait_ms=estimated_permission_wait_ms)
         self._assembled_spans.append(span)
 
     def _handle_subagent_start(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -670,7 +676,7 @@ class ClaudeHooksAPI:
             if span_ref:
                 span_ref["duration"] = duration
                 if estimated_perm_wait > 0:
-                    span_ref["meta"].setdefault("metadata", {}).setdefault("_dd", {})["estimated_permission_wait_ms"] = estimated_perm_wait
+                    self._set_hidden_metadata(span_ref, estimated_permission_wait_ms=estimated_perm_wait)
             session.deferred_agent_spans[task_tool_use_id] = {
                 "span_id": agent_info["span_id"],
                 "trace_id": session.trace_id,
@@ -686,10 +692,13 @@ class ClaudeHooksAPI:
             # Update the eagerly-emitted span in-place
             if span_ref:
                 span_ref["duration"] = duration
+                dd_fields: Dict[str, Any] = {}
                 if context_delta:
-                    span_ref["meta"].setdefault("metadata", {}).setdefault("_dd", {})["context_delta"] = context_delta
+                    dd_fields["context_delta"] = context_delta
                 if estimated_perm_wait > 0:
-                    span_ref["meta"].setdefault("metadata", {}).setdefault("_dd", {})["estimated_permission_wait_ms"] = estimated_perm_wait
+                    dd_fields["estimated_permission_wait_ms"] = estimated_perm_wait
+                if dd_fields:
+                    self._set_hidden_metadata(span_ref, **dd_fields)
             else:
                 # Fallback: no preliminary span (shouldn't happen)
                 span = {
@@ -717,10 +726,11 @@ class ClaudeHooksAPI:
                         "span": {"kind": "agent"},
                         "input": {},
                         "output": {},
-                        **({"metadata": {"_dd": {"context_delta": context_delta}}} if context_delta else {}),
                     },
                     "metrics": {},
                 }
+                if context_delta:
+                    self._set_hidden_metadata(span, context_delta=context_delta)
                 self._assembled_spans.append(span)
 
     def _compute_token_usage(self, trace_id: str) -> Dict[str, int]:
@@ -835,15 +845,16 @@ class ClaudeHooksAPI:
             root_meta = root_span["meta"].setdefault("metadata", {})
             root_meta.update(
                 {
-                    "agent_manifest": agent_manifest,
                     "model_name": session.model,
                     "model_provider": "anthropic",
                 }
             )
+            dd_fields: Dict[str, Any] = {"agent_manifest": agent_manifest}
             if context_delta:
-                root_meta.setdefault("_dd", {})["context_delta"] = context_delta
+                dd_fields["context_delta"] = context_delta
             if estimated_permission_wait_ms > 0:
-                root_meta.setdefault("_dd", {})["estimated_permission_wait_ms"] = estimated_permission_wait_ms
+                dd_fields["estimated_permission_wait_ms"] = estimated_permission_wait_ms
+            self._set_hidden_metadata(root_span, **dd_fields)
             root_span["metrics"] = token_usage
         else:
             # No eagerly-emitted root span found — create one as fallback
@@ -876,17 +887,18 @@ class ClaudeHooksAPI:
                     "model_name": session.model,
                     "model_provider": "anthropic",
                     "metadata": {
-                        "agent_manifest": agent_manifest,
                         "model_name": session.model,
                         "model_provider": "anthropic",
-                        **({"_dd": {
-                            **({"context_delta": context_delta} if context_delta else {}),
-                            **({"estimated_permission_wait_ms": estimated_permission_wait_ms} if estimated_permission_wait_ms > 0 else {}),
-                        }} if context_delta or estimated_permission_wait_ms > 0 else {}),
                     },
                 },
                 "metrics": token_usage,
             }
+            dd_fields = {"agent_manifest": agent_manifest}
+            if context_delta:
+                dd_fields["context_delta"] = context_delta
+            if estimated_permission_wait_ms > 0:
+                dd_fields["estimated_permission_wait_ms"] = estimated_permission_wait_ms
+            self._set_hidden_metadata(root_span, **dd_fields)
             self._assembled_spans.append(root_span)
 
         session.root_span_emitted = True
