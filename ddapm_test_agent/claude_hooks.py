@@ -786,7 +786,7 @@ class ClaudeHooksAPI:
             "last_input_tokens": last_input_tokens,
             "delta_tokens": delta_tokens,
             "context_window_size": window,
-            "start_usage_pct": round(start_input_tokens / window * 100, 1) if window else 0.0,
+            "first_usage_pct": round(start_input_tokens / window * 100, 1) if window else 0.0,
             "last_usage_pct": round(last_input_tokens / window * 100, 1) if window else 0.0,
         }
 
