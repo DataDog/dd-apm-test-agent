@@ -758,8 +758,8 @@ class ClaudeHooksAPI:
 
         parent_span_id: only consider LLM spans whose parent is this span.
         first_input_tokens: context size at the beginning of this span.
-          - Root agent: session.last_known_input_tokens (persists across turns)
-          - Subagent:   0 (each subagent has its own fresh context window)
+        - Root agent: session.last_known_input_tokens (persists across turns)
+        - Subagent:   0 (each subagent has its own fresh context window)
         """
         llm_spans = sorted(
             [
