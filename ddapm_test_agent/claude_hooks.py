@@ -787,7 +787,7 @@ class ClaudeHooksAPI:
             "delta_tokens": delta_tokens,
             "context_window_size": window,
             "start_usage_pct": round(start_input_tokens / window * 100, 1) if window else 0.0,
-            "context_usage_pct": round(last_input_tokens / window * 100, 1) if window else 0.0,
+            "last_usage_pct": round(last_input_tokens / window * 100, 1) if window else 0.0,
         }
 
     def _handle_stop(self, session_id: str, body: Dict[str, Any]) -> None:
