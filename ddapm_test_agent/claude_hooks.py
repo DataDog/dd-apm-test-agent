@@ -771,9 +771,12 @@ class ClaudeHooksAPI:
             ],
             key=lambda s: s.get("start_ns", 0),
         )
-        if not llm_spans:
+        last_span = next(
+            (s for s in reversed(llm_spans) if s.get("metrics", {}).get("input_tokens", 0) > 0),
+            None,
+        )
+        if last_span is None:
             return None
-        last_span = llm_spans[-1]
         last_input_tokens = last_span.get("metrics", {}).get("input_tokens", 0)
         primary_model = last_span.get("meta", {}).get("model_name", "")
         window = _get_context_limit(primary_model)
