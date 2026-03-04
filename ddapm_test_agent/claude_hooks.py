@@ -929,12 +929,14 @@ class ClaudeHooksAPI:
         Fires before Claude Code runs a context compaction operation.
         trigger is 'manual' (user ran /compact) or 'auto' (context window full).
         """
+        log.info("pre_compact body: %s", body)
         trigger = body.get("trigger", "")
         custom_instructions = body.get("custom_instructions", "")
         session = self._sessions.get(session_id)
         if not session:
             return
         span_ref = self._current_span_ref(session)
+        log.info("span_ref: %s", span_ref)
         if span_ref is None:
             return
         dd = span_ref.setdefault("meta", {}).setdefault("metadata", {}).setdefault("_dd", {})
@@ -942,6 +944,7 @@ class ClaudeHooksAPI:
             "trigger": trigger,
             "custom_instructions": custom_instructions,
         })
+        log.info("set compaction event on span %s", span_ref["span_id"])
 
     def _sum_estimated_permission_wait_ms(self, *, parent_id: Optional[str] = None, trace_id: Optional[str] = None) -> int:
         """Sum estimated_permission_wait_ms from tool spans.
