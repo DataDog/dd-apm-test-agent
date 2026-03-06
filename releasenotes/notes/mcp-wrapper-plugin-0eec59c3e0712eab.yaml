@@ -1,0 +1,8 @@
+---
+features:
+  - |
+    Add ``ddapm-test-agent-mcp`` console script and ``dd-llmobs`` Claude Code
+    plugin. The MCP wrapper starts the HTTP server in a background thread and
+    speaks MCP stdio protocol, enabling use as a Claude Code plugin MCP server.
+    The ``plugin/dd-llmobs/`` directory bundles hooks, proxy configuration, and
+    slash commands for zero-setup LLM Observability.

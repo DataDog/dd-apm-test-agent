@@ -1,0 +1,13 @@
+{
+  "name": "dd-apm-test-agent",
+  "metadata": {
+    "description": "Datadog LLM Observability plugin for Claude Code"
+  },
+  "owner": {
+    "name": "LLM Observability",
+    "email": "llmobs@datadoghq.com"
+  },
+  "plugins": [
+    { "name": "dd-llmobs", "source": "./plugin/dd-llmobs" }
+  ]
+}

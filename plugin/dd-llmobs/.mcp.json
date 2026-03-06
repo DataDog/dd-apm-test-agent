@@ -1,0 +1,7 @@
+{
+    "mcpServers": {
+        "dd-llmobs-agent": {
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/start-agent-mcp.sh"
+        }
+    }
+}
