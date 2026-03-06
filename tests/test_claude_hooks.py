@@ -297,7 +297,7 @@ async def test_hook_agent_manifest(agent):
     spans = body["spans"]
 
     root = [s for s in spans if s["parent_id"] == "undefined"][0]
-    manifest = root["meta"]["metadata"]["agent_manifest"]
+    manifest = root["meta"]["metadata"]["_dd"]["agent_manifest"]
 
     assert manifest["name"] == "claude-code"
     assert manifest["model"] == "claude-sonnet-4-5-20250929"
