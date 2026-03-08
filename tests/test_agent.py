@@ -12,6 +12,40 @@ from ddapm_test_agent.trace import decode_v1
 from ddapm_test_agent.trace import trace_id
 
 
+_FAST_EXIT_ARGS = ["--port=4318", "--otlp-http-port=4318"]
+
+
+def test_log_level_info_includes_info_messages():
+    """Regression test: --log-level=INFO should not be overridden to suppress INFO logs."""
+    p = subprocess.run(
+        ["ddapm-test-agent", "--log-level=INFO"] + _FAST_EXIT_ARGS,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert "INFO:" in p.stderr
+
+
+def test_log_level_warning_excludes_info_messages():
+    p = subprocess.run(
+        ["ddapm-test-agent", "--log-level=WARNING"] + _FAST_EXIT_ARGS,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert "INFO:" not in p.stderr
+
+
+def test_log_level_default_is_info():
+    p = subprocess.run(
+        ["ddapm-test-agent"] + _FAST_EXIT_ARGS,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert "INFO:" in p.stderr
+
+
 # Windows-only import for named pipes
 if platform.system() == "Windows":
     try:
