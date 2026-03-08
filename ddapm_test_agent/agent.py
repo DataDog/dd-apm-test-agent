@@ -2275,8 +2275,6 @@ def main(args: Optional[List[str]] = None) -> None:
     )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
-    logging.getLogger().setLevel(logging.WARNING)
-    logging.getLogger("ddapm_test_agent.claude_hooks").setLevel(logging.DEBUG)
 
     if parsed_args.version:
         print(_get_version())
