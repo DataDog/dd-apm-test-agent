@@ -61,6 +61,36 @@ Once the port is free, proceed to start the test agent.
 
 ### Start the container
 
+Start the test agent via Python, if available. Check if Python is available via
+
+```bash
+python --version
+```
+
+If Python is available, start the test agent via the [python instructions](#starting-via-python). Otherwise, follow the [docker setup instructions](#starting-via-docker). In both cases, [verify it is running correctly](#verify-the-test-agent-configuration).
+
+#### Starting Via Python
+
+Check if the test agent is installed:
+
+```bash
+pip show ddapm-test-agent
+```
+
+If it is not installed, install it:
+
+```bash
+pip install ddapm-test-agent
+```
+
+Once installed, run it:
+
+```bash
+ddapm-test-agent
+```
+
+#### Starting via Docker
+
 Run the test agent:
 
 ```bash
@@ -68,6 +98,8 @@ docker run --rm --pull always -p 8126:8126 -e HOST_USER="$USER" ghcr.io/datadog/
 ```
 
 The `HOST_USER` env var passes your username into the container so spans are tagged with `user_name:<you>` instead of `root`.
+
+#### Verify the test agent configuration
 
 Verify it's running:
 
