@@ -1328,6 +1328,21 @@ class Agent:
         return web.json_response(traces)
 
     async def handle_session_requests(self, request: Request) -> web.Response:
+        from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
+
+        headers: Dict[str, str] = {
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+            "Vary": "Origin",
+        }
+        origin = request.headers.get("Origin", "")
+        if _ALLOWED_ORIGIN_PATTERN.match(origin):
+            headers["Access-Control-Allow-Origin"] = origin
+
+        # Handle OPTIONS preflight
+        if request.method == "OPTIONS":
+            return web.Response(status=200, headers=headers)
+
         token = request["session_token"]
         resp = []
         for req in reversed(self._requests_by_session(token)):
@@ -1359,7 +1374,7 @@ class Agent:
                     "method": req.method,
                 }
             )
-        return web.json_response(resp)
+        return web.json_response(resp, headers=headers)
 
     async def handle_test_traces(self, request: Request) -> web.Response:
         """Return requested traces as JSON.
@@ -1815,6 +1830,7 @@ def make_app(
     vcr_ignore_headers: str,
     dd_site: str,
     dd_api_key: str | None,
+    claude_anthropic_base_url: str,
     disable_llmobs_data_forwarding: bool,
     enable_web_ui: bool = False,
 ) -> web.Application:
@@ -1877,6 +1893,7 @@ def make_app(
             web.get("/test/session/tracerflares", agent.handle_session_tracerflares),
             web.get("/test/session/stats", agent.handle_session_tracestats),
             web.get("/test/session/requests", agent.handle_session_requests),
+            web.options("/test/session/requests", agent.handle_session_requests),
             web.post("/test/session/responses/config", agent.handle_v07_remoteconfig_create),
             web.post("/test/session/responses/config/path", agent.handle_v07_remoteconfig_path_create),
             web.put("/test/session/responses/config", agent.handle_v07_remoteconfig_put),
@@ -1915,7 +1932,11 @@ def make_app(
     app.add_routes(claude_hooks_api.get_routes())
     llmobs_event_platform_api.set_claude_hooks_api(claude_hooks_api)
 
-    claude_proxy_api = ClaudeProxyAPI(hooks_api=claude_hooks_api, link_tracker=claude_link_tracker)
+    claude_proxy_api = ClaudeProxyAPI(
+        hooks_api=claude_hooks_api, 
+        link_tracker=claude_link_tracker,
+        base_url=claude_anthropic_base_url,
+    )
     app.add_routes(claude_proxy_api.get_routes())
 
     async def _cleanup_claude_proxy(app: web.Application) -> None:
@@ -2273,6 +2294,12 @@ def main(args: Optional[List[str]] = None) -> None:
         default=os.environ.get("DISABLE_LLMOBS_DATA_FORWARDING", "").lower() in ("true", "1", "yes"),
         help="Disable data forwarding to Datadog.",
     )
+    parser.add_argument(
+        "--claude-anthropic-base-url",
+        type=str,
+        default=os.environ.get("CLAUDE_ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+        help="Anthropic endpoint to forward requests for Claude Code Anthropic proxy.",
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -2321,6 +2348,7 @@ def main(args: Optional[List[str]] = None) -> None:
         vcr_ignore_headers=parsed_args.vcr_ignore_headers,
         dd_site=parsed_args.dd_site,
         dd_api_key=parsed_args.dd_api_key,
+        claude_anthropic_base_url=parsed_args.claude_anthropic_base_url,
         disable_llmobs_data_forwarding=parsed_args.disable_llmobs_data_forwarding,
         enable_web_ui=parsed_args.web_ui_port > 0,
     )

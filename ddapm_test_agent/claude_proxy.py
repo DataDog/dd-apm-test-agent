@@ -38,8 +38,6 @@ log = logging.getLogger(__name__)
 _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 
-ANTHROPIC_API_BASE = "https://api.anthropic.com"
-
 SKIP_REQUEST_HEADERS = {"host", "transfer-encoding", "content-length"}
 SKIP_RESPONSE_HEADERS = {"content-length", "transfer-encoding", "content-encoding", "connection"}
 
@@ -254,10 +252,11 @@ def _format_output_messages(content_blocks: List[Dict[str, Any]]) -> List[Dict[s
 class ClaudeProxyAPI:
     """Transparent proxy for Anthropic API calls that creates LLM spans."""
 
-    def __init__(self, hooks_api: ClaudeHooksAPI, link_tracker: ClaudeLinkTracker) -> None:
+    def __init__(self, hooks_api: ClaudeHooksAPI, link_tracker: ClaudeLinkTracker, base_url: str) -> None:
         self._hooks_api = hooks_api
         self._link_tracker = link_tracker
         self._http_session: Optional[aiohttp.ClientSession] = None
+        self._base_url = base_url
         # Spans created before any session existed; re-parented when a session appears.
         self._orphan_spans: List[Dict[str, Any]] = []
 
@@ -453,7 +452,7 @@ class ClaudeProxyAPI:
     async def handle_proxy(self, request: Request) -> web.StreamResponse:
         """Proxy an Anthropic API request, creating an LLM span."""
         path = request.match_info.get("path", "")
-        target_url = f"{ANTHROPIC_API_BASE}/{path}"
+        target_url = f"{self._base_url}/{path}"
         if request.query_string:
             target_url += f"?{request.query_string}"
 
