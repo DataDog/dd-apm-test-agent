@@ -493,13 +493,35 @@ def _tags_to_dict(tags: List[str]) -> Dict[str, Any]:
     return tag_obj
 
 
+def _compute_trace_aggregates(spans: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Compute per-trace aggregates: llm_calls, tool_calls, total_tokens."""
+    traces: Dict[str, Dict[str, Any]] = {}
+    for span in spans:
+        trace_id = span.get("trace_id", "")
+        if not trace_id:
+            continue
+        if trace_id not in traces:
+            traces[trace_id] = {"llm_calls": 0, "tool_calls": 0, "total_tokens": 0}
+        kind = span.get("meta", {}).get("span", {}).get("kind", "")
+        if kind == "llm":
+            traces[trace_id]["llm_calls"] += 1
+            metrics = span.get("metrics", {})
+            traces[trace_id]["total_tokens"] += metrics.get("input_tokens", 0) + metrics.get("output_tokens", 0)
+        elif kind == "tool":
+            traces[trace_id]["tool_calls"] += 1
+    return traces
+
+
 def build_event_platform_list_response(
     spans: List[Dict[str, Any]],
     request_id: str,
     limit: int = 100,
+    trace_aggregates: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Build Event Platform list response from spans."""
     children_map = compute_children_ids(spans[:limit])
+    if trace_aggregates is None:
+        trace_aggregates = _compute_trace_aggregates(spans[:limit])
     events = []
 
     for span in spans[:limit]:
@@ -592,6 +614,7 @@ def build_event_platform_list_response(
             "env": env,
             "trace": {
                 "estimated_total_cost": 0,
+                **trace_aggregates.get(trace_id, {"llm_calls": 0, "tool_calls": 0, "total_tokens": 0}),
             },
         }
 
@@ -725,9 +748,14 @@ class LLMObsEventPlatformAPI:
             limit = list_params.get("limit", 100)
             query_str = list_params.get("search", {}).get("query", "")
 
-            spans = self.get_llmobs_spans()
+            all_spans = self.get_llmobs_spans()
             if query_str:
-                spans = apply_filters(spans, parse_filter_query(query_str))
+                spans = apply_filters(all_spans, parse_filter_query(query_str))
+            else:
+                spans = all_spans
+
+            # Compute aggregates from ALL spans so child llm/tool spans are counted
+            trace_aggregates = _compute_trace_aggregates(all_spans)
 
             # Handle sort order (default is descending by start_ns from get_llmobs_spans)
             sort_params = list_params.get("sort", {})
@@ -736,7 +764,7 @@ class LLMObsEventPlatformAPI:
                 spans = list(reversed(spans))
 
             request_id = str(uuid.uuid4())
-            response = build_event_platform_list_response(spans, request_id, limit)
+            response = build_event_platform_list_response(spans, request_id, limit, trace_aggregates=trace_aggregates)
             self._query_results[request_id] = response
 
             return web.json_response(response)
