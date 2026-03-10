@@ -2419,6 +2419,7 @@ def main(args: Optional[List[str]] = None) -> None:
     # write claude code hooks
     if parsed_args.enable_claude_code_hooks:
         claude_settings_path = Path.home() / ".claude" / "settings.json"
+        log.info(f"Merging Claude Code hooks to {claude_settings_path}")
         write_claude_code_hooks(claude_settings_path)
 
     async def run_servers():
@@ -2482,6 +2483,11 @@ def main(args: Optional[List[str]] = None) -> None:
 
     # Run the servers
     asyncio.run(run_servers())
+
+
+def main_lapdog() -> None:
+    """Entry point for lapdog: same as main but with --enable-claude-code-hooks by default."""
+    main(["--enable-claude-code-hooks"] + sys.argv[1:])
 
 
 if __name__ == "__main__":
