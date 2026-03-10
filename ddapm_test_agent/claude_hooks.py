@@ -235,7 +235,7 @@ def _extract_intent(tool_name: str, tool_input: Any) -> str:
     return ""
 
 
-def write_claude_code_hooks(claude_settings_path: Path):
+def write_claude_code_hooks(claude_settings_path: Path) -> None:
     with open(claude_settings_path, "r") as claude_settings:
         try:
             claude_code_settings = json.load(claude_settings)
@@ -244,7 +244,7 @@ def write_claude_code_hooks(claude_settings_path: Path):
 
     hooks = claude_code_settings.get("hooks", {})
     for event in CLAUDE_CODE_EVENTS:
-        existing_hooks = cast(list[dict] | None, hooks.get(event, None))
+        existing_hooks = cast(list[dict[str, Any]] | None, hooks.get(event, None))
         if existing_hooks is None:
             hooks[event] = [CLAUDE_CODE_DEFAULT_MATCHER]
 
@@ -259,7 +259,7 @@ def write_claude_code_hooks(claude_settings_path: Path):
 
             continue
 
-        all_hooks_for_star_matcher = cast(list[dict], star_matcher_hook.get("hooks", []))
+        all_hooks_for_star_matcher = cast(list[dict[str, Any]], star_matcher_hook.get("hooks", []))
 
         if not any(hook == CLAUDE_CODE_HOOK for hook in all_hooks_for_star_matcher):
             all_hooks_for_star_matcher.append(CLAUDE_CODE_HOOK)
