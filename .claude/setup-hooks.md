@@ -242,26 +242,34 @@ This connects to the local test agent and displays traces as they arrive. The `e
 
 ## Step 5: Use Claude Code
 
-Start a new Claude Code session with the proxy enabled:
+Start a new Claude Code session with the fetch interceptor (preferred):
+
+```bash
+ddapm-test-agent-run claude
+```
+
+This injects a Node.js module via `NODE_OPTIONS` that patches `fetch()` to route Anthropic API calls through the test agent gateway. It works even when managed settings override `ANTHROPIC_BASE_URL`, and automatically applies to subagent processes (since `NODE_OPTIONS` is inherited by child processes).
+
+**Fallback method** — if `ddapm-test-agent-run` is not available, use the environment variable directly:
 
 ```bash
 ANTHROPIC_BASE_URL=http://localhost:8126/claude/proxy claude
 ```
 
-This routes API calls through the test agent's proxy for full LLM span capture. Each user turn produces a trace with:
+Both methods route API calls through the test agent's proxy for full LLM span capture. Each user turn produces a trace with:
 - A root agent span for the session turn
 - LLM spans for each Anthropic API call (with token metrics)
 - Tool spans for each tool invocation
 - Subagent spans for Task tool delegations
 - Span links connecting LLM outputs to tool inputs and vice versa
 
-Without the `ANTHROPIC_BASE_URL` env var, hooks still capture tool and agent spans, but LLM spans and span links won't be included. When the test agent is stopped, launching `claude` normally works without any cleanup — the hooks fail silently.
+Without the proxy, hooks still capture tool and agent spans, but LLM spans and span links won't be included. When the test agent is stopped, Claude Code still works — the interceptor's requests fall back to the original URL, and the hooks fail silently.
 
 ## Customization
 
 ### Different host or port
 
-Replace `http://localhost:8126` in both the `ANTHROPIC_BASE_URL` launch env var and the hook curl commands in `settings.json` with your test agent's URL.
+Replace `http://localhost:8126` in the hook curl commands in `settings.json` with your test agent's URL. For the proxy, either set `DDAPM_GATEWAY_URL` when using `ddapm-test-agent-run`, or replace the URL in `ANTHROPIC_BASE_URL` when using the fallback method.
 
 ### Forwarding to Datadog
 
@@ -277,7 +285,7 @@ docker run --rm -p 8126:8126 \
 
 ### Disabling the proxy
 
-If you only want hook-based tracing without LLM span capture, launch `claude` without the `ANTHROPIC_BASE_URL` env var. You will still get tool and agent spans but not LLM spans or span links.
+If you only want hook-based tracing without LLM span capture, launch `claude` directly (without `ddapm-test-agent-run` or `ANTHROPIC_BASE_URL`). You will still get tool and agent spans but not LLM spans or span links.
 
 ## Diagnostic endpoints
 
@@ -289,6 +297,6 @@ If you only want hook-based tracing without LLM span capture, launch `claude` wi
 
 **Hooks not sending events**: Verify the agent is running with `curl http://localhost:8126/info`. Check that `~/.claude/settings.json` is valid JSON. Start a new Claude Code session after changing settings.
 
-**No LLM spans**: Ensure you launched Claude with `ANTHROPIC_BASE_URL=http://localhost:8126/claude/proxy claude`. The proxy must be reachable at that URL for LLM span capture to work.
+**No LLM spans**: Ensure you launched Claude with `ddapm-test-agent-run claude` (or with `ANTHROPIC_BASE_URL=http://localhost:8126/claude/proxy claude`). The proxy must be reachable for LLM span capture to work.
 
 **Missing spans**: Some events (like Stop) may arrive after the session ends. Check `GET /claude/hooks/raw` to see all received events.

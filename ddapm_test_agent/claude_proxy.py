@@ -40,7 +40,7 @@ _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 
 ANTHROPIC_API_BASE = "https://api.anthropic.com"
 
-SKIP_REQUEST_HEADERS = {"host", "transfer-encoding", "content-length"}
+SKIP_REQUEST_HEADERS = {"host", "transfer-encoding", "content-length", "x-ddapm-upstream"}
 SKIP_RESPONSE_HEADERS = {"content-length", "transfer-encoding", "content-encoding", "connection"}
 
 
@@ -453,7 +453,8 @@ class ClaudeProxyAPI:
     async def handle_proxy(self, request: Request) -> web.StreamResponse:
         """Proxy an Anthropic API request, creating an LLM span."""
         path = request.match_info.get("path", "")
-        target_url = f"{ANTHROPIC_API_BASE}/{path}"
+        upstream_origin = request.headers.get("X-DDAPM-Upstream", ANTHROPIC_API_BASE)
+        target_url = f"{upstream_origin}/{path}"
         if request.query_string:
             target_url += f"?{request.query_string}"
 
