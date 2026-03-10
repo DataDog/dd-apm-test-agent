@@ -9,6 +9,7 @@ from dataclasses import field
 import json
 import logging
 import os
+from pathlib import Path
 import platform
 import pprint
 import re
@@ -55,6 +56,7 @@ from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
 from .claude_hooks import ClaudeHooksAPI
+from .claude_hooks import write_claude_code_hooks
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_proxy import ClaudeProxyAPI
 from .integration import Integration
@@ -65,9 +67,6 @@ from .logs import decode_logs_request
 from .metrics import METRICS_ENDPOINT
 from .metrics import OTLPMetricsGRPCServicer
 from .metrics import decode_metrics_request
-from .traces_otlp import TRACES_ENDPOINT
-from .traces_otlp import OTLPTracesGRPCServicer
-from .traces_otlp import decode_traces_request
 from .remoteconfig import RemoteConfigServer
 from .trace import Span
 from .trace import Trace
@@ -87,6 +86,9 @@ from .trace_checks import CheckTracePeerService
 from .trace_checks import CheckTraceStallAsync
 from .tracerflare import TracerFlareEvent
 from .tracerflare import v1_decode as v1_tracerflare_decode
+from .traces_otlp import OTLPTracesGRPCServicer
+from .traces_otlp import TRACES_ENDPOINT
+from .traces_otlp import decode_traces_request
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 from .vcr_proxy import proxy_request
@@ -1047,19 +1049,34 @@ class Agent:
 
     async def handle_settings(self, request: Request) -> web.Response:
         """Allow to change test agent settings on the fly"""
+        from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
+
+        headers: Dict[str, str] = {
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+            "Vary": "Origin",
+        }
+        origin = request.headers.get("Origin", "")
+        if _ALLOWED_ORIGIN_PATTERN.match(origin):
+            headers["Access-Control-Allow-Origin"] = origin
+
+        # Handle OPTIONS preflight
+        if request.method == "OPTIONS":
+            return web.Response(status=200, headers=headers)
+
         raw_data = await request.read()
         data = json.loads(raw_data)
 
         # First pass to validate the data
         for key in data:
             if key not in request.app:
-                return web.HTTPUnprocessableEntity(text=f"Unknown key: '{key}'")
+                return web.HTTPUnprocessableEntity(text=f"Unknown key: '{key}'", headers=headers)
 
         # Second pass to apply the config
         for key in data:
             request.app[key] = data[key]
 
-        return web.HTTPAccepted()
+        return web.HTTPAccepted(headers=headers)
 
     async def handle_info(self, request: Request) -> web.Response:
         from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
@@ -1328,6 +1345,21 @@ class Agent:
         return web.json_response(traces)
 
     async def handle_session_requests(self, request: Request) -> web.Response:
+        from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
+
+        headers: Dict[str, str] = {
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+            "Vary": "Origin",
+        }
+        origin = request.headers.get("Origin", "")
+        if _ALLOWED_ORIGIN_PATTERN.match(origin):
+            headers["Access-Control-Allow-Origin"] = origin
+
+        # Handle OPTIONS preflight
+        if request.method == "OPTIONS":
+            return web.Response(status=200, headers=headers)
+
         token = request["session_token"]
         resp = []
         for req in reversed(self._requests_by_session(token)):
@@ -1359,7 +1391,7 @@ class Agent:
                     "method": req.method,
                 }
             )
-        return web.json_response(resp)
+        return web.json_response(resp, headers=headers)
 
     async def handle_test_traces(self, request: Request) -> web.Response:
         """Return requested traces as JSON.
@@ -1877,6 +1909,7 @@ def make_app(
             web.get("/test/session/tracerflares", agent.handle_session_tracerflares),
             web.get("/test/session/stats", agent.handle_session_tracestats),
             web.get("/test/session/requests", agent.handle_session_requests),
+            web.options("/test/session/requests", agent.handle_session_requests),
             web.post("/test/session/responses/config", agent.handle_v07_remoteconfig_create),
             web.post("/test/session/responses/config/path", agent.handle_v07_remoteconfig_path_create),
             web.put("/test/session/responses/config", agent.handle_v07_remoteconfig_put),
@@ -1890,6 +1923,7 @@ def make_app(
             web.get("/test/trace_check/summary", agent.get_trace_check_summary),
             web.get("/test/integrations/tested_versions", agent.handle_get_tested_integrations),
             web.post("/test/settings", agent.handle_settings),
+            web.options("/test/settings", agent.handle_settings),
             web.post("/vcr/test/start", agent.check_vcr_proxy_suffix),
             web.post("/vcr/test/stop", agent.unset_vcr_proxy_suffix),
             web.route(
@@ -2273,6 +2307,12 @@ def main(args: Optional[List[str]] = None) -> None:
         default=os.environ.get("DISABLE_LLMOBS_DATA_FORWARDING", "").lower() in ("true", "1", "yes"),
         help="Disable data forwarding to Datadog.",
     )
+    parser.add_argument(
+        "--enable-claude-code-hooks",
+        action="store_true",
+        default=os.environ.get("ENABLE_CLAUDE_CODE_HOOKS", "").lower() in ("true", "1", "yes"),
+        help="Enable writing Claude Code hooks to ~/.claude/settings.json",
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -2375,6 +2415,11 @@ def main(args: Optional[List[str]] = None) -> None:
         web_ui_app._webui_instance = web_ui
         # Also store on main app for middleware access
         app._webui_instance = web_ui
+
+    # write claude code hooks
+    if parsed_args.enable_claude_code_hooks:
+        claude_settings_path = Path.home() / ".claude" / "settings.json"
+        write_claude_code_hooks(claude_settings_path)
 
     async def run_servers():
         """Run APM and OTLP HTTP servers concurrently."""

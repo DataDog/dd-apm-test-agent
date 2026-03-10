@@ -10,6 +10,7 @@ import gzip
 import json
 import logging
 import os
+from pathlib import Path
 import random
 import socket
 import time
@@ -24,6 +25,7 @@ from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 import msgpack
+from typing_extensions import cast
 
 from .claude_link_tracker import ClaudeLinkTracker
 from .llmobs_event_platform import with_cors
@@ -35,6 +37,27 @@ _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 
 MODEL_CONTEXT_LIMITS: Dict[str, int] = {}  # empty; default fallback handles all models
+
+
+CLAUDE_CODE_EVENTS = [
+    "PreToolUse",
+    "PostToolUse",
+    "Notification",
+    "Stop",
+    "SubagentStart",
+    "SubagentStop",
+    "UserPromptSubmit",
+    "SessionStart",
+    "SessionEnd",
+    "PreCompact",
+    "PermissionRequest",
+]
+CLAUDE_CODE_HOOK = {
+    "type": "command",
+    "command": "curl -s --max-time 2 -X POST -H 'Content-Type: application/json' -d @- http://localhost:8126/claude/hooks >/dev/null 2>&1 || true",
+    "async": True,
+}
+CLAUDE_CODE_DEFAULT_MATCHER = {"matcher": "", "hooks": [CLAUDE_CODE_HOOK]}
 
 
 def _get_context_limit(model: str) -> int:
@@ -210,6 +233,40 @@ def _extract_intent(tool_name: str, tool_input: Any) -> str:
         if val:
             return val[:80] + "..." if len(val) > 80 else val
     return ""
+
+
+def write_claude_code_hooks(claude_settings_path: Path):
+    with open(claude_settings_path, "r") as claude_settings:
+        try:
+            claude_code_settings = json.load(claude_settings)
+        except json.JSONDecodeError:
+            claude_code_settings = {"hooks": {}}
+
+    hooks = claude_code_settings.get("hooks", {})
+    for event in CLAUDE_CODE_EVENTS:
+        existing_hooks = cast(list[dict] | None, hooks.get(event, None))
+        if existing_hooks is None:
+            hooks[event] = [CLAUDE_CODE_DEFAULT_MATCHER]
+
+            continue
+
+        star_matcher_hook = next(
+            (hook_matcher for hook_matcher in existing_hooks if hook_matcher.get("matcher", None) == ""), None
+        )
+
+        if star_matcher_hook is None:
+            existing_hooks.append(CLAUDE_CODE_DEFAULT_MATCHER)
+
+            continue
+
+        all_hooks_for_star_matcher = cast(list[dict], star_matcher_hook.get("hooks", []))
+
+        if not any(hook == CLAUDE_CODE_HOOK for hook in all_hooks_for_star_matcher):
+            all_hooks_for_star_matcher.append(CLAUDE_CODE_HOOK)
+
+    claude_code_settings["hooks"] = hooks
+    with open(claude_settings_path, "w") as claude_settings:
+        json.dump(claude_code_settings, claude_settings, indent=2)
 
 
 class ClaudeHooksAPI:
@@ -655,9 +712,7 @@ class ClaudeHooksAPI:
             first_input_tokens=0,
         )
 
-        estimated_perm_wait = self._sum_estimated_permission_wait_ms(
-            parent_id=str(agent_info["span_id"])
-        )
+        estimated_perm_wait = self._sum_estimated_permission_wait_ms(parent_id=str(agent_info["span_id"]))
         # If SubagentStart fired before PreToolUse(Task), retry the match now.
         if not task_tool_use_id:
             for tid, pending in session.pending_tools.items():
@@ -834,9 +889,7 @@ class ClaudeHooksAPI:
 
         root_span_name = session.conversation_title or "claude-code-request"
 
-        estimated_permission_wait_ms = self._sum_estimated_permission_wait_ms(
-            trace_id=session.trace_id
-        )
+        estimated_permission_wait_ms = self._sum_estimated_permission_wait_ms(trace_id=session.trace_id)
 
         if root_span:
             root_span["name"] = root_span_name
@@ -940,13 +993,17 @@ class ClaudeHooksAPI:
         if span_ref is None:
             return
         dd = span_ref.setdefault("meta", {}).setdefault("metadata", {}).setdefault("_dd", {})
-        dd.setdefault("compactions", []).append({
-            "trigger": trigger,
-            "custom_instructions": custom_instructions,
-        })
+        dd.setdefault("compactions", []).append(
+            {
+                "trigger": trigger,
+                "custom_instructions": custom_instructions,
+            }
+        )
         log.info("set compaction event on span %s", span_ref["span_id"])
 
-    def _sum_estimated_permission_wait_ms(self, *, parent_id: Optional[str] = None, trace_id: Optional[str] = None) -> int:
+    def _sum_estimated_permission_wait_ms(
+        self, *, parent_id: Optional[str] = None, trace_id: Optional[str] = None
+    ) -> int:
         """Sum estimated_permission_wait_ms from tool spans.
 
         If trace_id is provided, sums across all tool spans in the trace (all descendants).
