@@ -1,7 +1,7 @@
 ---
 features:
   - |
-    Add ``ddapm-test-agent-run`` CLI launcher and Node.js fetch interceptor for
+    Add ``ddapm-test-agent-run`` CLI launcher and Javascript fetch interceptor for
     routing Claude Code API calls through the test agent proxy. This replaces
     the ``ANTHROPIC_BASE_URL`` approach which can be overridden by managed settings.
     Usage: ``ddapm-test-agent-run claude``.
