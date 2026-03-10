@@ -241,12 +241,12 @@ This connects to the local test agent and displays traces as they arrive. The `e
 Start a new Claude Code session with the fetch interceptor (preferred):
 
 ```bash
-ddapm-test-agent-run claude
+lapdog-run claude
 ```
 
 This injects a Javascript module via `BUN_OPTIONS` that patches `fetch()` to route Anthropic API calls through the test agent gateway. It works even when managed settings override `ANTHROPIC_BASE_URL`, and automatically applies to subagent processes (since `BUN_OPTIONS` is inherited by child processes).
 
-**Fallback method** — if `ddapm-test-agent-run` is not available, use the environment variable directly:
+**Fallback method** — if `lapdog-run` is not available, use the environment variable directly:
 
 ```bash
 ANTHROPIC_BASE_URL=http://localhost:8126/claude/proxy claude
@@ -265,11 +265,11 @@ Without the proxy, hooks still capture tool and agent spans, but LLM spans and s
 
 ### Different host or port
 
-Replace `http://localhost:8126` in the hook curl commands in `settings.json` with your test agent's URL. For the proxy, either set `DDAPM_GATEWAY_URL` when using `ddapm-test-agent-run`, or replace the URL in `ANTHROPIC_BASE_URL` when using the fallback method.
+Replace `http://localhost:8126` in the hook curl commands in `settings.json` with your test agent's URL. For the proxy, either set `DDAPM_GATEWAY_URL` when using `lapdog-run`, or replace the URL in `ANTHROPIC_BASE_URL` when using the fallback method.
 
 ### Disabling the proxy
 
-If you only want hook-based tracing without LLM span capture, launch `claude` directly (without `ddapm-test-agent-run` or `ANTHROPIC_BASE_URL`). You will still get tool and agent spans but not LLM spans or span links.
+If you only want hook-based tracing without LLM span capture, launch `claude` directly (without `lapdog-run` or `ANTHROPIC_BASE_URL`). You will still get tool and agent spans but not LLM spans or span links.
 
 ## Diagnostic endpoints
 
@@ -281,6 +281,6 @@ If you only want hook-based tracing without LLM span capture, launch `claude` di
 
 **Hooks not sending events**: Verify the agent is running with `curl http://localhost:8126/info`. Check that `~/.claude/settings.json` is valid JSON. Start a new Claude Code session after changing settings.
 
-**No LLM spans**: Ensure you launched Claude with `ddapm-test-agent-run claude` (or with `ANTHROPIC_BASE_URL=http://localhost:8126/claude/proxy claude`). The proxy must be reachable for LLM span capture to work.
+**No LLM spans**: Ensure you launched Claude with `lapdog-run claude` (or with `ANTHROPIC_BASE_URL=http://localhost:8126/claude/proxy claude`). The proxy must be reachable for LLM span capture to work.
 
 **Missing spans**: Some events (like Stop) may arrive after the session ends. Check `GET /claude/hooks/raw` to see all received events.
