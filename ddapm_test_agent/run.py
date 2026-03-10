@@ -1,6 +1,6 @@
 """CLI entry point for launching commands with the Anthropic API fetch interceptor.
 
-Usage: ddapm-test-agent-run <command> [args...]
+Usage: lapdog-run <command> [args...]
 
 - For "claude": sets BUN_OPTIONS with --preload pointing to claude_intercept.mjs and
   exec's the claude binary from PATH (e.g. Homebrew Cask). Works with Bun-based Claude Code.
@@ -14,7 +14,7 @@ import sys
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: ddapm-test-agent-run <command> [args...]", file=sys.stderr)
+        print("Usage: lapdog-run <command> [args...]", file=sys.stderr)
         sys.exit(1)
 
     mjs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude_intercept.mjs")
