@@ -61,13 +61,23 @@ Once the port is free, proceed to start the test agent.
 
 ### Start the container
 
-Run the test agent:
+Ask the user if they would like to forward traces to Datadog to persist them and get additional features like cost estimation. If they do, ask them for their `DD_API_KEY` and restart the test agent with the key:
+
+```bash
+docker run --rm -p 8126:8126 \
+  -e HOST_USER="$USER" \
+  -e DD_API_KEY=<their-api-key> \
+  -e DD_SITE=datadoghq.com \
+  ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
+```
+
+The `HOST_USER` env var passes your username into the container so spans are tagged with `user_name:<you>` instead of `root`.
+
+If they don't have an API key, they can create one at https://app.datadoghq.com/organization-settings/api-keys. If they prefer local-only mode, skip this step, and instead run the test agent with:
 
 ```bash
 docker run --rm --pull always -p 8126:8126 -e HOST_USER="$USER" ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
 ```
-
-The `HOST_USER` env var passes your username into the container so spans are tagged with `user_name:<you>` instead of `root`.
 
 Verify it's running:
 
@@ -218,21 +228,7 @@ Add the following to `~/.claude/settings.json`. If the file already exists, merg
 
 The hooks alone capture tool and agent spans. To also capture LLM spans (token counts, model info, input/output messages, and span links), set the `ANTHROPIC_BASE_URL` environment variable when launching Claude Code (see Step 5).
 
-## Step 3: Forward traces to Datadog (optional)
-
-Ask the user if they would like to forward traces to Datadog to persist them and get additional features like cost estimation. If they do, ask them for their `DD_API_KEY` and restart the test agent with the key:
-
-```bash
-docker run --rm -p 8126:8126 \
-  -e HOST_USER="$USER" \
-  -e DD_API_KEY=<their-api-key> \
-  -e DD_SITE=datadoghq.com \
-  ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
-```
-
-If they don't have an API key, they can create one at https://app.datadoghq.com/organization-settings/api-keys. If they prefer local-only mode, skip this step.
-
-## Step 4: View traces
+## Step 3: View traces
 
 Direct the user to open the local dev experience in their browser to view traces:
 
@@ -240,7 +236,7 @@ https://app-30bd13e67e6cba3b6c36f48da9908a7a.datadoghq.com/llm/traces?devLocal=t
 
 This connects to the local test agent and displays traces as they arrive. The `enable-rum` query parameter enables RUM data collection on hash links (it's disabled by default). This only needs to be added once — it persists in localStorage for subsequent visits.
 
-## Step 5: Use Claude Code
+## Step 4: Use Claude Code
 
 Start a new Claude Code session with the fetch interceptor (preferred):
 
@@ -270,18 +266,6 @@ Without the proxy, hooks still capture tool and agent spans, but LLM spans and s
 ### Different host or port
 
 Replace `http://localhost:8126` in the hook curl commands in `settings.json` with your test agent's URL. For the proxy, either set `DDAPM_GATEWAY_URL` when using `ddapm-test-agent-run`, or replace the URL in `ANTHROPIC_BASE_URL` when using the fallback method.
-
-### Forwarding to Datadog
-
-To forward LLM Observability data to Datadog, start the agent with:
-
-```bash
-docker run --rm -p 8126:8126 \
-  -e HOST_USER="$USER" \
-  -e DD_API_KEY=<your-api-key> \
-  -e DD_SITE=datadoghq.com \
-  ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
-```
 
 ### Disabling the proxy
 
