@@ -1,19 +1,20 @@
 /**
  * claude_intercept.mjs — Fetch interceptor for routing Anthropic API calls through the test agent gateway.
  *
- * Loaded via: NODE_OPTIONS="--import /path/to/claude_intercept.mjs"
+ * Node: NODE_OPTIONS="--import /path/to/claude_intercept.mjs" node ...
+ * Bun:  BUN_OPTIONS="--preload /path/to/claude_intercept.mjs" bun ...   (or --preload on CLI)
  *
- * Patches globalThis.fetch to rewrite requests matching api.anthropic.com to the
- * test agent gateway URL. This operates at the Node.js level before TLS, so managed
- * settings rules cannot override the routing.
+ * Patches globalThis.fetch to rewrite requests matching Anthropic API paths to the
+ * test agent gateway URL. Works in both Node and Bun runtimes.
  *
  * Environment variables:
  *   DDAPM_GATEWAY_URL       - Gateway URL (default: http://localhost:8126/claude/proxy)
  *   DDAPM_INTERCEPT_DEBUG   - "true" to enable stderr log messages
  */
 
-const GATEWAY_URL = process.env.DDAPM_GATEWAY_URL || 'http://localhost:8126/claude/proxy';
-const DEBUG = (process.env.DDAPM_INTERCEPT_DEBUG || '').toLowerCase() === 'true';
+const proc = typeof process !== 'undefined' ? process : undefined;
+const GATEWAY_URL = (proc?.env?.DDAPM_GATEWAY_URL) || 'http://localhost:8126/claude/proxy';
+const DEBUG = ((proc?.env?.DDAPM_INTERCEPT_DEBUG) || '').toLowerCase() === 'true';
 
 // Match URLs that look like Anthropic API calls (Messages API, token counting, etc.)
 // This catches api.anthropic.com, ai-gateway.*.ddbuild.io, and custom ANTHROPIC_BASE_URL hosts.
@@ -21,7 +22,7 @@ const ANTHROPIC_PATH_PATTERN = /\/v1\/messages|\/v1\/complete/;
 const ORIGIN_PATTERN = /^(https?:\/\/[^/]+)/;
 
 function log(msg) {
-  if (DEBUG) process.stderr.write(`[ddapm] ${msg}\n`);
+  if (DEBUG && proc?.stderr) proc.stderr.write(`[ddapm] ${msg}\n`);
 }
 
 const originalFetch = globalThis.fetch;
