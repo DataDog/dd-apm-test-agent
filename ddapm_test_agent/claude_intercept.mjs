@@ -14,6 +14,8 @@
 
 const proc = typeof process !== 'undefined' ? process : undefined;
 const GATEWAY_URL = (proc?.env?.DDAPM_GATEWAY_URL) || 'http://localhost:8126/claude/proxy';
+const TEST_AGENT_URL = (proc?.env?.TEST_AGENT_URL) || 'http://localhost:8126/info';
+const TEST_AGENT_CHECK_MS = 500; // low timeout since it should all be local
 const DEBUG = ((proc?.env?.DDAPM_INTERCEPT_DEBUG) || '').toLowerCase() === 'true';
 
 // Match URLs that look like Anthropic API calls (Messages API, token counting, etc.)
@@ -25,37 +27,60 @@ function log(msg) {
   if (DEBUG && proc?.stderr) proc.stderr.write(`[ddapm] ${msg}\n`);
 }
 
-const originalFetch = globalThis.fetch;
+const PATCH_MARKER = Symbol.for('ddapm.fetch.patched');
+if (!globalThis.fetch?.[PATCH_MARKER]) {
+  const originalFetch = globalThis.fetch;
 
-globalThis.fetch = async function patchedFetch(input, init) {
-  let url = typeof input === 'string' ? input : input?.url;
+  async function patchedFetch(input, init) {
+    let url = typeof input === 'string' ? input : input?.url;
 
-  if (DEBUG) {
-    const method = init?.method || (typeof input !== 'string' && input?.method) || 'GET';
-    log(`fetch ${method} ${url}`);
-  }
+    if (DEBUG) {
+      const method = init?.method || (typeof input !== 'string' && input?.method) || 'GET';
+      log(`fetch ${method} ${url}`);
+    }
 
-  if (url && ANTHROPIC_PATH_PATTERN.test(url) && !url.startsWith(GATEWAY_URL)) {
-    const originMatch = url.match(ORIGIN_PATTERN);
-    if (originMatch) {
-      const originalOrigin = originMatch[1];
-      const newUrl = url.replace(originalOrigin, GATEWAY_URL);
-      log(`routing → ${newUrl}`);
+    if (url && ANTHROPIC_PATH_PATTERN.test(url) && !url.startsWith(GATEWAY_URL)) {
+      const originMatch = url.match(ORIGIN_PATTERN);
+      if (originMatch) {
+        // check that test agent is running to forward to test agent proxy
+        const ac = new AbortController();
+        const timeoutId = setTimeout(() => ac.abort(), TEST_AGENT_CHECK_MS);
+        let testAgentResult;
 
-      // Pass the original origin so the proxy knows where to forward
-      const headers = new Headers(init?.headers || (typeof input !== 'string' ? input?.headers : undefined));
-      headers.set('X-DDAPM-Upstream', originalOrigin);
+        try {
+          testAgentResult = await originalFetch.call(this, TEST_AGENT_URL, { signal: ac.signal });
+        } catch (_) {
+          testAgentResult = null;
+        } finally {
+          clearTimeout(timeoutId);
+        }
 
-      if (typeof input === 'string') {
-        input = newUrl;
-        init = { ...init, headers };
-      } else {
-        input = new Request(newUrl, { ...input, headers });
+        if (!testAgentResult?.ok) {
+          log('Not able to reach the test agent to forward the claude request, passing the request through to the requested URL instead.');
+          return originalFetch.call(this, input, init);
+        }
+
+        const originalOrigin = originMatch[1];
+        const newUrl = url.replace(originalOrigin, GATEWAY_URL);
+        log(`routing → ${newUrl}`);
+
+        // Pass the original origin so the proxy knows where to forward
+        const headers = new Headers(init?.headers || (typeof input !== 'string' ? input?.headers : undefined));
+        headers.set('X-DDAPM-Upstream', originalOrigin);
+
+        if (typeof input === 'string') {
+          input = newUrl;
+          init = { ...init, headers };
+        } else {
+          input = new Request(newUrl, { ...input, headers });
+        }
       }
     }
+
+    return originalFetch.call(this, input, init);
   }
+  patchedFetch[PATCH_MARKER] = true;
+  globalThis.fetch = patchedFetch;
 
-  return originalFetch.call(this, input, init);
-};
-
-log(`active — routing Anthropic API calls → ${GATEWAY_URL}`);
+  log(`active — routing Anthropic API calls → ${GATEWAY_URL}`);
+}
