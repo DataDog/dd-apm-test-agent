@@ -248,7 +248,7 @@ Start a new Claude Code session with the fetch interceptor (preferred):
 ddapm-test-agent-run claude
 ```
 
-This injects a Node.js module via `BUN_OPTIONS` that patches `fetch()` to route Anthropic API calls through the test agent gateway. It works even when managed settings override `ANTHROPIC_BASE_URL`, and automatically applies to subagent processes (since `BUN_OPTIONS` is inherited by child processes).
+This injects a Javascript module via `BUN_OPTIONS` that patches `fetch()` to route Anthropic API calls through the test agent gateway. It works even when managed settings override `ANTHROPIC_BASE_URL`, and automatically applies to subagent processes (since `BUN_OPTIONS` is inherited by child processes).
 
 **Fallback method** — if `ddapm-test-agent-run` is not available, use the environment variable directly:
 
