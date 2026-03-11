@@ -47,7 +47,7 @@ SKIP_RESPONSE_HEADERS = {"content-length", "transfer-encoding", "content-encodin
 
 def _get_session_id_from_request_body(body: Dict[str, Any]) -> str:
     """
-    Parses the session id from the metadata field in the request body.
+    Parse the session id from the metadata field in the request body.
 
     Takes the form {"user_id": "user_{user_id_hash}_account__session_{session_id}"}
     """
