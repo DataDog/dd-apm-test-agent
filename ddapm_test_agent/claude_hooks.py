@@ -142,6 +142,10 @@ class SessionState:
         self.last_known_input_tokens: int = 0
         # Tracks the time when the permission dialog appeared, so we can compute the elapsed time.
         self.pending_permission_at_ns: Optional[int] = None
+        # whether the session is active or not
+        self.active = False
+        # whether the session is instrumented with the claude_intercept.mjs script for LLM calls
+        self.instrumented = False
 
 
 _MAX_UINT_64 = (1 << 64) - 1
@@ -323,6 +327,10 @@ class ClaudeHooksAPI:
         model = body.get("model", "")
         if model:
             session.model = model
+
+        session.active = True
+        session.instrumented = body.get("lapdog_instrumented", False)
+
         log.info("Claude session started: %s (model=%s)", session_id, model)
 
     def _finalize_interrupted_turn(self, session: SessionState) -> None:
@@ -973,6 +981,8 @@ class ClaudeHooksAPI:
         if not session:
             return
 
+        session.active = False
+
         if not session.root_span_emitted:
             self._finalize_interrupted_turn(session)
 
@@ -1310,6 +1320,8 @@ class ClaudeHooksAPI:
                     "num_prompts": len(state.user_prompts),
                     "agent_stack_depth": len(state.agent_span_stack),
                     "pending_tools": len(state.pending_tools),
+                    "active": state.active,
+                    "instrumented": state.instrumented,
                 }
             )
         return web.json_response({"sessions": sessions})
