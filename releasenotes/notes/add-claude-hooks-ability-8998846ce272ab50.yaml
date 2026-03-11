@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    Adds a `--enable-claude-code-hooks` option to insert the test agent's Claude Code hooks on startup.
+  - |
+    Adds a new `lapdog` startup command which starts up the test agent with Claude Code hooks enabled.
