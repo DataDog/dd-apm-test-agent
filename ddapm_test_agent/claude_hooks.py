@@ -61,11 +61,14 @@ CLAUDE_CODE_DEFAULT_MATCHER = {"matcher": "", "hooks": [CLAUDE_CODE_HOOK]}
 
 
 def write_claude_code_hooks(claude_settings_path: Path) -> None:
-    with open(claude_settings_path, "r") as claude_settings:
-        try:
-            claude_code_settings = json.load(claude_settings)
-        except json.JSONDecodeError:
-            claude_code_settings = {"hooks": {}}
+    try:
+        with open(claude_settings_path, "r") as claude_settings:
+            try:
+                claude_code_settings = json.load(claude_settings)
+            except json.JSONDecodeError:
+                claude_code_settings = {"hooks": {}}
+    except FileNotFoundError:
+        claude_code_settings = {"hooks": {}}
 
     hooks = claude_code_settings.get("hooks", {})
     for event in CLAUDE_CODE_EVENTS:
@@ -90,8 +93,14 @@ def write_claude_code_hooks(claude_settings_path: Path) -> None:
             all_hooks_for_star_matcher.append(CLAUDE_CODE_HOOK)
 
     claude_code_settings["hooks"] = hooks
-    with open(claude_settings_path, "w") as claude_settings:
-        json.dump(claude_code_settings, claude_settings, indent=2)
+    tmp_path = claude_settings_path.with_suffix(".tmp")
+    try:
+        with open(tmp_path, "w") as f:
+            json.dump(claude_code_settings, f, indent=2)
+        tmp_path.rename(claude_settings_path)
+    except Exception as e:
+        tmp_path.unlink(missing_ok=True)
+        log.error("Unable to write Claude Code hooks", exc_info=e)
 
 
 def _get_context_limit(model: str) -> int:
