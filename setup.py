@@ -53,7 +53,7 @@ setup(
             "ddapm-test-agent-session-start=ddapm_test_agent.cmd:main_session_start",
             "ddapm-test-agent-snapshot=ddapm_test_agent.cmd:main_snapshot",
             "lapdog-run=ddapm_test_agent.run:main",
-            "lapdog=ddapm_test_agent.agent:main_lapdog",
+            "lapdog=ddapm_test_agent.agent:lapdog",
         ]
     },
     extras_require={

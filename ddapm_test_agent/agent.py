@@ -2485,7 +2485,7 @@ def main(args: Optional[List[str]] = None) -> None:
     asyncio.run(run_servers())
 
 
-def main_lapdog() -> None:
+def lapdog() -> None:
     """Entry point for lapdog: same as main but with --enable-claude-code-hooks by default."""
     main(["--enable-claude-code-hooks"] + sys.argv[1:])
 
