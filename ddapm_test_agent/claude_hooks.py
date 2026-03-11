@@ -323,6 +323,12 @@ class ClaudeHooksAPI:
 
     def _handle_session_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SessionStart hook event."""
+        source = body.get("source")
+        transcript_path = body.get("transcript_path")
+        if source == "startup" and transcript_path and not os.path.exists(transcript_path):
+            # this is an ephemeral session started for resume commands
+            return
+
         session = self._get_or_create_session(session_id)
         model = body.get("model", "")
         if model:
