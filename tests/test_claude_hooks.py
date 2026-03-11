@@ -507,6 +507,87 @@ async def test_hook_console_output_on_agent_span(agent):
         os.unlink(transcript_path)
 
 
+async def test_hook_tool_use_failure_creates_error_span(agent):
+    session_id = "sess-tool-fail"
+
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "SessionStart"})
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-fail-1",
+            "tool_input": {"command": "rm -rf /nonexistent"},
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PostToolUseFailure",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-fail-1",
+            "error": "Command exited with non-zero status code 1",
+            "is_interrupt": False,
+        },
+    )
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "Stop"})
+
+    resp = await agent.get("/claude/hooks/spans")
+    body = await resp.json()
+    spans = body["spans"]
+
+    tool_spans = [s for s in spans if s["meta"]["span"]["kind"] == "tool"]
+    assert len(tool_spans) == 1
+
+    tool = tool_spans[0]
+    assert tool["status"] == "error"
+    assert tool["meta"]["error"]["message"] == "Command exited with non-zero status code 1"
+    assert "rm -rf /nonexistent" in tool["meta"]["input"]["value"]
+    assert "non-zero status" in tool["meta"]["output"]["value"]
+    assert tool["duration"] >= 0
+
+
+async def test_hook_tool_use_failure_interrupt(agent):
+    session_id = "sess-tool-interrupt"
+
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "SessionStart"})
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-int-1",
+            "tool_input": {"command": "sleep 100"},
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PostToolUseFailure",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-int-1",
+            "error": "User interrupted",
+            "is_interrupt": True,
+        },
+    )
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "Stop"})
+
+    resp = await agent.get("/claude/hooks/spans")
+    body = await resp.json()
+    spans = body["spans"]
+
+    tool_spans = [s for s in spans if s["meta"]["span"]["kind"] == "tool"]
+    assert len(tool_spans) == 1
+
+    tool = tool_spans[0]
+    assert tool["status"] == "error"
+    assert tool["meta"]["error"]["type"] == "interrupt"
+
+
 async def test_hook_sessions_endpoint(agent):
     session_id = "sess-list-test"
 

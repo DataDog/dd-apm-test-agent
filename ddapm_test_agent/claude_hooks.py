@@ -42,6 +42,7 @@ MODEL_CONTEXT_LIMITS: Dict[str, int] = {}  # empty; default fallback handles all
 CLAUDE_CODE_EVENTS = [
     "PreToolUse",
     "PostToolUse",
+    "PostToolUseFailure",
     "Notification",
     "Stop",
     "SubagentStart",
@@ -979,6 +980,108 @@ class ClaudeHooksAPI:
         """Handle Notification hook event — logged but no span emitted."""
         log.info("Claude notification for session %s: %s", session_id, body.get("message", ""))
 
+    def _handle_post_tool_use_failure(self, session_id: str, body: Dict[str, Any]) -> None:
+        """Handle PostToolUseFailure hook event — emits a tool span with error status.
+
+        Fired when a tool execution fails. The body includes an ``error`` string
+        and an optional ``is_interrupt`` boolean.
+        """
+        session = self._get_or_create_session(session_id)
+        tool_name = body.get("tool_name", "unknown_tool")
+        tool_use_id = body.get("tool_use_id", tool_name)
+        error_message = body.get("error", "unknown error")
+        is_interrupt = body.get("is_interrupt", False)
+
+        now_ns = int(time.time() * 1_000_000_000)
+
+        pending = session.pending_tools.pop(tool_use_id, None)
+        session.claimed_task_tools.discard(tool_use_id)
+
+        if pending:
+            span_id = pending.span_id
+            parent_id = pending.parent_id
+            start_ns = pending.start_ns
+            input_value = str(pending.tool_input) if pending.tool_input else ""
+            actual_tool_name = pending.tool_name
+            tool_input_dict = pending.tool_input if isinstance(pending.tool_input, dict) else {}
+        else:
+            span_id = _format_span_id()
+            parent_id = self._current_parent_id(session)
+            start_ns = now_ns
+            input_value = ""
+            actual_tool_name = tool_name
+            tool_input_dict = {}
+
+        intent = _extract_intent(actual_tool_name, tool_input_dict)
+        duration = now_ns - start_ns
+
+        # Consume any pending permission wait
+        estimated_permission_wait_ms: Optional[int] = None
+        if session.pending_permission_at_ns is not None:
+            estimated_permission_wait_ms = (now_ns - session.pending_permission_at_ns) // 1_000_000
+            session.pending_permission_at_ns = None
+            root_span_ref: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
+            if root_span_ref is not None and root_span_ref["duration"] == -1:
+                root_span_ref["duration"] = 0
+
+        # Handle deferred agent spans (Task tool that spawned a subagent)
+        deferred = session.deferred_agent_spans.pop(tool_use_id, None)
+        if deferred:
+            span_ref = deferred.get("_span_ref")
+            if span_ref:
+                span_ref["duration"] = deferred["duration"]
+                span_ref["status"] = "error"
+                span_ref["meta"]["input"] = {"value": input_value}
+                span_ref["meta"]["output"] = {"value": error_message}
+                span_ref["meta"]["error"] = {"message": error_message}
+                if is_interrupt:
+                    span_ref["meta"]["error"]["type"] = "interrupt"
+            return
+
+        span_links = []
+        if self._link_tracker:
+            links = self._link_tracker.on_tool_call(tool_use_id, span_id, session.trace_id, parent_id)
+            span_links = [link.to_dict() for link in links]
+
+        span_name = f"{actual_tool_name} - {intent}" if intent else actual_tool_name
+
+        span: Dict[str, Any] = {
+            "span_id": span_id,
+            "trace_id": session.trace_id,
+            "parent_id": parent_id,
+            "name": span_name,
+            "status": "error",
+            "start_ns": start_ns,
+            "duration": duration,
+            "ml_app": "claude-code",
+            "service": "claude-code",
+            "env": "local",
+            "session_id": session.session_id,
+            "tags": [
+                "ml_app:claude-code",
+                f"session_id:{session.session_id}",
+                "service:claude-code",
+                "env:local",
+                "source:claude-code-hooks",
+                "language:python",
+                f"hostname:{_HOSTNAME}",
+                f"tool_name:{actual_tool_name}",
+            ],
+            "meta": {
+                "span": {"kind": "tool"},
+                "input": {"value": input_value},
+                "output": {"value": error_message},
+                "error": {"message": error_message},
+            },
+            "metrics": {},
+            "span_links": span_links,
+        }
+        if is_interrupt:
+            span["meta"]["error"]["type"] = "interrupt"
+        if estimated_permission_wait_ms is not None:
+            self._set_hidden_metadata(span, estimated_permission_wait_ms=estimated_permission_wait_ms)
+        self._assembled_spans.append(span)
+
     def _handle_pre_compact(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle PreCompact hook event — marks the current active span with compaction metadata.
 
@@ -1047,6 +1150,7 @@ class ClaudeHooksAPI:
             "UserPromptSubmit": self._handle_user_prompt_submit,
             "PreToolUse": self._handle_pre_tool_use,
             "PostToolUse": self._handle_post_tool_use,
+            "PostToolUseFailure": self._handle_post_tool_use_failure,
             "SubagentStart": self._handle_subagent_start,
             "SubagentStop": self._handle_subagent_stop,
             "Stop": self._handle_stop,
