@@ -321,14 +321,20 @@ class ClaudeHooksAPI:
         """Merge key-value pairs into span['meta']['metadata']['_dd'], preserving existing values."""
         span["meta"].setdefault("metadata", {}).setdefault("_dd", {}).update(kwargs)
 
+    async def _check_ephemeral_session(self, session_id: str, transcript_path: str) -> None:
+        """After 500ms, if transcript file doesn't exist, drop session (likely ephemeral resume stub)."""
+        await asyncio.sleep(0.5)
+        if os.path.exists(transcript_path):
+            return
+        session = self._sessions.get(session_id)
+        if not session:
+            return
+        self._assembled_spans = [s for s in self._assembled_spans if s.get("trace_id") != session.trace_id]
+        del self._sessions[session_id]
+        log.info("Dropped ephemeral session %s (transcript never created)", session_id)
+
     def _handle_session_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SessionStart hook event."""
-        source = body.get("source")
-        transcript_path = body.get("transcript_path")
-        if source == "startup" and transcript_path and not os.path.exists(transcript_path):
-            # this is an ephemeral session started for resume commands
-            return
-
         session = self._get_or_create_session(session_id)
         model = body.get("model", "")
         if model:
@@ -336,6 +342,9 @@ class ClaudeHooksAPI:
 
         session.active = True
         session.instrumented = body.get("lapdog_instrumented", False)
+
+        if body.get("source") == "startup" and body.get("transcript_path"):
+            asyncio.create_task(self._check_ephemeral_session(session_id, body["transcript_path"]))
 
         log.info("Claude session started: %s (model=%s)", session_id, model)
 
