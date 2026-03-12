@@ -33,13 +33,12 @@ def main() -> None:
         print("Usage: lapdog-run <command> [args...]", file=sys.stderr)
         sys.exit(1)
 
-    mjs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude_intercept.mjs")
     command = sys.argv[1]
 
     if command == "claude":
         run_claude(sys.argv[2:])
     else:
-         # to avoid unintended side effects from running with other commands that might take some JS options
+        # to avoid unintended side effects from running with other commands that might take some JS options
         # TODO: expand upon this conditional tree with more support for other agent launchers
         print(f"""Unsupported command for lapdog-run: {command}
 Supported commands are: claude""", file=sys.stderr)
