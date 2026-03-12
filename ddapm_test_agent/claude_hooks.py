@@ -810,6 +810,24 @@ class ClaudeHooksAPI:
             "total_tokens": total_input + total_output,
         }
 
+    def _aggregate_tool_usage(self, trace_id: str) -> Dict[str, Dict[str, int]]:
+        """Aggregate call counts and total duration (ns) from all tool spans in the trace.
+
+        Returns a dict keyed by tool name: {"Read": {"call_count": 3, "total_duration_ns": 120000000}, ...}
+        """
+        result: Dict[str, Dict[str, int]] = {}
+        for span in self._assembled_spans:
+            if span.get("trace_id") != trace_id:
+                continue
+            if span.get("meta", {}).get("span", {}).get("kind") != "tool":
+                continue
+            raw_name = span.get("resource") or span.get("name") or "unknown"
+            tool_name = raw_name.split(" - ")[0]
+            entry = result.setdefault(tool_name, {"call_count": 0, "total_duration_ns": 0})
+            entry["call_count"] += 1
+            entry["total_duration_ns"] += span.get("duration", 0)
+        return result
+
     def _compute_context_delta(
         self, trace_id: str, parent_span_id: str, first_input_tokens: int = 0
     ) -> Optional[Dict[str, Any]]:
@@ -885,6 +903,7 @@ class ClaudeHooksAPI:
             )
         # Compute aggregate token usage from LLM spans in this trace
         token_usage = self._compute_token_usage(session.trace_id)
+        tool_usage = self._aggregate_tool_usage(session.trace_id)
         context_delta = self._compute_context_delta(
             session.trace_id, session.root_span_id, session.last_known_input_tokens
         )
@@ -914,6 +933,8 @@ class ClaudeHooksAPI:
                 dd_fields["context_delta"] = context_delta
             if estimated_permission_wait_ms > 0:
                 dd_fields["estimated_permission_wait_ms"] = estimated_permission_wait_ms
+            if tool_usage:
+                dd_fields["tool_usage"] = tool_usage
             self._set_hidden_metadata(root_span, **dd_fields)
             root_span["metrics"] = token_usage
         else:
@@ -958,6 +979,8 @@ class ClaudeHooksAPI:
                 dd_fields["context_delta"] = context_delta
             if estimated_permission_wait_ms > 0:
                 dd_fields["estimated_permission_wait_ms"] = estimated_permission_wait_ms
+            if tool_usage:
+                dd_fields["tool_usage"] = tool_usage
             self._set_hidden_metadata(root_span, **dd_fields)
             self._assembled_spans.append(root_span)
 
