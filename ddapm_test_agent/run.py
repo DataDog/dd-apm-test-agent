@@ -10,6 +10,22 @@ Usage: lapdog-run <command> [args...]
 import os
 import shutil
 import sys
+from typing import List
+from typing import Optional
+
+
+def run_claude(args: Optional[List[str]] = None) -> None:
+    """Set BUN_OPTIONS with claude_intercept.mjs and exec the claude binary. Never returns."""
+    if args is None:
+        args = sys.argv[1:]
+    mjs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude_intercept.mjs")
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        print("[ddapm] 'claude' not found in PATH", file=sys.stderr)
+        sys.exit(1)
+    existing = os.environ.get("BUN_OPTIONS", "")
+    os.environ["BUN_OPTIONS"] = f"--preload {mjs_path} {existing}".strip()
+    os.execv(claude_bin, [claude_bin] + args)
 
 
 def main() -> None:
@@ -21,13 +37,7 @@ def main() -> None:
     command = sys.argv[1]
 
     if command == "claude":
-        claude_bin = shutil.which("claude")
-        if not claude_bin:
-            print("[ddapm] 'claude' not found in PATH", file=sys.stderr)
-            sys.exit(1)
-        existing = os.environ.get("BUN_OPTIONS", "")
-        os.environ["BUN_OPTIONS"] = f"--preload {mjs_path} {existing}".strip()
-        os.execv(claude_bin, [claude_bin] + sys.argv[2:])
+        run_claude(sys.argv[2:])
     else:
         existing = os.environ.get("NODE_OPTIONS", "")
         os.environ["NODE_OPTIONS"] = f"--import {mjs_path} {existing}".strip()
