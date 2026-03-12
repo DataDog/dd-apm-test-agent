@@ -796,18 +796,24 @@ class ClaudeHooksAPI:
         """Sum token metrics from all LLM spans in the given trace."""
         total_input = 0
         total_output = 0
+        total_cache_read = 0
+        total_cache_write = 0
         for span in self._assembled_spans:
             if span.get("trace_id") != trace_id:
                 continue
             if span.get("meta", {}).get("span", {}).get("kind") != "llm":
                 continue
             metrics = span.get("metrics", {})
-            total_input += metrics.get("input_tokens", 0)
+            total_input += metrics.get("non_cached_input_tokens", 0)
             total_output += metrics.get("output_tokens", 0)
+            total_cache_read += metrics.get("cache_read_input_tokens", 0)
+            total_cache_write += metrics.get("cache_write_input_tokens", 0)
         return {
             "input_tokens": total_input,
             "output_tokens": total_output,
-            "total_tokens": total_input + total_output,
+            "cache_read_input_tokens": total_cache_read,
+            "cache_write_input_tokens": total_cache_write,
+            "total_tokens": total_input + total_output + total_cache_read + total_cache_write,
         }
 
     def _aggregate_tool_usage(self, trace_id: str) -> Dict[str, Dict[str, int]]:
