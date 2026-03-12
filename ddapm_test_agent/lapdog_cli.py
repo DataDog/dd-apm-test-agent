@@ -39,12 +39,6 @@ def _url_for_port(port: int) -> str:
     return f"http://127.0.0.1:{port}/info"
 
 
-def _lapdog_url() -> Optional[str]:
-    """URL for the lapdog we're managing (from pid file). Return None if no pid file or no port."""
-    _, port = _read_pid_file()
-    return _url_for_port(port) if port is not None else None
-
-
 def _lapdog_alive(timeout: float = 2.0) -> bool:
     """Check if the lapdog we started is running (pid file + process exists + /info responds)."""
     pid, port = _read_pid_file()
@@ -77,8 +71,6 @@ def _process_exists(pid: int) -> bool:
     try:
         os.kill(pid, 0)
         return True
-    except ProcessLookupError:
-        return False
     except OSError:
         return False
 
@@ -99,6 +91,27 @@ def _remove_pid_file() -> None:
             pass
 
 
+def _start_lapdog(port: int, extra_args: Optional[List[str]] = None) -> None:
+    """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
+    log_path = _log_file_path()
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    args = [sys.executable, "-m", "ddapm_test_agent.agent", "--enable-claude-code-hooks"]
+    if extra_args:
+        args += extra_args
+    with open(log_path, "w") as log_file:
+        proc = subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    _write_pid_file(proc.pid, port)
+    _wait_for_lapdog(proc, port, log_path)
+    
+    print(f"[lapdog] Lapdog running at {_url_for_port(port)} (pid={proc.pid}, logs: {log_path})")
+
+
 def _port_in_use(port: Optional[int] = None) -> bool:
     """Return True if something is already serving /info on the given port. If port is None, use _resolved_port()."""
     if port is None:
@@ -110,11 +123,29 @@ def _port_in_use(port: Optional[int] = None) -> bool:
         return False
 
 
+def _wait_for_lapdog(proc: subprocess.Popen, port: int, log_path: Optional[str] = None) -> None:
+    """Wait up to ~10s for lapdog to start, then exit(1) on timeout."""
+    for _ in range(50):
+        if _lapdog_alive():
+            return
+        time.sleep(0.2)
+    msg = "[lapdog] Lapdog failed to start in time."
+    if log_path:
+        msg += f" Check logs: {log_path}"
+    print(msg, file=sys.stderr)
+    _remove_pid_file()
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    sys.exit(1)
+
+
 def cmd_run() -> None:
     """Start lapdog in background with Claude hooks enabled."""
     if _lapdog_alive():
-        pid, _ = _read_pid_file()
-        url = _lapdog_url()
+        pid, port = _read_pid_file()
+        url = _url_for_port(port) if port else None
         print(f"[lapdog] Lapdog already running at {url}" + (f" (PID {pid})" if pid else ""), file=sys.stderr)
         return
     port = _resolved_port(sys.argv[2:])
@@ -125,35 +156,7 @@ def cmd_run() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    log_path = _log_file_path()
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    with open(log_path, "w") as log_file:
-        proc = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "ddapm_test_agent.agent",
-                "--enable-claude-code-hooks",
-            ] + sys.argv[2:],
-            stdin=subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-    _write_pid_file(proc.pid, port)
-    for _ in range(50):
-        if _lapdog_alive():
-            url = _lapdog_url()
-            print(f"[lapdog] Lapdog running at {url} (pid={proc.pid}, logs: {_log_file_path()})")
-            return
-        time.sleep(0.2)
-    print("[lapdog] Lapdog failed to start in time. Check logs:", log_path, file=sys.stderr)
-    _remove_pid_file()
-    try:
-        proc.kill()
-    except OSError:
-        pass
-    sys.exit(1)
+    _start_lapdog(port, sys.argv[2:])
 
 
 def cmd_stop() -> None:
@@ -179,13 +182,12 @@ def cmd_status() -> None:
     if port is None:
         print("[lapdog] No lapdog running (start with 'lapdog run' or 'lapdog claude').", file=sys.stderr)
         sys.exit(1)
+    url = _url_for_port(port)
     try:
-        r = requests.get(_url_for_port(port), timeout=2)
-        r.raise_for_status()
-        url = _url_for_port(port)
+        requests.get(url, timeout=2).raise_for_status()
         print(f"[lapdog] Lapdog running at {url} (pid={pid}, logs: {_log_file_path()})", file=sys.stderr)
     except requests.RequestException as e:
-        print(f"[lapdog] Lapdog not reachable at {_url_for_port(port)}: {e}", file=sys.stderr)
+        print(f"[lapdog] Lapdog not reachable at {url}: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -199,31 +201,7 @@ def cmd_claude() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        proc = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "ddapm_test_agent.agent",
-                "--enable-claude-code-hooks",
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        _write_pid_file(proc.pid, port)
-        for _ in range(50):
-            if _lapdog_alive():
-                break
-            time.sleep(0.2)
-        else:
-            print("[lapdog] Lapdog failed to start in time.", file=sys.stderr)
-            _remove_pid_file()
-            try:
-                proc.kill()
-            except OSError:
-                pass
-            sys.exit(1)
+        _start_lapdog(port)
     from ddapm_test_agent.run import run_claude
 
     run_claude(sys.argv[2:])
