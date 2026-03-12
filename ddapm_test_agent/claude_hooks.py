@@ -142,6 +142,10 @@ class SessionState:
         self.last_known_input_tokens: int = 0
         # Tracks the time when the permission dialog appeared, so we can compute the elapsed time.
         self.pending_permission_at_ns: Optional[int] = None
+        # whether the session is active or not
+        self.active = False
+        # whether the session is instrumented with the claude_intercept.mjs script for LLM calls
+        self.instrumented = False
 
 
 _MAX_UINT_64 = (1 << 64) - 1
@@ -317,12 +321,31 @@ class ClaudeHooksAPI:
         """Merge key-value pairs into span['meta']['metadata']['_dd'], preserving existing values."""
         span["meta"].setdefault("metadata", {}).setdefault("_dd", {}).update(kwargs)
 
+    async def _check_ephemeral_session(self, session_id: str, transcript_path: str) -> None:
+        """After 500ms, if transcript file doesn't exist, drop session (likely ephemeral resume stub)."""
+        await asyncio.sleep(0.5)
+        if os.path.exists(transcript_path):
+            return
+        session = self._sessions.get(session_id)
+        if not session:
+            return
+        self._assembled_spans = [s for s in self._assembled_spans if s.get("trace_id") != session.trace_id]
+        del self._sessions[session_id]
+        log.info("Dropped ephemeral session %s (transcript never created)", session_id)
+
     def _handle_session_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SessionStart hook event."""
         session = self._get_or_create_session(session_id)
         model = body.get("model", "")
         if model:
             session.model = model
+
+        session.active = True
+        session.instrumented = body.get("lapdog_instrumented", False)
+
+        if body.get("source") == "startup" and body.get("transcript_path"):
+            asyncio.create_task(self._check_ephemeral_session(session_id, body["transcript_path"]))
+
         log.info("Claude session started: %s (model=%s)", session_id, model)
 
     def _finalize_interrupted_turn(self, session: SessionState) -> None:
@@ -973,6 +996,8 @@ class ClaudeHooksAPI:
         if not session:
             return
 
+        session.active = False
+
         if not session.root_span_emitted:
             self._finalize_interrupted_turn(session)
 
@@ -1310,6 +1335,8 @@ class ClaudeHooksAPI:
                     "num_prompts": len(state.user_prompts),
                     "agent_stack_depth": len(state.agent_span_stack),
                     "pending_tools": len(state.pending_tools),
+                    "active": state.active,
+                    "instrumented": state.instrumented,
                 }
             )
         return web.json_response({"sessions": sessions})

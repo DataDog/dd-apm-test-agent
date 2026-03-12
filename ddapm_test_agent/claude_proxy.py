@@ -37,11 +37,24 @@ log = logging.getLogger(__name__)
 
 _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
+_SESSION_ID_MARK = "_account__session_"
 
 ANTHROPIC_API_BASE = "https://api.anthropic.com"
 
 SKIP_REQUEST_HEADERS = {"host", "transfer-encoding", "content-length", "x-ddapm-upstream"}
 SKIP_RESPONSE_HEADERS = {"content-length", "transfer-encoding", "content-encoding", "connection"}
+
+
+def _get_session_id_from_request_body(body: Dict[str, Any]) -> str:
+    """
+    Parse the session id from the metadata field in the request body.
+
+    Takes the form {"user_id": "user_{user_id_hash}_account__session_{session_id}"}
+    """
+    metadata: dict[str, Any] = body.get("metadata", {})
+    user_id: str = metadata.get("user_id", "")
+
+    return user_id[user_id.index(_SESSION_ID_MARK) + len(_SESSION_ID_MARK):]
 
 
 def _parse_sse_events(raw: bytes) -> List[Dict[str, Any]]:
@@ -270,7 +283,7 @@ class ClaudeProxyAPI:
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
 
-    def _get_active_session(self) -> Optional[SessionState]:
+    def _get_active_session(self, session_id: str | None = None) -> Optional[SessionState]:
         """Get the most likely active Claude session.
 
         Prefers sessions that have pending tools or an active agent stack
@@ -282,6 +295,9 @@ class ClaudeProxyAPI:
         sessions = self._hooks_api._sessions
         if not sessions:
             return None
+
+        if session_id:
+            return sessions.get(session_id)
 
         all_sessions = list(sessions.values())
 
@@ -472,8 +488,8 @@ class ClaudeProxyAPI:
         headers = {key: value for key, value in request.headers.items() if key.lower() not in SKIP_REQUEST_HEADERS}
 
         start_ns = int(time.time() * 1_000_000_000)
-        session = self._get_active_session()
 
+        session = self._get_active_session(session_id=_get_session_id_from_request_body(request_body))
         http_session = await self._get_http_session()
 
         try:

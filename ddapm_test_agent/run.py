@@ -39,6 +39,8 @@ def main() -> None:
     if command == "claude":
         run_claude(sys.argv[2:])
     else:
-        existing = os.environ.get("NODE_OPTIONS", "")
-        os.environ["NODE_OPTIONS"] = f"--import {mjs_path} {existing}".strip()
-        os.execvp(command, sys.argv[1:])
+        # to avoid unintended side effects from running with other commands that might take some JS options
+        # TODO: expand upon this conditional tree with more support for other agent launchers
+        print(f"""Unsupported command for lapdog-run: {command}
+Supported commands are: claude""", file=sys.stderr)
+        sys.exit(1)
