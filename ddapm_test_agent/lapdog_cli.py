@@ -107,8 +107,8 @@ def _start_lapdog(port: int, extra_args: Optional[List[str]] = None) -> None:
             start_new_session=True,
         )
     _write_pid_file(proc.pid, port)
-    _wait_for_lapdog(proc, port, log_path)
-    
+    _wait_for_lapdog(proc, log_path)
+
     print(f"[lapdog] Lapdog running at {_url_for_port(port)} (pid={proc.pid}, logs: {log_path})")
 
 
@@ -123,7 +123,7 @@ def _port_in_use(port: Optional[int] = None) -> bool:
         return False
 
 
-def _wait_for_lapdog(proc: subprocess.Popen, port: int, log_path: Optional[str] = None) -> None:
+def _wait_for_lapdog(proc: subprocess.Popen[bytes], log_path: Optional[str] = None) -> None:
     """Wait up to ~10s for lapdog to start, then exit(1) on timeout."""
     for _ in range(50):
         if _lapdog_alive():
