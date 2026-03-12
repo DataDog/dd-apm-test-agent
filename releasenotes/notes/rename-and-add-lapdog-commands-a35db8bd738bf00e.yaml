@@ -1,0 +1,8 @@
+---
+features:
+  - |
+    Updates the suite of ``lapdog`` commands:
+    - ``lapdog run`` now launches the test agent with ``--enable-claude-code-hooks`` in the background.
+    - ``lapdog stop`` stops that test agent instance
+    - ``lapdog status`` logs the current status (url, pid, and logs file) of the lapdog instance
+    - ``lapdog claude`` starts a claude session through lapdog, starting lapdog locally if not started by ``lapdog run``
