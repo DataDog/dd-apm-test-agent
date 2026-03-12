@@ -1076,6 +1076,8 @@ class Agent:
         for key in data:
             request.app[key] = data[key]
 
+        log.info(f"Updated test agent settings for {','.join(data.keys())}")
+
         return web.HTTPAccepted(headers=headers)
 
     async def handle_info(self, request: Request) -> web.Response:
@@ -1114,6 +1116,7 @@ class Agent:
                 # Just a random selection of some peer_tags to aggregate on for testing, not exhaustive
                 "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
                 "span_events": True,  # Advertise support for the top-level Span field for Span Events
+                "llmobs_data_forwarding": not request.app["disable_llmobs_data_forwarding"] and request.app["dd_api_key"] is not None and request.app["dd_site"] is not None,
             },
             headers=headers,
         )
