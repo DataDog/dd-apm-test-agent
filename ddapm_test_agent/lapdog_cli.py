@@ -1,5 +1,6 @@
 """CLI for lapdog subcommands: run, stop, status, claude."""
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -141,6 +142,20 @@ def _wait_for_lapdog(proc: subprocess.Popen[bytes], log_path: Optional[str] = No
     sys.exit(1)
 
 
+def _run_claude(args: Optional[List[str]] = None) -> None:
+    """Set BUN_OPTIONS with claude_intercept.mjs and exec the claude binary. Never returns."""
+    if args is None:
+        args = sys.argv[1:]
+    mjs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude_intercept.mjs")
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        print("[ddapm] 'claude' not found in PATH", file=sys.stderr)
+        sys.exit(1)
+    existing = os.environ.get("BUN_OPTIONS", "")
+    os.environ["BUN_OPTIONS"] = f"--preload {mjs_path} {existing}".strip()
+    os.execv(claude_bin, [claude_bin] + args)
+
+
 def cmd_run() -> None:
     """Start lapdog in background with Claude hooks enabled."""
     if _lapdog_alive():
@@ -202,9 +217,8 @@ def cmd_claude() -> None:
             )
             sys.exit(1)
         _start_lapdog(port)
-    from ddapm_test_agent.run import run_claude
-
-    run_claude(sys.argv[2:])
+    
+    _run_claude(sys.argv[2:])
 
 
 def main() -> None:
