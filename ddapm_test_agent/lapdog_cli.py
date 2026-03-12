@@ -217,7 +217,7 @@ def cmd_claude() -> None:
             )
             sys.exit(1)
         _start_lapdog(port)
-    
+
     _run_claude(sys.argv[2:])
 
 
