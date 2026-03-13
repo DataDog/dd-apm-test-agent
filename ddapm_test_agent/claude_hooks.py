@@ -817,9 +817,10 @@ class ClaudeHooksAPI:
         }
 
     def _aggregate_tool_usage(self, trace_id: str) -> Dict[str, Dict[str, int]]:
-        """Aggregate call counts and total duration (ns) from all tool spans in the trace.
+        """Aggregate call counts, total duration (ns), and permission wait stats from all tool spans in the trace.
 
-        Returns a dict keyed by tool name: {"Read": {"call_count": 3, "total_duration_ns": 120000000}, ...}
+        Returns a dict keyed by tool name:
+        {"Read": {"call_count": 3, "total_duration_ns": 120000000, "permission_wait_count": 1, "permission_wait_ms": 2500}, ...}
         """
         result: Dict[str, Dict[str, int]] = {}
         for span in self._assembled_spans:
@@ -829,9 +830,18 @@ class ClaudeHooksAPI:
                 continue
             raw_name = span.get("name") or "unknown"
             tool_name = raw_name.split(" - ")[0]
-            entry = result.setdefault(tool_name, {"call_count": 0, "total_duration_ns": 0})
+            entry = result.setdefault(
+                tool_name,
+                {"call_count": 0, "total_duration_ns": 0, "permission_wait_count": 0, "permission_wait_ms": 0},
+            )
             entry["call_count"] += 1
             entry["total_duration_ns"] += span.get("duration", 0)
+            perm_wait = (
+                span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("estimated_permission_wait_ms", 0)
+            )
+            if perm_wait:
+                entry["permission_wait_count"] += 1
+                entry["permission_wait_ms"] += perm_wait
         return result
 
     def _compute_context_delta(
