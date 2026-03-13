@@ -801,19 +801,53 @@ class ClaudeHooksAPI:
         """Sum token metrics from all LLM spans in the given trace."""
         total_input = 0
         total_output = 0
+        total_cache_read = 0
+        total_cache_write = 0
         for span in self._assembled_spans:
             if span.get("trace_id") != trace_id:
                 continue
             if span.get("meta", {}).get("span", {}).get("kind") != "llm":
                 continue
             metrics = span.get("metrics", {})
-            total_input += metrics.get("input_tokens", 0)
+            total_input += metrics.get("non_cached_input_tokens", 0)
             total_output += metrics.get("output_tokens", 0)
+            total_cache_read += metrics.get("cache_read_input_tokens", 0)
+            total_cache_write += metrics.get("cache_write_input_tokens", 0)
         return {
             "input_tokens": total_input,
             "output_tokens": total_output,
-            "total_tokens": total_input + total_output,
+            "cache_read_input_tokens": total_cache_read,
+            "cache_write_input_tokens": total_cache_write,
+            "total_tokens": total_input + total_output + total_cache_read + total_cache_write,
         }
+
+    def _aggregate_tool_usage(self, trace_id: str) -> Dict[str, Dict[str, int]]:
+        """Aggregate call counts, total duration (ns), and permission wait stats from all tool spans in the trace.
+
+        Returns a dict keyed by tool name:
+        {"Read": {"call_count": 3, "total_duration_ns": 120000000, "permission_wait_count": 1, "permission_wait_ms": 2500}, ...}
+        """
+        result: Dict[str, Dict[str, int]] = {}
+        for span in self._assembled_spans:
+            if span.get("trace_id") != trace_id:
+                continue
+            if span.get("meta", {}).get("span", {}).get("kind") != "tool":
+                continue
+            raw_name = span.get("name") or "unknown"
+            tool_name = raw_name.split(" - ")[0]
+            entry = result.setdefault(
+                tool_name,
+                {"call_count": 0, "total_duration_ns": 0, "permission_wait_count": 0, "permission_wait_ms": 0},
+            )
+            entry["call_count"] += 1
+            entry["total_duration_ns"] += span.get("duration", 0)
+            perm_wait = (
+                span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("estimated_permission_wait_ms", 0)
+            )
+            if perm_wait:
+                entry["permission_wait_count"] += 1
+                entry["permission_wait_ms"] += perm_wait
+        return result
 
     def _compute_context_delta(
         self, trace_id: str, parent_span_id: str, first_input_tokens: int = 0
@@ -890,6 +924,7 @@ class ClaudeHooksAPI:
             )
         # Compute aggregate token usage from LLM spans in this trace
         token_usage = self._compute_token_usage(session.trace_id)
+        tool_usage = self._aggregate_tool_usage(session.trace_id)
         context_delta = self._compute_context_delta(
             session.trace_id, session.root_span_id, session.last_known_input_tokens
         )
@@ -919,6 +954,8 @@ class ClaudeHooksAPI:
                 dd_fields["context_delta"] = context_delta
             if estimated_permission_wait_ms > 0:
                 dd_fields["estimated_permission_wait_ms"] = estimated_permission_wait_ms
+            if tool_usage:
+                dd_fields["tool_usage"] = tool_usage
             self._set_hidden_metadata(root_span, **dd_fields)
             root_span["metrics"] = token_usage
         else:
@@ -963,6 +1000,8 @@ class ClaudeHooksAPI:
                 dd_fields["context_delta"] = context_delta
             if estimated_permission_wait_ms > 0:
                 dd_fields["estimated_permission_wait_ms"] = estimated_permission_wait_ms
+            if tool_usage:
+                dd_fields["tool_usage"] = tool_usage
             self._set_hidden_metadata(root_span, **dd_fields)
             self._assembled_spans.append(root_span)
 
