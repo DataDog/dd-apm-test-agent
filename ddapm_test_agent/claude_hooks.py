@@ -827,7 +827,7 @@ class ClaudeHooksAPI:
                 continue
             if span.get("meta", {}).get("span", {}).get("kind") != "tool":
                 continue
-            raw_name = span.get("resource") or span.get("name") or "unknown"
+            raw_name = span.get("name") or "unknown"
             tool_name = raw_name.split(" - ")[0]
             entry = result.setdefault(tool_name, {"call_count": 0, "total_duration_ns": 0})
             entry["call_count"] += 1
