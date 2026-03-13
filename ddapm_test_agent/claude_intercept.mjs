@@ -27,8 +27,9 @@ function log(msg) {
   if (DEBUG && proc?.stderr) proc.stderr.write(`[ddapm] ${msg}\n`);
 }
 
-const PATCH_MARKER = Symbol.for('ddapm.fetch.patched');
-if (!globalThis.fetch?.[PATCH_MARKER]) {
+// patch fetch
+const FETCH_PATCH_MARKER = Symbol.for('ddapm.fetch.patched');
+if (!globalThis.fetch?.[FETCH_PATCH_MARKER]) {
   const originalFetch = globalThis.fetch;
 
   async function patchedFetch(input, init) {
@@ -79,8 +80,34 @@ if (!globalThis.fetch?.[PATCH_MARKER]) {
 
     return originalFetch.call(this, input, init);
   }
-  patchedFetch[PATCH_MARKER] = true;
+  patchedFetch[FETCH_PATCH_MARKER] = true;
   globalThis.fetch = patchedFetch;
 
   log(`active — routing Anthropic API calls → ${GATEWAY_URL}`);
+}
+
+// patch spawn - for start, send an additional "instrumented" field to show that this file has been loaded
+const CP_SPAWN_PATCH_MARKER = Symbol.for('ddapm.child_process.spawn.patched');
+const child_process = require('child_process');
+if (!child_process.spawn?.[CP_SPAWN_PATCH_MARKER]) {
+  const origSpawn = child_process.spawn;
+
+  function patchedSpawn (cmd, args, opts) {
+    const child = origSpawn(cmd, args, opts);
+    const origWrite = child.stdin.write.bind(child.stdin);
+    child.stdin.write = function(data, ...rest) {
+      try {
+        const parsed = JSON.parse(typeof data === 'string' ? data.trim() : data);
+        if (parsed?.hook_event_name === 'SessionStart') {
+          parsed.lapdog_instrumented = true;
+          data = JSON.stringify(parsed);
+        }
+      } catch {}
+      return origWrite(data, ...rest);
+    };
+    return child;
+  };
+
+  patchedSpawn[CP_SPAWN_PATCH_MARKER] = true;
+  child_process.spawn = patchedSpawn;
 }
