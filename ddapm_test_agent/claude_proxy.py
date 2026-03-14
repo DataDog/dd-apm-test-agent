@@ -328,6 +328,45 @@ class ClaudeProxyAPI:
                     log.info("Conversation title: %s", title)
                 return
 
+    @staticmethod
+    def _match_agent_by_prompt(session: SessionState, request_body: Dict[str, Any]) -> Optional[str]:
+        """Match an LLM request to an active agent by checking if the agent's task_prompt appears in the request.
+
+        When multiple concurrent subagents are active and there are no tool_result
+        hints (first LLM call for each subagent), we fall back to matching the
+        task prompt that launched each agent against the system/user messages in
+        the API request.
+        """
+        # Extract text from the request messages
+        request_text_parts: List[str] = []
+        for msg in request_body.get("messages", []):
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                request_text_parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        request_text_parts.append(block.get("text", ""))
+        # Also check system prompt
+        system = request_body.get("system", "")
+        if isinstance(system, str) and system:
+            request_text_parts.append(system)
+        elif isinstance(system, list):
+            for block in system:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    request_text_parts.append(block.get("text", ""))
+
+        request_text = "\n".join(request_text_parts)
+        if not request_text:
+            return None
+
+        for span_id, agent_entry in session.active_agents.items():
+            task_prompt = agent_entry.get("task_prompt", "")
+            if task_prompt and task_prompt in request_text:
+                return span_id
+
+        return None
+
     def _create_llm_span(
         self,
         session: Optional[SessionState],
@@ -383,6 +422,12 @@ class ClaudeProxyAPI:
             # All tool_results in a single LLM request should come from the same parent.
             # Use the first hint; if they disagree, still better than the stack guess.
             parent_id = parent_hints[0]
+        elif session and len(session.active_agents) > 1:
+            # First LLM call for a subagent — no tool_results to hint from.
+            # Match by checking which agent's task_prompt appears in the request.
+            resolved = self._match_agent_by_prompt(session, request_body)
+            if resolved:
+                parent_id = resolved
 
         # LLM.output -> Tool.input linking: register tool_use blocks from the response
         tool_uses = _extract_tool_uses_from_response(content_blocks)
@@ -394,6 +439,11 @@ class ClaudeProxyAPI:
                 llm_span_id=span_id,
                 llm_trace_id=trace_id,
             )
+
+        # Record which agent this LLM span belongs to, so tools from its
+        # tool_use blocks can resolve their parent via the link tracker.
+        if parent_id and parent_id != "undefined":
+            self._link_tracker.set_llm_parent(span_id, parent_id)
 
         input_messages = _format_input_messages(request_body)
         output_messages = _format_output_messages(content_blocks)
