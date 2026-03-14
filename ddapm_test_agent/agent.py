@@ -270,7 +270,7 @@ async def _is_valid_api_key_and_site_combination(dd_api_key: str, dd_site: str) 
         ) as resp:
             if resp.status == 403:
                 return False
-            
+
             result = cast(dict[str, bool], await resp.json())
             return result.get("valid", False)
 
