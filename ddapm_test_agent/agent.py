@@ -256,6 +256,25 @@ def default_value_trace_results_summary():
     }
 
 
+async def _is_valid_api_key_and_site_combination(dd_api_key: str, dd_site: str) -> bool:
+    """Check if the api key + site is a valid DD auth combo"""
+    url = f"https://api.{dd_site}/api/v1/validate"
+    headers = {
+        "DD-API-KEY": dd_api_key
+    }
+
+    async with ClientSession() as session:
+        async with session.get(
+            url,
+            headers=headers,
+        ) as resp:
+            if resp.status == 403:
+                return False
+            
+            result = cast(dict[str, bool], await resp.json())
+            return result.get("valid", False)
+
+
 class MockQuery:
     """Mock query object that behaves like a dict."""
 
@@ -1065,12 +1084,29 @@ class Agent:
             return web.Response(status=200, headers=headers)
 
         raw_data = await request.read()
-        data = json.loads(raw_data)
+        data = cast(dict[str, Any], json.loads(raw_data))
 
         # First pass to validate the data
         for key in data:
             if key not in request.app:
                 return web.HTTPUnprocessableEntity(text=f"Unknown key: '{key}'", headers=headers)
+
+        # before applying config, check if api-key and site are valid
+        # only do this if updating an api key or site
+        updated_auth_meta = "dd_api_key" in data or "dd_site" in data
+        if updated_auth_meta:
+            dd_api_key = data.get("dd_api_key", request.app["dd_api_key"])
+            dd_site = data.get("dd_site", request.app["dd_site"])
+
+            is_valid = await _is_valid_api_key_and_site_combination(
+                dd_api_key=dd_api_key,
+                dd_site=dd_site
+            )
+
+            if not is_valid:
+                return web.HTTPUnprocessableEntity(
+                    text="Incorrect DD API key and site combination to update", headers=headers
+                )
 
         # Second pass to apply the config
         for key in data:
