@@ -112,6 +112,20 @@ def _get_context_limit(model: str) -> int:
     return 200_000
 
 
+def _to_json_str(value: Any, max_len: int = 0) -> str:
+    """Serialize a value to a JSON string. Strings pass through; dicts/lists get json.dumps."""
+    if isinstance(value, str):
+        s = value
+    else:
+        try:
+            s = json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            s = str(value)
+    if max_len and len(s) > max_len:
+        return s[:max_len]
+    return s
+
+
 class PendingToolSpan:
     """Tracks a tool invocation between PreToolUse and PostToolUse."""
 
@@ -510,7 +524,7 @@ class ClaudeHooksAPI:
             span_id = pending.span_id
             parent_id = pending.parent_id
             start_ns = pending.start_ns
-            input_value = str(pending.tool_input) if pending.tool_input else ""
+            input_value = _to_json_str(pending.tool_input) if pending.tool_input else ""
             actual_tool_name = pending.tool_name
             tool_input_dict = pending.tool_input if isinstance(pending.tool_input, dict) else {}
         else:
@@ -523,7 +537,7 @@ class ClaudeHooksAPI:
 
         intent = _extract_intent(actual_tool_name, tool_input_dict)
 
-        output_str = str(tool_output)[:4096] if tool_output else ""
+        output_str = _to_json_str(tool_output, max_len=4096) if tool_output else ""
 
         estimated_permission_wait_ms: Optional[int] = None
         if session.pending_permission_at_ns is not None:
@@ -1085,7 +1099,7 @@ class ClaudeHooksAPI:
             span_id = pending.span_id
             parent_id = pending.parent_id
             start_ns = pending.start_ns
-            input_value = str(pending.tool_input) if pending.tool_input else ""
+            input_value = _to_json_str(pending.tool_input) if pending.tool_input else ""
             actual_tool_name = pending.tool_name
             tool_input_dict = pending.tool_input if isinstance(pending.tool_input, dict) else {}
         else:
