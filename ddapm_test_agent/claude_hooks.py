@@ -36,7 +36,12 @@ log = logging.getLogger(__name__)
 _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 
-MODEL_CONTEXT_LIMITS: Dict[str, int] = {}  # empty; default fallback handles all models
+# Models with 1M token context windows (native, no beta header needed).
+# All other models default to 200k.
+_1M_CONTEXT_MODELS = {
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+}
 
 
 CLAUDE_CODE_EVENTS = [
@@ -100,9 +105,10 @@ def write_claude_code_hooks(claude_settings_path: Path) -> None:
 
 def _get_context_limit(model: str) -> int:
     """Return the context window size for a given model."""
-    if model in MODEL_CONTEXT_LIMITS:
-        return MODEL_CONTEXT_LIMITS[model]
-    return 200_000  # all current Claude models
+    for prefix in _1M_CONTEXT_MODELS:
+        if model.startswith(prefix):
+            return 1_000_000
+    return 200_000
 
 
 class PendingToolSpan:
