@@ -338,25 +338,23 @@ class ClaudeProxyAPI:
         the API request.
         """
         # Extract text from the request messages
-        request_text_parts: List[str] = []
+        request_text = ""
         for msg in request_body.get("messages", []):
             content = msg.get("content", "")
             if isinstance(content, str):
-                request_text_parts.append(content)
+                request_text += content + "\n"
             elif isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "text":
-                        request_text_parts.append(block.get("text", ""))
+                        request_text += block.get("text", "") + "\n"
         # Also check system prompt
         system = request_body.get("system", "")
         if isinstance(system, str) and system:
-            request_text_parts.append(system)
+            request_text += system + "\n"
         elif isinstance(system, list):
             for block in system:
                 if isinstance(block, dict) and block.get("type") == "text":
-                    request_text_parts.append(block.get("text", ""))
-
-        request_text = "\n".join(request_text_parts)
+                    request_text += block.get("text", "") + "\n"
         if not request_text:
             return None
 
