@@ -410,7 +410,9 @@ class ClaudeHooksAPI:
             session.pending_tools = {}
             session.deferred_agent_spans = {}
             session.claimed_task_tools = set()
-            session.conversation_title = ""
+            # Don't reset conversation_title — it persists across turns so
+            # subsequent interactions on the same topic reuse the title.
+            # The haiku summarization call will update it when the topic changes.
             session.root_span_emitted = False
 
         prompt = body.get("user_prompt", body.get("prompt", ""))
@@ -439,7 +441,8 @@ class ClaudeHooksAPI:
                 "language:python",
                 f"hostname:{_HOSTNAME}",
             ]
-            + ([f"user_handle:{_USER_HANDLE}"] if _USER_HANDLE else []),
+            + ([f"user_handle:{_USER_HANDLE}"] if _USER_HANDLE else [])
+            + ([f"topic:{session.conversation_title}"] if session.conversation_title else []),
             "meta": {
                 "span": {"kind": "agent"},
                 "input": {"value": prompt},
@@ -898,12 +901,16 @@ class ClaudeHooksAPI:
         if context_delta:
             session.last_known_input_tokens = context_delta["last_input_tokens"]
 
-        root_span_name = session.conversation_title or "claude-code-request"
+        root_span_name = "claude-code-request"
 
         estimated_permission_wait_ms = self._sum_estimated_permission_wait_ms(trace_id=session.trace_id)
 
         if root_span:
             root_span["name"] = root_span_name
+            if session.conversation_title:
+                topic_tag = f"topic:{session.conversation_title}"
+                # Replace existing topic tag (set from preliminary span) or append
+                root_span["tags"] = [t for t in root_span["tags"] if not t.startswith("topic:")] + [topic_tag]
             root_span["duration"] = duration
             root_span["meta"]["input"]["value"] = input_value
             root_span["meta"]["output"]["value"] = output_value
@@ -947,7 +954,8 @@ class ClaudeHooksAPI:
                     f"hostname:{_HOSTNAME}",
                     f"user_name:{_USERNAME}",
                 ]
-                + ([f"user_handle:{_USER_HANDLE}"] if _USER_HANDLE else []),
+                + ([f"user_handle:{_USER_HANDLE}"] if _USER_HANDLE else [])
+                + ([f"topic:{session.conversation_title}"] if session.conversation_title else []),
                 "meta": {
                     "span": {"kind": "agent"},
                     "input": {"value": input_value},
