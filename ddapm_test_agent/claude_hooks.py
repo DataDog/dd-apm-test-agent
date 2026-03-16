@@ -112,18 +112,14 @@ def _get_context_limit(model: str) -> int:
     return 200_000
 
 
-def _to_json_str(value: Any, max_len: int = 0) -> str:
+def _to_json_str(value: Any) -> str:
     """Serialize a value to a JSON string. Strings pass through; dicts/lists get json.dumps."""
     if isinstance(value, str):
-        s = value
-    else:
-        try:
-            s = json.dumps(value, ensure_ascii=False)
-        except (TypeError, ValueError):
-            s = str(value)
-    if max_len and len(s) > max_len:
-        return s[:max_len]
-    return s
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 class PendingToolSpan:
@@ -537,7 +533,7 @@ class ClaudeHooksAPI:
 
         intent = _extract_intent(actual_tool_name, tool_input_dict)
 
-        output_str = _to_json_str(tool_output, max_len=4096) if tool_output else ""
+        output_str = _to_json_str(tool_output) if tool_output else ""
 
         estimated_permission_wait_ms: Optional[int] = None
         if session.pending_permission_at_ns is not None:
