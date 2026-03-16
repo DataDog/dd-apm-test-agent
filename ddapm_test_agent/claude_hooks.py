@@ -35,6 +35,7 @@ log = logging.getLogger(__name__)
 
 _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
+_USER_HANDLE = os.environ.get("DD_USER_HANDLE", "")
 
 MODEL_CONTEXT_LIMITS: Dict[str, int] = {}  # empty; default fallback handles all models
 
@@ -437,7 +438,8 @@ class ClaudeHooksAPI:
                 "source:claude-code-hooks",
                 "language:python",
                 f"hostname:{_HOSTNAME}",
-            ],
+            ]
+            + ([f"user_handle:{_USER_HANDLE}"] if _USER_HANDLE else []),
             "meta": {
                 "span": {"kind": "agent"},
                 "input": {"value": prompt},
@@ -944,7 +946,8 @@ class ClaudeHooksAPI:
                     "language:python",
                     f"hostname:{_HOSTNAME}",
                     f"user_name:{_USERNAME}",
-                ],
+                ]
+                + ([f"user_handle:{_USER_HANDLE}"] if _USER_HANDLE else []),
                 "meta": {
                     "span": {"kind": "agent"},
                     "input": {"value": input_value},
