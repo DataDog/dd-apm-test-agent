@@ -598,3 +598,156 @@ async def test_hook_sessions_endpoint(agent):
     body = await resp.json()
     session_ids = [s["session_id"] for s in body["sessions"]]
     assert session_id in session_ids
+
+
+async def test_concurrent_subagents_parent_correctly(agent):
+    """Two Task tools spawn sibling subagents — both should be parented to root, not each other."""
+    session_id = "sess-concurrent"
+
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "SessionStart"})
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "user_prompt": "Run two tasks concurrently",
+        },
+    )
+
+    # Two PreToolUse(Task) fire before any SubagentStart — simulates concurrent dispatch
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Task",
+            "tool_use_id": "task-A",
+            "tool_input": {"description": "search code", "prompt": "Search the codebase for foo"},
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Task",
+            "tool_use_id": "task-B",
+            "tool_input": {"description": "read docs", "prompt": "Read the documentation for bar"},
+        },
+    )
+
+    # SubagentStart for first agent (claims task-A)
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "SubagentStart",
+            "agent_type": "explore-agent",
+        },
+    )
+
+    # SubagentStart for second agent (claims task-B)
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "SubagentStart",
+            "agent_type": "explore-agent",
+        },
+    )
+
+    # Tool inside agent1
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Grep",
+            "tool_use_id": "tool-in-A",
+            "tool_input": {"pattern": "foo"},
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Grep",
+            "tool_use_id": "tool-in-A",
+            "tool_response": "found foo",
+        },
+    )
+
+    # Tool inside agent2
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Read",
+            "tool_use_id": "tool-in-B",
+            "tool_input": {"file_path": "/docs/bar.md"},
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Read",
+            "tool_use_id": "tool-in-B",
+            "tool_response": "bar docs",
+        },
+    )
+
+    # SubagentStop for agent2 (top of stack)
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "SubagentStop"})
+    # SubagentStop for agent1
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "SubagentStop"})
+
+    # PostToolUse for both Task tools
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Task",
+            "tool_use_id": "task-A",
+            "tool_response": "search results",
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Task",
+            "tool_use_id": "task-B",
+            "tool_response": "docs content",
+        },
+    )
+
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "Stop"})
+
+    resp = await agent.get("/claude/hooks/spans")
+    body = await resp.json()
+    spans = body["spans"]
+
+    # Filter to just this session's spans
+    session_spans = [s for s in spans if s.get("session_id") == session_id]
+
+    root_spans = [s for s in session_spans if s["parent_id"] == "undefined"]
+    assert len(root_spans) == 1
+    root = root_spans[0]
+
+    agent_spans = [
+        s for s in session_spans if s["meta"]["span"]["kind"] == "agent" and s["parent_id"] != "undefined"
+    ]
+    assert len(agent_spans) == 2, f"Expected 2 subagent spans, got {len(agent_spans)}"
+
+    # Both subagents should be parented to root — not to each other
+    for agent_span in agent_spans:
+        assert agent_span["parent_id"] == root["span_id"], (
+            f"Subagent {agent_span['name']} has parent_id={agent_span['parent_id']} "
+            f"but expected root span_id={root['span_id']}"
+        )

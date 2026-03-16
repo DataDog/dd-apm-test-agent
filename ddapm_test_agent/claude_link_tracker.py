@@ -71,6 +71,7 @@ class ClaudeLinkTracker:
 
     def __init__(self) -> None:
         self._tool_calls: Dict[str, TrackedToolCall] = {}
+        self._llm_span_parents: Dict[str, str] = {}  # llm_span_id → parent agent span_id
 
     def on_llm_tool_choice(
         self,
@@ -145,3 +146,19 @@ class ClaudeLinkTracker:
             )
         ]
         return links, tc.tool_parent_id
+
+    def set_llm_parent(self, llm_span_id: str, parent_span_id: str) -> None:
+        """Record which agent span an LLM span belongs to."""
+        self._llm_span_parents[llm_span_id] = parent_span_id
+
+    def get_parent_for_tool(self, tool_use_id: str) -> Optional[str]:
+        """Resolve the parent agent for a tool via: tool_use_id → LLM span → agent parent.
+
+        When an LLM response emits tool_use blocks, on_llm_tool_choice records which
+        LLM span produced each tool_use_id.  This method walks that chain to find the
+        agent span that the LLM (and therefore the tool) belongs to.
+        """
+        tc = self._tool_calls.get(tool_use_id)
+        if not tc:
+            return None
+        return self._llm_span_parents.get(tc.llm_span_id)

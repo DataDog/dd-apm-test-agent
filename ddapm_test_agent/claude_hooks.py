@@ -143,6 +143,8 @@ class SessionState:
         # Task tool_use_ids that have already been claimed by a SubagentStart,
         # so they are not matched again when a second SubagentStart fires.
         self.claimed_task_tools: Set[str] = set()
+        # Currently active agents keyed by span_id, for concurrent subagent resolution.
+        self.active_agents: Dict[str, Dict[str, Any]] = {}
         self.conversation_title: str = ""
         # Persists across turns so each turn's context_delta reflects growth from
         # the previous turn's final context size.
@@ -367,6 +369,7 @@ class ClaudeHooksAPI:
         session.pending_tools.clear()
         session.deferred_agent_spans.clear()
         session.claimed_task_tools.clear()
+        session.active_agents.clear()
 
         # Finalize the root span
         root_span: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
@@ -416,6 +419,7 @@ class ClaudeHooksAPI:
             session.pending_tools = {}
             session.deferred_agent_spans = {}
             session.claimed_task_tools = set()
+            session.active_agents = {}
             # Don't reset conversation_title — it persists across turns so
             # subsequent interactions on the same topic reuse the title.
             # The haiku summarization call will update it when the topic changes.
@@ -468,7 +472,13 @@ class ClaudeHooksAPI:
         session.tools_used.add(tool_name)
 
         span_id = _format_span_id()
-        parent_id = self._current_parent_id(session)
+        # Try link tracker first: tool_use_id → LLM span → agent parent.
+        # This correctly resolves the parent when concurrent subagents are active.
+        parent_id = None
+        if self._link_tracker:
+            parent_id = self._link_tracker.get_parent_for_tool(tool_use_id)
+        if not parent_id:
+            parent_id = self._current_parent_id(session)
         now_ns = int(time.time() * 1_000_000_000)
 
         session.pending_tools[tool_use_id] = PendingToolSpan(
@@ -638,7 +648,6 @@ class ClaudeHooksAPI:
         """
         session = self._get_or_create_session(session_id)
         span_id = _format_span_id()
-        parent_id = self._current_parent_id(session)
         now_ns = int(time.time() * 1_000_000_000)
 
         agent_name = body.get("agent_type", body.get("agent_name", "subagent"))
@@ -648,12 +657,19 @@ class ClaudeHooksAPI:
         # when multiple Task tools are pending, each subagent gets its own.
         task_tool_use_id = ""
         task_tool_input: Any = None
+        task_pending: Optional[PendingToolSpan] = None
         for tid, pending in session.pending_tools.items():
             if pending.tool_name == "Task" and tid not in session.claimed_task_tools:
                 task_tool_use_id = tid
                 task_tool_input = pending.tool_input
+                task_pending = pending
                 session.claimed_task_tools.add(tid)
                 break
+
+        # Use the parent captured at PreToolUse time (before any SubagentStart fired).
+        # This is correct for concurrent siblings — they all share the same parent
+        # from when they were dispatched, not the stack top which may have changed.
+        parent_id = task_pending.parent_id if task_pending else self._current_parent_id(session)
 
         # Enrich agent name with the Task tool's description if available
         task_desc = ""
@@ -693,17 +709,22 @@ class ClaudeHooksAPI:
         }
         self._assembled_spans.append(preliminary_span)
 
-        session.agent_span_stack.append(
-            {
-                "span_id": span_id,
-                "parent_id": parent_id,
-                "name": agent_name,
-                "start_ns": now_ns,
-                "task_tool_use_id": task_tool_use_id,
-                "task_tool_input": task_tool_input,
-                "_span_ref": preliminary_span,
-            }
-        )
+        task_prompt = ""
+        if isinstance(task_tool_input, dict):
+            task_prompt = task_tool_input.get("prompt", "")
+
+        agent_entry = {
+            "span_id": span_id,
+            "parent_id": parent_id,
+            "name": agent_name,
+            "start_ns": now_ns,
+            "task_tool_use_id": task_tool_use_id,
+            "task_tool_input": task_tool_input,
+            "task_prompt": task_prompt,
+            "_span_ref": preliminary_span,
+        }
+        session.agent_span_stack.append(agent_entry)
+        session.active_agents[span_id] = agent_entry
 
     def _handle_subagent_stop(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SubagentStop hook event — pops the agent stack.
@@ -720,6 +741,8 @@ class ClaudeHooksAPI:
             return
 
         agent_info = session.agent_span_stack.pop()
+        # Remove from active_agents map
+        session.active_agents.pop(str(agent_info["span_id"]), None)
         duration = now_ns - agent_info["start_ns"]
 
         task_tool_use_id = agent_info.get("task_tool_use_id", "")
