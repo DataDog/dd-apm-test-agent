@@ -28,6 +28,7 @@ from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import SessionState
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
+from .claude_hooks import _get_context_limit
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_link_tracker import SpanLink
 from .llmobs_event_platform import with_cors
@@ -42,6 +43,66 @@ ANTHROPIC_API_BASE = "https://api.anthropic.com"
 
 SKIP_REQUEST_HEADERS = {"host", "transfer-encoding", "content-length", "x-ddapm-upstream"}
 SKIP_RESPONSE_HEADERS = {"content-length", "transfer-encoding", "content-encoding", "connection"}
+
+
+def _compute_context_breakdown(
+    request_body: Dict[str, Any],
+    total_input_tokens: int,
+    cache_read_tokens: int,
+    cache_creation_tokens: int,
+    model: str,
+) -> Dict[str, Any]:
+    """Estimate how input tokens are distributed across request sections.
+
+    Serializes each section to JSON, measures byte lengths, and distributes
+    total_input_tokens proportionally. Cache token counts are included as
+    exact values from the API response.
+    """
+    sections_raw: Dict[str, Any] = {}
+
+    system = request_body.get("system")
+    if system:
+        sections_raw["system"] = system
+
+    tools = request_body.get("tools")
+    if tools:
+        sections_raw["tools"] = tools
+
+    user_msgs: List[Dict[str, Any]] = []
+    assistant_msgs: List[Dict[str, Any]] = []
+    for msg in request_body.get("messages", []):
+        role = msg.get("role", "")
+        if role == "user":
+            user_msgs.append(msg)
+        elif role == "assistant":
+            assistant_msgs.append(msg)
+
+    if user_msgs:
+        sections_raw["user_messages"] = user_msgs
+    if assistant_msgs:
+        sections_raw["assistant_messages"] = assistant_msgs
+
+    section_bytes: Dict[str, int] = {}
+    for name, data in sections_raw.items():
+        section_bytes[name] = len(json.dumps(data, separators=(",", ":")))
+
+    total_bytes = sum(section_bytes.values()) or 1
+
+    context_window_size = _get_context_limit(model)
+    sections: List[Dict[str, Any]] = []
+    for name in ["system", "tools", "user_messages", "assistant_messages"]:
+        if name not in section_bytes:
+            continue
+        proportion = section_bytes[name] / total_bytes
+        tokens = round(total_input_tokens * proportion)
+        pct = round(tokens / context_window_size * 100, 1) if context_window_size > 0 else 0.0
+        sections.append({"name": name, "tokens": tokens, "pct": pct})
+
+    return {
+        "sections": sections,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
+    }
 
 
 def _parse_sse_events(raw: bytes) -> List[Dict[str, Any]]:
@@ -453,6 +514,14 @@ class ClaudeProxyAPI:
         # Attach session_id so LLM spans can be grouped with the session
         session_id = session.session_id if session else ""
 
+        context_breakdown = _compute_context_breakdown(
+            request_body,
+            total_input_tokens,
+            cache_read,
+            cache_creation,
+            model,
+        )
+
         span: Dict[str, Any] = {
             "span_id": span_id,
             "trace_id": trace_id,
@@ -484,6 +553,9 @@ class ClaudeProxyAPI:
                 "metadata": {
                     "stop_reason": response_data.get("stop_reason", ""),
                     "stream": request_body.get("stream", False),
+                    "_dd": {
+                        "context_breakdown": context_breakdown,
+                    },
                 },
             },
             "metrics": {

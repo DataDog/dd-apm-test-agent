@@ -923,7 +923,7 @@ class ClaudeHooksAPI:
         primary_model = last_span.get("meta", {}).get("model_name", "")
         window = _get_context_limit(primary_model)
         delta_tokens = max(last_input_tokens - first_input_tokens, 0)
-        return {
+        context_delta: Dict[str, Any] = {
             "first_input_tokens": first_input_tokens,
             "last_input_tokens": last_input_tokens,
             "delta_tokens": delta_tokens,
@@ -931,6 +931,17 @@ class ClaudeHooksAPI:
             "first_usage_pct": round(first_input_tokens / window * 100, 1) if window else 0.0,
             "last_usage_pct": round(last_input_tokens / window * 100, 1) if window else 0.0,
         }
+        breakdown = (
+            last_span.get("meta", {})
+            .get("metadata", {})
+            .get("_dd", {})
+            .get("context_breakdown")
+        )
+        if breakdown:
+            context_delta["sections"] = breakdown.get("sections", [])
+            context_delta["cache_read_tokens"] = breakdown.get("cache_read_tokens", 0)
+            context_delta["cache_creation_tokens"] = breakdown.get("cache_creation_tokens", 0)
+        return context_delta
 
     def _handle_stop(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle Stop / SessionEnd hook event — updates the eagerly-emitted root span with final data."""
