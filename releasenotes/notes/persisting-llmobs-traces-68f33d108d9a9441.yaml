@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    Adds new options ``--persist-llmobs-traces`` (``PERSIST_LLMOBS_TRACES``) and ``--persist-llmobs-db`` (``PERSIST_LLMOBS_DB``) that will persist LLM Observability events sent to the test agent locally to the given path (defaulting to  ~/.ddapm-test-agent/llmobs.db).
+  - |
+    `lapdog start` and `lapdog claude` now enable the test agent with --persist-llmobs-traces
