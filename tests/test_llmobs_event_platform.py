@@ -1,8 +1,24 @@
 import gzip
 import time
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import cast
 
 import msgpack
 import pytest
+
+
+# Override persistence fixtures for this file so agent uses a temp DB for LLMObs spans
+@pytest.fixture
+def persist_llmobs_traces():
+    return True
+
+
+@pytest.fixture
+def persist_llmobs_db_path(tmp_path):
+    return str(tmp_path / "llmobs.db")
 
 
 @pytest.fixture
@@ -383,3 +399,199 @@ async def test_facet_range_info_with_filter_query(agent):
     # Should only include app-1 spans (1s and 2s)
     assert data["result"]["min"] == 1000000000
     assert data["result"]["max"] == 2000000000
+
+
+class _MockAgentEmptyRequests:
+    """Minimal agent with no stored requests (simulates post-restart)."""
+
+    _requests: List[Any] = []
+
+    def _requests_by_session(self, token: Optional[str]) -> List[Any]:
+        return []
+
+    def _request_data(self, req: Any) -> bytes:
+        return b""
+
+
+async def _llmobs_list(agent_client: Any) -> Dict[str, Any]:
+    """POST list and return JSON."""
+    resp = await agent_client.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    assert resp.status == 200
+    return cast(Dict[str, Any], await resp.json())
+
+
+async def test_persistence_restart_sees_persisted_spans(
+    agent, persist_llmobs_db_path, llmobs_payload
+):
+    """After submit + list, a new API instance loading from same DB sees the spans."""
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    list_data = await _llmobs_list(agent)
+    assert list_data["hitCount"] == 2
+
+    from ddapm_test_agent.llmobs_event_platform import LLMObsEventPlatformAPI
+
+    mock_agent = _MockAgentEmptyRequests()
+    api_restart = LLMObsEventPlatformAPI(
+        mock_agent, persist_llmobs_traces=True, persist_llmobs_db_path=persist_llmobs_db_path
+    )
+    spans = api_restart.get_llmobs_spans()
+    api_restart.close()
+    assert len(spans) == 2
+    span_ids = {s.get("span_id") for s in spans}
+    assert span_ids == {"span-root", "span-child"}
+
+
+async def test_persistence_upsert_updates_duration_after_restart(
+    agent, persist_llmobs_db_path
+):
+    """Second payload with same span_id but new duration is upserted; restart sees new duration."""
+    payload_v1 = {
+        "ml_app": "test-app",
+        "tags": [],
+        "spans": [
+            {
+                "span_id": "span-one",
+                "trace_id": "t1",
+                "name": "x",
+                "status": "ok",
+                "duration": 0,
+                "start_ns": int(time.time() * 1_000_000_000),
+                "meta": {"span": {"kind": "llm"}},
+                "tags": [],
+            },
+        ],
+    }
+    payload_v2 = {
+        "ml_app": "test-app",
+        "tags": [],
+        "spans": [
+            {
+                "span_id": "span-one",
+                "trace_id": "t1",
+                "name": "x",
+                "status": "ok",
+                "duration": 5_000_000_000,
+                "start_ns": int(time.time() * 1_000_000_000),
+                "meta": {"span": {"kind": "llm"}},
+                "tags": [],
+            },
+        ],
+    }
+    await _submit_llmobs_payload(agent, payload_v1)
+    await _llmobs_list(agent)
+    await _submit_llmobs_payload(agent, payload_v2)
+    await _llmobs_list(agent)
+
+    from ddapm_test_agent.llmobs_event_platform import LLMObsEventPlatformAPI
+
+    mock_agent = _MockAgentEmptyRequests()
+    api_restart = LLMObsEventPlatformAPI(
+        mock_agent, persist_llmobs_traces=True, persist_llmobs_db_path=persist_llmobs_db_path
+    )
+    spans = api_restart.get_llmobs_spans()
+    api_restart.close()
+    assert len(spans) == 1
+    assert spans[0]["duration"] == 5_000_000_000
+
+
+async def test_persistence_update_spans_persists_merged_duration(
+    agent, persist_llmobs_db_path
+):
+    """update_spans (merge + upsert) persists so restart sees updated duration."""
+    payload_initial = {
+        "ml_app": "test-app",
+        "tags": [],
+        "spans": [
+            {
+                "span_id": "span-update-me",
+                "trace_id": "t1",
+                "name": "x",
+                "status": "ok",
+                "duration": 0,
+                "start_ns": int(time.time() * 1_000_000_000),
+                "meta": {"span": {"kind": "llm"}},
+                "tags": [],
+            },
+        ],
+    }
+    await _submit_llmobs_payload(agent, payload_initial)
+    await _llmobs_list(agent)
+
+    update_payload = {
+        "ml_app": "test-app",
+        "tags": [],
+        "spans": [
+            {
+                "span_id": "span-update-me",
+                "duration": 10_000_000_000,
+            },
+        ],
+    }
+    data = gzip.compress(msgpack.packb(update_payload))
+    resp = await agent.post(
+        "/evp_proxy/v2/api/v2/llmobs/update",
+        headers={"Content-Type": "application/msgpack", "Content-Encoding": "gzip"},
+        data=data,
+    )
+    assert resp.status == 200
+
+    from ddapm_test_agent.llmobs_event_platform import LLMObsEventPlatformAPI
+
+    mock_agent = _MockAgentEmptyRequests()
+    api_restart = LLMObsEventPlatformAPI(
+        mock_agent, persist_llmobs_traces=True, persist_llmobs_db_path=persist_llmobs_db_path
+    )
+    spans = api_restart.get_llmobs_spans()
+    api_restart.close()
+    assert len(spans) == 1
+    assert spans[0]["duration"] == 10_000_000_000
+
+
+async def test_persistence_span_id_int_str_same_row(
+    agent, persist_llmobs_db_path
+):
+    """Span with span_id int then update with str (or vice versa) updates same row."""
+    payload_str_id = {
+        "ml_app": "test-app",
+        "tags": [],
+        "spans": [
+            {
+                "span_id": "12345",
+                "trace_id": "t1",
+                "name": "x",
+                "status": "ok",
+                "duration": 1,
+                "start_ns": int(time.time() * 1_000_000_000),
+                "meta": {"span": {"kind": "llm"}},
+                "tags": [],
+            },
+        ],
+    }
+    await _submit_llmobs_payload(agent, payload_str_id)
+    await _llmobs_list(agent)
+
+    update_payload = {
+        "ml_app": "test-app",
+        "tags": [],
+        "spans": [{"span_id": 12345, "duration": 99}],
+    }
+    data = gzip.compress(msgpack.packb(update_payload))
+    await agent.post(
+        "/evp_proxy/v2/api/v2/llmobs/update",
+        headers={"Content-Type": "application/msgpack", "Content-Encoding": "gzip"},
+        data=data,
+    )
+
+    from ddapm_test_agent.llmobs_event_platform import LLMObsEventPlatformAPI
+
+    mock_agent = _MockAgentEmptyRequests()
+    api_restart = LLMObsEventPlatformAPI(
+        mock_agent, persist_llmobs_traces=True, persist_llmobs_db_path=persist_llmobs_db_path
+    )
+    spans = api_restart.get_llmobs_spans()
+    api_restart.close()
+    assert len(spans) == 1
+    assert spans[0]["duration"] == 99
