@@ -24,7 +24,8 @@ def init_llmobs_db(db_path: Optional[str] = None) -> sqlite3.Connection:
     path = Path(db_path) if db_path else DEFAULT_DB_PATH
     _ensure_db_dir(path)
     conn = sqlite3.connect(str(path))
-    conn.execute(
+    cur = conn.cursor()
+    cur.execute(
         """
         CREATE TABLE IF NOT EXISTS llmobs_spans (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,6 +47,7 @@ def upsert_spans(conn: sqlite3.Connection, spans: List[Dict[str, Any]]) -> None:
     now = time.time()
     updated_count = 0
     inserted_count = 0
+    cur = conn.cursor()
     for s in spans:
         span_id = s.get("span_id")
         if span_id is None:
@@ -53,12 +55,12 @@ def upsert_spans(conn: sqlite3.Connection, spans: List[Dict[str, Any]]) -> None:
         span_id_str = str(span_id)
         duration = s.get("duration")
         span_json = json.dumps(s)
-        cur = conn.execute(
+        cur.execute(
             "UPDATE llmobs_spans SET span_json = ?, created_at = ? WHERE span_id = ?",
             (span_json, now, span_id_str),
         )
         if cur.rowcount == 0:
-            conn.execute(
+            cur.execute(
                 "INSERT INTO llmobs_spans (span_id, span_json, created_at) VALUES (?, ?, ?)",
                 (span_id_str, span_json, now),
             )
@@ -74,7 +76,9 @@ def upsert_spans(conn: sqlite3.Connection, spans: List[Dict[str, Any]]) -> None:
 
 def load_all_spans(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     """Load all persisted spans from the DB (for startup)."""
-    rows = conn.execute("SELECT span_json FROM llmobs_spans ORDER BY id").fetchall()
+    cur = conn.cursor()
+    cur.execute("SELECT span_json FROM llmobs_spans ORDER BY id")
+    rows = cur.fetchall()
     result: List[Dict[str, Any]] = []
     for (span_json,) in rows:
         try:
