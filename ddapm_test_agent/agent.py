@@ -59,6 +59,7 @@ from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import write_claude_code_hooks
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_proxy import ClaudeProxyAPI
+from .task_segmentation import TaskSegmentationAPI
 from .integration import Integration
 from .llmobs_event_platform import LLMObsEventPlatformAPI
 from .logs import LOGS_ENDPOINT
@@ -1990,6 +1991,9 @@ def make_app(
 
     claude_proxy_api = ClaudeProxyAPI(hooks_api=claude_hooks_api, link_tracker=claude_link_tracker)
     app.add_routes(claude_proxy_api.get_routes())
+
+    task_seg_api = TaskSegmentationAPI(llmobs_event_platform_api)
+    app.add_routes(task_seg_api.get_routes())
 
     async def _cleanup_claude_proxy(app: web.Application) -> None:
         await claude_proxy_api.close()

@@ -20,6 +20,9 @@ from aiohttp.web import Request
 import msgpack
 
 from . import llmobs_query_parser
+from .claude_sessions import SessionCache
+from .claude_sessions import enrich_with_hook_data
+from .claude_sessions import sessions_to_event_platform_events
 
 if TYPE_CHECKING:
     from .agent import Agent
@@ -654,6 +657,7 @@ class LLMObsEventPlatformAPI:
         self._query_results: Dict[str, Dict[str, Any]] = {}
         self.decoded_llmobs_span_events: Dict[int, List[Dict[str, Any]]] = {}
         self._claude_hooks_api: Optional["ClaudeHooksAPI"] = None
+        self._session_cache = SessionCache()
 
     def set_claude_hooks_api(self, api: "ClaudeHooksAPI") -> None:
         """Wire up the Claude hooks API so its spans appear in LLMObs queries."""
@@ -682,6 +686,12 @@ class LLMObsEventPlatformAPI:
 
         if self._claude_hooks_api:
             all_spans.extend(self._claude_hooks_api._assembled_spans)
+
+        # Inject session-scanned spans from Claude Code session files
+        session_spans = self._session_cache.get_sessions()
+        if self._claude_hooks_api:
+            session_spans = enrich_with_hook_data(session_spans, self._claude_hooks_api)
+        all_spans.extend(sessions_to_event_platform_events(session_spans))
 
         all_spans.sort(key=lambda s: s.get("start_ns", 0), reverse=True)
         return all_spans
@@ -1123,6 +1133,15 @@ class LLMObsEventPlatformAPI:
             }
         )
 
+    async def handle_sessions_list(self, request: Request) -> web.Response:
+        """Handle GET /api/ui/llm-obs/v1/sessions — return session-level events only."""
+        session_spans = self._session_cache.get_sessions()
+        if self._claude_hooks_api:
+            session_spans = enrich_with_hook_data(session_spans, self._claude_hooks_api)
+        events = sessions_to_event_platform_events(session_spans)
+        events.sort(key=lambda s: s.get("start_ns", 0), reverse=True)
+        return web.json_response({"sessions": events, "total": len(events)})
+
     def get_routes(self) -> List[web.RouteDef]:
         """Return the routes for this API (all handlers wrapped with CORS support)."""
         return [
@@ -1148,4 +1167,6 @@ class LLMObsEventPlatformAPI:
             web.route("*", "/api/ui/llm-obs/v1/trace/{trace_id}", with_cors(self.handle_trace)),
             # Query scalar endpoint
             web.route("*", "/api/ui/query/scalar", with_cors(self.handle_query_scalar)),
+            # Sessions list endpoint
+            web.route("*", "/api/ui/llm-obs/v1/sessions", with_cors(self.handle_sessions_list)),
         ]
