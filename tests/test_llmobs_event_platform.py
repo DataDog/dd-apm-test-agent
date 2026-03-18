@@ -1,5 +1,10 @@
 import gzip
 import time
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import cast
 
 import msgpack
 import pytest
@@ -399,23 +404,23 @@ async def test_facet_range_info_with_filter_query(agent):
 class _MockAgentEmptyRequests:
     """Minimal agent with no stored requests (simulates post-restart)."""
 
-    _requests = []
+    _requests: List[Any] = []
 
-    def _requests_by_session(self, token):
+    def _requests_by_session(self, token: Optional[str]) -> List[Any]:
         return []
 
-    def _request_data(self, req):
+    def _request_data(self, req: Any) -> bytes:
         return b""
 
 
-async def _llmobs_list(agent_client) -> dict:
+async def _llmobs_list(agent_client: Any) -> Dict[str, Any]:
     """POST list and return JSON."""
     resp = await agent_client.post(
         "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
         json={"list": {"search": {"query": ""}, "limit": 50}},
     )
     assert resp.status == 200
-    return await resp.json()
+    return cast(Dict[str, Any], await resp.json())
 
 
 async def test_persistence_restart_sees_persisted_spans(
