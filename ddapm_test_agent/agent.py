@@ -1888,6 +1888,8 @@ def make_app(
     dd_api_key: str | None,
     disable_llmobs_data_forwarding: bool,
     enable_web_ui: bool = False,
+    persist_llmobs_traces: bool = False,
+    persist_llmobs_db_path: Optional[str] = None,
 ) -> web.Application:
     agent = Agent()
 
@@ -1977,7 +1979,11 @@ def make_app(
 
     # Add LLM Observability Event Platform API routes
     # These provide Datadog Event Platform compatible endpoints for local development
-    llmobs_event_platform_api = LLMObsEventPlatformAPI(agent)
+    llmobs_event_platform_api = LLMObsEventPlatformAPI(
+        agent,
+        persist_llmobs_traces=persist_llmobs_traces,
+        persist_llmobs_db_path=persist_llmobs_db_path,
+    )
     app["llmobs_event_platform_api"] = llmobs_event_platform_api
     app.add_routes(llmobs_event_platform_api.get_routes())
 
@@ -1995,6 +2001,14 @@ def make_app(
         await claude_proxy_api.close()
 
     app.on_cleanup.append(_cleanup_claude_proxy)
+
+    if llmobs_event_platform_api._persist_conn is not None:
+
+        async def _close_llmobs_persist(app: web.Application) -> None:
+            llmobs_event_platform_api._persist_conn.close()
+            llmobs_event_platform_api._persist_conn = None
+
+        app.on_cleanup.append(_close_llmobs_persist)
 
     checks = Checks(
         checks=[
@@ -2352,6 +2366,18 @@ def main(args: Optional[List[str]] = None) -> None:
         default=os.environ.get("ENABLE_CLAUDE_CODE_HOOKS", "").lower() in ("true", "1", "yes"),
         help="Enable writing Claude Code hooks to ~/.claude/settings.json",
     )
+    parser.add_argument(
+        "--persist-llmobs-traces",
+        action="store_true",
+        default=os.environ.get("PERSIST_LLMOBS_TRACES", "").lower() in ("true", "1", "yes"),
+        help="Persist LLMObs spans to a local SQLite DB and load them on startup.",
+    )
+    parser.add_argument(
+        "--persist-llmobs-db",
+        type=str,
+        default=os.environ.get("PERSIST_LLMOBS_DB", ""),
+        help="Path to SQLite DB for LLMObs persistence (default: ~/.ddapm-test-agent/llmobs.db).",
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -2381,6 +2407,12 @@ def main(args: Optional[List[str]] = None) -> None:
             "default snapshot directory %r does not exist or is not readable. Snapshotting will not work.",
             os.path.abspath(parsed_args.snapshot_dir),
         )
+    persist_llmobs_db_path = parsed_args.persist_llmobs_db or None
+    if parsed_args.persist_llmobs_traces and not persist_llmobs_db_path:
+        from .llmobs_persistence import DEFAULT_DB_PATH
+
+        persist_llmobs_db_path = str(DEFAULT_DB_PATH)
+
     app = make_app(
         enabled_checks=parsed_args.enabled_checks,
         log_span_fmt=parsed_args.log_span_fmt,
@@ -2402,6 +2434,8 @@ def main(args: Optional[List[str]] = None) -> None:
         dd_api_key=parsed_args.dd_api_key,
         disable_llmobs_data_forwarding=parsed_args.disable_llmobs_data_forwarding,
         enable_web_ui=parsed_args.web_ui_port > 0,
+        persist_llmobs_traces=parsed_args.persist_llmobs_traces,
+        persist_llmobs_db_path=persist_llmobs_db_path,
     )
 
     # Validate port configuration
