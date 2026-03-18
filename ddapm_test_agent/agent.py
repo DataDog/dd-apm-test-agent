@@ -2002,13 +2002,10 @@ def make_app(
 
     app.on_cleanup.append(_cleanup_claude_proxy)
 
-    if llmobs_event_platform_api._persist_conn is not None:
+    async def _close_llmobs_persist(app: web.Application) -> None:
+        llmobs_event_platform_api.close()
 
-        async def _close_llmobs_persist(app: web.Application) -> None:
-            llmobs_event_platform_api._persist_conn.close()
-            llmobs_event_platform_api._persist_conn = None
-
-        app.on_cleanup.append(_close_llmobs_persist)
+    app.on_cleanup.append(_close_llmobs_persist)
 
     checks = Checks(
         checks=[

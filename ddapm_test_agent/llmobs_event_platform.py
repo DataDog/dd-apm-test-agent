@@ -5,6 +5,7 @@ import gzip
 import json
 import logging
 import re
+import sqlite3
 import time
 from typing import Any
 from typing import Awaitable
@@ -662,8 +663,8 @@ class LLMObsEventPlatformAPI:
         self._query_results: Dict[str, Dict[str, Any]] = {}
         self.decoded_llmobs_span_events: Dict[int, List[Dict[str, Any]]] = {}
         self._claude_hooks_api: Optional["ClaudeHooksAPI"] = None
-        self._persist_conn = None
-        self._persisted_spans = []
+        self._persist_conn: Optional[sqlite3.Connection] = None
+        self._persisted_spans: List[Dict[str, Any]] = []
 
         if persist_llmobs_traces and persist_llmobs_db_path:
             self._persist_conn = init_llmobs_db(persist_llmobs_db_path)
@@ -672,6 +673,12 @@ class LLMObsEventPlatformAPI:
     def set_claude_hooks_api(self, api: "ClaudeHooksAPI") -> None:
         """Wire up the Claude hooks API so its spans appear in LLMObs queries."""
         self._claude_hooks_api = api
+
+    def close(self) -> None:
+        """Close the SQLite persistence connection, if open."""
+        if self._persist_conn is not None:
+            self._persist_conn.close()
+            self._persist_conn = None
 
     def get_llmobs_spans(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all LLMObs spans from stored requests and persisted DB."""

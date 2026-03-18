@@ -39,27 +39,6 @@ def init_llmobs_db(db_path: Optional[str] = None) -> sqlite3.Connection:
     return conn
 
 
-def insert_spans(conn: sqlite3.Connection, spans: List[Dict[str, Any]]) -> None:
-    """Persist spans as JSON rows. Spans with same span_id are skipped (no-op on collision)."""
-    if not spans:
-        return
-    now = time.time()
-    rows = []
-    for s in spans:
-        span_id = s.get("span_id")
-        if span_id is None:
-            continue
-        rows.append((str(span_id), json.dumps(s), now))
-    if not rows:
-        return
-    conn.executemany(
-        "INSERT OR IGNORE INTO llmobs_spans (span_id, span_json, created_at) VALUES (?, ?, ?)",
-        rows,
-    )
-    conn.commit()
-    log.debug("insert_spans count=%d", len(rows))
-
-
 def upsert_spans(conn: sqlite3.Connection, spans: List[Dict[str, Any]]) -> None:
     """Insert or update spans by span_id. Updates existing rows with merged content."""
     if not spans:
