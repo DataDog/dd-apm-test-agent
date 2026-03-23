@@ -338,6 +338,29 @@ class ClaudeHooksAPI:
         """Merge key-value pairs into span['meta']['metadata']['_dd'], preserving existing values."""
         span["meta"].setdefault("metadata", {}).setdefault("_dd", {}).update(kwargs)
 
+    def _set_permission_wait_critical_evaluation(
+        self, span: Dict[str, Any], estimated_permission_wait_ms: int
+    ) -> None:
+        """Embed a permission_wait_critical boolean evaluation on a span.
+
+        Mirrors the frontend isPermissionWaitCritical() threshold:
+        critical when permission wait > 50% of span duration.
+        """
+        duration_ms = span.get("duration", 0) / 1_000_000  # ns → ms
+        if duration_ms <= 0:
+            return
+        is_critical = estimated_permission_wait_ms / duration_ms > 0.5
+        span.setdefault("evaluation", {})["permission_wait_critical"] = {
+            "eval_metric_type": "boolean",
+            "value": is_critical,
+            "assessment": "fail" if is_critical else "pass",
+            "status": "OK",
+            "reasoning": (
+                f"Permission wait {'exceeded' if is_critical else 'did not exceed'} "
+                f"50% of span duration"
+            ),
+        }
+
     def _handle_session_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SessionStart hook event."""
         session = self._get_or_create_session(session_id)
@@ -1002,6 +1025,7 @@ class ClaudeHooksAPI:
                 dd_fields["context_delta"] = context_delta
             if estimated_permission_wait_ms > 0:
                 dd_fields["estimated_permission_wait_ms"] = estimated_permission_wait_ms
+                self._set_permission_wait_critical_evaluation(root_span, estimated_permission_wait_ms)
             if tool_usage:
                 dd_fields["tool_usage"] = tool_usage
             self._set_hidden_metadata(root_span, **dd_fields)
@@ -1050,6 +1074,7 @@ class ClaudeHooksAPI:
                 dd_fields["context_delta"] = context_delta
             if estimated_permission_wait_ms > 0:
                 dd_fields["estimated_permission_wait_ms"] = estimated_permission_wait_ms
+                self._set_permission_wait_critical_evaluation(root_span, estimated_permission_wait_ms)
             if tool_usage:
                 dd_fields["tool_usage"] = tool_usage
             self._set_hidden_metadata(root_span, **dd_fields)
@@ -1362,6 +1387,85 @@ class ClaudeHooksAPI:
         except Exception as e:
             log.warning("Error forwarding Claude hooks spans: %s", e)
 
+    async def _forward_eval_metrics_to_backend(self, session_id: str) -> None:
+        """Forward evaluation metrics for all spans in a session's trace to the Datadog backend.
+
+        Collects evaluation entries from every span in the trace (not just root),
+        so any future span-level evaluations are also forwarded automatically.
+        Uses the LLMObs eval-metric intake API (JSON, not msgpack).
+        Only runs when DD_API_KEY and DD_SITE are configured.
+        """
+        app = self._app
+        if not app:
+            return
+
+        session = self._sessions.get(session_id)
+        if not session:
+            return
+
+        dd_site = app.get("dd_site", "")
+        dd_api_key = app.get("dd_api_key")
+        if app.get("disable_llmobs_data_forwarding", False) or not dd_api_key or not dd_site:
+            return
+
+        trace_id = session.trace_id
+        spans = [s for s in self._assembled_spans if s.get("trace_id") == trace_id]
+
+        timestamp_ms = int(time.time() * 1000)
+        metrics: List[Dict[str, Any]] = []
+        for span in spans:
+            for label, metric in span.get("evaluation", {}).items():
+                metric_type = metric.get("eval_metric_type", "boolean")
+                entry: Dict[str, Any] = {
+                    "join_on": {
+                        "span": {
+                            "span_id": span["span_id"],
+                            "trace_id": trace_id,
+                        }
+                    },
+                    "metric_type": metric_type,
+                    "label": label,
+                    "ml_app": span.get("ml_app", "claude-code"),
+                    "timestamp_ms": timestamp_ms,
+                    "tags": [f"ml_app:{span.get('ml_app', 'claude-code')}"],
+                }
+                if "assessment" in metric:
+                    entry["assessment"] = metric["assessment"]
+                if "reasoning" in metric:
+                    entry["reasoning"] = metric["reasoning"]
+                if metric_type == "boolean":
+                    entry["boolean_value"] = bool(metric.get("value"))
+                elif metric_type == "score":
+                    entry["score_value"] = float(metric.get("value", 0))
+                elif metric_type == "categorical":
+                    entry["categorical_value"] = str(metric.get("value", ""))
+                metrics.append(entry)
+
+        if not metrics:
+            return
+
+        url = f"https://api.{dd_site}/api/intake/llm-obs/v2/eval-metric"
+        payload = {"data": {"type": "evaluation_metric", "attributes": {"metrics": metrics}}}
+        try:
+            async with ClientSession() as http_session:
+                async with http_session.post(
+                    url,
+                    headers={"Content-Type": "application/json", "DD-API-KEY": dd_api_key},
+                    data=json.dumps(payload),
+                ) as resp:
+                    if not resp.ok:
+                        log.warning(
+                            "Failed to forward eval metrics to Datadog: %s %s",
+                            resp.status,
+                            await resp.text(),
+                        )
+                    else:
+                        log.info(
+                            "Forwarded %d eval metric(s) for trace %s", len(metrics), trace_id
+                        )
+        except Exception as e:
+            log.warning("Error forwarding eval metrics: %s", e)
+
     async def handle_hook(self, request: Request) -> web.Response:
         """Handle POST /claude/hooks — receives hook JSON and dispatches by event name."""
         try:
@@ -1389,6 +1493,7 @@ class ClaudeHooksAPI:
         # doesn't deduplicate by span_id and would create a duplicate entry.
         if hook_event_name in ("Stop", "SessionEnd"):
             await self._forward_trace_to_backend(session_id)
+            await self._forward_eval_metrics_to_backend(session_id)
 
         return web.json_response({"status": "ok"})
 
