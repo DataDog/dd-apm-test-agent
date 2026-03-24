@@ -19,6 +19,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Set
+from typing import Tuple
 from urllib.parse import urlparse
 
 from aiohttp import ClientSession
@@ -337,6 +338,27 @@ class ClaudeHooksAPI:
     def _set_hidden_metadata(self, span: Dict[str, Any], **kwargs: Any) -> None:
         """Merge key-value pairs into span['meta']['metadata']['_dd'], preserving existing values."""
         span["meta"].setdefault("metadata", {}).setdefault("_dd", {}).update(kwargs)
+
+    def _set_permission_wait_critical_evaluation(
+        self, span: Dict[str, Any], estimated_permission_wait_ms: int
+    ) -> None:
+        """Embed a permission_wait_critical boolean evaluation on a span.
+        The evaluation flags whether the permission wait was > 50% of span duration.
+        """
+        duration_ms = span.get("duration", 0) / 1_000_000
+        if duration_ms <= 0:
+            return
+        is_critical = estimated_permission_wait_ms / duration_ms > 0.5
+        span.setdefault("evaluation", {})["permission_wait_critical"] = {
+            "eval_metric_type": "boolean",
+            "value": is_critical,
+            "assessment": "fail" if is_critical else "pass",
+            "status": "OK",
+            "reasoning": (
+                f"Permission wait {'exceeded' if is_critical else 'did not exceed'} "
+                f"50% of span duration"
+            ),
+        }
 
     def _handle_session_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SessionStart hook event."""
@@ -1002,6 +1024,7 @@ class ClaudeHooksAPI:
                 dd_fields["context_delta"] = context_delta
             if estimated_permission_wait_ms > 0:
                 dd_fields["estimated_permission_wait_ms"] = estimated_permission_wait_ms
+                self._set_permission_wait_critical_evaluation(root_span, estimated_permission_wait_ms)
             if tool_usage:
                 dd_fields["tool_usage"] = tool_usage
             self._set_hidden_metadata(root_span, **dd_fields)
@@ -1050,6 +1073,7 @@ class ClaudeHooksAPI:
                 dd_fields["context_delta"] = context_delta
             if estimated_permission_wait_ms > 0:
                 dd_fields["estimated_permission_wait_ms"] = estimated_permission_wait_ms
+                self._set_permission_wait_critical_evaluation(root_span, estimated_permission_wait_ms)
             if tool_usage:
                 dd_fields["tool_usage"] = tool_usage
             self._set_hidden_metadata(root_span, **dd_fields)
@@ -1260,36 +1284,73 @@ class ClaudeHooksAPI:
         else:
             log.debug("Unhandled hook event: %s", hook_event_name)
 
-    async def _forward_span_update(self, spans: List[Dict[str, Any]]) -> None:
-        """Forward span updates to the DD backend via the update endpoint."""
-        app = self._app
-        if not app:
-            return
+    def _resolve_backend_target(
+        self,
+        endpoint: str,
+        *,
+        content_type: str = "application/msgpack",
+        agentless_base_url: str = "llmobs-intake",
+        evp_subdomain: str = "llmobs-intake",
+    ) -> Optional[Tuple[str, Dict[str, str]]]:
+        """Resolve the forwarding URL and headers for a backend request.
 
-        if not spans:
-            return
+        Returns ``(url, headers)`` when forwarding is possible, or ``None``
+        when it should be skipped (disabled, no credentials, etc.).
+
+        Args:
+            endpoint: The API path, e.g. ``/api/v2/llmobs``.
+            content_type: Value for the ``Content-Type`` header.
+            agentless_base_url: Subdomain prefix for agentless mode.
+            evp_subdomain: ``X-Datadog-EVP-Subdomain`` header value for agent proxy mode.
+        """
+        app = self._app
+        if not app or app.get("disable_llmobs_data_forwarding", False):
+            return None
 
         dd_site = app.get("dd_site", "")
         dd_api_key = app.get("dd_api_key")
         agent_url = app.get("agent_url", "")
-        disable_forwarding = app.get("disable_llmobs_data_forwarding", False)
 
-        if disable_forwarding:
-            return
+        headers: Dict[str, str] = {"Content-Type": content_type}
+        if content_type == "application/msgpack":
+            headers["Content-Encoding"] = "gzip"
 
         if agent_url:
-            url = f"{agent_url}/evp_proxy/v2/api/v2/llmobs"
-            headers: Dict[str, str] = {"Content-Type": "application/msgpack", "Content-Encoding": "gzip"}
+            url = f"{agent_url}/evp_proxy/v2{endpoint}"
+            headers["X-Datadog-EVP-Subdomain"] = evp_subdomain
         elif dd_api_key and dd_site:
-            url = f"https://llmobs-intake.{dd_site}/api/v2/llmobs"
-            headers = {
-                "Content-Type": "application/msgpack",
-                "Content-Encoding": "gzip",
-                "DD-API-KEY": dd_api_key,
-            }
+            url = f"https://{agentless_base_url}.{dd_site}{endpoint}"
+            headers["DD-API-KEY"] = dd_api_key
         else:
-            log.debug("No DD_API_KEY/DD_SITE or agent URL configured — skipping LLMObs update forwarding")
+            log.debug("No DD_API_KEY/DD_SITE or agent URL configured — skipping forwarding")
+            return None
+
+        log.info("Resolved backend target: %s (mode=%s)", url, "agent" if agent_url else "agentless")
+        return url, headers
+
+    async def _post_to_backend(
+        self, url: str, headers: Dict[str, str], data: bytes, description: str
+    ) -> None:
+        """POST the given data to the url and log the outcome."""
+        try:
+            async with ClientSession() as http_session:
+                async with http_session.post(url, headers=headers, data=data) as resp:
+                    if not resp.ok:
+                        log.warning("Failed to %s: %s %s", description, resp.status, await resp.text())
+                    else:
+                        log.info("Successfully %s", description)
+        except Exception as e:
+            log.warning("Error trying to %s: %s", description, e)
+
+    async def _forward_span_update(self, spans: List[Dict[str, Any]]) -> None:
+        """Forward span updates to the DD backend via the update endpoint."""
+        if not spans:
             return
+
+        target = self._resolve_backend_target("/api/v2/llmobs")
+        if target is None:
+            return
+        url, headers = target
 
         payload = {
             "_dd.stage": "raw",
@@ -1297,23 +1358,10 @@ class ClaudeHooksAPI:
             "spans": spans,
         }
         data = gzip.compress(msgpack.packb(payload))
-
-        try:
-            async with ClientSession() as http_session:
-                async with http_session.post(url, headers=headers, data=data) as resp:
-                    if not resp.ok:
-                        log.warning("Failed to forward span update: %s %s", resp.status, await resp.text())
-                    else:
-                        log.info("Forwarded %d span updates", len(spans))
-        except Exception as e:
-            log.warning("Error forwarding span update: %s", e)
+        await self._post_to_backend(url, headers, data, f"forward {len(spans)} span updates")
 
     async def _forward_trace_to_backend(self, session_id: str) -> None:
         """Forward all assembled spans for a session's trace to the backend via the EVP proxy path."""
-        app = self._app
-        if not app:
-            return
-
         session = self._sessions.get(session_id)
         if not session:
             return
@@ -1323,27 +1371,10 @@ class ClaudeHooksAPI:
         if not spans:
             return
 
-        dd_site = app.get("dd_site", "")
-        dd_api_key = app.get("dd_api_key")
-        agent_url = app.get("agent_url", "")
-        disable_forwarding = app.get("disable_llmobs_data_forwarding", False)
-
-        if disable_forwarding:
+        target = self._resolve_backend_target("/api/v2/llmobs")
+        if target is None:
             return
-
-        if agent_url:
-            url = f"{agent_url}/evp_proxy/v2/api/v2/llmobs"
-            headers: Dict[str, str] = {"Content-Type": "application/msgpack", "Content-Encoding": "gzip"}
-        elif dd_api_key and dd_site:
-            url = f"https://llmobs-intake.{dd_site}/api/v2/llmobs"
-            headers = {
-                "Content-Type": "application/msgpack",
-                "Content-Encoding": "gzip",
-                "DD-API-KEY": dd_api_key,
-            }
-        else:
-            log.debug("No DD_API_KEY/DD_SITE or agent URL configured — skipping LLMObs forwarding for Claude hooks")
-            return
+        url, headers = target
 
         payload = {
             "_dd.stage": "raw",
@@ -1351,16 +1382,69 @@ class ClaudeHooksAPI:
             "spans": spans,
         }
         data = gzip.compress(msgpack.packb(payload))
+        await self._post_to_backend(url, headers, data, f"forward {len(spans)} Claude hooks spans for trace {trace_id}")
 
-        try:
-            async with ClientSession() as http_session:
-                async with http_session.post(url, headers=headers, data=data) as resp:
-                    if not resp.ok:
-                        log.warning("Failed to forward Claude hooks spans: %s %s", resp.status, await resp.text())
-                    else:
-                        log.info("Forwarded %d Claude hooks spans for trace %s", len(spans), trace_id)
-        except Exception as e:
-            log.warning("Error forwarding Claude hooks spans: %s", e)
+    async def _forward_eval_metrics_to_backend(self, session_id: str) -> None:
+        """Forward evaluation metrics for all spans in a session's trace to the Datadog backend.
+
+        Collects evaluation entries from every span in the trace (not just root),
+        so any future span-level evaluations are also forwarded automatically.
+        Uses the LLMObs eval-metric intake API (JSON, not msgpack).
+        """
+        session = self._sessions.get(session_id)
+        if not session:
+            return
+
+        target = self._resolve_backend_target(
+            "/api/intake/llm-obs/v2/eval-metric",
+            content_type="application/json",
+            agentless_base_url="api",
+            evp_subdomain="api",
+        )
+        if target is None:
+            return
+        url, headers = target
+
+        trace_id = session.trace_id
+        spans = [s for s in self._assembled_spans if s.get("trace_id") == trace_id]
+
+        timestamp_ms = int(time.time() * 1000)
+        metrics: List[Dict[str, Any]] = []
+        for span in spans:
+            for label, metric in span.get("evaluation", {}).items():
+                metric_type = metric.get("eval_metric_type", "boolean")
+                entry: Dict[str, Any] = {
+                    "join_on": {
+                        "span": {
+                            "span_id": span["span_id"],
+                            "trace_id": trace_id,
+                        }
+                    },
+                    "metric_type": metric_type,
+                    "label": label,
+                    "ml_app": span.get("ml_app", "claude-code"),
+                    "timestamp_ms": timestamp_ms,
+                    "tags": [f"ml_app:{span.get('ml_app', 'claude-code')}"],
+                }
+                if "assessment" in metric:
+                    entry["assessment"] = metric["assessment"]
+                if "reasoning" in metric:
+                    entry["reasoning"] = metric["reasoning"]
+                if metric_type == "boolean":
+                    entry["boolean_value"] = bool(metric.get("value"))
+                elif metric_type == "score":
+                    entry["score_value"] = float(metric.get("value", 0))
+                elif metric_type == "categorical":
+                    entry["categorical_value"] = str(metric.get("value", ""))
+                metrics.append(entry)
+
+        if not metrics:
+            return
+
+        payload = {"data": {"type": "evaluation_metric", "attributes": {"metrics": metrics}}}
+        await self._post_to_backend(
+            url, headers, json.dumps(payload).encode(), f"forward {len(metrics)} eval metric(s) for trace {trace_id}"
+        )
 
     async def handle_hook(self, request: Request) -> web.Response:
         """Handle POST /claude/hooks — receives hook JSON and dispatches by event name."""
@@ -1389,6 +1473,7 @@ class ClaudeHooksAPI:
         # doesn't deduplicate by span_id and would create a duplicate entry.
         if hook_event_name in ("Stop", "SessionEnd"):
             await self._forward_trace_to_backend(session_id)
+            await self._forward_eval_metrics_to_backend(session_id)
 
         return web.json_response({"status": "ok"})
 
