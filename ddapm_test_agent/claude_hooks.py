@@ -349,16 +349,20 @@ class ClaudeHooksAPI:
         if duration_ms <= 0:
             return
         is_critical = estimated_permission_wait_ms / duration_ms > 0.5
+        assessment = "fail" if is_critical else "pass"
         span.setdefault("evaluation", {})["permission_wait_critical"] = {
             "eval_metric_type": "boolean",
             "value": is_critical,
-            "assessment": "fail" if is_critical else "pass",
+            "assessment": assessment,
             "status": "OK",
             "reasoning": (
                 f"Permission wait {'exceeded' if is_critical else 'did not exceed'} "
                 f"50% of span duration"
             ),
         }
+        # Also populate legacy fields so the frontend can read them
+        span.setdefault("evaluations", {}).setdefault("custom", {})["permission_wait_critical"] = is_critical
+        span.setdefault("evaluation_assessments", {}).setdefault("custom", {})["permission_wait_critical"] = assessment
 
     def _handle_session_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SessionStart hook event."""
