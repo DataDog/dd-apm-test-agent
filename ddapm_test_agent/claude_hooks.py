@@ -19,6 +19,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Set
+from typing import Tuple
 from urllib.parse import urlparse
 
 from aiohttp import ClientSession
@@ -342,11 +343,9 @@ class ClaudeHooksAPI:
         self, span: Dict[str, Any], estimated_permission_wait_ms: int
     ) -> None:
         """Embed a permission_wait_critical boolean evaluation on a span.
-
-        Mirrors the frontend isPermissionWaitCritical() threshold:
-        critical when permission wait > 50% of span duration.
+        The evaluation flags whether the permission wait was > 50% of span duration.
         """
-        duration_ms = span.get("duration", 0) / 1_000_000  # ns → ms
+        duration_ms = span.get("duration", 0) / 1_000_000 
         if duration_ms <= 0:
             return
         is_critical = estimated_permission_wait_ms / duration_ms > 0.5
@@ -1285,36 +1284,74 @@ class ClaudeHooksAPI:
         else:
             log.debug("Unhandled hook event: %s", hook_event_name)
 
-    async def _forward_span_update(self, spans: List[Dict[str, Any]]) -> None:
-        """Forward span updates to the DD backend via the update endpoint."""
-        app = self._app
-        if not app:
-            return
+    def _resolve_backend_target(
+        self,
+        endpoint: str,
+        *,
+        content_type: str = "application/msgpack",
+        agentless_base_url: str = "llmobs-intake",
+        evp_subdomain: str = "llmobs-intake",
+    ) -> Optional[Tuple[str, Dict[str, str]]]:
+        """Resolve the forwarding URL and headers for a backend request.
 
-        if not spans:
-            return
+        Returns ``(url, headers)`` when forwarding is possible, or ``None``
+        when it should be skipped (disabled, no credentials, etc.).
+
+        Args:
+            endpoint: The API path, e.g. ``/api/v2/llmobs``.
+            content_type: Value for the ``Content-Type`` header.
+            agentless_base_url: Subdomain prefix used in agentless mode
+                (e.g. ``"llmobs-intake"`` → ``https://llmobs-intake.<site>``).
+            evp_subdomain: Value for the ``X-Datadog-EVP-Subdomain`` header
+                when routing through the agent proxy.
+        """
+        app = self._app
+        if not app or app.get("disable_llmobs_data_forwarding", False):
+            return None
 
         dd_site = app.get("dd_site", "")
         dd_api_key = app.get("dd_api_key")
         agent_url = app.get("agent_url", "")
-        disable_forwarding = app.get("disable_llmobs_data_forwarding", False)
 
-        if disable_forwarding:
-            return
+        headers: Dict[str, str] = {"Content-Type": content_type}
+        if content_type == "application/msgpack":
+            headers["Content-Encoding"] = "gzip"
 
         if agent_url:
-            url = f"{agent_url}/evp_proxy/v2/api/v2/llmobs"
-            headers: Dict[str, str] = {"Content-Type": "application/msgpack", "Content-Encoding": "gzip"}
+            url = f"{agent_url}/evp_proxy/v2{endpoint}"
+            headers["X-Datadog-EVP-Subdomain"] = evp_subdomain
         elif dd_api_key and dd_site:
-            url = f"https://llmobs-intake.{dd_site}/api/v2/llmobs"
-            headers = {
-                "Content-Type": "application/msgpack",
-                "Content-Encoding": "gzip",
-                "DD-API-KEY": dd_api_key,
-            }
+            url = f"https://{agentless_base_url}.{dd_site}{endpoint}"
+            headers["DD-API-KEY"] = dd_api_key
         else:
-            log.debug("No DD_API_KEY/DD_SITE or agent URL configured — skipping LLMObs update forwarding")
+            log.debug("No DD_API_KEY/DD_SITE or agent URL configured — skipping forwarding")
+            return None
+
+        return url, headers
+
+    async def _post_to_backend(
+        self, url: str, headers: Dict[str, str], data: bytes, description: str
+    ) -> None:
+        """POST the given data to the url and log the outcome."""
+        try:
+            async with ClientSession() as http_session:
+                async with http_session.post(url, headers=headers, data=data) as resp:
+                    if not resp.ok:
+                        log.warning("Failed to %s: %s %s", description, resp.status, await resp.text())
+                    else:
+                        log.info("Successfully %s", description)
+        except Exception as e:
+            log.warning("Error trying to %s: %s", description, e)
+
+    async def _forward_span_update(self, spans: List[Dict[str, Any]]) -> None:
+        """Forward span updates to the DD backend via the update endpoint."""
+        if not spans:
             return
+
+        target = self._resolve_backend_target("/api/v2/llmobs")
+        if target is None:
+            return
+        url, headers = target
 
         payload = {
             "_dd.stage": "raw",
@@ -1322,23 +1359,10 @@ class ClaudeHooksAPI:
             "spans": spans,
         }
         data = gzip.compress(msgpack.packb(payload))
-
-        try:
-            async with ClientSession() as http_session:
-                async with http_session.post(url, headers=headers, data=data) as resp:
-                    if not resp.ok:
-                        log.warning("Failed to forward span update: %s %s", resp.status, await resp.text())
-                    else:
-                        log.info("Forwarded %d span updates", len(spans))
-        except Exception as e:
-            log.warning("Error forwarding span update: %s", e)
+        await self._post_to_backend(url, headers, data, f"forward {len(spans)} span updates")
 
     async def _forward_trace_to_backend(self, session_id: str) -> None:
         """Forward all assembled spans for a session's trace to the backend via the EVP proxy path."""
-        app = self._app
-        if not app:
-            return
-
         session = self._sessions.get(session_id)
         if not session:
             return
@@ -1348,27 +1372,10 @@ class ClaudeHooksAPI:
         if not spans:
             return
 
-        dd_site = app.get("dd_site", "")
-        dd_api_key = app.get("dd_api_key")
-        agent_url = app.get("agent_url", "")
-        disable_forwarding = app.get("disable_llmobs_data_forwarding", False)
-
-        if disable_forwarding:
+        target = self._resolve_backend_target("/api/v2/llmobs")
+        if target is None:
             return
-
-        if agent_url:
-            url = f"{agent_url}/evp_proxy/v2/api/v2/llmobs"
-            headers: Dict[str, str] = {"Content-Type": "application/msgpack", "Content-Encoding": "gzip"}
-        elif dd_api_key and dd_site:
-            url = f"https://llmobs-intake.{dd_site}/api/v2/llmobs"
-            headers = {
-                "Content-Type": "application/msgpack",
-                "Content-Encoding": "gzip",
-                "DD-API-KEY": dd_api_key,
-            }
-        else:
-            log.debug("No DD_API_KEY/DD_SITE or agent URL configured — skipping LLMObs forwarding for Claude hooks")
-            return
+        url, headers = target
 
         payload = {
             "_dd.stage": "raw",
@@ -1376,16 +1383,7 @@ class ClaudeHooksAPI:
             "spans": spans,
         }
         data = gzip.compress(msgpack.packb(payload))
-
-        try:
-            async with ClientSession() as http_session:
-                async with http_session.post(url, headers=headers, data=data) as resp:
-                    if not resp.ok:
-                        log.warning("Failed to forward Claude hooks spans: %s %s", resp.status, await resp.text())
-                    else:
-                        log.info("Forwarded %d Claude hooks spans for trace %s", len(spans), trace_id)
-        except Exception as e:
-            log.warning("Error forwarding Claude hooks spans: %s", e)
+        await self._post_to_backend(url, headers, data, f"forward {len(spans)} Claude hooks spans for trace {trace_id}")
 
     async def _forward_eval_metrics_to_backend(self, session_id: str) -> None:
         """Forward evaluation metrics for all spans in a session's trace to the Datadog backend.
@@ -1393,20 +1391,20 @@ class ClaudeHooksAPI:
         Collects evaluation entries from every span in the trace (not just root),
         so any future span-level evaluations are also forwarded automatically.
         Uses the LLMObs eval-metric intake API (JSON, not msgpack).
-        Only runs when DD_API_KEY and DD_SITE are configured.
         """
-        app = self._app
-        if not app:
-            return
-
         session = self._sessions.get(session_id)
         if not session:
             return
 
-        dd_site = app.get("dd_site", "")
-        dd_api_key = app.get("dd_api_key")
-        if app.get("disable_llmobs_data_forwarding", False) or not dd_api_key or not dd_site:
+        target = self._resolve_backend_target(
+            "/api/intake/llm-obs/v2/eval-metric",
+            content_type="application/json",
+            agentless_base_url="api",
+            evp_subdomain="api",
+        )
+        if target is None:
             return
+        url, headers = target
 
         trace_id = session.trace_id
         spans = [s for s in self._assembled_spans if s.get("trace_id") == trace_id]
@@ -1444,27 +1442,10 @@ class ClaudeHooksAPI:
         if not metrics:
             return
 
-        url = f"https://api.{dd_site}/api/intake/llm-obs/v2/eval-metric"
         payload = {"data": {"type": "evaluation_metric", "attributes": {"metrics": metrics}}}
-        try:
-            async with ClientSession() as http_session:
-                async with http_session.post(
-                    url,
-                    headers={"Content-Type": "application/json", "DD-API-KEY": dd_api_key},
-                    data=json.dumps(payload),
-                ) as resp:
-                    if not resp.ok:
-                        log.warning(
-                            "Failed to forward eval metrics to Datadog: %s %s",
-                            resp.status,
-                            await resp.text(),
-                        )
-                    else:
-                        log.info(
-                            "Forwarded %d eval metric(s) for trace %s", len(metrics), trace_id
-                        )
-        except Exception as e:
-            log.warning("Error forwarding eval metrics: %s", e)
+        await self._post_to_backend(
+            url, headers, json.dumps(payload).encode(), f"forward {len(metrics)} eval metric(s) for trace {trace_id}"
+        )
 
     async def handle_hook(self, request: Request) -> web.Response:
         """Handle POST /claude/hooks — receives hook JSON and dispatches by event name."""

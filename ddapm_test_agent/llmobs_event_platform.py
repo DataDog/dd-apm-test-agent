@@ -1,5 +1,6 @@
 """LLM Observability Event Platform API."""
 
+from collections import defaultdict
 from datetime import datetime
 import gzip
 import json
@@ -501,8 +502,6 @@ def _build_trace_aggregates(
     Mirrors what the production llm-obs-query-rewriter computes via Trino SQL.
     Add new @trace.* metrics here to extend coverage for the static app.
     """
-    from collections import defaultdict
-
     by_trace: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for span in all_spans:
         by_trace[span.get("trace_id", "")].append(span)
