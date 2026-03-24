@@ -345,7 +345,7 @@ class ClaudeHooksAPI:
         """Embed a permission_wait_critical boolean evaluation on a span.
         The evaluation flags whether the permission wait was > 50% of span duration.
         """
-        duration_ms = span.get("duration", 0) / 1_000_000 
+        duration_ms = span.get("duration", 0) / 1_000_000
         if duration_ms <= 0:
             return
         is_critical = estimated_permission_wait_ms / duration_ms > 0.5
@@ -1300,10 +1300,8 @@ class ClaudeHooksAPI:
         Args:
             endpoint: The API path, e.g. ``/api/v2/llmobs``.
             content_type: Value for the ``Content-Type`` header.
-            agentless_base_url: Subdomain prefix used in agentless mode
-                (e.g. ``"llmobs-intake"`` → ``https://llmobs-intake.<site>``).
-            evp_subdomain: Value for the ``X-Datadog-EVP-Subdomain`` header
-                when routing through the agent proxy.
+            agentless_base_url: Subdomain prefix for agentless mode.
+            evp_subdomain: ``X-Datadog-EVP-Subdomain`` header value for agent proxy mode.
         """
         app = self._app
         if not app or app.get("disable_llmobs_data_forwarding", False):
@@ -1327,6 +1325,7 @@ class ClaudeHooksAPI:
             log.debug("No DD_API_KEY/DD_SITE or agent URL configured — skipping forwarding")
             return None
 
+        log.info("Resolved backend target: %s (mode=%s)", url, "agent" if agent_url else "agentless")
         return url, headers
 
     async def _post_to_backend(
