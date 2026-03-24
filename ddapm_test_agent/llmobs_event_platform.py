@@ -631,6 +631,8 @@ def build_event_platform_list_response(
                 **trace_aggregates.get(trace_id, {}),
             },
             "evaluation": span.get("evaluation", {}),
+            "evaluations": span.get("evaluations", {}),
+            "evaluation_assessments": span.get("evaluation_assessments", {}),
         }
 
         # Build columns array [status, ?, ?, ml_app, service, ?, ?, duration]
@@ -1011,6 +1013,8 @@ class LLMObsEventPlatformAPI:
                     },
                     "metrics": metrics,
                     "evaluation": span.get("evaluation", {}),
+                    "evaluations": span.get("evaluations", {}),
+                    "evaluation_assessments": span.get("evaluation_assessments", {}),
                     "_dd": {"apm_trace_id": span.get("trace_id", "")},
                 }
 
