@@ -48,15 +48,12 @@ SKIP_RESPONSE_HEADERS = {"content-length", "transfer-encoding", "content-encodin
 def _compute_context_breakdown(
     request_body: Dict[str, Any],
     total_input_tokens: int,
-    cache_read_tokens: int,
-    cache_creation_tokens: int,
     model: str,
 ) -> Dict[str, Any]:
     """Estimate how input tokens are distributed across request sections.
 
     Serializes each section to JSON, measures byte lengths, and distributes
-    total_input_tokens proportionally. Cache token counts are included as
-    exact values from the API response.
+    total_input_tokens proportionally.
     """
     sections_raw: Dict[str, Any] = {}
 
@@ -95,13 +92,16 @@ def _compute_context_breakdown(
             continue
         proportion = section_bytes[name] / total_bytes
         tokens = round(total_input_tokens * proportion)
-        pct = round(tokens / context_window_size * 100, 1) if context_window_size > 0 else 0.0
+        pct = round(tokens / total_input_tokens * 100, 1) if total_input_tokens > 0 else 0.0
         sections.append({"name": name, "tokens": tokens, "pct": pct})
 
+    context_usage_pct = round(total_input_tokens / context_window_size * 100, 1) if context_window_size > 0 else 0.0
+
     return {
+        "context_window_size": context_window_size,
+        "total_input_tokens": total_input_tokens,
+        "context_usage_pct": context_usage_pct,
         "sections": sections,
-        "cache_read_tokens": cache_read_tokens,
-        "cache_creation_tokens": cache_creation_tokens,
     }
 
 
@@ -517,8 +517,6 @@ class ClaudeProxyAPI:
         context_breakdown = _compute_context_breakdown(
             request_body,
             total_input_tokens,
-            cache_read,
-            cache_creation,
             model,
         )
 

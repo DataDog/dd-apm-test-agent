@@ -949,6 +949,18 @@ class ClaudeHooksAPI:
         primary_model = last_span.get("meta", {}).get("model_name", "")
         window = _get_context_limit(primary_model)
         delta_tokens = max(last_input_tokens - first_input_tokens, 0)
+        # Extract sections from first and last LLM spans' context_breakdown
+        first_span = next(
+            (s for s in llm_spans if s.get("metrics", {}).get("input_tokens", 0) > 0),
+            None,
+        )
+        first_breakdown = (
+            first_span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("context_breakdown")
+            if first_span else None
+        )
+        last_breakdown = (
+            last_span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("context_breakdown")
+        )
         context_delta: Dict[str, Any] = {
             "first_input_tokens": first_input_tokens,
             "last_input_tokens": last_input_tokens,
@@ -957,16 +969,10 @@ class ClaudeHooksAPI:
             "first_usage_pct": round(first_input_tokens / window * 100, 1) if window else 0.0,
             "last_usage_pct": round(last_input_tokens / window * 100, 1) if window else 0.0,
         }
-        breakdown = (
-            last_span.get("meta", {})
-            .get("metadata", {})
-            .get("_dd", {})
-            .get("context_breakdown")
-        )
-        if breakdown:
-            context_delta["sections"] = breakdown.get("sections", [])
-            context_delta["cache_read_tokens"] = breakdown.get("cache_read_tokens", 0)
-            context_delta["cache_creation_tokens"] = breakdown.get("cache_creation_tokens", 0)
+        if first_breakdown:
+            context_delta["first_sections"] = first_breakdown.get("sections", [])
+        if last_breakdown:
+            context_delta["last_sections"] = last_breakdown.get("sections", [])
         return context_delta
 
     def _handle_stop(self, session_id: str, body: Dict[str, Any]) -> None:
