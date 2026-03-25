@@ -156,7 +156,7 @@ def _run_claude(args: Optional[List[str]] = None) -> None:
     os.execv(claude_bin, [claude_bin] + args)
 
 
-def cmd_run() -> None:
+def cmd_start() -> None:
     """Start lapdog in background with Claude hooks enabled."""
     if _lapdog_alive():
         pid, port = _read_pid_file()
@@ -233,8 +233,8 @@ def main() -> None:
         )
         sys.exit(0)
     sub = sys.argv[1].lower()
-    if sub == "run":
-        cmd_run()
+    if sub == "start":
+        cmd_start()
     elif sub == "stop":
         cmd_stop()
     elif sub == "status":

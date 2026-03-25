@@ -1,5 +1,6 @@
 """LLM Observability Event Platform API."""
 
+from collections import defaultdict
 from datetime import datetime
 import gzip
 import json
@@ -493,12 +494,47 @@ def _tags_to_dict(tags: List[str]) -> Dict[str, Any]:
     return tag_obj
 
 
+def _build_trace_aggregates(
+    all_spans: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Pre-compute @trace.* aggregates grouped by trace_id.
+
+    Mirrors what the production llm-obs-query-rewriter computes via Trino SQL.
+    Add new @trace.* metrics here to extend coverage for the static app.
+    """
+    by_trace: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for span in all_spans:
+        by_trace[span.get("trace_id", "")].append(span)
+
+    result: Dict[str, Dict[str, Any]] = {}
+    for tid, trace_spans in by_trace.items():
+        num_evaluations_failed = sum(
+            sum(
+                1
+                for metric in span.get("evaluation", {}).values()
+                if isinstance(metric, dict) and metric.get("assessment") == "fail"
+            )
+            for span in trace_spans
+        )
+        number_of_errors = sum(
+            1 for span in trace_spans if span.get("status") == "error"
+        )
+        result[tid] = {
+            "num_evaluations_failed": num_evaluations_failed,
+            "number_of_errors": number_of_errors,
+        }
+    return result
+
+
 def build_event_platform_list_response(
     spans: List[Dict[str, Any]],
     request_id: str,
     limit: int = 100,
+    all_spans: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Build Event Platform list response from spans."""
+    _all_spans = all_spans if all_spans is not None else spans
+    trace_aggregates = _build_trace_aggregates(_all_spans)
     children_map = compute_children_ids(spans[:limit])
     events = []
 
@@ -592,7 +628,11 @@ def build_event_platform_list_response(
             "env": env,
             "trace": {
                 "estimated_total_cost": 0,
+                **trace_aggregates.get(trace_id, {}),
             },
+            "evaluation": span.get("evaluation", {}),
+            "evaluations": span.get("evaluations", {}),
+            "evaluation_assessments": span.get("evaluation_assessments", {}),
         }
 
         # Build columns array [status, ?, ?, ml_app, service, ?, ?, duration]
@@ -725,7 +765,8 @@ class LLMObsEventPlatformAPI:
             limit = list_params.get("limit", 100)
             query_str = list_params.get("search", {}).get("query", "")
 
-            spans = self.get_llmobs_spans()
+            all_spans = self.get_llmobs_spans()
+            spans = all_spans
             if query_str:
                 spans = apply_filters(spans, parse_filter_query(query_str))
 
@@ -736,7 +777,7 @@ class LLMObsEventPlatformAPI:
                 spans = list(reversed(spans))
 
             request_id = str(uuid.uuid4())
-            response = build_event_platform_list_response(spans, request_id, limit)
+            response = build_event_platform_list_response(spans, request_id, limit, all_spans=all_spans)
             self._query_results[request_id] = response
 
             return web.json_response(response)
@@ -971,6 +1012,9 @@ class LLMObsEventPlatformAPI:
                         "model_provider": model_provider,
                     },
                     "metrics": metrics,
+                    "evaluation": span.get("evaluation", {}),
+                    "evaluations": span.get("evaluations", {}),
+                    "evaluation_assessments": span.get("evaluation_assessments", {}),
                     "_dd": {"apm_trace_id": span.get("trace_id", "")},
                 }
 
