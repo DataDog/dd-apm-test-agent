@@ -44,7 +44,7 @@ setup(
         "pywin32; sys_platform == 'win32'",
     ],
     tests_require=testing_deps,
-    setup_requires=["setuptools_scm"],
+    setup_requires=["setuptools_scm<10"],
     use_scm_version=True,
     entry_points={
         "console_scripts": [
