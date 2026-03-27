@@ -44,8 +44,6 @@ setup(
         "pywin32; sys_platform == 'win32'",
     ],
     tests_require=testing_deps,
-    setup_requires=["setuptools_scm"],
-    use_scm_version=True,
     entry_points={
         "console_scripts": [
             "ddapm-test-agent=ddapm_test_agent.agent:main",
