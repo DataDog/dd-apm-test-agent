@@ -154,6 +154,16 @@ def disable_llmobs_data_forwarding() -> Generator[bool, None, None]:
 
 
 @pytest.fixture
+def persist_llmobs_traces() -> Generator[bool, None, None]:
+    yield False
+
+
+@pytest.fixture
+def persist_llmobs_db_path() -> Generator[Optional[str], None, None]:
+    yield None
+
+
+@pytest.fixture
 async def agent_app(
     aiohttp_server,
     agent_enabled_checks,
@@ -175,6 +185,8 @@ async def agent_app(
     dd_site,
     dd_api_key,
     disable_llmobs_data_forwarding,
+    persist_llmobs_traces,
+    persist_llmobs_db_path,
 ):
     app = await aiohttp_server(
         make_app(
@@ -197,6 +209,8 @@ async def agent_app(
             dd_site=dd_site,
             dd_api_key=dd_api_key,
             disable_llmobs_data_forwarding=disable_llmobs_data_forwarding,
+            persist_llmobs_traces=persist_llmobs_traces,
+            persist_llmobs_db_path=persist_llmobs_db_path,
         )
     )
     yield app

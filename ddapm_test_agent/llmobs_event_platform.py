@@ -6,6 +6,7 @@ import gzip
 import json
 import logging
 import re
+import sqlite3
 import time
 from typing import Any
 from typing import Awaitable
@@ -21,6 +22,9 @@ from aiohttp.web import Request
 import msgpack
 
 from . import llmobs_query_parser
+from .llmobs_persistence import init_llmobs_db
+from .llmobs_persistence import load_all_spans
+from .llmobs_persistence import upsert_spans
 
 if TYPE_CHECKING:
     from .agent import Agent
@@ -689,18 +693,35 @@ def build_event_platform_list_response(
 class LLMObsEventPlatformAPI:
     """Handler for Event Platform API requests."""
 
-    def __init__(self, agent: "Agent"):
+    def __init__(
+        self,
+        agent: "Agent",
+        persist_llmobs_traces: bool = False,
+        persist_llmobs_db_path: Optional[str] = None,
+    ):
         self.agent = agent
         self._query_results: Dict[str, Dict[str, Any]] = {}
         self.decoded_llmobs_span_events: Dict[int, List[Dict[str, Any]]] = {}
         self._claude_hooks_api: Optional["ClaudeHooksAPI"] = None
+        self._persist_conn: Optional[sqlite3.Connection] = None
+        self._persisted_spans: List[Dict[str, Any]] = []
+
+        if persist_llmobs_traces and persist_llmobs_db_path:
+            self._persist_conn = init_llmobs_db(persist_llmobs_db_path)
+            self._persisted_spans = load_all_spans(self._persist_conn)
 
     def set_claude_hooks_api(self, api: "ClaudeHooksAPI") -> None:
         """Wire up the Claude hooks API so its spans appear in LLMObs queries."""
         self._claude_hooks_api = api
 
+    def close(self) -> None:
+        """Close the SQLite persistence connection, if open."""
+        if self._persist_conn is not None:
+            self._persist_conn.close()
+            self._persist_conn = None
+
     def get_llmobs_spans(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get all LLMObs spans from stored requests."""
+        """Get all LLMObs spans from stored requests and persisted DB."""
         requests = self.agent._requests_by_session(token) if token else self.agent._requests
         all_spans = []
 
@@ -714,14 +735,21 @@ class LLMObsEventPlatformAPI:
                         events = decode_llmobs_payload(data, content_type)
                         spans = extract_spans_from_events(events)
                         self.decoded_llmobs_span_events[req_id] = spans
+                        if self._persist_conn is not None and spans:
+                            upsert_spans(self._persist_conn, spans)
                     else:
                         spans = self.decoded_llmobs_span_events[req_id]
                     all_spans.extend(spans)
                 except Exception as e:
                     log.warning(f"Failed to extract spans from request: {e}")
 
+        all_spans.extend(self._persisted_spans)
+
         if self._claude_hooks_api:
-            all_spans.extend(self._claude_hooks_api._assembled_spans)
+            assembled = self._claude_hooks_api._assembled_spans
+            if self._persist_conn is not None and assembled:
+                upsert_spans(self._persist_conn, assembled)
+            all_spans.extend(assembled)
 
         all_spans.sort(key=lambda s: s.get("start_ns", 0), reverse=True)
         return all_spans
@@ -731,25 +759,27 @@ class LLMObsEventPlatformAPI:
         events = decode_llmobs_payload(update_data, content_type)
         update_span_list = extract_spans_from_events(events)
 
-        # Build index of all existing spans (stored requests + hooks assembled)
+        # Build index of all existing spans (stored requests + persisted + hooks)
+        # Use str(span_id) as key so int/str don't create duplicate entries
         all_spans = self.get_llmobs_spans()
-        span_index = {s.get("span_id"): s for s in all_spans}
+        span_index = {}
+        for s in all_spans:
+            sid = s.get("span_id")
+            if sid is not None:
+                span_index[str(sid)] = s
 
         updated = 0
+        updated_spans: List[Dict[str, Any]] = []
         for update in update_span_list:
             sid = update.get("span_id")
-            existing = span_index.get(sid)
+            existing = span_index.get(str(sid)) if sid is not None else None
             if existing:
                 _deep_merge(update, existing)
+                updated_spans.append(existing)
                 updated += 1
+        if self._persist_conn is not None and updated_spans:
+            upsert_spans(self._persist_conn, updated_spans)
         return updated
-
-    async def handle_llmobs_update(self, request: Request) -> web.Response:
-        """Handle POST /evp_proxy/v2/api/v2/llmobs/update — update existing spans."""
-        data = await request.read()
-        content_type = request.content_type or ""
-        updated = self.update_spans(data, content_type)
-        return web.json_response({"updated": updated})
 
     async def handle_logs_analytics_list(self, request: Request) -> web.Response:
         """Handle POST /api/unstable/llm-obs-query-rewriter/list endpoint."""
