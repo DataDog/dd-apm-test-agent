@@ -1,4 +1,5 @@
 """CLI for lapdog subcommands: run, stop, status, claude."""
+import argparse
 import os
 import shutil
 import signal
@@ -10,6 +11,17 @@ from typing import Optional
 from typing import Tuple
 
 import requests
+
+
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude"]
+LAPDOG_USAGE = (
+    "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
+    "Options must appear before <command>. Arguments after <command> are forwarded.\n"
+    "  run     Start lapdog (background)\n"
+    "  stop    Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
+    "  status  Show lapdog status (from /info)\n"
+    "  claude  Start lapdog in background if needed, then launch Claude with intercept"
+)
 
 
 def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
@@ -92,11 +104,15 @@ def _remove_pid_file() -> None:
             pass
 
 
-def _start_lapdog(port: int, extra_args: Optional[List[str]] = None) -> None:
+def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False) -> None:
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    args = [sys.executable, "-m", "ddapm_test_agent.agent", "--enable-claude-code-hooks", "--disable-llmobs-data-forwarding"]
+    args = [sys.executable, "-m", "ddapm_test_agent.agent", "--enable-claude-code-hooks"]
+
+    if not forward_data:
+        args.append("--disable-llmobs-data-forwarding")
+
     if extra_args:
         args += extra_args
     with open(log_path, "w") as log_file:
@@ -156,7 +172,7 @@ def _run_claude(args: Optional[List[str]] = None) -> None:
     os.execv(claude_bin, [claude_bin] + args)
 
 
-def cmd_start() -> None:
+def cmd_start(sub_cmd_args: list[str], forward_data: bool) -> None:
     """Start lapdog in background with Claude hooks enabled."""
     if _lapdog_alive():
         pid, port = _read_pid_file()
@@ -171,7 +187,7 @@ def cmd_start() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    _start_lapdog(port, sys.argv[2:])
+    _start_lapdog(port, sub_cmd_args, forward_data)
 
 
 def cmd_stop() -> None:
@@ -206,7 +222,7 @@ def cmd_status() -> None:
         sys.exit(1)
 
 
-def cmd_claude() -> None:
+def cmd_claude(sub_cmd_args: list[str], forward_data: bool) -> None:
     """Ensure lapdog is running in background, then launch Claude with intercept."""
     if not _lapdog_alive():
         port = _resolved_port()
@@ -216,31 +232,69 @@ def cmd_claude() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        _start_lapdog(port)
+        _start_lapdog(port, forward_data=forward_data)
 
-    _run_claude(sys.argv[2:])
+    _run_claude(sub_cmd_args)
+
+
+def _parse_command(cmd_args: list[str]) -> tuple[list[str], list[str]]:
+    lapdog_args: list[str] = []
+
+    for arg_idx, arg in enumerate(cmd_args):
+        if arg in LAPDOG_COMMANDS:
+            return lapdog_args, cmd_args[arg_idx:]
+
+        lapdog_args.append(arg)
+
+    # no lapdog command found
+    print(LAPDOG_USAGE, file=sys.stderr)
+    sys.exit(1)
+
+
+def _parse_lapdog_args(lapdog_args: list[str]) -> argparse.Namespace:
+    """Parse lapdog-specific args"""
+    parser = argparse.ArgumentParser(
+        description="Lapdog CLI",
+        prog="lapdog",
+    )
+
+    parser.add_argument(
+        "--forward",
+        action="store_true",
+        default=False,
+        help="Enable data forwarding to Datadog.",
+    )
+
+    return parser.parse_args(args=lapdog_args)
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
-        print(
-            "Usage: lapdog <command> [args...]\n"
-            "  run     Start lapdog (background)\n"
-            "  stop    Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
-            "  status  Show lapdog status (from /info)\n"
-            "  claude  Start lapdog in background if needed, then launch Claude with intercept",
-            file=sys.stderr,
-        )
-        sys.exit(0)
-    sub = sys.argv[1].lower()
-    if sub == "start":
-        cmd_start()
-    elif sub == "stop":
-        cmd_stop()
-    elif sub == "status":
-        cmd_status()
-    elif sub == "claude":
-        cmd_claude()
-    else:
-        print(f"[lapdog] Unknown command: {sub}", file=sys.stderr)
+    args = sys.argv
+    if len(args) < 2:
+        print(LAPDOG_USAGE, file=sys.stderr)
         sys.exit(1)
+
+    lapdog_args, remaining = _parse_command(args[1:])
+    lapdog_parsed_args = _parse_lapdog_args(lapdog_args)
+
+    sub_cmd = remaining[0].lower()
+    sub_cmd_args = remaining[1:]
+
+    if sub_cmd not in LAPDOG_COMMANDS:
+        print(f"[lapdog] Unknown command: {sub_cmd}", file=sys.stderr)
+        sys.exit(1)
+
+    if sub_cmd == "start":
+        cmd_start(
+            sub_cmd_args=sub_cmd_args,
+            forward_data=lapdog_parsed_args.forward
+        )
+    elif sub_cmd == "stop":
+        cmd_stop()
+    elif sub_cmd == "status":
+        cmd_status()
+    elif sub_cmd == "claude":
+        cmd_claude(
+            sub_cmd_args=sub_cmd_args,
+            forward_data=lapdog_parsed_args.forward
+        )
