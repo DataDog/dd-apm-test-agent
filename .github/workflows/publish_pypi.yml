@@ -22,18 +22,9 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: astral-sh/setup-uv@1edb52594c857e2b5b13128931090f0640537287 # v5.3.0
-
-      - name: Compute pip cooldown date (2 days ago)
-        id: cooldown
-        shell: bash
-        run: |
-          cutoff=$(python3 -c "from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
-          echo "cutoff=$cutoff" >> "$GITHUB_OUTPUT"
-
       - name: Build wheels
         run: |
-          uv pip install --system --exclude-newer "${{ steps.cooldown.outputs.cutoff }}" wheel
+          pip install wheel
           pip wheel --no-deps -w dist .
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -55,18 +46,9 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: astral-sh/setup-uv@1edb52594c857e2b5b13128931090f0640537287 # v5.3.0
-
-      - name: Compute pip cooldown date (2 days ago)
-        id: cooldown
-        shell: bash
-        run: |
-          cutoff=$(python3 -c "from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
-          echo "cutoff=$cutoff" >> "$GITHUB_OUTPUT"
-
       - name: Build sdist
         run: |
-          uv pip install --system --exclude-newer "${{ steps.cooldown.outputs.cutoff }}" setuptools
+          python -m pip install --upgrade setuptools
           python setup.py sdist
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
