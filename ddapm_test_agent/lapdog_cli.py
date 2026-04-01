@@ -175,7 +175,7 @@ def cmd_start() -> None:
 
 
 def cmd_stop() -> None:
-    """Stop lapdog (started by 'lapdog run' or 'lapdog claude')."""
+    """Stop lapdog (started by 'lapdog start' or 'lapdog claude')."""
     pid, _ = _read_pid_file()
     if pid is None:
         print("[lapdog] No lapdog PID file found; lapdog may not be running.", file=sys.stderr)
@@ -195,7 +195,7 @@ def cmd_status() -> None:
     """Print lapdog status (from /info). Only works when lapdog was started by this CLI (pid file exists)."""
     pid, port = _read_pid_file()
     if port is None:
-        print("[lapdog] No lapdog running (start with 'lapdog run' or 'lapdog claude').", file=sys.stderr)
+        print("[lapdog] No lapdog running (start with 'lapdog start' or 'lapdog claude').", file=sys.stderr)
         sys.exit(1)
     url = _url_for_port(port)
     try:
@@ -226,7 +226,7 @@ def main() -> None:
         print(
             "Usage: lapdog <command> [args...]\n"
             "  run     Start lapdog (background)\n"
-            "  stop    Stop lapdog (started by 'lapdog run' or 'lapdog claude')\n"
+            "  stop    Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
             "  status  Show lapdog status (from /info)\n"
             "  claude  Start lapdog in background if needed, then launch Claude with intercept",
             file=sys.stderr,
