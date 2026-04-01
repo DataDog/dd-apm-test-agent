@@ -30,8 +30,17 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Dependencies
-        run: pip install reno docutils
+      - uses: astral-sh/setup-uv@1edb52594c857e2b5b13128931090f0640537287 # v5.3.0
+
+      - name: Compute pip cooldown date (2 days ago)
+        id: cooldown
+        shell: bash
+        run: |
+          cutoff=$(python3 -c "from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(days=2)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+          echo "cutoff=$cutoff" >> "$GITHUB_OUTPUT"
+
+      - name: Install Dependencies (with 2-day cooldown)
+        run: uv pip install --system --exclude-newer "${{ steps.cooldown.outputs.cutoff }}" reno docutils
 
       - name: Lint release notes
         run: reno lint
