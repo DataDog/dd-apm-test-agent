@@ -80,7 +80,7 @@ def write_claude_code_hooks(claude_settings_path: Path) -> None:
 
     hooks = claude_code_settings.get("hooks", {})
     for event in CLAUDE_CODE_EVENTS:
-        existing_hooks = cast(list[dict[str, Any]] | None, hooks.get(event, None))
+        existing_hooks = cast(Optional[list[dict[str, Any]]], hooks.get(event, None))
         if existing_hooks is None:
             hooks[event] = [CLAUDE_CODE_DEFAULT_MATCHER]
 
