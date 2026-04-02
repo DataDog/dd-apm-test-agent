@@ -1885,7 +1885,7 @@ def make_app(
     vcr_provider_map: str,
     vcr_ignore_headers: str,
     dd_site: str,
-    dd_api_key: str | None,
+    dd_api_key: Optional[str],
     disable_llmobs_data_forwarding: bool,
     enable_web_ui: bool = False,
 ) -> web.Application:
