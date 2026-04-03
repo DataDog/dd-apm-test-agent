@@ -140,7 +140,7 @@ def _port_in_use(port: Optional[int] = None) -> bool:
         return False
 
 
-def _wait_for_lapdog(proc: subprocess.Popen[bytes], log_path: Optional[str] = None) -> None:
+def _wait_for_lapdog(proc: "subprocess.Popen[bytes]", log_path: Optional[str] = None) -> None:
     """Wait up to ~10s for lapdog to start, then exit(1) on timeout."""
     for _ in range(50):
         if _lapdog_alive():
