@@ -80,7 +80,7 @@ def write_claude_code_hooks(claude_settings_path: Path) -> None:
 
     hooks = claude_code_settings.get("hooks", {})
     for event in CLAUDE_CODE_EVENTS:
-        existing_hooks = cast(list[dict[str, Any]] | None, hooks.get(event, None))
+        existing_hooks = cast(Optional[List[Dict[str, Any]]], hooks.get(event, None))
         if existing_hooks is None:
             hooks[event] = [CLAUDE_CODE_DEFAULT_MATCHER]
 
@@ -95,7 +95,7 @@ def write_claude_code_hooks(claude_settings_path: Path) -> None:
 
             continue
 
-        all_hooks_for_star_matcher = cast(list[dict[str, Any]], star_matcher_hook.get("hooks", []))
+        all_hooks_for_star_matcher = cast(List[Dict[str, Any]], star_matcher_hook.get("hooks", []))
 
         if not any(hook == CLAUDE_CODE_HOOK for hook in all_hooks_for_star_matcher):
             all_hooks_for_star_matcher.append(CLAUDE_CODE_HOOK)

@@ -271,7 +271,7 @@ async def _is_valid_api_key_and_site_combination(dd_api_key: str, dd_site: str) 
             if resp.status == 403:
                 return False
 
-            result = cast(dict[str, bool], await resp.json())
+            result = cast(Dict[str, bool], await resp.json())
             return result.get("valid", False)
 
 
@@ -1084,7 +1084,7 @@ class Agent:
             return web.Response(status=200, headers=headers)
 
         raw_data = await request.read()
-        data = cast(dict[str, Any], json.loads(raw_data))
+        data = cast(Dict[str, Any], json.loads(raw_data))
 
         # First pass to validate the data
         for key in data:
@@ -1636,7 +1636,7 @@ class Agent:
                 raise web.HTTPBadRequest(body=msg)
         return response
 
-    def _parse_http_request(self, data: bytes) -> tuple[str, str, Dict[str, str], bytes]:
+    def _parse_http_request(self, data: bytes) -> Tuple[str, str, Dict[str, str], bytes]:
         """Parse HTTP request from raw bytes.
 
         Returns:
@@ -1885,7 +1885,7 @@ def make_app(
     vcr_provider_map: str,
     vcr_ignore_headers: str,
     dd_site: str,
-    dd_api_key: str | None,
+    dd_api_key: Optional[str],
     disable_llmobs_data_forwarding: bool,
     enable_web_ui: bool = False,
 ) -> web.Application:
