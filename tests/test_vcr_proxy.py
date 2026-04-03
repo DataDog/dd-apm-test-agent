@@ -106,7 +106,7 @@ def vcr_ignore_headers() -> Generator[str, None, None]:
 
 
 @pytest.fixture
-async def vcr_test_name(agent: TestClient[Any, Any]) -> AsyncGenerator[None, None]:
+async def vcr_test_name(agent: TestClient) -> AsyncGenerator[None, None]:
     await agent.post("/vcr/test/start", json={"test_name": "test_name_prefix"})
     yield
     await agent.post("/vcr/test/stop")
@@ -136,7 +136,7 @@ def get_recorded_request(file_path: str) -> Dict[str, Any]:
         return data
 
 
-async def test_vcr_proxy_make_cassette(agent: TestClient[Any, Any], vcr_cassettes_directory: str) -> None:
+async def test_vcr_proxy_make_cassette(agent: TestClient, vcr_cassettes_directory: str) -> None:
     resp = await agent.post("/vcr/custom/serve", json={"foo": "bar"})
 
     assert resp.status == 200
@@ -149,7 +149,7 @@ async def test_vcr_proxy_make_cassette(agent: TestClient[Any, Any], vcr_cassette
     assert cassette_file.startswith("custom_serve_post")
 
 
-async def test_vcr_proxy_uses_existing_cassette(agent: TestClient[Any, Any], vcr_cassettes_directory: str) -> None:
+async def test_vcr_proxy_uses_existing_cassette(agent: TestClient, vcr_cassettes_directory: str) -> None:
     resp = await agent.post("/vcr/custom/serve", json={"foo": "bar"}, headers={"Pass-Through-Header-Value": "test"})
 
     assert resp.status == 200
@@ -171,7 +171,7 @@ async def test_vcr_proxy_uses_existing_cassette(agent: TestClient[Any, Any], vcr
 
 
 async def test_vcr_proxy_creates_different_cassettes_for_different_bodies(
-    agent: TestClient[Any, Any], vcr_cassettes_directory: str
+    agent: TestClient, vcr_cassettes_directory: str
 ) -> None:
     resp = await agent.post("/vcr/custom/serve", json={"foo": "bar"})
 
@@ -188,7 +188,7 @@ async def test_vcr_proxy_creates_different_cassettes_for_different_bodies(
 
 
 async def test_vcr_proxy_uses_test_name_prefix(
-    agent: TestClient[Any, Any], vcr_cassettes_directory: str, vcr_test_name: Any
+    agent: TestClient, vcr_cassettes_directory: str, vcr_test_name: Any
 ) -> None:
     resp = await agent.post("/vcr/custom/serve", json={"foo": "bar"})
 
@@ -200,7 +200,7 @@ async def test_vcr_proxy_uses_test_name_prefix(
     assert cassette_files[0].startswith("test_name_prefix_custom_serve_post")
 
 
-async def test_vcr_proxy_with_multipart_form_data(agent: TestClient[Any, Any], vcr_cassettes_directory: str) -> None:
+async def test_vcr_proxy_with_multipart_form_data(agent: TestClient, vcr_cassettes_directory: str) -> None:
     form = CustomFormData(boundary="form-data-boundary-abc123")
     form.add_field("text_field", "some text value")
     form.add_field("number_field", "42")
@@ -230,7 +230,7 @@ async def test_vcr_proxy_with_multipart_form_data(agent: TestClient[Any, Any], v
 
 
 async def test_vcr_proxy_does_not_record_ignored_headers(
-    agent: TestClient[Any, Any], vcr_cassettes_directory: str
+    agent: TestClient, vcr_cassettes_directory: str
 ) -> None:
     resp = await agent.post(
         "/vcr/custom/serve",
@@ -259,7 +259,7 @@ async def test_vcr_proxy_does_not_record_ignored_headers(
 
 
 async def test_vcr_proxy_converts_legacy_vcr_cassette_to_json(
-    agent: TestClient[Any, Any], vcr_cassettes_directory: str, vcr_legacy_cassette: str
+    agent: TestClient, vcr_cassettes_directory: str, vcr_legacy_cassette: str
 ) -> None:
     assert os.path.exists(vcr_legacy_cassette)
 
@@ -278,7 +278,7 @@ async def test_vcr_proxy_converts_legacy_vcr_cassette_to_json(
     assert not os.path.exists(vcr_legacy_cassette)
 
 
-async def test_vcr_proxy_with_chunked_request(agent: TestClient[Any, Any], vcr_cassettes_directory: str) -> None:
+async def test_vcr_proxy_with_chunked_request(agent: TestClient, vcr_cassettes_directory: str) -> None:
     resp = await agent.post("/vcr/custom/serve", json={"foo": "bar"}, chunked=True)
 
     assert resp.status == 200

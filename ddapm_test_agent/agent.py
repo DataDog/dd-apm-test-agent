@@ -1636,7 +1636,7 @@ class Agent:
                 raise web.HTTPBadRequest(body=msg)
         return response
 
-    def _parse_http_request(self, data: bytes) -> tuple[str, str, Dict[str, str], bytes]:
+    def _parse_http_request(self, data: bytes) -> Tuple[str, str, Dict[str, str], bytes]:
         """Parse HTTP request from raw bytes.
 
         Returns:

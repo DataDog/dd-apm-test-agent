@@ -3,7 +3,8 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any
-from typing_extensions import cast
+from typing import Dict
+from typing import cast
 
 from ddapm_test_agent.claude_hooks import (
     CLAUDE_CODE_DEFAULT_MATCHER,
@@ -13,12 +14,12 @@ from ddapm_test_agent.claude_hooks import (
 )
 
 
-def _read_settings(path: Path) -> dict[str, Any]:
+def _read_settings(path: Path) -> Dict[str, Any]:
     with open(path, "r") as f:
-        return cast(dict[str, Any], json.load(f))
+        return cast(Dict[str, Any], json.load(f))
 
 
-def _default_hooks_structure() -> dict[str, Any]:
+def _default_hooks_structure() -> Dict[str, Any]:
     return {event: [CLAUDE_CODE_DEFAULT_MATCHER] for event in CLAUDE_CODE_EVENTS}
 
 
