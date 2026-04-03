@@ -172,7 +172,7 @@ def _run_claude(args: Optional[List[str]] = None) -> None:
     os.execv(claude_bin, [claude_bin] + args)
 
 
-def cmd_start(sub_cmd_args: list[str], forward_data: bool) -> None:
+def cmd_start(sub_cmd_args: List[str], forward_data: bool) -> None:
     """Start lapdog in background with Claude hooks enabled."""
     if _lapdog_alive():
         pid, port = _read_pid_file()
@@ -222,7 +222,7 @@ def cmd_status() -> None:
         sys.exit(1)
 
 
-def cmd_claude(sub_cmd_args: list[str], forward_data: bool) -> None:
+def cmd_claude(sub_cmd_args: List[str], forward_data: bool) -> None:
     """Ensure lapdog is running in background, then launch Claude with intercept."""
     if not _lapdog_alive():
         port = _resolved_port()
@@ -237,8 +237,8 @@ def cmd_claude(sub_cmd_args: list[str], forward_data: bool) -> None:
     _run_claude(sub_cmd_args)
 
 
-def _parse_command(cmd_args: list[str]) -> tuple[list[str], list[str]]:
-    lapdog_args: list[str] = []
+def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
+    lapdog_args: List[str] = []
 
     for arg_idx, arg in enumerate(cmd_args):
         if arg in LAPDOG_COMMANDS:
@@ -251,7 +251,7 @@ def _parse_command(cmd_args: list[str]) -> tuple[list[str], list[str]]:
     sys.exit(1)
 
 
-def _parse_lapdog_args(lapdog_args: list[str]) -> argparse.Namespace:
+def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
     """Parse lapdog-specific args"""
     parser = argparse.ArgumentParser(
         description="Lapdog CLI",
