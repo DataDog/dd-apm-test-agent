@@ -1152,7 +1152,7 @@ class Agent:
                 # Just a random selection of some peer_tags to aggregate on for testing, not exhaustive
                 "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
                 "span_events": True,  # Advertise support for the top-level Span field for Span Events
-                "llmobs_data_forwarding": not request.app["disable_llmobs_data_forwarding"] and request.app["dd_api_key"] is not None and request.app["dd_site"] is not None,
+                "llmobs_data_forwarding": not request.app["disable_llmobs_data_forwarding"] and request.app["dd_api_key"] and request.app["dd_site"],  # api key and site not empty strings
             },
             headers=headers,
         )
