@@ -6,21 +6,33 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import List
 from typing import Optional
 from typing import Tuple
 
 import requests
 
+from lapdog import tracer_inject
+from lapdog.hooks import write_claude_code_hooks
+from lapdog.paths import LOG_FILE
+from lapdog.paths import PID_FILE
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude"]
+
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "install"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
-    "  run     Start lapdog (background)\n"
-    "  stop    Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
-    "  status  Show lapdog status (from /info)\n"
-    "  claude  Start lapdog in background if needed, then launch Claude with intercept"
+    "  start    Start lapdog (background)\n"
+    "  stop     Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
+    "  status   Show lapdog status (from /info)\n"
+    "  claude   Start lapdog in background if needed, then launch Claude with intercept\n"
+    "  install  Install Node.js tracer (dd-trace) to ~/.lapdog/node_modules\n"
+    "\n"
+    "Any other command is treated as an app to run with tracing instrumentation:\n"
+    "  lapdog python app.py\n"
+    "  lapdog node server.js\n"
+    "  lapdog npm run dev"
 )
 
 
@@ -39,13 +51,6 @@ def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
             i += 1
     return int(os.environ.get("PORT", "8126"))
 
-
-def _pid_file_path() -> str:
-    return os.environ.get("LAPDOG_PID_FILE", os.path.expanduser("~/.lapdog/lapdog.pid"))
-
-
-def _log_file_path() -> str:
-    return os.environ.get("LAPDOG_LOG_FILE", os.path.expanduser("~/.lapdog/lapdog.log"))
 
 
 def _url_for_port(port: int) -> str:
@@ -67,7 +72,7 @@ def _lapdog_alive(timeout: float = 2.0) -> bool:
 
 
 def _read_pid_file() -> Tuple[Optional[int], Optional[int]]:
-    path = _pid_file_path()
+    path = PID_FILE
     if not os.path.exists(path):
         return None, None
     try:
@@ -89,14 +94,14 @@ def _process_exists(pid: int) -> bool:
 
 
 def _write_pid_file(pid: int, port: int) -> None:
-    path = _pid_file_path()
+    path = PID_FILE
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write(f"{pid}\n{port}\n")
 
 
 def _remove_pid_file() -> None:
-    path = _pid_file_path()
+    path = PID_FILE
     if os.path.exists(path):
         try:
             os.remove(path)
@@ -104,11 +109,18 @@ def _remove_pid_file() -> None:
             pass
 
 
+def _maybe_write_claude_hooks(disable: bool) -> None:
+    if disable:
+        return
+    claude_settings_path = Path.home() / ".claude" / "settings.json"
+    write_claude_code_hooks(claude_settings_path)
+
+
 def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False) -> None:
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
-    log_path = _log_file_path()
+    log_path = LOG_FILE
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    args = [sys.executable, "-m", "ddapm_test_agent.agent", "--enable-claude-code-hooks"]
+    args = [sys.executable, "-m", "ddapm_test_agent.agent"]
 
     if not forward_data:
         args.append("--disable-llmobs-data-forwarding")
@@ -172,7 +184,7 @@ def _run_claude(args: Optional[List[str]] = None) -> None:
     os.execv(claude_bin, [claude_bin] + args)
 
 
-def cmd_start(sub_cmd_args: List[str], forward_data: bool) -> None:
+def cmd_start(sub_cmd_args: List[str], forward_data: bool, disable_hooks: bool = False) -> None:
     """Start lapdog in background with Claude hooks enabled."""
     if _lapdog_alive():
         pid, port = _read_pid_file()
@@ -187,6 +199,7 @@ def cmd_start(sub_cmd_args: List[str], forward_data: bool) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    _maybe_write_claude_hooks(disable_hooks)
     _start_lapdog(port, sub_cmd_args, forward_data)
 
 
@@ -216,37 +229,68 @@ def cmd_status() -> None:
     url = _url_for_port(port)
     try:
         requests.get(url, timeout=2).raise_for_status()
-        print(f"[lapdog] Lapdog running at {url} (pid={pid}, logs: {_log_file_path()})", file=sys.stderr)
+        print(f"[lapdog] Lapdog running at {url} (pid={pid}, logs: {LOG_FILE})", file=sys.stderr)
     except requests.RequestException as e:
         print(f"[lapdog] Lapdog not reachable at {url}: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-def cmd_claude(sub_cmd_args: List[str], forward_data: bool) -> None:
-    """Ensure lapdog is running in background, then launch Claude with intercept."""
-    if not _lapdog_alive():
-        port = _resolved_port()
-        if _port_in_use(port):
-            print(
-                f"[lapdog] Port {port} is already in use. Stop the existing lapdog instance first (e.g. 'lapdog stop').",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        _start_lapdog(port, forward_data=forward_data)
+def _ensure_lapdog_running(forward_data: bool = False) -> None:
+    """Start lapdog in background if it is not already running. Exits if the port is taken."""
+    if _lapdog_alive():
+        return
+    port = _resolved_port()
+    if _port_in_use(port):
+        print(
+            f"[lapdog] Port {port} is already in use. Stop the existing lapdog instance first (e.g. 'lapdog stop').",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    _start_lapdog(port, forward_data=forward_data)
 
+
+def cmd_claude(sub_cmd_args: List[str], forward_data: bool, disable_hooks: bool = False) -> None:
+    """Ensure lapdog is running in background, then launch Claude with intercept."""
+    _maybe_write_claude_hooks(disable_hooks)
+    _ensure_lapdog_running(forward_data)
     _run_claude(sub_cmd_args)
+
+
+def cmd_install() -> None:
+    """Install the Node.js tracer (dd-trace) to ~/.lapdog/node_modules."""
+    tracer_inject.install_node_tracer(required=True)
+
+
+def cmd_exec(app_cmd: List[str], forward_data: bool, disable_hooks: bool = False) -> None:
+    """Auto-start lapdog if needed, inject tracer env vars, then exec the app command. Never returns."""
+    _maybe_write_claude_hooks(disable_hooks)
+    _ensure_lapdog_running(forward_data)
+
+    _, port = _read_pid_file()
+    if port is None:
+        print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+        sys.exit(1)
+
+    env = tracer_inject.build_instrumented_env(port=port)
+
+    resolved = shutil.which(app_cmd[0])
+    if not resolved:
+        print(f"[lapdog] Command not found: {app_cmd[0]}", file=sys.stderr)
+        sys.exit(1)
+
+    os.execvpe(resolved, app_cmd, env)
 
 
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
     lapdog_args: List[str] = []
 
     for arg_idx, arg in enumerate(cmd_args):
-        if arg in LAPDOG_COMMANDS:
+        if not arg.startswith('--'):
             return lapdog_args, cmd_args[arg_idx:]
 
         lapdog_args.append(arg)
 
-    # no lapdog command found
+    # no sub command found
     print(LAPDOG_USAGE, file=sys.stderr)
     sys.exit(1)
 
@@ -263,6 +307,12 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Enable data forwarding to Datadog.",
+    )
+    parser.add_argument(
+        "--disable-claude-code-hooks",
+        action="store_true",
+        default=False,
+        help="Skip writing Claude Code hooks to ~/.claude/settings.json.",
     )
 
     return parser.parse_args(args=lapdog_args)
@@ -281,13 +331,19 @@ def main() -> None:
     sub_cmd_args = remaining[1:]
 
     if sub_cmd not in LAPDOG_COMMANDS:
-        print(f"[lapdog] Unknown command: {sub_cmd}", file=sys.stderr)
-        sys.exit(1)
+        cmd_exec(
+            app_cmd=remaining,
+            forward_data=lapdog_parsed_args.forward,
+            disable_hooks=lapdog_parsed_args.disable_claude_code_hooks,
+        )
+
+        return
 
     if sub_cmd == "start":
         cmd_start(
             sub_cmd_args=sub_cmd_args,
-            forward_data=lapdog_parsed_args.forward
+            forward_data=lapdog_parsed_args.forward,
+            disable_hooks=lapdog_parsed_args.disable_claude_code_hooks,
         )
     elif sub_cmd == "stop":
         cmd_stop()
@@ -296,5 +352,8 @@ def main() -> None:
     elif sub_cmd == "claude":
         cmd_claude(
             sub_cmd_args=sub_cmd_args,
-            forward_data=lapdog_parsed_args.forward
+            forward_data=lapdog_parsed_args.forward,
+            disable_hooks=lapdog_parsed_args.disable_claude_code_hooks,
         )
+    elif sub_cmd == "install":
+        cmd_install()

@@ -9,7 +9,6 @@ from dataclasses import field
 import json
 import logging
 import os
-from pathlib import Path
 import platform
 import pprint
 import re
@@ -56,7 +55,6 @@ from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
 from .claude_hooks import ClaudeHooksAPI
-from .claude_hooks import write_claude_code_hooks
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_proxy import ClaudeProxyAPI
 from .integration import Integration
@@ -2346,12 +2344,7 @@ def main(args: Optional[List[str]] = None) -> None:
         default=os.environ.get("DISABLE_LLMOBS_DATA_FORWARDING", "").lower() in ("true", "1", "yes"),
         help="Disable data forwarding to Datadog.",
     )
-    parser.add_argument(
-        "--enable-claude-code-hooks",
-        action="store_true",
-        default=os.environ.get("ENABLE_CLAUDE_CODE_HOOKS", "").lower() in ("true", "1", "yes"),
-        help="Enable writing Claude Code hooks to ~/.claude/settings.json",
-    )
+
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -2455,11 +2448,6 @@ def main(args: Optional[List[str]] = None) -> None:
         # Also store on main app for middleware access
         app._webui_instance = web_ui
 
-    # write claude code hooks
-    if parsed_args.enable_claude_code_hooks:
-        claude_settings_path = Path.home() / ".claude" / "settings.json"
-        log.info(f"Merging Claude Code hooks to {claude_settings_path}")
-        write_claude_code_hooks(claude_settings_path)
 
     async def run_servers():
         """Run APM and OTLP HTTP servers concurrently."""
