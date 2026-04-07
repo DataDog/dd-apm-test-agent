@@ -44,7 +44,6 @@ _1M_CONTEXT_MODELS = {
 }
 
 
-
 def _get_context_limit(model: str) -> int:
     """Return the context window size for a given model."""
     for prefix in _1M_CONTEXT_MODELS:

@@ -2448,7 +2448,6 @@ def main(args: Optional[List[str]] = None) -> None:
         # Also store on main app for middleware access
         app._webui_instance = web_ui
 
-
     async def run_servers():
         """Run APM and OTLP HTTP servers concurrently."""
         # Create runners for apps

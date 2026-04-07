@@ -52,7 +52,6 @@ def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
     return int(os.environ.get("PORT", "8126"))
 
 
-
 def _url_for_port(port: int) -> str:
     return f"http://127.0.0.1:{port}/info"
 

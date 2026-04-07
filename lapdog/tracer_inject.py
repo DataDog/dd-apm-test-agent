@@ -95,7 +95,7 @@ def build_instrumented_env(port: int, base_env: Optional[Dict[str, str]] = None)
 
 
 def install_node_tracer(required: bool = False) -> None:
-    """npm install dd-trace into ~/.lapdog/node_modules.
+    """`npm install dd-trace` into ~/.lapdog/node_modules.
 
     If required is True, exits on failure. Otherwise prints a warning and returns.
     """
