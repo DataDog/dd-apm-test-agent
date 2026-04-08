@@ -799,11 +799,107 @@ class LLMObsEventPlatformAPI:
     async def handle_aggregate(self, request: Request) -> web.Response:
         """Handle POST /api/unstable/llm-obs-query-rewriter/aggregate endpoint."""
         try:
-            spans = self.get_llmobs_spans()
+            body = await request.json()
+            agg_params = body.get("aggregate", {})
+            query_str = agg_params.get("search", {}).get("query", "")
+            group_by_list = agg_params.get("groupBy", [])
+            compute_list = agg_params.get("compute", [])
+
+            all_spans = self.get_llmobs_spans()
+            spans = all_spans
+            if query_str:
+                spans = apply_filters(spans, parse_filter_query(query_str))
+
+            # Determine groupBy field (support one group-by field)
+            group_by_field: Optional[str] = None
+            group_by_output: Optional[str] = None
+            group_by_limit = 50
+            group_by_sort_order = "desc"
+            if group_by_list:
+                field_cfg = group_by_list[0].get("field", {})
+                raw_field = field_cfg.get("id", "")
+                group_by_output = field_cfg.get("output", raw_field)
+                group_by_field = raw_field.lstrip("@")
+                group_by_limit = field_cfg.get("limit", 50)
+                sort_cfg = field_cfg.get("sort", {})
+                metric_sort = sort_cfg.get("metric", {})
+                group_by_sort_order = metric_sort.get("order", "desc")
+
+            # Group spans (spans are already sorted desc by start_ns)
+            groups: Dict[str, List[Dict[str, Any]]] = {}
+            group_order: List[str] = []
+            for span in spans:
+                key = str(get_span_field_value(span, group_by_field) or "") if group_by_field else ""
+                if key not in groups:
+                    groups[key] = []
+                    group_order.append(key)
+                groups[key].append(span)
+
+            # Sort group keys by min timestamp (spans sorted desc, so last span = earliest)
+            if group_by_sort_order == "desc":
+                group_order.sort(
+                    key=lambda k: groups[k][0].get("start_ns", 0),
+                    reverse=True,
+                )
+            else:
+                group_order.sort(
+                    key=lambda k: groups[k][-1].get("start_ns", 0),
+                )
+
+            group_order = group_order[:group_by_limit]
+
+            # Build compute results per group
+            values = []
+            for key in group_order:
+                group_spans = groups[key]
+                # spans are sorted desc by start_ns; earliest = last, latest = first
+                latest_span = group_spans[0]
+                earliest_span = group_spans[-1]
+
+                metrics: Dict[str, Any] = {}
+                for compute_item in compute_list:
+                    if "total" in compute_item:
+                        cfg = compute_item["total"]
+                        output = cfg.get("output", "")
+                        aggregation = cfg.get("aggregation", "")
+                        metric_field = cfg.get("metric", "").lstrip("@")
+                        if aggregation == "count":
+                            metrics[output] = len(group_spans)
+                        elif aggregation == "earliest":
+                            metrics[output] = str(get_span_field_value(earliest_span, metric_field) or "")
+                        elif aggregation == "latest":
+                            metrics[output] = str(get_span_field_value(latest_span, metric_field) or "")
+                    elif "list" in compute_item:
+                        cfg = compute_item["list"]
+                        output = cfg.get("output", "")
+                        columns = cfg.get("columns", [])
+                        sort_cfg = cfg.get("sort", {})
+                        sort_order = sort_cfg.get("time", {}).get("order", "desc") if isinstance(sort_cfg, dict) else "desc"
+                        sorted_spans = group_spans if sort_order == "desc" else list(reversed(group_spans))
+                        rows = []
+                        for s in sorted_spans:
+                            row = [str(get_span_field_value(s, col.lstrip("@")) or "") for col in columns]
+                            rows.append(row)
+                        metrics[output] = rows
+
+                by_val: Any = key
+                try:
+                    by_val = int(key)
+                except (ValueError, TypeError):
+                    pass
+                values.append({"by": {group_by_output or group_by_field or "": by_val}, "metrics": metrics})
+
+            paging_after: Dict[str, Any] = {}
+            if group_by_output:
+                paging_after[group_by_output] = group_order
+
             response = {
                 "elapsed": 50,
                 "requestId": str(uuid.uuid4()),
-                "result": {"buckets": [{"computes": {"c0": len(spans)}}], "status": "done"},
+                "result": {
+                    "paging": {"after": paging_after},
+                    "values": values,
+                },
                 "status": "done",
                 "type": "aggregate",
             }
