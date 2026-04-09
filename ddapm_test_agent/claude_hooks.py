@@ -28,6 +28,7 @@ from aiohttp.web import Request
 import msgpack
 from typing_extensions import cast
 
+from .claude_cost_tracker import COST_METRIC_KEYS
 from .claude_link_tracker import ClaudeLinkTracker
 from .llmobs_event_platform import with_cors
 
@@ -1399,10 +1400,18 @@ class ClaudeHooksAPI:
             return
         url, headers = target
 
+        # Strip locally-computed cost estimates before forwarding — let real cost tracking happen on ingestion
+        forwarded_spans = [
+            {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}}
+            if s.get("metrics")
+            else s
+            for s in spans
+        ]
+
         payload = {
             "_dd.stage": "raw",
             "event_type": "span",
-            "spans": spans,
+            "spans": forwarded_spans,
         }
         data = gzip.compress(msgpack.packb(payload))
         await self._post_to_backend(url, headers, data, f"forward {len(spans)} Claude hooks spans for trace {trace_id}")

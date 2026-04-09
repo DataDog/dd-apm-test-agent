@@ -24,6 +24,7 @@ import aiohttp
 from aiohttp import web
 from aiohttp.web import Request
 
+from .claude_cost_tracker import compute_cost_metrics
 from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import SessionState
 from .claude_hooks import _format_span_id
@@ -563,6 +564,16 @@ class ClaudeProxyAPI:
                 "cache_read_input_tokens": cache_read,
                 "cache_write_input_tokens": cache_creation,
                 "non_cached_input_tokens": raw_input_tokens,
+                **(
+                    compute_cost_metrics(
+                        model_id=model,
+                        non_cached_input_tokens=raw_input_tokens,
+                        cache_write_tokens=cache_creation,
+                        cache_read_tokens=cache_read,
+                        output_tokens=usage.get("output_tokens", 0),
+                    )
+                    or {}
+                ),
             },
             "span_links": [link.to_dict() for link in span_links],
         }
