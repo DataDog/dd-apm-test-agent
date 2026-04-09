@@ -522,6 +522,10 @@ def _build_trace_aggregates(
         result[tid] = {
             "num_evaluations_failed": num_evaluations_failed,
             "number_of_errors": number_of_errors,
+            "estimated_total_cost": sum(
+                span.get("metrics", {}).get("estimated_total_cost", 0)
+                for span in trace_spans
+            ),
         }
     return result
 
@@ -607,9 +611,9 @@ def build_event_platform_list_response(
                 "cache_read_input_tokens": metrics.get("cache_read_input_tokens", 0),
                 "cache_write_input_tokens": metrics.get("cache_write_input_tokens", 0),
                 "non_cached_input_tokens": metrics.get("non_cached_input_tokens", 0),
-                "estimated_input_cost": 0,
-                "estimated_output_cost": 0,
-                "estimated_total_cost": 0,
+                "estimated_input_cost": metrics.get("estimated_input_cost", 0),
+                "estimated_output_cost": metrics.get("estimated_output_cost", 0),
+                "estimated_total_cost": metrics.get("estimated_total_cost", 0),
             },
             "ml_app": ml_app,
             "name": name,
