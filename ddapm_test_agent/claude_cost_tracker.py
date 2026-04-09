@@ -18,6 +18,7 @@ Only the popular models used with Claude Code are included.
 
 from dataclasses import dataclass
 from typing import Dict
+from typing import FrozenSet
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -50,7 +51,7 @@ class _PriceTier:
 # Keys added by the local cost tracker that must be stripped before forwarding
 # spans to the Datadog backend.  The backend processor computes its own costs;
 # sending our local estimates would duplicate or conflict with those values.
-COST_METRIC_KEYS: frozenset[str] = frozenset(
+COST_METRIC_KEYS: FrozenSet[str] = frozenset(
     {
         "estimated_non_cached_input_cost",
         "estimated_cache_write_input_cost",
