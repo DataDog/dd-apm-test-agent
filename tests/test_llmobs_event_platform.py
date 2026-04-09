@@ -269,6 +269,129 @@ async def test_llmobs_aggregate(agent, llmobs_payload):
     assert data["status"] == "done"
 
 
+async def test_llmobs_aggregate_group_by_session_id(agent):
+    now = int(time.time() * 1_000_000_000)
+    session_a_early = {
+        "ml_app": "test-app",
+        "tags": [],
+        "spans": [
+            {
+                "name": "root-a-early",
+                "span_id": "span-a1",
+                "trace_id": "trace-a1",
+                "parent_id": "undefined",
+                "session_id": "session-a",
+                "status": "ok",
+                "start_ns": now - 2000,
+                "duration": 1_000_000,
+                "meta": {"span": {"kind": "agent"}},
+                "metrics": {},
+                "tags": [],
+            }
+        ],
+    }
+    session_a_late = {
+        "ml_app": "test-app",
+        "tags": [],
+        "spans": [
+            {
+                "name": "root-a-late",
+                "span_id": "span-a2",
+                "trace_id": "trace-a2",
+                "parent_id": "undefined",
+                "session_id": "session-a",
+                "status": "ok",
+                "start_ns": now - 1000,
+                "duration": 1_000_000,
+                "meta": {"span": {"kind": "agent"}},
+                "metrics": {},
+                "tags": [],
+            }
+        ],
+    }
+    session_b = {
+        "ml_app": "test-app",
+        "tags": [],
+        "spans": [
+            {
+                "name": "root-b",
+                "span_id": "span-b1",
+                "trace_id": "trace-b1",
+                "parent_id": "undefined",
+                "session_id": "session-b",
+                "status": "ok",
+                "start_ns": now,
+                "duration": 1_000_000,
+                "meta": {"span": {"kind": "agent"}},
+                "metrics": {},
+                "tags": [],
+            }
+        ],
+    }
+    for payload in [session_a_early, session_a_late, session_b]:
+        await _submit_llmobs_payload(agent, payload)
+
+    aggregate_query = {
+        "aggregate": {
+            "groupBy": [
+                {
+                    "field": {
+                        "id": "@session_id",
+                        "output": "@session_id",
+                        "limit": 50,
+                        "sort": {"metric": {"order": "desc", "id": "timestamp:min"}},
+                    }
+                }
+            ],
+            "compute": [
+                {"total": {"metric": "@trace_id", "output": "@trace_id:earliest", "aggregation": "earliest"}},
+                {"total": {"metric": "@trace_id", "output": "@trace_id:latest", "aggregation": "latest"}},
+                {"total": {"metric": "count", "output": "count:count", "aggregation": "count"}},
+                {
+                    "list": {
+                        "columns": ["@session_id"],
+                        "output": "@session_id:latest",
+                        "sort": {"time": {"order": "desc"}},
+                    }
+                },
+            ],
+            "search": {"query": "@parent_id:undefined @session_id:*"},
+            "indexes": ["llmobs"],
+        }
+    }
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/aggregate?type=llmobs",
+        json=aggregate_query,
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["status"] == "done"
+    assert data["type"] == "aggregate"
+
+    values = data["result"]["values"]
+    assert len(values) == 2
+
+    # Groups are sorted desc by latest start_ns; session-b has the most recent span
+    session_b_entry = values[0]
+    session_a_entry = values[1]
+
+    assert session_b_entry["by"]["@session_id"] == "session-b"
+    assert session_b_entry["metrics"]["count:count"] == 1
+    assert session_b_entry["metrics"]["@trace_id:earliest"] == "trace-b1"
+    assert session_b_entry["metrics"]["@trace_id:latest"] == "trace-b1"
+    assert session_b_entry["metrics"]["@session_id:latest"] == [["session-b"]]
+
+    assert session_a_entry["by"]["@session_id"] == "session-a"
+    assert session_a_entry["metrics"]["count:count"] == 2
+    # earliest = span with the smallest start_ns
+    assert session_a_entry["metrics"]["@trace_id:earliest"] == "trace-a1"
+    # latest = span with the largest start_ns
+    assert session_a_entry["metrics"]["@trace_id:latest"] == "trace-a2"
+
+    paging_sessions = data["result"]["paging"]["after"]["@session_id"]
+    assert set(paging_sessions) == {"session-a", "session-b"}
+
+
 async def test_llmobs_cors_headers(agent):
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
