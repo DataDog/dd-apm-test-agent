@@ -481,6 +481,52 @@ async def test_facet_info_with_filter_query(agent):
     assert field_map.get("app-2") == 1  # 1 llm span in app-2
 
 
+async def test_span_cost_metrics_surfaced_in_list(agent):
+    """Span-level estimated cost metrics are passed through to the list response."""
+    span = _create_span_for_facet_test(1, 200)
+    span["metrics"].update(
+        {
+            "estimated_input_cost": 3_000_000,
+            "estimated_output_cost": 15_000_000,
+            "estimated_total_cost": 18_000_000,
+        }
+    )
+    await _submit_spans_for_facet_test(agent, [span])
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["hitCount"] == 1
+
+    metrics = data["result"]["events"][0]["event"]["custom"]["metrics"]
+    assert metrics["estimated_input_cost"] == 3_000_000
+    assert metrics["estimated_output_cost"] == 15_000_000
+    assert metrics["estimated_total_cost"] == 18_000_000
+
+
+async def test_trace_estimated_total_cost_aggregated_across_spans(agent):
+    """@trace.estimated_total_cost is the sum of estimated_total_cost across all spans in the trace."""
+    span_a = _create_span_for_facet_test(1, 300)
+    span_a["metrics"]["estimated_total_cost"] = 10_000_000
+    span_b = _create_span_for_facet_test(2, 300)
+    span_b["metrics"]["estimated_total_cost"] = 5_000_000
+    await _submit_spans_for_facet_test(agent, [span_a, span_b])
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+
+    # Both spans share trace 300; each should report the aggregated trace total
+    for event in data["result"]["events"]:
+        assert event["event"]["custom"]["trace"]["estimated_total_cost"] == 15_000_000
+
+
 async def test_facet_range_info_with_filter_query(agent):
     """Test facet_range_info respects filter query."""
     spans = [
