@@ -50,7 +50,7 @@ class _PriceTier:
 # Keys added by the local cost tracker that must be stripped before forwarding
 # spans to the Datadog backend.  The backend processor computes its own costs;
 # sending our local estimates would duplicate or conflict with those values.
-COST_METRIC_KEYS: frozenset = frozenset(
+COST_METRIC_KEYS: frozenset[str] = frozenset(
     {
         "estimated_non_cached_input_cost",
         "estimated_cache_write_input_cost",
@@ -170,13 +170,7 @@ def compute_cost_metrics(
 
     Returns:
         Dict of estimated cost metrics in nanodollars, or None if the model
-        is not in the pricing table.  Keys match the web-ui facet paths:
-            estimated_non_cached_input_cost
-            estimated_cache_write_input_cost
-            estimated_cache_read_input_cost
-            estimated_input_cost
-            estimated_output_cost
-            estimated_total_cost
+        is not in the pricing table.
     """
     tiers = _find_tiers(model_id)
     if tiers is None:

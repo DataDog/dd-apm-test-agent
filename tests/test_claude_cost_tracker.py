@@ -1,7 +1,3 @@
-from typing import Optional
-
-import pytest
-
 from ddapm_test_agent.claude_cost_tracker import compute_cost_metrics
 
 
