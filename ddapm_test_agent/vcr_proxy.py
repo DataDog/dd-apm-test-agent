@@ -170,28 +170,48 @@ def _get_custom_vcr_providers(vcr_provider_map: str) -> Dict[str, str]:
     )
 
 
-def _normalize_multipart_body(body: bytes) -> str:
+def _get_vcr_normalizers(vcr_normalizers: str) -> List[str]:
+    return [normalizer.strip() for normalizer in vcr_normalizers.split(",") if normalizer.strip()]
+
+
+def _apply_json_path_normalizer(body_dict: Dict[str, Any], path: str, placeholder: str = "<normalized>") -> None:
+    """Set the value at a dot-notation path in a nested dict to a placeholder string."""
+    parts = path.split(".")
+    obj: Any = body_dict
+    for part in parts[:-1]:
+        if not isinstance(obj, dict) or part not in obj:
+            return
+        obj = obj[part]
+    if isinstance(obj, dict) and parts[-1] in obj:
+        obj[parts[-1]] = placeholder
+
+
+def _normalize_body(body: bytes, vcr_json_body_normalizers: Optional[List[str]] = None) -> str:
     if not body:
         return ""
 
     try:
         body_str = body.decode("utf-8")
-
-        for pattern, replacement in NORMALIZERS:
-            body_str = re.sub(pattern, replacement, body_str)
-
-        return body_str
     except UnicodeDecodeError:
         try:
             body_str = body.decode("latin-1")
-
-            for pattern, replacement in NORMALIZERS:
-                body_str = re.sub(pattern, replacement, body_str)
-
-            return body_str
         except Exception:
             hex_digest = hashlib.sha256(body).hexdigest()[:8]
             return f"[binary_data_{hex_digest}]"
+
+    for pattern, replacement in NORMALIZERS:
+        body_str = re.sub(pattern, replacement, body_str)
+
+    if vcr_json_body_normalizers:
+        try:
+            body_dict = json.loads(body_str)
+            for path in vcr_json_body_normalizers:
+                _apply_json_path_normalizer(body_dict, path)
+            body_str = json.dumps(body_dict)
+        except json.JSONDecodeError:
+            pass
+
+    return body_str
 
 
 def _decode_body(body: bytes) -> str:
@@ -243,8 +263,14 @@ def _parse_authorization_header(auth_header: str) -> Dict[str, str]:
     return parsed
 
 
-def _generate_cassette_name(path: str, method: str, body: bytes, vcr_cassette_prefix: Optional[str]) -> str:
-    decoded_body = _normalize_multipart_body(body) if body else ""
+def _generate_cassette_name(
+    path: str,
+    method: str,
+    body: bytes,
+    vcr_cassette_prefix: Optional[str],
+    vcr_json_body_normalizers: Optional[List[str]] = None,
+) -> str:
+    decoded_body = _normalize_body(body, vcr_json_body_normalizers) if body else ""
     try:
         parsed_body = json.loads(decoded_body) if decoded_body else {}
     except json.JSONDecodeError:
@@ -435,8 +461,14 @@ async def _request(
 
 
 async def proxy_request(
-    request: Request, vcr_cassettes_directory: str, vcr_ci_mode: bool, vcr_provider_map: str, vcr_ignore_headers: str
+    request: Request
 ) -> Response:
+    vcr_cassettes_directory: str = request.app["vcr_cassettes_directory"]
+    vcr_ci_mode: bool = request.app["vcr_ci_mode"]
+    vcr_provider_map: str = request.app["vcr_provider_map"]
+    vcr_ignore_headers: str = request.app["vcr_ignore_headers"]
+    vcr_json_body_normalizers: str = request.app["vcr_json_body_normalizers"]
+
     provider_base_urls = PROVIDER_BASE_URLS.copy()
     provider_base_urls.update(_get_custom_vcr_providers(vcr_provider_map))
 
@@ -455,7 +487,13 @@ async def proxy_request(
     body_bytes = await request.read()
 
     vcr_cassette_prefix = request.pop("vcr_cassette_prefix", None)
-    cassette_name = _generate_cassette_name(path, request.method, body_bytes, vcr_cassette_prefix)
+    cassette_name = _generate_cassette_name(
+        path,
+        request.method,
+        body_bytes,
+        vcr_cassette_prefix,
+        _get_vcr_normalizers(vcr_json_body_normalizers),
+    )
     cassette_file_path = os.path.join(vcr_cassettes_directory, provider, cassette_name)
     cassette_exists = len(glob(f"{cassette_file_path}.*")) > 0
 

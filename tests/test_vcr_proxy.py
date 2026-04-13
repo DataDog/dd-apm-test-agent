@@ -115,6 +115,11 @@ async def vcr_test_name(agent: TestClient[Any, Any]) -> AsyncGenerator[None, Non
 
 
 @pytest.fixture
+def vcr_json_body_normalizers() -> Generator[str, None, None]:
+    yield "dummy_id,metadata.dummy_id"
+
+
+@pytest.fixture
 def vcr_legacy_cassette(vcr_cassettes_directory: str) -> Generator[str, None, None]:
     cassette_name = _generate_cassette_name("custom/serve", "POST", b'{"foo": "bar"}', None)
     os.makedirs(os.path.join(vcr_cassettes_directory, "custom"), exist_ok=True)
@@ -285,3 +290,56 @@ async def test_vcr_proxy_with_chunked_request(agent: TestClient[Any, Any], vcr_c
 
     assert resp.status == 200
     assert await resp.text() == "OK"
+
+
+async def test_vcr_proxy_normalizes_json_field_to_single_cassette(
+    agent: TestClient[Any, Any], vcr_cassettes_directory: str
+) -> None:
+    resp = await agent.post("/vcr/custom/serve", json={"foo": "bar", "dummy_id": "aaa-111"})
+
+    assert resp.status == 200
+    assert await resp.text() == "OK"
+
+    cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
+    assert len(cassette_files) == 1
+
+    resp = await agent.post("/vcr/custom/serve", json={"foo": "bar", "dummy_id": "bbb-222"})
+
+    assert resp.status == 200
+    assert await resp.text() == "OK"
+
+    cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
+    assert len(cassette_files) == 1  # same cassette reused despite different dummy_id
+
+
+async def test_vcr_proxy_normalizer_does_not_collapse_other_body_differences(
+    agent: TestClient[Any, Any], vcr_cassettes_directory: str
+) -> None:
+    resp = await agent.post("/vcr/custom/serve", json={"foo": "bar", "dummy_id": "aaa-111"})
+
+    assert resp.status == 200
+
+    resp = await agent.post("/vcr/custom/serve", json={"foo": "DIFFERENT", "dummy_id": "bbb-222"})
+
+    assert resp.status == 200
+
+    cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
+    assert len(cassette_files) == 2  # different foo values still produce separate cassettes
+
+
+async def test_vcr_proxy_normalizes_nested_json_field_to_single_cassette(
+    agent: TestClient[Any, Any], vcr_cassettes_directory: str
+) -> None:
+    resp = await agent.post("/vcr/custom/serve", json={"metadata": {"dummy_id": "aaa-111", "stable": "x"}})
+
+    assert resp.status == 200
+
+    cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
+    assert len(cassette_files) == 1
+
+    resp = await agent.post("/vcr/custom/serve", json={"metadata": {"dummy_id": "bbb-222", "stable": "x"}})
+
+    assert resp.status == 200
+
+    cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
+    assert len(cassette_files) == 1  # same cassette despite different nested dummy_id

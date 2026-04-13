@@ -139,6 +139,11 @@ def vcr_ignore_headers() -> Generator[str, None, None]:
 
 
 @pytest.fixture
+def vcr_json_body_normalizers() -> Generator[str, None, None]:
+    yield ""
+
+
+@pytest.fixture
 def dd_site() -> Generator[str, None, None]:
     yield "datadoghq.com"
 
@@ -172,6 +177,7 @@ async def agent_app(
     vcr_ci_mode,
     vcr_provider_map,
     vcr_ignore_headers,
+    vcr_json_body_normalizers,
     dd_site,
     dd_api_key,
     disable_llmobs_data_forwarding,
@@ -194,6 +200,7 @@ async def agent_app(
             vcr_ci_mode=vcr_ci_mode,
             vcr_provider_map=vcr_provider_map,
             vcr_ignore_headers=vcr_ignore_headers,
+            vcr_json_body_normalizers=vcr_json_body_normalizers,
             dd_site=dd_site,
             dd_api_key=dd_api_key,
             disable_llmobs_data_forwarding=disable_llmobs_data_forwarding,
