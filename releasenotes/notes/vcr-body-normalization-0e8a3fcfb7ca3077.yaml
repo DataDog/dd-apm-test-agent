@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    vcr: Add support for normalizing parts of JSON request bodies when recording requests via ``--vcr-json-body-normalizers`` or ``VCR_JSON_BODY_NORMALIZERS``. This option should take a comma-separated list of JSON paths to normalize, e.g. ``request.user.id``.
