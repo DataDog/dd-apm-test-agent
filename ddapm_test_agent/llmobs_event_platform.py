@@ -522,6 +522,18 @@ def _build_trace_aggregates(
         result[tid] = {
             "num_evaluations_failed": num_evaluations_failed,
             "number_of_errors": number_of_errors,
+            "input_tokens": sum(
+                span.get("metrics", {}).get("input_tokens", 0)
+                for span in trace_spans
+            ),
+            "output_tokens": sum(
+                span.get("metrics", {}).get("output_tokens", 0)
+                for span in trace_spans
+            ),
+            "total_tokens": sum(
+                span.get("metrics", {}).get("total_tokens", 0)
+                for span in trace_spans
+            ),
             "estimated_total_cost": sum(
                 span.get("metrics", {}).get("estimated_total_cost", 0)
                 for span in trace_spans
@@ -631,7 +643,6 @@ def build_event_platform_list_response(
             "service": service,
             "env": env,
             "trace": {
-                "estimated_total_cost": 0,
                 **trace_aggregates.get(trace_id, {}),
             },
             "evaluation": span.get("evaluation", {}),
