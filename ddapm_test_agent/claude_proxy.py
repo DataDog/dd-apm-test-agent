@@ -279,19 +279,19 @@ def _format_input_messages(body: Dict[str, Any]) -> List[Dict[str, Any]]:
         if isinstance(content, str):
             messages.append({"role": role, "content": content})
         elif isinstance(content, list):
-            parts: List[str] = []
+            content_parts: List[str] = []
             for block in content:
                 if isinstance(block, dict):
                     btype = block.get("type", "")
                     if btype == "text":
-                        parts.append(block.get("text", ""))
+                        content_parts.append(block.get("text", ""))
                     elif btype == "tool_result":
-                        parts.append(f"[tool_result:{block.get('tool_use_id', '')}]")
+                        content_parts.append(f"[tool_result:{block.get('tool_use_id', '')}]")
                     elif btype == "tool_use":
-                        parts.append(f"[tool_use:{block.get('name', '')}]")
+                        content_parts.append(f"[tool_use:{block.get('name', '')}]")
                     else:
-                        parts.append(f"[{btype}]")
-            messages.append({"role": role, "content": " ".join(parts)})
+                        content_parts.append(f"[{btype}]")
+            messages.append({"role": role, "content": " ".join(content_parts)})
     return messages
 
 
