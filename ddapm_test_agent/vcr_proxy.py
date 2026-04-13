@@ -413,7 +413,8 @@ async def _request(
             raise ValueError(f"Unsupported cassette file extension: {file_extension}")
     else:
         logger.info(f"Cassette file does not exist at {cassette_file_path}, making a request to the provider")
-        provider_response = await asyncio.to_thread(lambda: requests.request(**request_kwargs))
+        loop = asyncio.get_event_loop()
+        provider_response = await loop.run_in_executor(None, lambda: requests.request(**request_kwargs))
         cassette = _write_cassette_file(cassette_file_path, request_kwargs, provider_response, vcr_ignore_headers)
 
     # Build response from cassette data

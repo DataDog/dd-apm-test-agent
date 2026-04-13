@@ -28,6 +28,7 @@ from aiohttp.web import Request
 import msgpack
 from typing_extensions import cast
 
+from .claude_cost_tracker import COST_METRIC_KEYS
 from .claude_link_tracker import ClaudeLinkTracker
 from .llmobs_event_platform import with_cors
 
@@ -80,7 +81,7 @@ def write_claude_code_hooks(claude_settings_path: Path) -> None:
 
     hooks = claude_code_settings.get("hooks", {})
     for event in CLAUDE_CODE_EVENTS:
-        existing_hooks = cast(list[dict[str, Any]] | None, hooks.get(event, None))
+        existing_hooks = cast(Optional[List[Dict[str, Any]]], hooks.get(event, None))
         if existing_hooks is None:
             hooks[event] = [CLAUDE_CODE_DEFAULT_MATCHER]
 
@@ -95,7 +96,7 @@ def write_claude_code_hooks(claude_settings_path: Path) -> None:
 
             continue
 
-        all_hooks_for_star_matcher = cast(list[dict[str, Any]], star_matcher_hook.get("hooks", []))
+        all_hooks_for_star_matcher = cast(List[Dict[str, Any]], star_matcher_hook.get("hooks", []))
 
         if not any(hook == CLAUDE_CODE_HOOK for hook in all_hooks_for_star_matcher):
             all_hooks_for_star_matcher.append(CLAUDE_CODE_HOOK)
@@ -1399,10 +1400,18 @@ class ClaudeHooksAPI:
             return
         url, headers = target
 
+        # Strip locally-computed cost estimates before forwarding — let real cost tracking happen on ingestion
+        forwarded_spans = [
+            {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}}
+            if s.get("metrics")
+            else s
+            for s in spans
+        ]
+
         payload = {
             "_dd.stage": "raw",
             "event_type": "span",
-            "spans": spans,
+            "spans": forwarded_spans,
         }
         data = gzip.compress(msgpack.packb(payload))
         await self._post_to_backend(url, headers, data, f"forward {len(spans)} Claude hooks spans for trace {trace_id}")

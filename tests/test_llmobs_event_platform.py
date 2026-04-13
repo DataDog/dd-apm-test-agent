@@ -269,6 +269,129 @@ async def test_llmobs_aggregate(agent, llmobs_payload):
     assert data["status"] == "done"
 
 
+async def test_llmobs_aggregate_group_by_session_id(agent):
+    now = int(time.time() * 1_000_000_000)
+    session_a_early = {
+        "ml_app": "test-app",
+        "tags": [],
+        "spans": [
+            {
+                "name": "root-a-early",
+                "span_id": "span-a1",
+                "trace_id": "trace-a1",
+                "parent_id": "undefined",
+                "session_id": "session-a",
+                "status": "ok",
+                "start_ns": now - 2000,
+                "duration": 1_000_000,
+                "meta": {"span": {"kind": "agent"}},
+                "metrics": {},
+                "tags": [],
+            }
+        ],
+    }
+    session_a_late = {
+        "ml_app": "test-app",
+        "tags": [],
+        "spans": [
+            {
+                "name": "root-a-late",
+                "span_id": "span-a2",
+                "trace_id": "trace-a2",
+                "parent_id": "undefined",
+                "session_id": "session-a",
+                "status": "ok",
+                "start_ns": now - 1000,
+                "duration": 1_000_000,
+                "meta": {"span": {"kind": "agent"}},
+                "metrics": {},
+                "tags": [],
+            }
+        ],
+    }
+    session_b = {
+        "ml_app": "test-app",
+        "tags": [],
+        "spans": [
+            {
+                "name": "root-b",
+                "span_id": "span-b1",
+                "trace_id": "trace-b1",
+                "parent_id": "undefined",
+                "session_id": "session-b",
+                "status": "ok",
+                "start_ns": now,
+                "duration": 1_000_000,
+                "meta": {"span": {"kind": "agent"}},
+                "metrics": {},
+                "tags": [],
+            }
+        ],
+    }
+    for payload in [session_a_early, session_a_late, session_b]:
+        await _submit_llmobs_payload(agent, payload)
+
+    aggregate_query = {
+        "aggregate": {
+            "groupBy": [
+                {
+                    "field": {
+                        "id": "@session_id",
+                        "output": "@session_id",
+                        "limit": 50,
+                        "sort": {"metric": {"order": "desc", "id": "timestamp:min"}},
+                    }
+                }
+            ],
+            "compute": [
+                {"total": {"metric": "@trace_id", "output": "@trace_id:earliest", "aggregation": "earliest"}},
+                {"total": {"metric": "@trace_id", "output": "@trace_id:latest", "aggregation": "latest"}},
+                {"total": {"metric": "count", "output": "count:count", "aggregation": "count"}},
+                {
+                    "list": {
+                        "columns": ["@session_id"],
+                        "output": "@session_id:latest",
+                        "sort": {"time": {"order": "desc"}},
+                    }
+                },
+            ],
+            "search": {"query": "@parent_id:undefined @session_id:*"},
+            "indexes": ["llmobs"],
+        }
+    }
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/aggregate?type=llmobs",
+        json=aggregate_query,
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["status"] == "done"
+    assert data["type"] == "aggregate"
+
+    values = data["result"]["values"]
+    assert len(values) == 2
+
+    # Groups are sorted desc by latest start_ns; session-b has the most recent span
+    session_b_entry = values[0]
+    session_a_entry = values[1]
+
+    assert session_b_entry["by"]["@session_id"] == "session-b"
+    assert session_b_entry["metrics"]["count:count"] == 1
+    assert session_b_entry["metrics"]["@trace_id:earliest"] == "trace-b1"
+    assert session_b_entry["metrics"]["@trace_id:latest"] == "trace-b1"
+    assert session_b_entry["metrics"]["@session_id:latest"] == [["session-b"]]
+
+    assert session_a_entry["by"]["@session_id"] == "session-a"
+    assert session_a_entry["metrics"]["count:count"] == 2
+    # earliest = span with the smallest start_ns
+    assert session_a_entry["metrics"]["@trace_id:earliest"] == "trace-a1"
+    # latest = span with the largest start_ns
+    assert session_a_entry["metrics"]["@trace_id:latest"] == "trace-a2"
+
+    paging_sessions = data["result"]["paging"]["after"]["@session_id"]
+    assert set(paging_sessions) == {"session-a", "session-b"}
+
+
 async def test_llmobs_cors_headers(agent):
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
@@ -356,6 +479,130 @@ async def test_facet_info_with_filter_query(agent):
     field_map = {f["field"]: f["value"] for f in fields}
     assert field_map.get("app-1") == 1  # Only 1 llm span in app-1
     assert field_map.get("app-2") == 1  # 1 llm span in app-2
+
+
+async def test_span_cost_metrics_surfaced_in_list(agent):
+    """Span-level estimated cost metrics are passed through to the list response."""
+    span = _create_span_for_facet_test(1, 200)
+    span["metrics"].update(
+        {
+            "estimated_input_cost": 3_000_000,
+            "estimated_output_cost": 15_000_000,
+            "estimated_total_cost": 18_000_000,
+        }
+    )
+    await _submit_spans_for_facet_test(agent, [span])
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["hitCount"] == 1
+
+    metrics = data["result"]["events"][0]["event"]["custom"]["metrics"]
+    assert metrics["estimated_input_cost"] == 3_000_000
+    assert metrics["estimated_output_cost"] == 15_000_000
+    assert metrics["estimated_total_cost"] == 18_000_000
+
+
+async def test_trace_estimated_total_cost_aggregated_across_spans(agent):
+    """@trace.estimated_total_cost is the sum of estimated_total_cost across all spans in the trace."""
+    span_a = _create_span_for_facet_test(1, 300)
+    span_a["metrics"]["estimated_total_cost"] = 10_000_000
+    span_b = _create_span_for_facet_test(2, 300)
+    span_b["metrics"]["estimated_total_cost"] = 5_000_000
+    await _submit_spans_for_facet_test(agent, [span_a, span_b])
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+
+    # Both spans share trace 300; each should report the aggregated trace total
+    for event in data["result"]["events"]:
+        assert event["event"]["custom"]["trace"]["estimated_total_cost"] == 15_000_000
+
+
+async def test_trace_token_metrics_aggregated_across_spans(agent):
+    """@trace.input_tokens, output_tokens, and total_tokens are summed across all spans in the trace."""
+    span_a = _create_span_for_facet_test(1, 400)
+    span_a["metrics"] = {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}
+    span_b = _create_span_for_facet_test(2, 400)
+    span_b["metrics"] = {"input_tokens": 5, "output_tokens": 10, "total_tokens": 15}
+    await _submit_spans_for_facet_test(agent, [span_a, span_b])
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+
+    for event in data["result"]["events"]:
+        trace = event["event"]["custom"]["trace"]
+        assert trace["input_tokens"] == 15
+        assert trace["output_tokens"] == 30
+        assert trace["total_tokens"] == 45
+
+
+async def test_trace_level_fields_populated_for_session_query(agent):
+    """Trace-level token and cost fields are present for session-id-filtered queries (non-static app path)."""
+    now = int(time.time() * 1_000_000_000)
+    root_span = {
+        "span_id": "span-sess-root",
+        "trace_id": "trace-sess-1",
+        "parent_id": "undefined",
+        "name": "root",
+        "status": "ok",
+        "start_ns": now,
+        "duration": 1_000_000_000,
+        "session_id": "session-xyz",
+        "tags": ["session_id:session-xyz"],
+        "meta": {"span": {"kind": "agent"}},
+        "metrics": {
+            "input_tokens": 8,
+            "output_tokens": 12,
+            "total_tokens": 20,
+            "estimated_total_cost": 7_000_000,
+        },
+    }
+    child_span = {
+        "span_id": "span-sess-child",
+        "trace_id": "trace-sess-1",
+        "parent_id": "span-sess-root",
+        "name": "llm-call",
+        "status": "ok",
+        "start_ns": now,
+        "duration": 500_000_000,
+        "session_id": "session-xyz",
+        "tags": ["session_id:session-xyz"],
+        "meta": {"span": {"kind": "llm"}},
+        "metrics": {
+            "input_tokens": 4,
+            "output_tokens": 6,
+            "total_tokens": 10,
+            "estimated_total_cost": 3_000_000,
+        },
+    }
+    await _submit_spans_for_facet_test(agent, [root_span, child_span])
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": "@parent_id:undefined @session_id:session-xyz"}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["hitCount"] == 1
+
+    trace = data["result"]["events"][0]["event"]["custom"]["trace"]
+    assert trace["input_tokens"] == 12
+    assert trace["output_tokens"] == 18
+    assert trace["total_tokens"] == 30
+    assert trace["estimated_total_cost"] == 10_000_000
 
 
 async def test_facet_range_info_with_filter_query(agent):

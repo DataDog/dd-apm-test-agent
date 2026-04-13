@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Include token aggregation fields in LLM Observability event platform responses.
