@@ -263,7 +263,6 @@ def _extract_tool_uses_from_response(content_blocks: List[Dict[str, Any]]) -> Li
     return [b for b in content_blocks if b.get("type") == "tool_use"]
 
 
-
 def _format_input_messages(body: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Format request messages for the LLM span input."""
     messages: List[Dict[str, Any]] = []
