@@ -13,7 +13,6 @@ import getpass
 import json
 import logging
 import os
-import re
 import socket
 import time
 from typing import Any
@@ -262,47 +261,6 @@ def _extract_tool_uses_from_response(content_blocks: List[Dict[str, Any]]) -> Li
     """Extract tool_use blocks from the response content."""
     return [b for b in content_blocks if b.get("type") == "tool_use"]
 
-
-def _extract_skills_from_request(body: Dict[str, Any]) -> List[Dict[str, str]]:
-    """Extract available skills from <system-reminder> blocks in request messages."""
-    skills: List[Dict[str, str]] = []
-    seen: set = set()
-
-    for msg in body.get("messages", []):
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            text = "\n".join(
-                b.get("text", "") for b in content
-                if isinstance(b, dict) and b.get("type") == "text"
-            )
-        else:
-            continue
-
-        for block in re.findall(r"<system-reminder>(.*?)</system-reminder>", text, re.DOTALL):
-            if "The following skills are available" not in block:
-                continue
-            match = re.search(r"The following skills are available[^\n]*\n\n?(.*)", block, re.DOTALL)
-            if not match:
-                continue
-            for entry in re.split(r"\n(?=- )", match.group(1).strip()):
-                entry = entry.strip()
-                if not entry.startswith("- "):
-                    continue
-                entry = entry[2:]
-                colon_idx = entry.find(": ")
-                if colon_idx == -1:
-                    continue
-                name = entry[:colon_idx].strip()
-                description = " ".join(entry[colon_idx + 2:].split())
-                if name and name not in seen:
-                    seen.add(name)
-                    skills.append({"name": name, "description": description})
-
-    return skills
 
 
 def _format_input_messages(body: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -569,8 +527,6 @@ class ClaudeProxyAPI:
             total_input_tokens,
             model,
         )
-        available_skills = _extract_skills_from_request(request_body)
-
         span: Dict[str, Any] = {
             "span_id": span_id,
             "trace_id": trace_id,
@@ -604,7 +560,6 @@ class ClaudeProxyAPI:
                     "stream": request_body.get("stream", False),
                     "_dd": {
                         "context_breakdown": context_breakdown,
-                        **({"available_skills": available_skills} if available_skills else {}),
                     },
                 },
             },
