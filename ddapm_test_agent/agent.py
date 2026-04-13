@@ -2318,7 +2318,7 @@ def main(args: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--vcr-json-body-normalizers",
         type=str,
-        default=os.environ.get("VCR_NORMALIZERS", ""),
+        default=os.environ.get("VCR_JSON_BODY_NORMALIZERS", ""),
         help="Comma-separated list of normalizers to apply when recording VCR cassettes.",
     )
     parser.add_argument(
