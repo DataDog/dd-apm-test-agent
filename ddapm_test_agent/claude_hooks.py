@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 _USER_HANDLE = os.environ.get("DD_USER_HANDLE", "")
-_ML_APP = os.environ.get("DD_LLMOBS_ML_APP", "claude-code")
+_ML_APP = os.environ.get("DD_CLAUDE_CODE_ML_APP", "claude-code")
 
 # Models with 1M token context windows (native, no beta header needed).
 # All other models default to 200k.
