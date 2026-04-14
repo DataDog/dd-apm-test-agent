@@ -249,10 +249,10 @@ def _start_lapdog_detached(port: int, forward_data: bool) -> None:
         print("[lapdog] Failed to start lapdog in background.", file=sys.stderr)
         sys.exit(1)
 
-    # Double-check lapdog is actually reachable.
-    if not _lapdog_alive():
-        print("[lapdog] Lapdog started but is not reachable.", file=sys.stderr)
-        sys.exit(1)
+    # The child already verified lapdog is alive via _wait_for_lapdog before
+    # exiting, so we don't re-check here.  The forked child's exit can briefly
+    # disrupt the listening socket (shared fd), causing a transient connection
+    # refused that would make a re-check flaky.
 
 
 def cmd_claude(sub_cmd_args: List[str], forward_data: bool) -> None:
