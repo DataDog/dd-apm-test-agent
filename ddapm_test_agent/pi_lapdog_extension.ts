@@ -30,6 +30,67 @@ function truncate(value: unknown, maxBytes: number = MAX_OUTPUT_BYTES): string {
 	return str.slice(0, maxBytes) + `\n... (truncated, ${str.length} bytes total)`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function byteLength(value: unknown): number {
+	try {
+		return new TextEncoder().encode(JSON.stringify(value ?? null)).length;
+	} catch {
+		return 0;
+	}
+}
+
+function pushSection(sections: Array<{ name: string; bytes: number }>, name: string, value: unknown): void {
+	if (value === undefined || value === null) return;
+	const bytes = byteLength(value);
+	if (bytes > 0) sections.push({ name, bytes });
+}
+
+function normalizeProviderContext(payload: unknown): Array<{ name: string; bytes: number }> {
+	if (!isRecord(payload)) return [];
+
+	const sections: Array<{ name: string; bytes: number }> = [];
+	const tools = payload.tools;
+	pushSection(sections, "tools", tools);
+
+	if (Array.isArray(payload.messages)) {
+		const messages = payload.messages.filter(isRecord);
+		const systemMessages = messages.filter((m) => m.role === "system" || m.role === "developer");
+		const userMessages = messages.filter((m) => m.role === "user");
+		const assistantMessages = messages.filter((m) => m.role === "assistant");
+		const toolMessages = messages.filter((m) => m.role === "tool");
+		pushSection(sections, "system", payload.system ?? systemMessages);
+		pushSection(sections, "user_messages", userMessages);
+		pushSection(sections, "assistant_messages", assistantMessages);
+		pushSection(sections, "tool_messages", toolMessages);
+		return sections;
+	}
+
+	if (Array.isArray(payload.contents)) {
+		const contents = payload.contents.filter(isRecord);
+		const userMessages = contents.filter((m) => m.role === "user");
+		const assistantMessages = contents.filter((m) => m.role === "model");
+		const toolMessages = contents.filter((m) => m.role !== "user" && m.role !== "model");
+		pushSection(sections, "system", payload.systemInstruction);
+		pushSection(sections, "user_messages", userMessages);
+		pushSection(sections, "assistant_messages", assistantMessages);
+		pushSection(sections, "tool_messages", toolMessages);
+		return sections;
+	}
+
+	pushSection(sections, "request", payload);
+	return sections;
+}
+
+function resolvePayloadModel(payload: unknown, currentModel: string): string {
+	if (isRecord(payload) && typeof payload.model === "string" && payload.model.length > 0) {
+		return payload.model;
+	}
+	return currentModel;
+}
+
 /** Fire-and-forget POST. Errors are silently swallowed. */
 function post(event: string, sessionId: string, data: Record<string, unknown>): void {
 	try {
@@ -42,17 +103,6 @@ function post(event: string, sessionId: string, data: Record<string, unknown>): 
 	} catch {
 		// fetch itself can throw synchronously in some edge cases
 	}
-}
-
-/**
- * Extract text from user message content (string or content array).
- */
-function extractUserText(content: string | Array<{ type: string; text?: string }>): string {
-	if (typeof content === "string") return content;
-	return content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text" && typeof c.text === "string")
-		.map((c) => c.text)
-		.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +191,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 		post("agent_end", sessionId, {
 			output: truncate(outputText),
 			num_messages: event.messages.length,
+			model_provider: currentProvider,
 		});
 	});
 
@@ -162,8 +213,26 @@ export default function lapdog(pi: ExtensionAPI): void {
 	});
 
 	// ------------------------------------------------------------------
-	// LLM message lifecycle (creates LLM spans)
+	// Provider request context + LLM message lifecycle
 	// ------------------------------------------------------------------
+
+	pi.on("before_provider_request", (event, ctx) => {
+		const model = ctx.model;
+		if (model) {
+			currentModel = model.id;
+			currentProvider = model.provider;
+		}
+		const contextUsage = ctx.getContextUsage();
+		const payload = event.payload;
+		const modelId = resolvePayloadModel(payload, currentModel);
+		post("provider_request_context", sessionId, {
+			model_id: modelId,
+			model_provider: currentProvider,
+			context_window_size: contextUsage?.contextWindow ?? 0,
+			estimated_input_tokens: contextUsage?.tokens ?? null,
+			sections: normalizeProviderContext(payload),
+		});
+	});
 
 	pi.on("message_start", (event) => {
 		if (event.message.role !== "assistant") return;

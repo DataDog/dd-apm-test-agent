@@ -9,6 +9,7 @@ Pi extension events and their mapping:
     session_start     → create session, set model
     agent_start       → start new trace (like UserPromptSubmit)
     agent_end         → finalize root span (like Stop)
+    provider_request_context → capture request-side context for next LLM span
     message_start     → begin tracking an LLM span
     message_end       → emit LLM span with token usage
     tool_execution_start → create pending tool span (like PreToolUse)
@@ -37,7 +38,6 @@ from .claude_hooks import PendingToolSpan
 from .claude_hooks import SessionState
 from .claude_hooks import _ML_APP
 from .claude_hooks import _HOSTNAME
-from .claude_hooks import _USERNAME
 from .claude_hooks import _USER_HANDLE
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
@@ -57,6 +57,24 @@ class PendingLLMSpan:
         self.start_ns = start_ns
 
 
+class PendingContextBreakdown:
+    """Tracks normalized request context captured before a provider request."""
+
+    def __init__(
+        self,
+        model_id: str,
+        model_provider: str,
+        context_window_size: int,
+        estimated_input_tokens: Optional[int],
+        sections: List[Dict[str, Any]],
+    ) -> None:
+        self.model_id = model_id
+        self.model_provider = model_provider
+        self.context_window_size = context_window_size
+        self.estimated_input_tokens = estimated_input_tokens
+        self.sections = sections
+
+
 class PiHooksAPI:
     """Handler for pi coding agent hook events.
 
@@ -69,6 +87,7 @@ class PiHooksAPI:
         self._raw_events: List[Dict[str, Any]] = []
         # Pending LLM span per session (pi sends one LLM call at a time)
         self._pending_llm: Dict[str, PendingLLMSpan] = {}
+        self._pending_context: Dict[str, PendingContextBreakdown] = {}
 
     # ------------------------------------------------------------------
     # Helpers — access shared state via hooks_api
@@ -83,6 +102,34 @@ class PiHooksAPI:
     def _append_span(self, span: Dict[str, Any]) -> None:
         self._hooks_api._assembled_spans.append(span)
 
+    def _compute_context_breakdown(
+        self,
+        pending_context: Optional[PendingContextBreakdown],
+        total_input_tokens: int,
+        fallback_model_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        if pending_context is None:
+            return None
+
+        section_bytes_total = sum(section.get("bytes", 0) for section in pending_context.sections) or 1
+        sections: List[Dict[str, Any]] = []
+        for section in pending_context.sections:
+            section_bytes = section.get("bytes", 0)
+            tokens = round(total_input_tokens * section_bytes / section_bytes_total) if total_input_tokens > 0 else 0
+            pct = round(tokens / total_input_tokens * 100, 1) if total_input_tokens > 0 else 0.0
+            sections.append({"name": section.get("name", "unknown"), "tokens": tokens, "pct": pct})
+
+        context_window_size = pending_context.context_window_size
+        context_usage_pct = round(total_input_tokens / context_window_size * 100, 1) if context_window_size > 0 else 0.0
+
+        return {
+            "context_window_size": context_window_size,
+            "total_input_tokens": total_input_tokens,
+            "context_usage_pct": context_usage_pct,
+            "sections": sections,
+            "model_name": pending_context.model_id or fallback_model_id,
+        }
+
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
@@ -93,14 +140,19 @@ class PiHooksAPI:
         model_provider = body.get("model_provider", "")
         if model_id:
             session.model = model_id
+        if model_provider:
+            session.model_provider = model_provider
         log.info("Pi session started: %s (model=%s/%s)", session_id, model_provider, model_id)
 
     def _handle_model_select(self, session_id: str, body: Dict[str, Any]) -> None:
         session = self._get_or_create_session(session_id)
         model_id = body.get("model_id", "")
+        model_provider = body.get("model_provider", "")
         if model_id:
             session.model = model_id
-        log.info("Pi model changed: %s → %s/%s", session_id, body.get("model_provider", ""), model_id)
+        if model_provider:
+            session.model_provider = model_provider
+        log.info("Pi model changed: %s → %s/%s", session_id, model_provider, model_id)
 
     def _handle_agent_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Start a new trace for each user turn (equivalent to UserPromptSubmit)."""
@@ -109,6 +161,8 @@ class PiHooksAPI:
         # Finalize previous turn if it wasn't finalized
         if not session.root_span_emitted and getattr(session, "_root_span_ref", None) is not None:
             self._hooks_api._finalize_interrupted_turn(session)
+
+        self._pending_context.pop(session_id, None)
 
         # Start fresh trace
         if session.root_span_emitted:
@@ -130,9 +184,11 @@ class PiHooksAPI:
             session.user_prompts.append(prompt)
 
         model_id = body.get("model_id", session.model)
-        model_provider = body.get("model_provider", "")
+        model_provider = body.get("model_provider", session.model_provider)
         if model_id:
             session.model = model_id
+        if model_provider:
+            session.model_provider = model_provider
 
         root_span: Dict[str, Any] = {
             "span_id": session.root_span_id,
@@ -182,6 +238,15 @@ class PiHooksAPI:
 
         token_usage = self._hooks_api._compute_token_usage(session.trace_id)
         tool_usage = self._hooks_api._aggregate_tool_usage(session.trace_id)
+        context_delta = self._hooks_api._compute_context_delta(
+            session.trace_id, session.root_span_id, session.last_known_input_tokens
+        )
+        if context_delta:
+            session.last_known_input_tokens = context_delta["last_input_tokens"]
+
+        model_provider = body.get("model_provider", session.model_provider)
+        if model_provider:
+            session.model_provider = model_provider
 
         root_span: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
         if not root_span:
@@ -195,15 +260,17 @@ class PiHooksAPI:
             root_span["meta"]["input"]["value"] = input_value
             root_span["meta"]["output"]["value"] = output_value
             root_span["meta"]["model_name"] = session.model
-            root_span["meta"]["model_provider"] = body.get("model_provider", "anthropic")
+            root_span["meta"]["model_provider"] = model_provider
             root_span["metrics"] = token_usage
             dd_fields: Dict[str, Any] = {}
+            if context_delta:
+                dd_fields["context_delta"] = context_delta
             if tool_usage:
                 dd_fields["tool_usage"] = tool_usage
             dd_fields["agent_manifest"] = {
                 "name": _ML_APP,
                 "model": session.model,
-                "model_provider": body.get("model_provider", "anthropic"),
+                "model_provider": model_provider,
                 "tools": [{"name": name} for name in sorted(session.tools_used)],
             }
             if dd_fields:
@@ -237,13 +304,55 @@ class PiHooksAPI:
                     "input": {"value": input_value},
                     "output": {"value": output_value},
                     "model_name": session.model,
-                    "model_provider": body.get("model_provider", "anthropic"),
+                    "model_provider": model_provider,
                 },
                 "metrics": token_usage,
             }
+            if context_delta:
+                self._hooks_api._set_hidden_metadata(root_span, context_delta=context_delta)
             self._append_span(root_span)
 
         session.root_span_emitted = True
+
+    def _handle_provider_request_context(self, session_id: str, body: Dict[str, Any]) -> None:
+        """Track normalized request context for the next LLM span."""
+        session = self._get_or_create_session(session_id)
+        model_id = body.get("model_id", session.model)
+        model_provider = body.get("model_provider", session.model_provider)
+        if model_id:
+            session.model = model_id
+        if model_provider:
+            session.model_provider = model_provider
+
+        raw_sections = body.get("sections") or []
+        sections: List[Dict[str, Any]] = []
+        if isinstance(raw_sections, list):
+            for item in raw_sections:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name")
+                bytes_value = item.get("bytes")
+                if not isinstance(name, str) or not isinstance(bytes_value, int):
+                    continue
+                if bytes_value <= 0:
+                    continue
+                sections.append({"name": name, "bytes": bytes_value})
+
+        estimated_input_tokens = body.get("estimated_input_tokens")
+        if not isinstance(estimated_input_tokens, int):
+            estimated_input_tokens = None
+
+        context_window_size = body.get("context_window_size")
+        if not isinstance(context_window_size, int):
+            context_window_size = 0
+
+        self._pending_context[session_id] = PendingContextBreakdown(
+            model_id=model_id,
+            model_provider=model_provider,
+            context_window_size=context_window_size,
+            estimated_input_tokens=estimated_input_tokens,
+            sections=sections,
+        )
 
     def _handle_message_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Begin tracking an LLM call."""
@@ -278,11 +387,17 @@ class PiHooksAPI:
         duration = now_ns - start_ns
 
         model_id = body.get("model_id", session.model)
-        model_provider = body.get("model_provider", "")
+        model_provider = body.get("model_provider", session.model_provider)
         usage = body.get("usage") or {}
         output_text = body.get("output_text", "")
         tool_calls = body.get("tool_calls", [])
         stop_reason = body.get("stop_reason", "")
+        pending_context = self._pending_context.pop(session_id, None)
+
+        if model_id:
+            session.model = model_id
+        if model_provider:
+            session.model_provider = model_provider
 
         # Build input/output messages in LLMObs format
         output_messages = []
@@ -301,7 +416,8 @@ class PiHooksAPI:
         output_tokens = usage.get("output", 0)
         cache_read = usage.get("cacheRead", 0)
         cache_write = usage.get("cacheWrite", 0)
-        total_tokens = usage.get("totalTokens", 0) or (input_tokens + output_tokens + cache_read + cache_write)
+        total_input_tokens = input_tokens + cache_read + cache_write
+        total_tokens = usage.get("totalTokens", 0) or (total_input_tokens + output_tokens)
 
         # Cost: prefer provider-reported cost, fall back to model-based estimate
         provider_cost = usage.get("cost")
@@ -316,6 +432,12 @@ class PiHooksAPI:
                 cache_read_tokens=cache_read,
                 output_tokens=output_tokens,
             ) or {}
+
+        context_breakdown = self._compute_context_breakdown(
+            pending_context,
+            total_input_tokens if total_input_tokens > 0 else (pending_context.estimated_input_tokens if pending_context else 0),
+            model_id or session.model,
+        )
 
         span: Dict[str, Any] = {
             "span_id": span_id,
@@ -349,7 +471,7 @@ class PiHooksAPI:
                 },
             },
             "metrics": {
-                "input_tokens": input_tokens + cache_read + cache_write,
+                "input_tokens": total_input_tokens,
                 "output_tokens": output_tokens,
                 "total_tokens": total_tokens,
                 "cache_read_input_tokens": cache_read,
@@ -358,6 +480,8 @@ class PiHooksAPI:
                 **cost_metrics,
             },
         }
+        if context_breakdown:
+            self._hooks_api._set_hidden_metadata(span, context_breakdown=context_breakdown)
         self._append_span(span)
 
     def _handle_tool_execution_start(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -476,6 +600,7 @@ class PiHooksAPI:
         session = self._hooks_api._sessions.get(session_id)
         if not session:
             return
+        self._pending_context.pop(session_id, None)
         if not session.root_span_emitted:
             self._hooks_api._finalize_interrupted_turn(session)
 
@@ -491,6 +616,7 @@ class PiHooksAPI:
         "agent_end": "_handle_agent_end",
         "turn_start": "_handle_turn_start",
         "turn_end": "_handle_turn_end",
+        "provider_request_context": "_handle_provider_request_context",
         "message_start": "_handle_message_start",
         "message_end": "_handle_message_end",
         "tool_execution_start": "_handle_tool_execution_start",

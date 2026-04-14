@@ -148,6 +148,7 @@ class SessionState:
         self.pending_tools: Dict[str, PendingToolSpan] = {}
         self.user_prompts: List[str] = []
         self.model: str = ""
+        self.model_provider: str = ""
         self.tools_used: Set[str] = set()
         self.root_span_emitted: bool = False
         # Deferred agent spans waiting for PostToolUse(Task) to provide their output.
@@ -950,7 +951,6 @@ class ClaudeHooksAPI:
             return None
         last_input_tokens = last_span.get("metrics", {}).get("input_tokens", 0)
         primary_model = last_span.get("meta", {}).get("model_name", "")
-        window = _get_context_limit(primary_model)
         delta_tokens = max(last_input_tokens - first_input_tokens, 0)
         # Extract sections from first and last LLM spans' context_breakdown
         first_span = next(
@@ -964,6 +964,12 @@ class ClaudeHooksAPI:
         last_breakdown = (
             last_span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("context_breakdown")
         )
+        window = 0
+        if isinstance(last_breakdown, dict):
+            window = int(last_breakdown.get("context_window_size", 0) or 0)
+        if window <= 0:
+            window = _get_context_limit(primary_model)
+
         context_delta: Dict[str, Any] = {
             "first_input_tokens": first_input_tokens,
             "last_input_tokens": last_input_tokens,
