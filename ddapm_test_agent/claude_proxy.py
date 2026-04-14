@@ -25,6 +25,7 @@ from aiohttp import web
 from aiohttp.web import Request
 
 from .claude_cost_tracker import compute_cost_metrics
+from .claude_hooks import _ML_APP
 from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import SessionState
 from .claude_hooks import _format_span_id
@@ -535,13 +536,13 @@ class ClaudeProxyAPI:
             "status": "ok",
             "start_ns": start_ns,
             "duration": duration_ns,
-            "ml_app": "claude-code",
-            "service": "claude-code",
+            "ml_app": _ML_APP,
+            "service": _ML_APP,
             "env": "local",
             "session_id": session_id,
             "tags": [
-                "ml_app:claude-code",
-                "service:claude-code",
+                f"ml_app:{_ML_APP}",
+                f"service:{_ML_APP}",
                 "env:local",
                 "source:claude-code-proxy",
                 "language:python",

@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Add ``DD_CLAUDE_CODE_ML_APP`` environment variable to configure the ``ml_app``
+    field for Claude Code traces. Defaults to ``"claude-code"`` for backwards compatibility.
