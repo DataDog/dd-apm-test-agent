@@ -48,6 +48,14 @@ function pushSection(sections: Array<{ name: string; bytes: number }>, name: str
 	if (bytes > 0) sections.push({ name, bytes });
 }
 
+function pushOtherSection(
+	sections: Array<{ name: string; bytes: number }>,
+	value: unknown,
+): void {
+	const bytes = byteLength(value);
+	if (bytes > 0) sections.push({ name: "other", bytes });
+}
+
 function normalizeProviderContext(payload: unknown): Array<{ name: string; bytes: number }> {
 	if (!isRecord(payload)) return [];
 
@@ -61,10 +69,19 @@ function normalizeProviderContext(payload: unknown): Array<{ name: string; bytes
 		const userMessages = messages.filter((m) => m.role === "user");
 		const assistantMessages = messages.filter((m) => m.role === "assistant");
 		const toolMessages = messages.filter((m) => m.role === "tool");
+		const otherMessages = messages.filter(
+			(m) => m.role !== "system" && m.role !== "developer" && m.role !== "user" && m.role !== "assistant" && m.role !== "tool",
+		);
 		pushSection(sections, "system", payload.system ?? systemMessages);
 		pushSection(sections, "user_messages", userMessages);
 		pushSection(sections, "assistant_messages", assistantMessages);
 		pushSection(sections, "tool_messages", toolMessages);
+		pushOtherSection(sections, {
+			...payload,
+			tools: undefined,
+			system: undefined,
+			messages: otherMessages.length > 0 ? otherMessages : undefined,
+		});
 		return sections;
 	}
 
@@ -77,6 +94,12 @@ function normalizeProviderContext(payload: unknown): Array<{ name: string; bytes
 		pushSection(sections, "user_messages", userMessages);
 		pushSection(sections, "assistant_messages", assistantMessages);
 		pushSection(sections, "tool_messages", toolMessages);
+		pushOtherSection(sections, {
+			...payload,
+			tools: undefined,
+			systemInstruction: undefined,
+			contents: undefined,
+		});
 		return sections;
 	}
 

@@ -66,6 +66,7 @@ async def test_pi_llm_span_gets_context_breakdown_and_root_gets_context_delta(ag
                 {"name": "system", "bytes": 100},
                 {"name": "tools", "bytes": 200},
                 {"name": "user_messages", "bytes": 400},
+                {"name": "other", "bytes": 300},
             ],
         },
     )
@@ -109,7 +110,9 @@ async def test_pi_llm_span_gets_context_breakdown_and_root_gets_context_delta(ag
     assert context_breakdown["context_window_size"] == 128000
     assert context_breakdown["total_input_tokens"] == 620
     assert context_breakdown["model_name"] == "gpt-4.1"
-    assert [section["name"] for section in context_breakdown["sections"]] == ["system", "tools", "user_messages"]
+    assert [section["name"] for section in context_breakdown["sections"]] == ["system", "tools", "user_messages", "other"]
+    other_section = next(section for section in context_breakdown["sections"] if section["name"] == "other")
+    assert other_section["tokens"] > 0
 
     root_spans = [span for span in spans if span["meta"]["span"]["kind"] == "agent"]
     assert len(root_spans) == 1
