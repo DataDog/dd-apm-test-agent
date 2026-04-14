@@ -527,6 +527,84 @@ async def test_trace_estimated_total_cost_aggregated_across_spans(agent):
         assert event["event"]["custom"]["trace"]["estimated_total_cost"] == 15_000_000
 
 
+async def test_trace_token_metrics_aggregated_across_spans(agent):
+    """@trace.input_tokens, output_tokens, and total_tokens are summed across all spans in the trace."""
+    span_a = _create_span_for_facet_test(1, 400)
+    span_a["metrics"] = {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}
+    span_b = _create_span_for_facet_test(2, 400)
+    span_b["metrics"] = {"input_tokens": 5, "output_tokens": 10, "total_tokens": 15}
+    await _submit_spans_for_facet_test(agent, [span_a, span_b])
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+
+    for event in data["result"]["events"]:
+        trace = event["event"]["custom"]["trace"]
+        assert trace["input_tokens"] == 15
+        assert trace["output_tokens"] == 30
+        assert trace["total_tokens"] == 45
+
+
+async def test_trace_level_fields_populated_for_session_query(agent):
+    """Trace-level token and cost fields are present for session-id-filtered queries (non-static app path)."""
+    now = int(time.time() * 1_000_000_000)
+    root_span = {
+        "span_id": "span-sess-root",
+        "trace_id": "trace-sess-1",
+        "parent_id": "undefined",
+        "name": "root",
+        "status": "ok",
+        "start_ns": now,
+        "duration": 1_000_000_000,
+        "session_id": "session-xyz",
+        "tags": ["session_id:session-xyz"],
+        "meta": {"span": {"kind": "agent"}},
+        "metrics": {
+            "input_tokens": 8,
+            "output_tokens": 12,
+            "total_tokens": 20,
+            "estimated_total_cost": 7_000_000,
+        },
+    }
+    child_span = {
+        "span_id": "span-sess-child",
+        "trace_id": "trace-sess-1",
+        "parent_id": "span-sess-root",
+        "name": "llm-call",
+        "status": "ok",
+        "start_ns": now,
+        "duration": 500_000_000,
+        "session_id": "session-xyz",
+        "tags": ["session_id:session-xyz"],
+        "meta": {"span": {"kind": "llm"}},
+        "metrics": {
+            "input_tokens": 4,
+            "output_tokens": 6,
+            "total_tokens": 10,
+            "estimated_total_cost": 3_000_000,
+        },
+    }
+    await _submit_spans_for_facet_test(agent, [root_span, child_span])
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": "@parent_id:undefined @session_id:session-xyz"}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["hitCount"] == 1
+
+    trace = data["result"]["events"][0]["event"]["custom"]["trace"]
+    assert trace["input_tokens"] == 12
+    assert trace["output_tokens"] == 18
+    assert trace["total_tokens"] == 30
+    assert trace["estimated_total_cost"] == 10_000_000
+
+
 async def test_facet_range_info_with_filter_query(agent):
     """Test facet_range_info respects filter query."""
     spans = [
