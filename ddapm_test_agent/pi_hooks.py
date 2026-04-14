@@ -35,17 +35,24 @@ from .claude_cost_tracker import cost_from_provider_usage
 from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import PendingToolSpan
 from .claude_hooks import SessionState
-from .claude_hooks import _ML_APP
 from .claude_hooks import _HOSTNAME
-from .claude_hooks import _USERNAME
+from .claude_hooks import _ML_APP
 from .claude_hooks import _USER_HANDLE
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
 from .llmobs_event_platform import with_cors
 
-
 log = logging.getLogger(__name__)
+
+_MAX_CONTENT_BYTES = 128 * 1024  # 128 KB cap — mirrors the limit previously in the extension
+
+
+def _truncate(value: str, max_bytes: int = _MAX_CONTENT_BYTES) -> str:
+    """Truncate a string to max_bytes characters with a truncation notice."""
+    if len(value) <= max_bytes:
+        return value
+    return value[:max_bytes] + f"\n... (truncated, {len(value)} bytes total)"
 
 
 class PendingLLMSpan:
@@ -93,14 +100,23 @@ class PiHooksAPI:
         model_provider = body.get("model_provider", "")
         if model_id:
             session.model = model_id
+            if not session.models or session.models[-1] != model_id:
+                session.models.append(model_id)
+        if model_provider:
+            session.model_provider = model_provider
         log.info("Pi session started: %s (model=%s/%s)", session_id, model_provider, model_id)
 
     def _handle_model_select(self, session_id: str, body: Dict[str, Any]) -> None:
         session = self._get_or_create_session(session_id)
         model_id = body.get("model_id", "")
+        model_provider = body.get("model_provider", "")
         if model_id:
             session.model = model_id
-        log.info("Pi model changed: %s → %s/%s", session_id, body.get("model_provider", ""), model_id)
+            if not session.models or session.models[-1] != model_id:
+                session.models.append(model_id)
+        if model_provider:
+            session.model_provider = model_provider
+        log.info("Pi model changed: %s → %s/%s", session_id, model_provider, model_id)
 
     def _handle_agent_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Start a new trace for each user turn (equivalent to UserPromptSubmit)."""
@@ -124,15 +140,20 @@ class PiHooksAPI:
             session.claimed_task_tools = set()
             session.active_agents = {}
             session.root_span_emitted = False
+            session.models = [session.model] if session.model else []
 
         prompt = body.get("user_prompt", "")
         if prompt:
             session.user_prompts.append(prompt)
 
         model_id = body.get("model_id", session.model)
-        model_provider = body.get("model_provider", "")
+        model_provider = body.get("model_provider", session.model_provider)
         if model_id:
             session.model = model_id
+            if not session.models or session.models[-1] != model_id:
+                session.models.append(model_id)
+        if model_provider:
+            session.model_provider = model_provider
 
         root_span: Dict[str, Any] = {
             "span_id": session.root_span_id,
@@ -162,6 +183,7 @@ class PiHooksAPI:
                 "output": {"value": ""},
                 "model_name": model_id,
                 "model_provider": model_provider,
+                "metadata": {"models_used": session.models[:]},
             },
             "metrics": {},
         }
@@ -177,8 +199,25 @@ class PiHooksAPI:
 
         now_ns = int(time.time() * 1_000_000_000)
         duration = now_ns - session.start_ns
-        output_value = body.get("output", "")
         input_value = "\n\n".join(session.user_prompts) if session.user_prompts else ""
+
+        # Extract output text from the messages array (processing moved from extension)
+        messages = body.get("messages", [])
+        output_value = ""
+        if messages:
+            for msg in reversed(messages):
+                if msg.get("role") == "assistant":
+                    content = msg.get("content", [])
+                    if isinstance(content, list):
+                        text_parts = [c.get("text", "") for c in content if c.get("type") == "text" and c.get("text")]
+                        output_value = "\n".join(text_parts)
+                    elif isinstance(content, str):
+                        output_value = content
+                    if output_value:
+                        break
+        else:
+            output_value = body.get("output", "")  # fallback for older extension format
+        output_value = _truncate(output_value)
 
         token_usage = self._hooks_api._compute_token_usage(session.trace_id)
         tool_usage = self._hooks_api._aggregate_tool_usage(session.trace_id)
@@ -195,7 +234,8 @@ class PiHooksAPI:
             root_span["meta"]["input"]["value"] = input_value
             root_span["meta"]["output"]["value"] = output_value
             root_span["meta"]["model_name"] = session.model
-            root_span["meta"]["model_provider"] = body.get("model_provider", "anthropic")
+            root_span["meta"]["model_provider"] = session.model_provider
+            root_span["meta"].setdefault("metadata", {})["models_used"] = session.models[:]
             root_span["metrics"] = token_usage
             dd_fields: Dict[str, Any] = {}
             if tool_usage:
@@ -203,7 +243,8 @@ class PiHooksAPI:
             dd_fields["agent_manifest"] = {
                 "name": _ML_APP,
                 "model": session.model,
-                "model_provider": body.get("model_provider", "anthropic"),
+                "model_provider": session.model_provider,
+                "models": session.models[:],
                 "tools": [{"name": name} for name in sorted(session.tools_used)],
             }
             if dd_fields:
@@ -237,7 +278,8 @@ class PiHooksAPI:
                     "input": {"value": input_value},
                     "output": {"value": output_value},
                     "model_name": session.model,
-                    "model_provider": body.get("model_provider", "anthropic"),
+                    "model_provider": session.model_provider,
+                    "metadata": {"models_used": session.models[:]},
                 },
                 "metrics": token_usage,
             }
@@ -278,23 +320,40 @@ class PiHooksAPI:
         duration = now_ns - start_ns
 
         model_id = body.get("model_id", session.model)
-        model_provider = body.get("model_provider", "")
+        model_provider = body.get("model_provider", session.model_provider)
         usage = body.get("usage") or {}
-        output_text = body.get("output_text", "")
-        tool_calls = body.get("tool_calls", [])
         stop_reason = body.get("stop_reason", "")
 
+        # Extract tool calls and output text from the content array (processing moved from extension)
+        content = body.get("content", [])
+        tool_calls: List[Dict[str, Any]] = []
+        output_text = ""
+        if content:
+            text_parts = []
+            for c in content:
+                if c.get("type") == "toolCall":
+                    tool_calls.append({"id": c.get("id"), "name": c.get("name"), "arguments": c.get("arguments")})
+                elif c.get("type") == "text" and c.get("text"):
+                    text_parts.append(c["text"])
+            output_text = _truncate("\n".join(text_parts))
+        else:
+            # Fallback for older extension format
+            output_text = _truncate(body.get("output_text", ""))
+            tool_calls = body.get("tool_calls", [])
+
         # Build input/output messages in LLMObs format
-        output_messages = []
+        output_messages: List[Dict[str, Any]] = []
         if output_text:
             output_messages.append({"content": output_text, "role": "assistant"})
         if tool_calls:
             for tc in tool_calls:
-                output_messages.append({
-                    "content": json.dumps(tc.get("arguments", {})),
-                    "role": "assistant",
-                    "tool_calls": [{"name": tc.get("name", ""), "arguments": tc.get("arguments", {})}],
-                })
+                output_messages.append(
+                    {
+                        "content": json.dumps(tc.get("arguments", {})),
+                        "role": "assistant",
+                        "tool_calls": [{"name": tc.get("name", ""), "arguments": tc.get("arguments", {})}],
+                    }
+                )
 
         # Token metrics
         input_tokens = usage.get("input", 0)
@@ -309,13 +368,16 @@ class PiHooksAPI:
         if isinstance(provider_cost, dict) and provider_cost.get("total", 0) > 0:
             cost_metrics = cost_from_provider_usage(provider_cost)
         else:
-            cost_metrics = compute_cost_metrics(
-                model_id=model_id or "",
-                non_cached_input_tokens=input_tokens,
-                cache_write_tokens=cache_write,
-                cache_read_tokens=cache_read,
-                output_tokens=output_tokens,
-            ) or {}
+            cost_metrics = (
+                compute_cost_metrics(
+                    model_id=model_id or "",
+                    non_cached_input_tokens=input_tokens,
+                    cache_write_tokens=cache_write,
+                    cache_read_tokens=cache_read,
+                    output_tokens=output_tokens,
+                )
+                or {}
+            )
 
         span: Dict[str, Any] = {
             "span_id": span_id,
@@ -373,12 +435,12 @@ class PiHooksAPI:
         now_ns = int(time.time() * 1_000_000_000)
 
         # Parse args string back to dict for tool_input if possible
-        tool_input: Any = args
-        if isinstance(args, str):
+        tool_input: Any = _truncate(args) if isinstance(args, str) else args
+        if isinstance(tool_input, str):
             try:
-                tool_input = json.loads(args)
+                tool_input = json.loads(tool_input)
             except (json.JSONDecodeError, ValueError):
-                tool_input = args
+                pass
 
         session.pending_tools[tool_call_id] = PendingToolSpan(
             span_id=span_id,
@@ -396,7 +458,7 @@ class PiHooksAPI:
 
         tool_name = body.get("tool_name", "unknown_tool")
         tool_call_id = body.get("tool_call_id", tool_name)
-        result = body.get("result", "")
+        result = _truncate(body.get("result", ""))
         is_error = body.get("is_error", False)
 
         now_ns = int(time.time() * 1_000_000_000)
@@ -444,6 +506,8 @@ class PiHooksAPI:
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},
                 "output": {"value": output_str},
+                "model_name": session.model,
+                "model_provider": session.model_provider,
                 "metadata": {"tool_id": tool_call_id},
             },
             "metrics": {},
@@ -461,9 +525,11 @@ class PiHooksAPI:
         if span_ref is None:
             return
         dd = span_ref.setdefault("meta", {}).setdefault("metadata", {}).setdefault("_dd", {})
-        dd.setdefault("compactions", []).append({
-            "trigger": "auto" if body.get("from_extension") else "manual",
-        })
+        dd.setdefault("compactions", []).append(
+            {
+                "trigger": "auto" if body.get("from_extension") else "manual",
+            }
+        )
 
     def _handle_turn_start(self, session_id: str, body: Dict[str, Any]) -> None:
         log.debug("Pi turn_start for session %s: turn_index=%s", session_id, body.get("turn_index"))

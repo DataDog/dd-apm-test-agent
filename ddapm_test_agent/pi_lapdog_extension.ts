@@ -18,17 +18,10 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 const LAPDOG_URL = process.env.LAPDOG_URL || "http://localhost:8126";
 const HOOKS_ENDPOINT = `${LAPDOG_URL}/pi/hooks`;
-const MAX_OUTPUT_BYTES = 128 * 1024; // 128 KB cap for tool output / message content
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function truncate(value: unknown, maxBytes: number = MAX_OUTPUT_BYTES): string {
-	const str = typeof value === "string" ? value : JSON.stringify(value ?? "");
-	if (str.length <= maxBytes) return str;
-	return str.slice(0, maxBytes) + `\n... (truncated, ${str.length} bytes total)`;
-}
 
 /** Fire-and-forget POST. Errors are silently swallowed. */
 function post(event: string, sessionId: string, data: Record<string, unknown>): void {
@@ -42,17 +35,6 @@ function post(event: string, sessionId: string, data: Record<string, unknown>): 
 	} catch {
 		// fetch itself can throw synchronously in some edge cases
 	}
-}
-
-/**
- * Extract text from user message content (string or content array).
- */
-function extractUserText(content: string | Array<{ type: string; text?: string }>): string {
-	if (typeof content === "string") return content;
-	return content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text" && typeof c.text === "string")
-		.map((c) => c.text)
-		.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -126,21 +108,8 @@ export default function lapdog(pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_end", (event) => {
-		// Extract the final assistant text from the last assistant message
-		let outputText = "";
-		for (let i = event.messages.length - 1; i >= 0; i--) {
-			const msg = event.messages[i];
-			if (msg.role === "assistant") {
-				const textParts = (msg.content as Array<{ type: string; text?: string }>)
-					.filter((c) => c.type === "text" && c.text)
-					.map((c) => c.text!);
-				outputText = textParts.join("\n");
-				break;
-			}
-		}
 		post("agent_end", sessionId, {
-			output: truncate(outputText),
-			num_messages: event.messages.length,
+			messages: event.messages,
 		});
 	});
 
@@ -192,16 +161,6 @@ export default function lapdog(pi: ExtensionAPI): void {
 			stopReason?: string;
 		};
 
-		// Extract tool_use blocks for span linking
-		const toolCalls = msg.content
-			.filter((c) => c.type === "toolCall")
-			.map((c) => ({ id: c.id, name: c.name, arguments: c.arguments }));
-
-		// Extract text output
-		const textParts = msg.content
-			.filter((c) => c.type === "text" && c.text)
-			.map((c) => c.text!);
-
 		post("message_end", sessionId, {
 			message_role: "assistant",
 			model_id: msg.model || currentModel,
@@ -209,8 +168,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 			api: msg.api,
 			usage: msg.usage ?? null,
 			stop_reason: msg.stopReason ?? "",
-			tool_calls: toolCalls,
-			output_text: truncate(textParts.join("\n")),
+			content: msg.content,
 		});
 	});
 
@@ -222,7 +180,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 		post("tool_execution_start", sessionId, {
 			tool_call_id: event.toolCallId,
 			tool_name: event.toolName,
-			args: truncate(event.args),
+			args: event.args,
 		});
 	});
 
@@ -230,7 +188,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 		post("tool_execution_end", sessionId, {
 			tool_call_id: event.toolCallId,
 			tool_name: event.toolName,
-			result: truncate(event.result),
+			result: event.result,
 			is_error: event.isError,
 		});
 	});

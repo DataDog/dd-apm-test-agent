@@ -1,4 +1,5 @@
 """CLI for lapdog subcommands"""
+
 import argparse
 import os
 import shutil
@@ -11,7 +12,6 @@ from typing import Optional
 from typing import Tuple
 
 import requests
-
 
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi"]
 LAPDOG_USAGE = (
@@ -278,33 +278,19 @@ _PI_GLOBAL_EXT_DIR = os.path.expanduser("~/.pi/agent/extensions")
 _PI_EXT_DEST = os.path.join(_PI_GLOBAL_EXT_DIR, "lapdog.ts")
 _PI_EXT_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pi_lapdog_extension.ts")
 
-# Marker comment embedded in installed copies so we can identify our file.
-_PI_EXT_MARKER = "dd-apm-test-agent/pi_lapdog_extension"
 
-
-def _install_pi_extension(port: int) -> None:
+def _install_pi_extension() -> None:
     """Copy the bundled lapdog extension into pi's global extensions directory.
 
-    The extension is patched with the resolved LAPDOG_URL so the user does not
-    need to set an environment variable when using a non-default port.
-
     If the extension is already installed and identical, skip the copy.
+    LAPDOG_URL is injected at runtime via environment variable when pi is launched.
     """
-    os.makedirs(_PI_GLOBAL_EXT_DIR, exist_ok=True)
-
     if not os.path.isfile(_PI_EXT_SOURCE):
         print(f"[lapdog] Extension source not found: {_PI_EXT_SOURCE}", file=sys.stderr)
         sys.exit(1)
 
     with open(_PI_EXT_SOURCE, "r") as f:
         source = f.read()
-
-    # Patch the default URL if using a non-standard port.
-    lapdog_url = f"http://localhost:{port}"
-    source = source.replace(
-        'const LAPDOG_URL = process.env.LAPDOG_URL || "http://localhost:8126";',
-        f'const LAPDOG_URL = process.env.LAPDOG_URL || "{lapdog_url}";',
-    )
 
     # Check if already installed and up-to-date.
     is_update = False
@@ -319,6 +305,7 @@ def _install_pi_extension(port: int) -> None:
         except OSError:
             pass
 
+    os.makedirs(_PI_GLOBAL_EXT_DIR, exist_ok=True)
     with open(_PI_EXT_DEST, "w") as f:
         f.write(source)
 
@@ -335,7 +322,7 @@ def _uninstall_pi_extension() -> None:
     try:
         with open(_PI_EXT_DEST, "r") as f:
             content = f.read()
-        if _PI_EXT_MARKER not in content and "lapdog" not in content[:200]:
+        if "lapdog" not in content[:200]:
             # Not our file — leave it alone.
             return
     except OSError:
@@ -347,7 +334,7 @@ def _uninstall_pi_extension() -> None:
         pass
 
 
-def _run_pi(args: Optional[List[str]] = None) -> None:
+def _run_pi(args: Optional[List[str]] = None, port: int = 8126) -> None:
     """Exec the pi binary, forwarding arguments.  Never returns."""
     if args is None:
         args = []
@@ -355,7 +342,8 @@ def _run_pi(args: Optional[List[str]] = None) -> None:
     if not pi_bin:
         print("[lapdog] 'pi' not found in PATH", file=sys.stderr)
         sys.exit(1)
-    os.execv(pi_bin, [pi_bin] + args)
+    env = {**os.environ, "LAPDOG_URL": f"http://localhost:{port}"}
+    os.execve(pi_bin, [pi_bin] + args, env)
 
 
 def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
@@ -371,8 +359,8 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
             sys.exit(1)
         _start_lapdog_detached(port, forward_data=forward_data)
 
-    _install_pi_extension(port)
-    _run_pi(sub_cmd_args)
+    _install_pi_extension()
+    _run_pi(sub_cmd_args, port)
 
 
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
@@ -423,21 +411,12 @@ def main() -> None:
         sys.exit(1)
 
     if sub_cmd == "start":
-        cmd_start(
-            sub_cmd_args=sub_cmd_args,
-            forward_data=lapdog_parsed_args.forward
-        )
+        cmd_start(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
     elif sub_cmd == "stop":
         cmd_stop()
     elif sub_cmd == "status":
         cmd_status()
     elif sub_cmd == "claude":
-        cmd_claude(
-            sub_cmd_args=sub_cmd_args,
-            forward_data=lapdog_parsed_args.forward
-        )
+        cmd_claude(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
     elif sub_cmd == "pi":
-        cmd_pi(
-            sub_cmd_args=sub_cmd_args,
-            forward_data=lapdog_parsed_args.forward
-        )
+        cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)

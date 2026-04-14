@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    Add `lapdog pi` command for tracing pi coding agent sessions through the
+    dd-apm-test-agent. The command installs the bundled pi extension, launches
+    pi with `LAPDOG_URL` configured, and records current model/provider details
+    on agent, LLM, and tool spans.
