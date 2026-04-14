@@ -287,6 +287,8 @@ def _install_pi_extension(port: int) -> None:
 
     The extension is patched with the resolved LAPDOG_URL so the user does not
     need to set an environment variable when using a non-default port.
+
+    If the extension is already installed and identical, skip the copy.
     """
     os.makedirs(_PI_GLOBAL_EXT_DIR, exist_ok=True)
 
@@ -304,10 +306,26 @@ def _install_pi_extension(port: int) -> None:
         f'const LAPDOG_URL = process.env.LAPDOG_URL || "{lapdog_url}";',
     )
 
+    # Check if already installed and up-to-date.
+    is_update = False
+    if os.path.isfile(_PI_EXT_DEST):
+        try:
+            with open(_PI_EXT_DEST, "r") as f:
+                existing = f.read()
+            if existing == source:
+                print(f"[lapdog] pi extension already installed at {_PI_EXT_DEST}")
+                return
+            is_update = True
+        except OSError:
+            pass
+
     with open(_PI_EXT_DEST, "w") as f:
         f.write(source)
 
-    print(f"[lapdog] Installed pi extension → {_PI_EXT_DEST}")
+    if is_update:
+        print(f"[lapdog] Updated pi extension → {_PI_EXT_DEST}")
+    else:
+        print(f"[lapdog] Installed pi extension → {_PI_EXT_DEST}")
 
 
 def _uninstall_pi_extension() -> None:
