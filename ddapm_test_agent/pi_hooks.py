@@ -112,14 +112,14 @@ class PiHooksAPI:
             return None
 
         section_bytes_total = sum(section.get("bytes", 0) for section in pending_context.sections) or 1
+        context_window_size = pending_context.context_window_size
         sections: List[Dict[str, Any]] = []
         for section in pending_context.sections:
             section_bytes = section.get("bytes", 0)
             tokens = round(total_input_tokens * section_bytes / section_bytes_total) if total_input_tokens > 0 else 0
-            pct = round(tokens / total_input_tokens * 100, 1) if total_input_tokens > 0 else 0.0
+            pct = round(tokens / context_window_size * 100, 1) if context_window_size > 0 else 0.0
             sections.append({"name": section.get("name", "unknown"), "tokens": tokens, "pct": pct})
 
-        context_window_size = pending_context.context_window_size
         context_usage_pct = round(total_input_tokens / context_window_size * 100, 1) if context_window_size > 0 else 0.0
 
         return {

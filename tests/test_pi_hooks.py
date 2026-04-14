@@ -60,13 +60,12 @@ async def test_pi_llm_span_gets_context_breakdown_and_root_gets_context_delta(ag
             "hook_event_name": "provider_request_context",
             "model_id": "gpt-4.1",
             "model_provider": "openai",
-            "context_window_size": 128000,
+            "context_window_size": 1000,
             "estimated_input_tokens": 700,
             "sections": [
                 {"name": "system", "bytes": 100},
                 {"name": "tools", "bytes": 200},
-                {"name": "user_messages", "bytes": 400},
-                {"name": "other", "bytes": 300},
+                {"name": "user_messages", "bytes": 700},
             ],
         },
     )
@@ -107,12 +106,16 @@ async def test_pi_llm_span_gets_context_breakdown_and_root_gets_context_delta(ag
     assert len(llm_spans) == 1
     llm_span = llm_spans[0]
     context_breakdown = llm_span["meta"]["metadata"]["_dd"]["context_breakdown"]
-    assert context_breakdown["context_window_size"] == 128000
+    assert context_breakdown["context_window_size"] == 1000
     assert context_breakdown["total_input_tokens"] == 620
+    assert context_breakdown["context_usage_pct"] == 62.0
     assert context_breakdown["model_name"] == "gpt-4.1"
-    assert [section["name"] for section in context_breakdown["sections"]] == ["system", "tools", "user_messages", "other"]
-    other_section = next(section for section in context_breakdown["sections"] if section["name"] == "other")
-    assert other_section["tokens"] > 0
+    assert [section["name"] for section in context_breakdown["sections"]] == ["system", "tools", "user_messages"]
+    assert context_breakdown["sections"] == [
+        {"name": "system", "tokens": 62, "pct": 6.2},
+        {"name": "tools", "tokens": 124, "pct": 12.4},
+        {"name": "user_messages", "tokens": 434, "pct": 43.4},
+    ]
 
     root_spans = [span for span in spans if span["meta"]["span"]["kind"] == "agent"]
     assert len(root_spans) == 1
@@ -122,7 +125,7 @@ async def test_pi_llm_span_gets_context_breakdown_and_root_gets_context_delta(ag
     assert context_delta["first_input_tokens"] == 0
     assert context_delta["last_input_tokens"] == 620
     assert context_delta["delta_tokens"] == 620
-    assert context_delta["context_window_size"] == 128000
+    assert context_delta["context_window_size"] == 1000
     assert context_delta["last_sections"] == context_breakdown["sections"]
 
 

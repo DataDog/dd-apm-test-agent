@@ -42,18 +42,26 @@ function byteLength(value: unknown): number {
 	}
 }
 
-function pushSection(sections: Array<{ name: string; bytes: number }>, name: string, value: unknown): void {
-	if (value === undefined || value === null) return;
-	const bytes = byteLength(value);
-	if (bytes > 0) sections.push({ name, bytes });
+function addSectionBytes(sections: Array<{ name: string; bytes: number }>, name: string, bytes: number): void {
+	if (bytes <= 0) return;
+	const existing = sections.find((section) => section.name === name);
+	if (existing) {
+		existing.bytes += bytes;
+		return;
+	}
+	sections.push({ name, bytes });
 }
 
-function pushOtherSection(
+function pushSection(sections: Array<{ name: string; bytes: number }>, name: string, value: unknown): void {
+	if (value === undefined || value === null) return;
+	addSectionBytes(sections, name, byteLength(value));
+}
+
+function pushNonToolContextToUserSection(
 	sections: Array<{ name: string; bytes: number }>,
 	value: unknown,
 ): void {
-	const bytes = byteLength(value);
-	if (bytes > 0) sections.push({ name: "other", bytes });
+	addSectionBytes(sections, "user_messages", byteLength(value));
 }
 
 function normalizeProviderContext(payload: unknown): Array<{ name: string; bytes: number }> {
@@ -76,7 +84,7 @@ function normalizeProviderContext(payload: unknown): Array<{ name: string; bytes
 		pushSection(sections, "user_messages", userMessages);
 		pushSection(sections, "assistant_messages", assistantMessages);
 		pushSection(sections, "tool_messages", toolMessages);
-		pushOtherSection(sections, {
+		pushNonToolContextToUserSection(sections, {
 			...payload,
 			tools: undefined,
 			system: undefined,
@@ -94,7 +102,7 @@ function normalizeProviderContext(payload: unknown): Array<{ name: string; bytes
 		pushSection(sections, "user_messages", userMessages);
 		pushSection(sections, "assistant_messages", assistantMessages);
 		pushSection(sections, "tool_messages", toolMessages);
-		pushOtherSection(sections, {
+		pushNonToolContextToUserSection(sections, {
 			...payload,
 			tools: undefined,
 			systemInstruction: undefined,
