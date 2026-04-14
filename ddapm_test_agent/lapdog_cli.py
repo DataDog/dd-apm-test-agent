@@ -1,4 +1,4 @@
-"""CLI for lapdog subcommands: run, stop, status, claude."""
+"""CLI for lapdog subcommands"""
 import argparse
 import os
 import shutil
@@ -13,14 +13,15 @@ from typing import Tuple
 import requests
 
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
     "  run     Start lapdog (background)\n"
     "  stop    Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
     "  status  Show lapdog status (from /info)\n"
-    "  claude  Start lapdog in background if needed, then launch Claude with intercept"
+    "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
+    "  pi      Start lapdog in background if needed, install extension, then launch pi"
 )
 
 
@@ -222,6 +223,38 @@ def cmd_status() -> None:
         sys.exit(1)
 
 
+def _start_lapdog_detached(port: int, forward_data: bool) -> None:
+    """Start lapdog in a forked child so it is not a child of the calling process.
+
+    After os.execv replaces the current process with pi/claude, lapdog must not
+    be a child of that process.  If it were, killing/restarting lapdog would
+    send SIGCHLD to the agent which can crash the runtime.  By forking first
+    and starting lapdog in the child, the child exits immediately after lapdog
+    is ready and lapdog gets re-parented to init/launchd — fully independent of
+    the process that will become pi/claude.
+    """
+    child_pid = os.fork()
+    if child_pid == 0:
+        # Child: start lapdog, wait for it to be ready, then exit.
+        try:
+            _start_lapdog(port, forward_data=forward_data)
+        except SystemExit:
+            # _start_lapdog may call sys.exit on failure
+            os._exit(1)
+        os._exit(0)
+
+    # Parent: wait for the intermediate child to finish.
+    _, status = os.waitpid(child_pid, 0)
+    if os.WIFEXITED(status) and os.WEXITSTATUS(status) != 0:
+        print("[lapdog] Failed to start lapdog in background.", file=sys.stderr)
+        sys.exit(1)
+
+    # Double-check lapdog is actually reachable.
+    if not _lapdog_alive():
+        print("[lapdog] Lapdog started but is not reachable.", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_claude(sub_cmd_args: List[str], forward_data: bool) -> None:
     """Ensure lapdog is running in background, then launch Claude with intercept."""
     if not _lapdog_alive():
@@ -232,9 +265,96 @@ def cmd_claude(sub_cmd_args: List[str], forward_data: bool) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        _start_lapdog(port, forward_data=forward_data)
+        _start_lapdog_detached(port, forward_data=forward_data)
 
     _run_claude(sub_cmd_args)
+
+
+# ---------------------------------------------------------------------------
+# Pi extension management
+# ---------------------------------------------------------------------------
+
+_PI_GLOBAL_EXT_DIR = os.path.expanduser("~/.pi/agent/extensions")
+_PI_EXT_DEST = os.path.join(_PI_GLOBAL_EXT_DIR, "lapdog.ts")
+_PI_EXT_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pi_lapdog_extension.ts")
+
+# Marker comment embedded in installed copies so we can identify our file.
+_PI_EXT_MARKER = "dd-apm-test-agent/pi_lapdog_extension"
+
+
+def _install_pi_extension(port: int) -> None:
+    """Copy the bundled lapdog extension into pi's global extensions directory.
+
+    The extension is patched with the resolved LAPDOG_URL so the user does not
+    need to set an environment variable when using a non-default port.
+    """
+    os.makedirs(_PI_GLOBAL_EXT_DIR, exist_ok=True)
+
+    if not os.path.isfile(_PI_EXT_SOURCE):
+        print(f"[lapdog] Extension source not found: {_PI_EXT_SOURCE}", file=sys.stderr)
+        sys.exit(1)
+
+    with open(_PI_EXT_SOURCE, "r") as f:
+        source = f.read()
+
+    # Patch the default URL if using a non-standard port.
+    lapdog_url = f"http://localhost:{port}"
+    source = source.replace(
+        'const LAPDOG_URL = process.env.LAPDOG_URL || "http://localhost:8126";',
+        f'const LAPDOG_URL = process.env.LAPDOG_URL || "{lapdog_url}";',
+    )
+
+    with open(_PI_EXT_DEST, "w") as f:
+        f.write(source)
+
+    print(f"[lapdog] Installed pi extension → {_PI_EXT_DEST}")
+
+
+def _uninstall_pi_extension() -> None:
+    """Remove the lapdog extension if it was installed by us."""
+    if not os.path.isfile(_PI_EXT_DEST):
+        return
+    try:
+        with open(_PI_EXT_DEST, "r") as f:
+            content = f.read()
+        if _PI_EXT_MARKER not in content and "lapdog" not in content[:200]:
+            # Not our file — leave it alone.
+            return
+    except OSError:
+        pass
+    try:
+        os.remove(_PI_EXT_DEST)
+        print(f"[lapdog] Removed pi extension from {_PI_EXT_DEST}")
+    except OSError:
+        pass
+
+
+def _run_pi(args: Optional[List[str]] = None) -> None:
+    """Exec the pi binary, forwarding arguments.  Never returns."""
+    if args is None:
+        args = []
+    pi_bin = shutil.which("pi")
+    if not pi_bin:
+        print("[lapdog] 'pi' not found in PATH", file=sys.stderr)
+        sys.exit(1)
+    os.execv(pi_bin, [pi_bin] + args)
+
+
+def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
+    """Ensure lapdog is running, install the pi extension, then launch pi."""
+    port = _resolved_port()
+
+    if not _lapdog_alive():
+        if _port_in_use(port):
+            print(
+                f"[lapdog] Port {port} is already in use. Stop the existing instance first (e.g. 'lapdog stop').",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        _start_lapdog_detached(port, forward_data=forward_data)
+
+    _install_pi_extension(port)
+    _run_pi(sub_cmd_args)
 
 
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
@@ -295,6 +415,11 @@ def main() -> None:
         cmd_status()
     elif sub_cmd == "claude":
         cmd_claude(
+            sub_cmd_args=sub_cmd_args,
+            forward_data=lapdog_parsed_args.forward
+        )
+    elif sub_cmd == "pi":
+        cmd_pi(
             sub_cmd_args=sub_cmd_args,
             forward_data=lapdog_parsed_args.forward
         )
