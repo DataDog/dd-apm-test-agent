@@ -267,25 +267,32 @@ def _extract_tool_uses_from_response(content_blocks: List[Dict[str, Any]]) -> Li
 def _format_input_messages(body: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Format request messages for the LLM span input."""
     messages: List[Dict[str, Any]] = []
+    system = body.get("system")
+    if system:
+        if isinstance(system, str):
+            messages.append({"role": "system", "content": system})
+        elif isinstance(system, list):
+            parts = [b.get("text", "") for b in system if isinstance(b, dict) and b.get("type") == "text"]
+            messages.append({"role": "system", "content": "\n".join(parts)})
     for msg in body.get("messages", []):
         role = msg.get("role", "")
         content = msg.get("content", "")
         if isinstance(content, str):
             messages.append({"role": role, "content": content})
         elif isinstance(content, list):
-            parts: List[str] = []
+            content_parts: List[str] = []
             for block in content:
                 if isinstance(block, dict):
                     btype = block.get("type", "")
                     if btype == "text":
-                        parts.append(block.get("text", ""))
+                        content_parts.append(block.get("text", ""))
                     elif btype == "tool_result":
-                        parts.append(f"[tool_result:{block.get('tool_use_id', '')}]")
+                        content_parts.append(f"[tool_result:{block.get('tool_use_id', '')}]")
                     elif btype == "tool_use":
-                        parts.append(f"[tool_use:{block.get('name', '')}]")
+                        content_parts.append(f"[tool_use:{block.get('name', '')}]")
                     else:
-                        parts.append(f"[{btype}]")
-            messages.append({"role": role, "content": " ".join(parts)})
+                        content_parts.append(f"[{btype}]")
+            messages.append({"role": role, "content": " ".join(content_parts)})
     return messages
 
 
@@ -521,7 +528,6 @@ class ClaudeProxyAPI:
             total_input_tokens,
             model,
         )
-
         span: Dict[str, Any] = {
             "span_id": span_id,
             "trace_id": trace_id,
