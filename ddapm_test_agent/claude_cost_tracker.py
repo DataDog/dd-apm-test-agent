@@ -153,6 +153,44 @@ def _find_tiers(model_id: str) -> Optional[List[_PriceTier]]:
     return None
 
 
+# 1 nanodollar = 1e-9 USD
+_NANODOLLARS_PER_DOLLAR = 1_000_000_000
+
+
+def cost_from_provider_usage(
+    cost: Dict[str, float],
+) -> Dict[str, int]:
+    """Convert provider-reported cost (in USD) to nanodollar cost metrics.
+
+    The *cost* dict is expected to have keys matching the pi extension's format::
+
+        {"input": 0.00015, "output": 0.03, "cacheRead": 0.028, "cacheWrite": 0.001, "total": 0.059}
+
+    Returns a dict with the same metric keys as ``compute_cost_metrics``.
+    """
+    def _to_nano(v: float) -> int:
+        return int(round(v * _NANODOLLARS_PER_DOLLAR))
+
+    non_cached_input = _to_nano(cost.get("input", 0.0))
+    cache_write = _to_nano(cost.get("cacheWrite", 0.0))
+    cache_read = _to_nano(cost.get("cacheRead", 0.0))
+    output = _to_nano(cost.get("output", 0.0))
+    input_cost = non_cached_input + cache_write + cache_read
+    total = _to_nano(cost.get("total", 0.0))
+    # Prefer the provider's total if available; fall back to sum of parts.
+    if total == 0 and input_cost + output > 0:
+        total = input_cost + output
+
+    return {
+        "estimated_non_cached_input_cost": non_cached_input,
+        "estimated_cache_write_input_cost": cache_write,
+        "estimated_cache_read_input_cost": cache_read,
+        "estimated_input_cost": input_cost,
+        "estimated_output_cost": output,
+        "estimated_total_cost": total,
+    }
+
+
 def compute_cost_metrics(
     model_id: str,
     non_cached_input_tokens: int,
