@@ -260,7 +260,7 @@ async def test_multiple_steps(agent):
     assert step_names == ["inference-0", "inference-1"]
 
     # Each LLM parents to its own step
-    llm_parents = {l["parent_id"] for l in llms}
+    llm_parents = {llm["parent_id"] for llm in llms}
     step_ids = {s["span_id"] for s in steps}
     assert llm_parents == step_ids
 

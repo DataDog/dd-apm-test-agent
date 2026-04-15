@@ -50,6 +50,7 @@ from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
 from .llmobs_event_platform import with_cors
 
+
 log = logging.getLogger(__name__)
 
 

@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Emit step spans for pi coding agent sessions.
