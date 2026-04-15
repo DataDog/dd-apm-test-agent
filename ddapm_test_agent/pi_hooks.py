@@ -45,15 +45,6 @@ from .llmobs_event_platform import with_cors
 
 log = logging.getLogger(__name__)
 
-_MAX_CONTENT_BYTES = 128 * 1024  # 128 KB cap — mirrors the limit previously in the extension
-
-
-def _truncate(value: str, max_bytes: int = _MAX_CONTENT_BYTES) -> str:
-    """Truncate a string to max_bytes characters with a truncation notice."""
-    if len(value) <= max_bytes:
-        return value
-    return value[:max_bytes] + f"\n... (truncated, {len(value)} bytes total)"
-
 
 class PendingLLMSpan:
     """Tracks an LLM call between message_start and message_end."""
@@ -217,7 +208,6 @@ class PiHooksAPI:
                         break
         else:
             output_value = body.get("output", "")  # fallback for older extension format
-        output_value = _truncate(output_value)
 
         token_usage = self._hooks_api._compute_token_usage(session.trace_id)
         tool_usage = self._hooks_api._aggregate_tool_usage(session.trace_id)
@@ -335,10 +325,10 @@ class PiHooksAPI:
                     tool_calls.append({"id": c.get("id"), "name": c.get("name"), "arguments": c.get("arguments")})
                 elif c.get("type") == "text" and c.get("text"):
                     text_parts.append(c["text"])
-            output_text = _truncate("\n".join(text_parts))
+            output_text = "\n".join(text_parts)
         else:
             # Fallback for older extension format
-            output_text = _truncate(body.get("output_text", ""))
+            output_text = body.get("output_text", "")
             tool_calls = body.get("tool_calls", [])
 
         # Build input/output messages in LLMObs format
@@ -435,7 +425,7 @@ class PiHooksAPI:
         now_ns = int(time.time() * 1_000_000_000)
 
         # Parse args string back to dict for tool_input if possible
-        tool_input: Any = _truncate(args) if isinstance(args, str) else args
+        tool_input: Any = args
         if isinstance(tool_input, str):
             try:
                 tool_input = json.loads(tool_input)
@@ -458,7 +448,7 @@ class PiHooksAPI:
 
         tool_name = body.get("tool_name", "unknown_tool")
         tool_call_id = body.get("tool_call_id", tool_name)
-        result = _truncate(body.get("result", ""))
+        result = body.get("result", "")
         is_error = body.get("is_error", False)
 
         now_ns = int(time.time() * 1_000_000_000)

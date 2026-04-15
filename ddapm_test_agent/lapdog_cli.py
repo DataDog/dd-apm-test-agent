@@ -315,25 +315,6 @@ def _install_pi_extension() -> None:
         print(f"[lapdog] Installed pi extension → {_PI_EXT_DEST}")
 
 
-def _uninstall_pi_extension() -> None:
-    """Remove the lapdog extension if it was installed by us."""
-    if not os.path.isfile(_PI_EXT_DEST):
-        return
-    try:
-        with open(_PI_EXT_DEST, "r") as f:
-            content = f.read()
-        if "lapdog" not in content[:200]:
-            # Not our file — leave it alone.
-            return
-    except OSError:
-        pass
-    try:
-        os.remove(_PI_EXT_DEST)
-        print(f"[lapdog] Removed pi extension from {_PI_EXT_DEST}")
-    except OSError:
-        pass
-
-
 def _run_pi(args: Optional[List[str]] = None, port: int = 8126) -> None:
     """Exec the pi binary, forwarding arguments.  Never returns."""
     if args is None:

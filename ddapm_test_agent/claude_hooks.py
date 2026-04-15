@@ -146,7 +146,11 @@ class SessionState:
         self.agent_span_stack: List[Dict[str, Any]] = []
         self.pending_tools: Dict[str, PendingToolSpan] = {}
         self.user_prompts: List[str] = []
+        # Currently active model ID (updated on each model_select / agent_start).
         self.model: str = ""
+        # Ordered history of distinct models used during this session (deduplicated
+        # on append so consecutive duplicate entries are collapsed, but the
+        # sequence is preserved — a Set would lose ordering).
         self.models: List[str] = []
         self.model_provider: str = ""
         self.tools_used: Set[str] = set()
