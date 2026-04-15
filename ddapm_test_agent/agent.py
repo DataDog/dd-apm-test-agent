@@ -13,6 +13,7 @@ from pathlib import Path
 import platform
 import pprint
 import re
+import requests
 import socket
 import sys
 import threading
@@ -256,23 +257,17 @@ def default_value_trace_results_summary():
     }
 
 
-async def _is_valid_api_key_and_site_combination(dd_api_key: str, dd_site: str) -> bool:
+def _is_valid_api_key_and_site_combination(dd_api_key: str, dd_site: str) -> bool:
     """Check if the api key + site is a valid DD auth combo"""
     url = f"https://api.{dd_site}/api/v1/validate"
     headers = {
         "DD-API-KEY": dd_api_key
     }
 
-    async with ClientSession() as session:
-        async with session.get(
-            url,
-            headers=headers,
-        ) as resp:
-            if resp.status == 403:
-                return False
+    response = requests.get(url=url, headers=headers)
+    result = cast(Dict[str, bool], response.json())
 
-            result = cast(Dict[str, bool], await resp.json())
-            return result.get("valid", False)
+    return result.get("valid", False)
 
 
 class MockQuery:
@@ -1098,7 +1093,7 @@ class Agent:
             dd_api_key = data.get("dd_api_key", request.app["dd_api_key"])
             dd_site = data.get("dd_site", request.app["dd_site"])
 
-            is_valid = await _is_valid_api_key_and_site_combination(
+            is_valid = _is_valid_api_key_and_site_combination(
                 dd_api_key=dd_api_key,
                 dd_site=dd_site
             )
@@ -2023,7 +2018,14 @@ def make_app(
     app["vcr_json_body_normalizers"] = vcr_json_body_normalizers
     app["dd_site"] = dd_site
     app["dd_api_key"] = dd_api_key
+
+    if dd_api_key and dd_site and not disable_llmobs_data_forwarding:
+        valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site)
+        if not valid_auth:
+            log.warning("Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding.")
+            disable_llmobs_data_forwarding = True
     app["disable_llmobs_data_forwarding"] = disable_llmobs_data_forwarding
+
     return app
 
 
