@@ -32,7 +32,6 @@ from .claude_cost_tracker import COST_METRIC_KEYS
 from .claude_link_tracker import ClaudeLinkTracker
 from .llmobs_event_platform import with_cors
 
-
 log = logging.getLogger(__name__)
 
 _HOSTNAME = socket.gethostname()
@@ -147,7 +146,13 @@ class SessionState:
         self.agent_span_stack: List[Dict[str, Any]] = []
         self.pending_tools: Dict[str, PendingToolSpan] = {}
         self.user_prompts: List[str] = []
+        # Currently active model ID (updated on each model_select / agent_start).
         self.model: str = ""
+        # Ordered history of distinct models used during this session (deduplicated
+        # on append so consecutive duplicate entries are collapsed, but the
+        # sequence is preserved — a Set would lose ordering).
+        self.models: List[str] = []
+        self.model_provider: str = ""
         self.tools_used: Set[str] = set()
         self.root_span_emitted: bool = False
         # Deferred agent spans waiting for PostToolUse(Task) to provide their output.
@@ -341,9 +346,7 @@ class ClaudeHooksAPI:
         """Merge key-value pairs into span['meta']['metadata']['_dd'], preserving existing values."""
         span["meta"].setdefault("metadata", {}).setdefault("_dd", {}).update(kwargs)
 
-    def _set_permission_wait_critical_evaluation(
-        self, span: Dict[str, Any], estimated_permission_wait_ms: int
-    ) -> None:
+    def _set_permission_wait_critical_evaluation(self, span: Dict[str, Any], estimated_permission_wait_ms: int) -> None:
         """Embed a permission_wait_critical boolean evaluation on a span.
         The evaluation flags whether the permission wait was > 50% of span duration.
         """
@@ -358,8 +361,7 @@ class ClaudeHooksAPI:
             "assessment": assessment,
             "status": "OK",
             "reasoning": (
-                f"Permission wait {'exceeded' if is_critical else 'did not exceed'} "
-                f"50% of span duration"
+                f"Permission wait {'exceeded' if is_critical else 'did not exceed'} " f"50% of span duration"
             ),
         }
         # Also populate legacy fields so the frontend can read them
@@ -914,9 +916,7 @@ class ClaudeHooksAPI:
             )
             entry["call_count"] += 1
             entry["total_duration_ns"] += span.get("duration", 0)
-            perm_wait = (
-                span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("estimated_permission_wait_ms", 0)
-            )
+            perm_wait = span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("estimated_permission_wait_ms", 0)
             if perm_wait:
                 entry["permission_wait_count"] += 1
                 entry["permission_wait_ms"] += perm_wait
@@ -959,11 +959,10 @@ class ClaudeHooksAPI:
         )
         first_breakdown = (
             first_span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("context_breakdown")
-            if first_span else None
+            if first_span
+            else None
         )
-        last_breakdown = (
-            last_span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("context_breakdown")
-        )
+        last_breakdown = last_span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("context_breakdown")
         context_delta: Dict[str, Any] = {
             "first_input_tokens": first_input_tokens,
             "last_input_tokens": last_input_tokens,
@@ -1353,9 +1352,7 @@ class ClaudeHooksAPI:
         log.info("Resolved backend target: %s (mode=%s)", url, "agent" if agent_url else "agentless")
         return url, headers
 
-    async def _post_to_backend(
-        self, url: str, headers: Dict[str, str], data: bytes, description: str
-    ) -> None:
+    async def _post_to_backend(self, url: str, headers: Dict[str, str], data: bytes, description: str) -> None:
         """POST the given data to the url and log the outcome."""
         try:
             async with ClientSession() as http_session:
@@ -1403,9 +1400,11 @@ class ClaudeHooksAPI:
 
         # Strip locally-computed cost estimates before forwarding — let real cost tracking happen on ingestion
         forwarded_spans = [
-            {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}}
-            if s.get("metrics")
-            else s
+            (
+                {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}}
+                if s.get("metrics")
+                else s
+            )
             for s in spans
         ]
 

@@ -24,7 +24,7 @@ setup(
     long_description_content_type="text/markdown",
     license="BSD 3",
     packages=find_packages(exclude=["tests*", "releasenotes", "scripts"]),
-    package_data={"ddapm_test_agent": ["py.typed", "templates/*", "static/*", "claude_intercept.mjs"]},
+    package_data={"ddapm_test_agent": ["py.typed", "templates/*", "static/*", "claude_intercept.mjs", "pi_lapdog_extension.ts"]},
     python_requires=">=3.8",
     install_requires=[
         "aiohttp",
