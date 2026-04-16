@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Properly verifies ``DD_SITE`` and ``DD_API_KEY`` on startup if LLM Observability data forwarding is enabled, and disables it if not a valid 
