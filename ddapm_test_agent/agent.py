@@ -1108,6 +1108,15 @@ class Agent:
         for key in data:
             request.app[key] = data[key]
 
+        # save lapdog settings if valid
+        if updated_auth_meta and request.app.get("lapdog_mode", False) and request.headers.get("X-UPDATE-ORIGIN", "") == "lapdog":
+            from .lapdog_settings import save_settings
+            save_settings(
+                dd_api_key=request.app["dd_api_key"],
+                dd_site=request.app["dd_site"],
+                data_forwarding_enabled=(not request.app["disable_llmobs_data_forwarding"])
+            )
+
         log.info(f"Updated test agent settings for {','.join(data.keys())}")
 
         return web.HTTPAccepted(headers=headers)
@@ -1885,6 +1894,7 @@ def make_app(
     dd_api_key: Optional[str],
     disable_llmobs_data_forwarding: bool,
     enable_web_ui: bool = False,
+    lapdog_mode: bool = False,
 ) -> web.Application:
     agent = Agent()
 
@@ -2022,8 +2032,9 @@ def make_app(
     app["vcr_json_body_normalizers"] = vcr_json_body_normalizers
     app["dd_site"] = dd_site
     app["dd_api_key"] = dd_api_key
+    app["lapdog_mode"] = lapdog_mode
 
-    if dd_api_key and dd_site and not disable_llmobs_data_forwarding:
+    if lapdog_mode and dd_api_key and dd_site and not disable_llmobs_data_forwarding:
         valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site)
         if not valid_auth:
             log.warning("Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding.")
@@ -2352,7 +2363,7 @@ def main(args: Optional[List[str]] = None) -> None:
         help="Datadog API key to use for the agent. Example: --dd-api-key=1234567890",
     )
     parser.add_argument(
-        "--disable-llmobs-data-forwarding",
+        "--disable-llmobs-data-forwarding",  # TODO: change this to `--enable-llmobs-data-forwarding`
         action="store_true",
         default=os.environ.get("DISABLE_LLMOBS_DATA_FORWARDING", "").lower() in ("true", "1", "yes"),
         help="Disable data forwarding to Datadog.",
@@ -2362,6 +2373,11 @@ def main(args: Optional[List[str]] = None) -> None:
         action="store_true",
         default=os.environ.get("ENABLE_CLAUDE_CODE_HOOKS", "").lower() in ("true", "1", "yes"),
         help="Enable writing Claude Code hooks to ~/.claude/settings.json",
+    )
+    parser.add_argument(
+        "--lapdog-mode",
+        action="store_true",
+        default=False,
     )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
@@ -2414,6 +2430,7 @@ def main(args: Optional[List[str]] = None) -> None:
         dd_api_key=parsed_args.dd_api_key,
         disable_llmobs_data_forwarding=parsed_args.disable_llmobs_data_forwarding,
         enable_web_ui=parsed_args.web_ui_port > 0,
+        lapdog_mode=parsed_args.lapdog_mode,
     )
 
     # Validate port configuration

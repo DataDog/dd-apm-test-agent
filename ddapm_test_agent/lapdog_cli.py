@@ -11,6 +11,8 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
+from lapdog_settings import load_settings
+
 import requests
 
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi"]
@@ -105,14 +107,23 @@ def _remove_pid_file() -> None:
             pass
 
 
-def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False) -> None:
+def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: Optional[bool] = None) -> None:
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    args = [sys.executable, "-m", "ddapm_test_agent.agent", "--enable-claude-code-hooks"]
+    args = [sys.executable, "-m", "ddapm_test_agent.agent", "--enable-claude-code-hooks", "--lapdog-mode"]
+
+    dd_api_key, dd_site, data_forwarding_enabled = load_settings()
+    forward_data = data_forwarding_enabled if forward_data is None else forward_data
 
     if not forward_data:
         args.append("--disable-llmobs-data-forwarding")
+
+    # TODO: what if DD_API_KEY/--dd-api-key or site are already set?
+    if dd_api_key:
+        args += ["--dd-api-key", dd_api_key]
+    if dd_site:
+        args += ["--dd-site", dd_site]
 
     if extra_args:
         args += extra_args
@@ -173,7 +184,7 @@ def _run_claude(args: Optional[List[str]] = None) -> None:
     os.execv(claude_bin, [claude_bin] + args)
 
 
-def cmd_start(sub_cmd_args: List[str], forward_data: bool) -> None:
+def cmd_start(sub_cmd_args: List[str], forward_data: Optional[bool]) -> None:
     """Start lapdog in background with Claude hooks enabled."""
     if _lapdog_alive():
         pid, port = _read_pid_file()
@@ -223,7 +234,7 @@ def cmd_status() -> None:
         sys.exit(1)
 
 
-def _start_lapdog_detached(port: int, forward_data: bool) -> None:
+def _start_lapdog_detached(port: int, forward_data: Optional[bool]) -> None:
     """Start lapdog in a forked child so it is not a child of the calling process.
 
     After os.execv replaces the current process with pi/claude, lapdog must not
@@ -255,7 +266,7 @@ def _start_lapdog_detached(port: int, forward_data: bool) -> None:
     # refused that would make a re-check flaky.
 
 
-def cmd_claude(sub_cmd_args: List[str], forward_data: bool) -> None:
+def cmd_claude(sub_cmd_args: List[str], forward_data: Optional[bool]) -> None:
     """Ensure lapdog is running in background, then launch Claude with intercept."""
     if not _lapdog_alive():
         port = _resolved_port()
@@ -327,7 +338,7 @@ def _run_pi(args: Optional[List[str]] = None, port: int = 8126) -> None:
     os.execve(pi_bin, [pi_bin] + args, env)
 
 
-def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
+def cmd_pi(sub_cmd_args: List[str], forward_data: Optional[bool]) -> None:
     """Ensure lapdog is running, install the pi extension, then launch pi."""
     port = _resolved_port()
 
@@ -368,7 +379,7 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
     parser.add_argument(
         "--forward",
         action="store_true",
-        default=False,
+        default=None,
         help="Enable data forwarding to Datadog.",
     )
 
