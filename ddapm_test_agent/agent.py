@@ -1068,7 +1068,7 @@ class Agent:
 
         headers: Dict[str, str] = {
             "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Headers": "Content-Type, X-UPDATE-ORIGIN",
             "Vary": "Origin",
         }
         origin = request.headers.get("Origin", "")
@@ -1108,14 +1108,23 @@ class Agent:
         for key in data:
             request.app[key] = data[key]
 
-        # save lapdog settings if valid
-        if updated_auth_meta and request.app.get("lapdog_mode", False) and request.headers.get("X-UPDATE-ORIGIN", "") == "lapdog":
+        # update lapdog_authenticated after a successful auth update
+        if updated_auth_meta and request.app.get("lapdog_mode", False):
+            request.app["lapdog_authenticated"] = True
+
+        lapdog_header = request.headers.get("X-UPDATE-ORIGIN", "") == "lapdog"
+        # save lapdog settings if valid auth updated
+        if updated_auth_meta and request.app.get("lapdog_mode", False) and lapdog_header:
             from .lapdog_settings import save_settings
             save_settings(
                 dd_api_key=request.app["dd_api_key"],
                 dd_site=request.app["dd_site"],
                 data_forwarding_enabled=(not request.app["disable_llmobs_data_forwarding"])
             )
+        # save forwarding preference if only that changed
+        elif "disable_llmobs_data_forwarding" in data and not updated_auth_meta and request.app.get("lapdog_mode", False) and lapdog_header:
+            from .lapdog_settings import save_settings
+            save_settings(data_forwarding_enabled=(not request.app["disable_llmobs_data_forwarding"]))
 
         log.info(f"Updated test agent settings for {','.join(data.keys())}")
 
@@ -1158,6 +1167,7 @@ class Agent:
                 "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
                 "span_events": True,  # Advertise support for the top-level Span field for Span Events
                 "llmobs_data_forwarding": not request.app["disable_llmobs_data_forwarding"] and request.app["dd_api_key"] and request.app["dd_site"],  # api key and site not empty strings
+                "lapdog_authenticated": request.app.get("lapdog_authenticated", False),
             },
             headers=headers,
         )
@@ -2034,12 +2044,15 @@ def make_app(
     app["dd_api_key"] = dd_api_key
     app["lapdog_mode"] = lapdog_mode
 
-    if lapdog_mode and dd_api_key and dd_site and not disable_llmobs_data_forwarding:
+    lapdog_authenticated = False
+    if lapdog_mode and dd_api_key and dd_site:
         valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site)
-        if not valid_auth:
+        lapdog_authenticated = valid_auth
+        if not valid_auth and not disable_llmobs_data_forwarding:
             log.warning("Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding.")
             disable_llmobs_data_forwarding = True
     app["disable_llmobs_data_forwarding"] = disable_llmobs_data_forwarding
+    app["lapdog_authenticated"] = lapdog_authenticated
 
     return app
 
