@@ -207,9 +207,7 @@ async def test_query_scalar_group_by_kind(agent, llmobs_payload):
                     "indexes": ["llmobs"],
                     "search": {"query": ""},
                     "compute": {"aggregation": "count"},
-                    "group_by": [
-                        {"facet": "@meta.span.kind", "limit": 10, "sort": {"order": "desc"}}
-                    ],
+                    "group_by": [{"facet": "@meta.span.kind", "limit": 10, "sort": {"order": "desc"}}],
                 }
             ]
         ),

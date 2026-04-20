@@ -517,28 +517,14 @@ def _build_trace_aggregates(
             )
             for span in trace_spans
         )
-        number_of_errors = sum(
-            1 for span in trace_spans if span.get("status") == "error"
-        )
+        number_of_errors = sum(1 for span in trace_spans if span.get("status") == "error")
         result[tid] = {
             "num_evaluations_failed": num_evaluations_failed,
             "number_of_errors": number_of_errors,
-            "input_tokens": sum(
-                span.get("metrics", {}).get("input_tokens", 0)
-                for span in trace_spans
-            ),
-            "output_tokens": sum(
-                span.get("metrics", {}).get("output_tokens", 0)
-                for span in trace_spans
-            ),
-            "total_tokens": sum(
-                span.get("metrics", {}).get("total_tokens", 0)
-                for span in trace_spans
-            ),
-            "estimated_total_cost": sum(
-                span.get("metrics", {}).get("estimated_total_cost", 0)
-                for span in trace_spans
-            ),
+            "input_tokens": sum(span.get("metrics", {}).get("input_tokens", 0) for span in trace_spans),
+            "output_tokens": sum(span.get("metrics", {}).get("output_tokens", 0) for span in trace_spans),
+            "total_tokens": sum(span.get("metrics", {}).get("total_tokens", 0) for span in trace_spans),
+            "estimated_total_cost": sum(span.get("metrics", {}).get("estimated_total_cost", 0) for span in trace_spans),
         }
     return result
 
@@ -555,7 +541,7 @@ def _resolve_field_value(
 
     ``@trace.*`` paths are served from pre-computed per-trace aggregates
     (mirrors what the production query rewriter does via Trino). All other
-    paths fall back to :func:`get_span_field_value`.
+    paths fall back to ``get_span_field_value``.
     """
     if not field:
         return None
@@ -564,7 +550,7 @@ def _resolve_field_value(
         agg = trace_aggregates.get(span.get("trace_id", ""))
         if not agg:
             return None
-        return agg.get(stripped[len("trace."):])
+        return agg.get(stripped[len("trace.") :])
     return get_span_field_value(span, stripped)
 
 
@@ -578,6 +564,7 @@ def _filter_spans_by_time_ms(
     Either bound may be ``None``/missing, in which case that side of the
     window is open. Values that don't parse as numbers are ignored.
     """
+
     def _to_ns(value: Any) -> Optional[int]:
         try:
             return int(float(value)) * 1_000_000
@@ -741,7 +728,7 @@ def _query_column_name(query: Dict[str, Any]) -> str:
     name = query.get("name")
     if name:
         return str(name)
-    agg = spec["aggregation"]
+    agg = str(spec["aggregation"])
     metric = spec["metric"]
     return f"{agg}({metric})" if metric else agg
 
@@ -814,10 +801,7 @@ def _build_scalar_columns(
     first_spans = supported_spans_by_query[0]
 
     def _group_key(span: Dict[str, Any]) -> tuple:  # type: ignore[type-arg]
-        return tuple(
-            str(_resolve_field_value(span, gd["field"], trace_aggregates) or "")
-            for gd in group_defs
-        )
+        return tuple(str(_resolve_field_value(span, gd["field"], trace_aggregates) or "") for gd in group_defs)
 
     buckets: Dict[tuple, List[Dict[str, Any]]] = {}  # type: ignore[type-arg]
     order: List[tuple] = []  # type: ignore[type-arg]
@@ -1240,7 +1224,9 @@ class LLMObsEventPlatformAPI:
                         output = cfg.get("output", "")
                         columns = cfg.get("columns", [])
                         sort_cfg = cfg.get("sort", {})
-                        sort_order = sort_cfg.get("time", {}).get("order", "desc") if isinstance(sort_cfg, dict) else "desc"
+                        sort_order = (
+                            sort_cfg.get("time", {}).get("order", "desc") if isinstance(sort_cfg, dict) else "desc"
+                        )
                         sorted_spans = group_spans if sort_order == "desc" else list(reversed(group_spans))
                         rows = []
                         for s in sorted_spans:
