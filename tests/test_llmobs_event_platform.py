@@ -355,6 +355,30 @@ async def test_query_scalar_multi_request(agent, llmobs_payload):
     assert data["data"][1]["attributes"]["columns"][0]["values"] == [45.0]
 
 
+async def test_query_scalar_trace_rollup_metric(agent, llmobs_payload):
+    # Fixture has 2 spans on the same trace with token counts 30 and 15.
+    # @trace.total_tokens rolls up per-trace: sum across spans = 45, but
+    # because both spans share trace-123, sum(@trace.total_tokens) over all
+    # spans must dedupe to 45 (not 90).
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "query1",
+                    "data_source": "llm_observability",
+                    "indexes": ["llmobs"],
+                    "compute": {"aggregation": "sum", "metric": "@trace.total_tokens"},
+                }
+            ]
+        ),
+    )
+    data = await resp.json()
+    cols = data["data"][0]["attributes"]["columns"]
+    assert cols[0]["values"] == [45.0]
+
+
 async def test_query_scalar_formulas_reference_query(agent, llmobs_payload):
     await _submit_llmobs_payload(agent, llmobs_payload)
     resp = await agent.post(

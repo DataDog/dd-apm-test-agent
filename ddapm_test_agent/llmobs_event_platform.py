@@ -546,6 +546,28 @@ def _build_trace_aggregates(
 _LLMOBS_SCALAR_DATA_SOURCES = {"llm_observability", "llm_observability_stream"}
 
 
+def _resolve_field_value(
+    span: Dict[str, Any],
+    field: Optional[str],
+    trace_aggregates: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Optional[Any]:
+    """Resolve a facet path, with trace-level rollup support.
+
+    ``@trace.*`` paths are served from pre-computed per-trace aggregates
+    (mirrors what the production query rewriter does via Trino). All other
+    paths fall back to :func:`get_span_field_value`.
+    """
+    if not field:
+        return None
+    stripped = field.lstrip("@")
+    if stripped.startswith("trace.") and trace_aggregates is not None:
+        agg = trace_aggregates.get(span.get("trace_id", ""))
+        if not agg:
+            return None
+        return agg.get(stripped[len("trace."):])
+    return get_span_field_value(span, stripped)
+
+
 def _filter_spans_by_time_ms(
     spans: List[Dict[str, Any]],
     from_ms: Optional[Any],
@@ -590,12 +612,17 @@ def _scalar_compute(
     spans: List[Dict[str, Any]],
     aggregation: str,
     metric_field: Optional[str],
+    trace_aggregates: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> float:
     """Compute a single scalar value for a list of spans.
 
     Supported aggregations: ``count``, ``cardinality``, ``sum``, ``avg``,
     ``min``, ``max``, ``median``, ``pc75``/``pc90``/``pc95``/``pc99``,
     ``latest``, ``earliest``. Unknown aggregations return ``0.0``.
+
+    When ``metric_field`` is a ``@trace.*`` path, spans are deduplicated by
+    ``trace_id`` before aggregation so trace-rollup metrics aren't
+    multi-counted.
     """
     agg = (aggregation or "count").lower()
 
@@ -605,25 +632,39 @@ def _scalar_compute(
     if not metric_field:
         return 0.0
     field = metric_field.lstrip("@")
+    is_trace_field = field.startswith("trace.")
+
+    # Trace-level rollups are one value per trace; dedupe before aggregating.
+    source_spans: List[Dict[str, Any]] = spans
+    if is_trace_field:
+        seen_traces: set = set()  # type: ignore[type-arg]
+        deduped: List[Dict[str, Any]] = []
+        for s in spans:
+            tid = s.get("trace_id", "")
+            if tid in seen_traces:
+                continue
+            seen_traces.add(tid)
+            deduped.append(s)
+        source_spans = deduped
 
     if agg == "cardinality":
         seen = set()
-        for s in spans:
-            v = get_span_field_value(s, field)
+        for s in source_spans:
+            v = _resolve_field_value(s, field, trace_aggregates)
             if v is not None:
                 seen.add(v)
         return float(len(seen))
 
     if agg in ("latest", "earliest"):
-        if not spans:
+        if not source_spans:
             return 0.0
         # get_llmobs_spans sorts desc by start_ns; first = latest, last = earliest.
-        pick = spans[0] if agg == "latest" else spans[-1]
-        return _coerce_float(get_span_field_value(pick, field)) or 0.0
+        pick = source_spans[0] if agg == "latest" else source_spans[-1]
+        return _coerce_float(_resolve_field_value(pick, field, trace_aggregates)) or 0.0
 
     values: List[float] = []
-    for s in spans:
-        fv = _coerce_float(get_span_field_value(s, field))
+    for s in source_spans:
+        fv = _coerce_float(_resolve_field_value(s, field, trace_aggregates))
         if fv is not None:
             values.append(fv)
 
@@ -709,6 +750,7 @@ def _build_scalar_columns(
     spans: List[Dict[str, Any]],
     queries: List[Dict[str, Any]],
     formulas: List[Dict[str, Any]],
+    trace_aggregates: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Build the ``columns`` array for a single scalar_response.
 
@@ -731,6 +773,9 @@ def _build_scalar_columns(
         else:
             supported_spans_by_query.append([])
 
+    def _compute(spans_: List[Dict[str, Any]], spec: Dict[str, Any]) -> float:
+        return _scalar_compute(spans_, spec["aggregation"], spec["metric"], trace_aggregates)
+
     # Group-by based on the first query's dimensions.
     group_defs = _query_group_by_fields(queries[0])
     columns: List[Dict[str, Any]] = []
@@ -740,7 +785,7 @@ def _build_scalar_columns(
         number_values_by_query: Dict[str, float] = {}
         for i, q in enumerate(queries):
             spec = _query_compute_spec(q)
-            val = _scalar_compute(supported_spans_by_query[i], spec["aggregation"], spec["metric"])
+            val = _compute(supported_spans_by_query[i], spec)
             number_values_by_query[str(q.get("name") or f"query{i + 1}")] = val
             if not formulas:
                 columns.append(
@@ -770,7 +815,8 @@ def _build_scalar_columns(
 
     def _group_key(span: Dict[str, Any]) -> tuple:  # type: ignore[type-arg]
         return tuple(
-            str(get_span_field_value(span, gd["field"]) or "") for gd in group_defs
+            str(_resolve_field_value(span, gd["field"], trace_aggregates) or "")
+            for gd in group_defs
         )
 
     buckets: Dict[tuple, List[Dict[str, Any]]] = {}  # type: ignore[type-arg]
@@ -784,10 +830,7 @@ def _build_scalar_columns(
 
     # Sort by first query's compute (descending by default) so the biggest groups win.
     primary_spec = _query_compute_spec(queries[0])
-    primary_values = {
-        k: _scalar_compute(buckets[k], primary_spec["aggregation"], primary_spec["metric"])
-        for k in order
-    }
+    primary_values = {k: _compute(buckets[k], primary_spec) for k in order}
     sort_order = group_defs[0]["sort_order"]
     order.sort(key=lambda k: primary_values[k], reverse=(sort_order == "desc"))
 
@@ -820,9 +863,7 @@ def _build_scalar_columns(
             k = _group_key(s)
             if k in qbuckets:
                 qbuckets[k].append(s)
-        per_query_values.append(
-            [_scalar_compute(qbuckets[k], spec["aggregation"], spec["metric"]) for k in order]
-        )
+        per_query_values.append([_compute(qbuckets[k], spec) for k in order])
 
     if formulas:
         name_to_idx = {str(q.get("name") or f"query{i + 1}"): i for i, q in enumerate(queries)}
@@ -1603,6 +1644,10 @@ class LLMObsEventPlatformAPI:
             )
 
         all_spans = self.get_llmobs_spans()
+        # Pre-compute @trace.* rollups once over the unscoped span set. The UI
+        # sums/avgs these values per trace (a trace’s rollup is identical
+        # regardless of time window), so computing once is correct and cheaper.
+        trace_aggregates = _build_trace_aggregates(all_spans)
         out: List[Dict[str, Any]] = []
 
         for req in requests:
@@ -1612,7 +1657,9 @@ class LLMObsEventPlatformAPI:
             attrs = req.get("attributes") or {}
             queries = attrs.get("queries") or []
             scoped = _filter_spans_by_time_ms(all_spans, attrs.get("from"), attrs.get("to"))
-            columns = _build_scalar_columns(scoped, queries, attrs.get("formulas") or [])
+            columns = _build_scalar_columns(
+                scoped, queries, attrs.get("formulas") or [], trace_aggregates=trace_aggregates
+            )
             out.append(
                 {
                     "type": "scalar_response",
