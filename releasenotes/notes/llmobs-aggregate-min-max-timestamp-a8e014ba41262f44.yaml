@@ -1,0 +1,14 @@
+---
+fixes:
+  - |
+    llmobs: support ``min``/``max``/``sum``/``avg`` aggregations on the
+    ``/api/v1/logs-analytics/aggregate`` endpoint and expose ``timestamp``
+    (``start_ns`` in milliseconds) as a resolvable field so the static app's
+    sessions table can compute session duration. Also fixes ``earliest`` /
+    ``latest`` so a value of ``0`` is no longer collapsed to an empty string.
+  - |
+    llmobs: stop rolling up aggregated ``token_usage`` onto the root (agent)
+    span's ``metrics`` dict from the claude and pi hook handlers. The trace
+    aggregate builder sums ``metrics.total_tokens`` across every span in the
+    trace, so writing the rollup on the root caused session-table token totals
+    to double-count relative to the per-span values.
