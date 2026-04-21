@@ -1642,9 +1642,15 @@ class LLMObsEventPlatformAPI:
                 continue
             attrs = req.get("attributes") or {}
             queries = attrs.get("queries") or []
-            scoped = _filter_spans_by_time_ms(all_spans, attrs.get("from"), attrs.get("to"))
+            # Intentionally ignore the request's ``from``/``to`` window. The
+            # sibling list/aggregate endpoints (handle_logs_analytics_list,
+            # handle_aggregate) return spans regardless of time, so callers
+            # like the LLMObs Sessions table see rows for older sessions even
+            # when the UI sends a short (e.g. 15m) window. Filtering here
+            # would make scalar aggregates (cost, tokens) come back empty
+            # for exactly those rows — the bug this file used to have.
             columns = _build_scalar_columns(
-                scoped, queries, attrs.get("formulas") or [], trace_aggregates=trace_aggregates
+                all_spans, queries, attrs.get("formulas") or [], trace_aggregates=trace_aggregates
             )
             out.append(
                 {
