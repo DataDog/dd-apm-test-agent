@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Attaches the proper session id for Claude Code LLM spans
