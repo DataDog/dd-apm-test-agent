@@ -248,9 +248,12 @@ async def test_query_scalar_avg_duration(agent, llmobs_payload):
     assert cols[0]["values"] == [3_500_000_000.0]
 
 
-async def test_query_scalar_time_filter_excludes_spans(agent, llmobs_payload):
+async def test_query_scalar_ignores_time_window(agent, llmobs_payload):
+    # The sibling list/aggregate endpoints return spans regardless of the
+    # UI's time window, so the scalar endpoint must do the same — otherwise
+    # the LLMObs Sessions table renders rows with blank cost / token columns
+    # for any session older than the UI's (short) timeframe.
     await _submit_llmobs_payload(agent, llmobs_payload)
-    # Window entirely in the past — should exclude all fixture spans (start_ns = now).
     resp = await agent.post(
         "/api/ui/query/scalar",
         json=_scalar_request(
@@ -267,7 +270,7 @@ async def test_query_scalar_time_filter_excludes_spans(agent, llmobs_payload):
         ),
     )
     data = await resp.json()
-    assert data["data"][0]["attributes"]["columns"][0]["values"] == [0.0]
+    assert data["data"][0]["attributes"]["columns"][0]["values"] == [2.0]
 
 
 async def test_query_scalar_search_query_filters(agent, llmobs_payload):
