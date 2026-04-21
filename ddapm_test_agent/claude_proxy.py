@@ -621,8 +621,6 @@ class ClaudeProxyAPI:
         except json.JSONDecodeError:
             pass
 
-        log.info(f"REQUEST BODY IS {json.dumps(request_body, indent=2)}")
-
         is_streaming = request_body.get("stream", False)
 
         headers = {key: value for key, value in request.headers.items() if key.lower() not in SKIP_REQUEST_HEADERS}
