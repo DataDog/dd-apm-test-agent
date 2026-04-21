@@ -419,7 +419,6 @@ class ClaudeHooksAPI:
                 None,
             )
 
-        token_usage = self._compute_token_usage(session.trace_id)
         input_value = "\n\n".join(session.user_prompts) if session.user_prompts else ""
 
         if root_span:
@@ -429,7 +428,11 @@ class ClaudeHooksAPI:
             root_span["meta"]["error"] = {"message": "interrupted by user"}
             root_span["meta"]["model_name"] = session.model
             root_span["meta"]["model_provider"] = "anthropic"
-            root_span["metrics"] = token_usage
+            # Do not roll token_usage up onto root_span["metrics"] —
+            # production stores trace rollups in a separate `@trace.*`
+            # document, not on the root span. Mirroring it here caused
+            # `_build_trace_aggregates` to double-count tokens (root's
+            # rollup + each LLM span's own value).
 
         session.root_span_emitted = True
         log.info("Finalized interrupted turn for session %s (trace %s)", session.session_id, session.trace_id)
@@ -1011,8 +1014,6 @@ class ClaudeHooksAPI:
                 (s for s in self._assembled_spans if s.get("span_id") == session.root_span_id),
                 None,
             )
-        # Compute aggregate token usage from LLM spans in this trace
-        token_usage = self._compute_token_usage(session.trace_id)
         tool_usage = self._aggregate_tool_usage(session.trace_id)
         context_delta = self._compute_context_delta(
             session.trace_id, session.root_span_id, session.last_known_input_tokens
@@ -1051,7 +1052,8 @@ class ClaudeHooksAPI:
             if tool_usage:
                 dd_fields["tool_usage"] = tool_usage
             self._set_hidden_metadata(root_span, **dd_fields)
-            root_span["metrics"] = token_usage
+            # See comment above: skip the root-span metrics rollup to
+            # avoid double-counting in `_build_trace_aggregates`.
         else:
             # No eagerly-emitted root span found — create one as fallback
             root_span = {
@@ -1089,7 +1091,7 @@ class ClaudeHooksAPI:
                         "model_provider": "anthropic",
                     },
                 },
-                "metrics": token_usage,
+                # Intentionally no "metrics" key — see comment above.
             }
             dd_fields = {"agent_manifest": agent_manifest}
             if context_delta:

@@ -406,7 +406,6 @@ class PiHooksAPI:
         else:
             output_value = body.get("output", "")  # fallback for older extension format
 
-        token_usage = self._hooks_api._compute_token_usage(session.trace_id)
         tool_usage = self._hooks_api._aggregate_tool_usage(session.trace_id)
 
         root_span: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
@@ -423,7 +422,10 @@ class PiHooksAPI:
             root_span["meta"]["model_name"] = session.model
             root_span["meta"]["model_provider"] = session.model_provider
             root_span["meta"].setdefault("metadata", {})["models_used"] = session.models[:]
-            root_span["metrics"] = token_usage
+            # Do not roll token_usage up onto root_span["metrics"] —
+            # production stores trace rollups in a separate `@trace.*`
+            # document, not on the root span. Mirroring it here caused
+            # `_build_trace_aggregates` to double-count tokens.
             dd_fields: Dict[str, Any] = {}
             if tool_usage:
                 dd_fields["tool_usage"] = tool_usage
@@ -471,7 +473,7 @@ class PiHooksAPI:
                     "model_provider": session.model_provider,
                     "metadata": {"models_used": session.models[:]},
                 },
-                "metrics": token_usage,
+                # Intentionally no "metrics" key — see comment above.
             }
             self._append_span(root_span)
 
