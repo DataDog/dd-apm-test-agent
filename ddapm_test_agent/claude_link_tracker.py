@@ -12,7 +12,6 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
-
 log = logging.getLogger(__name__)
 
 
@@ -152,11 +151,13 @@ class ClaudeLinkTracker:
         self._llm_span_parents[llm_span_id] = parent_span_id
 
     def get_parent_for_tool(self, tool_use_id: str) -> Optional[str]:
-        """Resolve the parent agent for a tool via: tool_use_id → LLM span → agent parent.
+        """Resolve the parent for a tool via: tool_use_id → LLM span → recorded parent.
 
         When an LLM response emits tool_use blocks, on_llm_tool_choice records which
         LLM span produced each tool_use_id.  This method walks that chain to find the
-        agent span that the LLM (and therefore the tool) belongs to.
+        span that the LLM (and therefore the tool) belongs to — either the agent span
+        directly, or a ``step`` span nested under the agent (when step tracking is
+        active for the session).
         """
         tc = self._tool_calls.get(tool_use_id)
         if not tc:

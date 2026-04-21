@@ -215,6 +215,12 @@ async def test_hook_tool_use_creates_tool_span(agent):
     root_spans = [s for s in spans if s["parent_id"] == "undefined"]
     assert len(root_spans) == 1
 
+    # Non-instrumented sessions (default) don't produce step spans — the tool
+    # parents directly to the root agent.
+    step_spans = [s for s in spans if s["meta"]["span"]["kind"] == "step"]
+    assert step_spans == []
+    assert tool["parent_id"] == root_spans[0]["span_id"]
+
 
 async def test_hook_subagent_creates_nested_agent(agent):
     session_id = "sess-subagent"

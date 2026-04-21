@@ -1,0 +1,11 @@
+---
+features:
+  - |
+    claude hooks: Insert a ``step`` span between the agent span and its
+    ``llm``/``tool`` children for instrumented Claude Code sessions. Each
+    step represents one inference cycle (one LLM call plus the tools it
+    dispatches), is named ``inference-{N}`` per agent, carries the
+    ``trajectory.semantic_type:agent_message`` tag, and stores
+    ``message_index``, ``tool_use_ids``, ``stop_reason``, and
+    ``has_thinking`` in ``meta.metadata``. Non-instrumented sessions
+    (no LLM proxy) are unchanged.

@@ -135,6 +135,33 @@ class PendingToolSpan:
         self.start_ns = start_ns
 
 
+class ActiveStep:
+    """Tracks the currently open step span for one agent stack frame.
+
+    A step represents a single inference cycle: one LLM call plus the tools
+    it dispatches. Finalized when the next LLM call arrives on the same
+    agent, or when the agent itself terminates.
+    """
+
+    def __init__(
+        self,
+        span_id: str,
+        parent_id: str,
+        start_ns: int,
+        message_index: int,
+        span_ref: Dict[str, Any],
+    ) -> None:
+        self.span_id = span_id
+        self.parent_id = parent_id
+        self.start_ns = start_ns
+        self.message_index = message_index
+        self.span_ref = span_ref
+        self.output_text: str = ""
+        self.tool_use_ids: List[str] = []
+        self.has_thinking: bool = False
+        self.stop_reason: str = ""
+
+
 class SessionState:
     """Tracks the state of a single Claude Code session."""
 
@@ -171,6 +198,11 @@ class SessionState:
         self.pending_permission_at_ns: Optional[int] = None
         # whether the session is instrumented with the claude_intercept.mjs script for LLM calls
         self.instrumented = False
+        # Per-agent-frame active step (keyed by agent span_id).
+        self.active_steps_by_agent: Dict[str, "ActiveStep"] = {}
+        # Per-agent 0-based inference counter. Persists after a step finalizes so
+        # consecutive steps on the same agent get consecutive indexes.
+        self.step_index_by_agent: Dict[str, int] = {}
 
 
 _MAX_UINT_64 = (1 << 64) - 1
@@ -368,6 +400,150 @@ class ClaudeHooksAPI:
         span.setdefault("evaluations", {}).setdefault("custom", {})["permission_wait_critical"] = is_critical
         span.setdefault("evaluation_assessments", {}).setdefault("custom", {})["permission_wait_critical"] = assessment
 
+    def _start_step_for_llm(
+        self,
+        session: SessionState,
+        llm_span_id: str,
+        agent_parent_id: str,
+        llm_start_ns: int,
+    ) -> ActiveStep:
+        """Open a new step span for a just-created LLM call.
+
+        Finalizes any prior active step on the same agent frame first so
+        sibling steps don't overlap (prior step ends at the new LLM's
+        start_ns). Also routes downstream tool spans to the step by
+        registering ``llm_span_id -> step_span_id`` on the link tracker.
+        """
+        prior = session.active_steps_by_agent.get(agent_parent_id)
+        if prior is not None:
+            self._finalize_step(session, prior, end_ns=llm_start_ns)
+
+        message_index = session.step_index_by_agent.get(agent_parent_id, 0)
+        session.step_index_by_agent[agent_parent_id] = message_index + 1
+
+        step_span_id = _format_span_id()
+        step_span: Dict[str, Any] = {
+            "span_id": step_span_id,
+            "trace_id": session.trace_id,
+            "parent_id": agent_parent_id,
+            "name": f"inference-{message_index}",
+            "status": "ok",
+            "start_ns": llm_start_ns,
+            "duration": 0,
+            "ml_app": _ML_APP,
+            "service": _ML_APP,
+            "env": "local",
+            "session_id": session.session_id,
+            "tags": [
+                f"ml_app:{_ML_APP}",
+                f"session_id:{session.session_id}",
+                f"service:{_ML_APP}",
+                "env:local",
+                "source:claude-code-hooks",
+                "language:python",
+                f"hostname:{_HOSTNAME}",
+                "trajectory.semantic_type:agent_message",
+            ],
+            "meta": {
+                "span": {"kind": "step"},
+                "input": {},
+                "output": {"value": ""},
+                "metadata": {},
+            },
+            "metrics": {},
+        }
+        self._assembled_spans.append(step_span)
+
+        active = ActiveStep(
+            span_id=step_span_id,
+            parent_id=agent_parent_id,
+            start_ns=llm_start_ns,
+            message_index=message_index,
+            span_ref=step_span,
+        )
+        session.active_steps_by_agent[agent_parent_id] = active
+
+        # Route future tool parent lookups (via tool_use_id -> llm_span_id -> parent)
+        # to the step span rather than the agent span.
+        if self._link_tracker is not None:
+            self._link_tracker.set_llm_parent(llm_span_id, step_span_id)
+
+        return active
+
+    def _finalize_step(
+        self,
+        session: SessionState,
+        active: ActiveStep,
+        end_ns: int,
+        status: str = "ok",
+        error_message: str = "",
+    ) -> None:
+        """Populate the step span's duration, output, metadata, and status."""
+        duration = max(0, end_ns - active.start_ns)
+        span = active.span_ref
+        span["duration"] = duration
+        span["status"] = status
+        span["meta"]["output"]["value"] = active.output_text
+        metadata = span["meta"].setdefault("metadata", {})
+        metadata["message_index"] = active.message_index
+        metadata["tool_use_ids"] = list(active.tool_use_ids)
+        metadata["has_thinking"] = active.has_thinking
+        metadata["stop_reason"] = active.stop_reason
+        if status == "error" and error_message:
+            span["meta"]["error"] = {"message": error_message}
+
+        # Remove from the active map so subsequent finalize calls are no-ops.
+        existing = session.active_steps_by_agent.get(active.parent_id)
+        if existing is active:
+            session.active_steps_by_agent.pop(active.parent_id, None)
+
+    def _finalize_all_steps_for_agent(
+        self,
+        session: SessionState,
+        agent_span_id: str,
+        end_ns: int,
+        status: str = "ok",
+        error_message: str = "",
+    ) -> None:
+        """Finalize the open step (if any) for the given agent frame."""
+        active = session.active_steps_by_agent.get(agent_span_id)
+        if active is not None:
+            self._finalize_step(session, active, end_ns=end_ns, status=status, error_message=error_message)
+
+    def _update_step_from_llm_response(
+        self,
+        active: ActiveStep,
+        response_data: Dict[str, Any],
+    ) -> None:
+        """Populate step metadata from an Anthropic Messages API response."""
+        content = response_data.get("content", []) or []
+        text_parts: List[str] = []
+        tool_use_ids: List[str] = []
+        has_thinking = False
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type", "")
+            if btype == "text":
+                text = block.get("text", "")
+                if text:
+                    text_parts.append(text)
+            elif btype == "tool_use":
+                tool_id = block.get("id", "")
+                if tool_id:
+                    tool_use_ids.append(tool_id)
+            elif btype == "thinking":
+                has_thinking = True
+        if text_parts:
+            active.output_text = "\n\n".join(text_parts)
+        if tool_use_ids:
+            active.tool_use_ids = tool_use_ids
+        if has_thinking:
+            active.has_thinking = True
+        stop_reason = response_data.get("stop_reason", "")
+        if stop_reason:
+            active.stop_reason = stop_reason
+
     def _handle_session_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SessionStart hook event."""
         session = self._get_or_create_session(session_id)
@@ -395,6 +571,12 @@ class ClaudeHooksAPI:
         root_span_ref: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
         if root_span_ref is not None and root_span_ref["duration"] == -1:
             root_span_ref["duration"] = 0
+
+        # Finalize any in-progress step spans before tearing down their agents.
+        for active in list(session.active_steps_by_agent.values()):
+            self._finalize_step(session, active, end_ns=now_ns, status="error", error_message="interrupted")
+        session.active_steps_by_agent.clear()
+        session.step_index_by_agent.clear()
 
         # Finalize any in-progress subagent spans on the stack
         while session.agent_span_stack:
@@ -463,6 +645,8 @@ class ClaudeHooksAPI:
             session.deferred_agent_spans = {}
             session.claimed_task_tools = set()
             session.active_agents = {}
+            session.active_steps_by_agent = {}
+            session.step_index_by_agent = {}
             # Don't reset conversation_title — it persists across turns so
             # subsequent interactions on the same topic reuse the title.
             # The haiku summarization call will update it when the topic changes.
@@ -784,6 +968,10 @@ class ClaudeHooksAPI:
             log.warning("SubagentStop with empty agent stack for session %s", session_id)
             return
 
+        # Finalize this subagent's active step (if any) before popping the frame.
+        subagent_span_id = str(session.agent_span_stack[-1]["span_id"])
+        self._finalize_all_steps_for_agent(session, subagent_span_id, now_ns)
+
         agent_info = session.agent_span_stack.pop()
         # Remove from active_agents map
         session.active_agents.pop(str(agent_info["span_id"]), None)
@@ -989,6 +1177,9 @@ class ClaudeHooksAPI:
 
         now_ns = int(time.time() * 1_000_000_000)
         duration = now_ns - session.start_ns
+
+        # Finalize any still-open step on the root agent before aggregating the turn.
+        self._finalize_all_steps_for_agent(session, session.root_span_id, now_ns)
 
         input_value = "\n\n".join(session.user_prompts) if session.user_prompts else ""
         transcript_path = body.get("transcript_path", "")

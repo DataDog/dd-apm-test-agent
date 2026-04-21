@@ -15,27 +15,26 @@ import logging
 import os
 import socket
 import time
-from typing import cast
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import cast
 
 import aiohttp
 from aiohttp import web
 from aiohttp.web import Request
 
 from .claude_cost_tracker import compute_cost_metrics
-from .claude_hooks import _ML_APP
 from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import SessionState
+from .claude_hooks import _ML_APP
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _get_context_limit
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_link_tracker import SpanLink
 from .llmobs_event_platform import with_cors
-
 
 log = logging.getLogger(__name__)
 
@@ -515,6 +514,22 @@ class ClaudeProxyAPI:
             if resolved:
                 parent_id = resolved
 
+        # Open a step span for this inference cycle. Each LLM call on an
+        # instrumented session becomes one step; the LLM span (and any tool
+        # spans it triggers) parent to the step rather than directly to the
+        # agent. Skipped for non-instrumented sessions and orphan spans so
+        # they keep the flat hierarchy.
+        agent_parent_id = parent_id
+        active_step = None
+        if session is not None and session.instrumented and agent_parent_id and agent_parent_id != "undefined":
+            active_step = self._hooks_api._start_step_for_llm(
+                session=session,
+                llm_span_id=span_id,
+                agent_parent_id=agent_parent_id,
+                llm_start_ns=start_ns,
+            )
+            parent_id = active_step.span_id
+
         # LLM.output -> Tool.input linking: register tool_use blocks from the response
         tool_uses = _extract_tool_uses_from_response(content_blocks)
         for tu in tool_uses:
@@ -526,10 +541,14 @@ class ClaudeProxyAPI:
                 llm_trace_id=trace_id,
             )
 
-        # Record which agent this LLM span belongs to, so tools from its
-        # tool_use blocks can resolve their parent via the link tracker.
-        if parent_id and parent_id != "undefined":
+        # Record which agent/step this LLM span belongs to. When an active_step
+        # exists, _start_step_for_llm already registered the step as the LLM's
+        # parent for tool-use resolution.
+        if active_step is None and parent_id and parent_id != "undefined":
             self._link_tracker.set_llm_parent(span_id, parent_id)
+
+        if active_step is not None:
+            self._hooks_api._update_step_from_llm_response(active_step, response_data)
 
         input_messages = _format_input_messages(request_body)
         output_messages = _format_output_messages(content_blocks)
