@@ -453,11 +453,7 @@ def get_span_field_value(span: Dict[str, Any], field: str) -> Optional[Any]:
         # `start_ns` in nanoseconds — convert here so downstream
         # aggregations (min/max/earliest/latest on `timestamp`) match
         # production semantics.
-        "timestamp": lambda s: (
-            s["start_ns"] / 1_000_000
-            if isinstance(s.get("start_ns"), (int, float))
-            else None
-        ),
+        "timestamp": lambda s: (s["start_ns"] / 1_000_000 if isinstance(s.get("start_ns"), (int, float)) else None),
     }
     if field in direct_fields:
         return direct_fields[field](span)
@@ -1250,9 +1246,7 @@ class LLMObsEventPlatformAPI:
                             elif aggregation == "sum":
                                 metrics[output] = sum(numeric_values)
                             elif aggregation == "avg":
-                                metrics[output] = (
-                                    sum(numeric_values) / len(numeric_values)
-                                )
+                                metrics[output] = sum(numeric_values) / len(numeric_values)
                     elif "list" in compute_item:
                         cfg = compute_item["list"]
                         output = cfg.get("output", "")
