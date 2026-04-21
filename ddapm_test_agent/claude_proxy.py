@@ -15,6 +15,7 @@ import logging
 import os
 import socket
 import time
+from typing import cast
 from typing import Any
 from typing import Dict
 from typing import List
@@ -321,6 +322,20 @@ def _format_output_messages(content_blocks: List[Dict[str, Any]]) -> List[Dict[s
     return messages
 
 
+def _get_session_id_from_claude_llm_request(request_body: Dict[str, Any]) -> Optional[str]:
+    metadata = cast(Dict[str, Any], request_body.get("metadata", {}))
+    user_id: str = metadata.get("user_id", "")
+
+    user_id_parsed: Dict[str, Any] = {}
+    try:
+        if user_id:
+            user_id_parsed = json.loads(user_id)
+    except json.JSONDecodeError:
+        pass
+
+    return user_id_parsed.get("session_id")
+
+
 class ClaudeProxyAPI:
     """Transparent proxy for Anthropic API calls that creates LLM spans."""
 
@@ -340,8 +355,8 @@ class ClaudeProxyAPI:
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
 
-    def _get_active_session(self) -> Optional[SessionState]:
-        """Get the most likely active Claude session.
+    def _get_active_session(self, maybe_session_id: Optional[str] = None) -> Optional[SessionState]:
+        """Get the most likely active Claude session. If a recorded session_id is passed in, use that instead.
 
         Prefers sessions that have pending tools or an active agent stack
         (indicating they are mid-turn), then falls back to sessions that
@@ -349,6 +364,9 @@ class ClaudeProxyAPI:
         prevents LLM spans from being assigned to a finished/test session
         when multiple sessions exist.
         """
+        if maybe_session_id and maybe_session_id in self._hooks_api._sessions:
+            return self._hooks_api._sessions[maybe_session_id]
+
         sessions = self._hooks_api._sessions
         if not sessions:
             return None
@@ -603,12 +621,15 @@ class ClaudeProxyAPI:
         except json.JSONDecodeError:
             pass
 
+        log.info(f"REQUEST BODY IS {json.dumps(request_body, indent=2)}")
+
         is_streaming = request_body.get("stream", False)
 
         headers = {key: value for key, value in request.headers.items() if key.lower() not in SKIP_REQUEST_HEADERS}
 
         start_ns = int(time.time() * 1_000_000_000)
-        session = self._get_active_session()
+        maybe_session_id = _get_session_id_from_claude_llm_request(request_body)
+        session = self._get_active_session(maybe_session_id)
 
         http_session = await self._get_http_session()
 
