@@ -7,16 +7,22 @@ span storage so that pi traces appear alongside Claude Code traces in the UI.
 Pi extension events and their mapping:
 
     session_start     → create session, set model
-    agent_start       → start new trace (like UserPromptSubmit)
-    agent_end         → finalize root span (like Stop)
-    message_start     → begin tracking an LLM span
+    agent_start       → start new trace / root agent span (proposal "turn")
+    agent_end         → finalize root span
+    turn_start        → open a step span (proposal "step" = one inference cycle)
+    turn_end          → finalize step span
+    message_start     → begin tracking an LLM span (child of step)
     message_end       → emit LLM span with token usage
-    tool_execution_start → create pending tool span (like PreToolUse)
-    tool_execution_end   → emit tool span (like PostToolUse)
-    turn_start / turn_end → logged, no span emitted
+    tool_execution_start → create pending tool span (child of step)
+    tool_execution_end   → emit tool span
     model_select      → update session model
     session_compact   → mark compaction on current span
     session_shutdown  → finalize session (like SessionEnd)
+
+Terminology mapping (pi → trajectory-dev proposal):
+    pi agent_start/agent_end  →  proposal "turn" (full response to one user input)
+    pi turn_start/turn_end    →  proposal "step" (one inference cycle + its tools)
+    pi message_start/end      →  proposal LLM call within a step
 """
 
 import json
@@ -26,6 +32,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Tuple
 
 from aiohttp import web
 from aiohttp.web import Request
@@ -43,6 +50,7 @@ from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
 from .llmobs_event_platform import with_cors
 
+
 log = logging.getLogger(__name__)
 
 
@@ -53,6 +61,61 @@ class PendingLLMSpan:
         self.span_id = span_id
         self.parent_id = parent_id
         self.start_ns = start_ns
+
+
+class ActiveStepSpan:
+    """Tracks the active step (inference cycle) for a session.
+
+    A step groups one LLM call and its downstream tool executions.
+    It maps to a ``turn_start`` / ``turn_end`` pair in pi's event model and
+    to the ``step`` span kind in the trajectory-dev proposal.
+    """
+
+    def __init__(
+        self,
+        span_id: str,
+        parent_id: str,
+        start_ns: int,
+        message_index: int,
+        turn_index: Optional[int] = None,
+    ) -> None:
+        self.span_id = span_id
+        self.parent_id = parent_id
+        self.start_ns = start_ns
+        self.message_index = message_index
+        self.turn_index = turn_index
+        self.output_text = ""
+        self.tool_use_ids: List[str] = []
+        self.has_thinking = False
+        self.stop_reason = ""
+        self.span_ref: Optional[Dict[str, Any]] = None
+
+
+def _extract_output_text_and_tool_calls(
+    content: List[Dict[str, Any]],
+) -> Tuple[str, List[Dict[str, Any]], List[str], bool]:
+    """Parse assistant message content blocks.
+
+    Returns ``(output_text, tool_calls, tool_use_ids, has_thinking)``.
+    """
+    text_parts: List[str] = []
+    tool_calls: List[Dict[str, Any]] = []
+    tool_use_ids: List[str] = []
+    has_thinking = False
+
+    for block in content:
+        btype = block.get("type", "")
+        if btype == "text" and block.get("text"):
+            text_parts.append(block["text"])
+        elif btype == "toolCall":
+            tid = block.get("id", "")
+            tool_calls.append({"id": tid, "name": block.get("name"), "arguments": block.get("arguments")})
+            if tid:
+                tool_use_ids.append(tid)
+        elif btype in ("thinking", "reasoning"):
+            has_thinking = True
+
+    return "\n".join(text_parts), tool_calls, tool_use_ids, has_thinking
 
 
 class PiHooksAPI:
@@ -67,6 +130,12 @@ class PiHooksAPI:
         self._raw_events: List[Dict[str, Any]] = []
         # Pending LLM span per session (pi sends one LLM call at a time)
         self._pending_llm: Dict[str, PendingLLMSpan] = {}
+        # Active step span per session (one inference cycle)
+        self._active_steps: Dict[str, ActiveStepSpan] = {}
+        # Per-session step counter (resets each agent cycle)
+        self._step_indexes: Dict[str, int] = {}
+        # Per-session turn index from extension events
+        self._turn_indexes: Dict[str, Optional[int]] = {}
 
     # ------------------------------------------------------------------
     # Helpers — access shared state via hooks_api
@@ -80,6 +149,117 @@ class PiHooksAPI:
 
     def _append_span(self, span: Dict[str, Any]) -> None:
         self._hooks_api._assembled_spans.append(span)
+
+    def _active_step_parent_id(self, session: SessionState) -> str:
+        """Return active step span_id if one exists, else fall back to root/agent parent."""
+        active = self._active_steps.get(session.session_id)
+        if active:
+            return active.span_id
+        return self._current_parent_id(session)
+
+    # ------------------------------------------------------------------
+    # Step lifecycle helpers
+    # ------------------------------------------------------------------
+
+    def _start_step(self, session: SessionState, turn_index: Optional[int] = None) -> ActiveStepSpan:
+        """Open a new step span.  Finalizes any prior active step first."""
+        sid = session.session_id
+        # Finalize prior step if still open
+        self._finalize_active_step(sid)
+
+        # Use current counter value as 0-based index, then advance.
+        # After this, _step_indexes[sid] is always (last emitted index + 1).
+        idx = self._step_indexes.get(sid, 0)
+        self._step_indexes[sid] = idx + 1
+
+        now_ns = int(time.time() * 1_000_000_000)
+        span_id = _format_span_id()
+        parent_id = self._current_parent_id(session)
+
+        tags = [
+            f"ml_app:{_ML_APP}",
+            f"session_id:{session.session_id}",
+            f"service:{_ML_APP}",
+            "env:local",
+            "source:pi-hooks",
+            "language:python",
+            f"hostname:{_HOSTNAME}",
+            "trajectory.semantic_type:agent_message",
+        ]
+        if _USER_HANDLE:
+            tags.append(f"user_handle:{_USER_HANDLE}")
+
+        step_span: Dict[str, Any] = {
+            "span_id": span_id,
+            "trace_id": session.trace_id,
+            "parent_id": parent_id,
+            "name": f"inference-{idx}",
+            "status": "ok",
+            "start_ns": now_ns,
+            "duration": 0,
+            "ml_app": _ML_APP,
+            "service": _ML_APP,
+            "env": "local",
+            "session_id": session.session_id,
+            "tags": tags,
+            "meta": {
+                "span": {"kind": "step"},
+                "input": {},
+                "output": {"value": ""},
+                "metadata": {},
+            },
+            "metrics": {},
+        }
+        self._append_span(step_span)
+
+        active = ActiveStepSpan(
+            span_id=span_id,
+            parent_id=parent_id,
+            start_ns=now_ns,
+            message_index=idx,
+            turn_index=turn_index,
+        )
+        active.span_ref = step_span
+        self._active_steps[sid] = active
+        return active
+
+    def _finalize_active_step(self, session_id: str, end_ns: Optional[int] = None) -> None:
+        """Close the active step span, updating its metadata in-place."""
+        active = self._active_steps.pop(session_id, None)
+        if not active:
+            return
+
+        if end_ns is None:
+            end_ns = int(time.time() * 1_000_000_000)
+
+        ref = active.span_ref
+        if ref is None:
+            return
+
+        ref["duration"] = end_ns - active.start_ns
+        ref["meta"]["output"]["value"] = active.output_text
+
+        metadata = ref["meta"].setdefault("metadata", {})
+        metadata["message_index"] = active.message_index
+        if active.turn_index is not None:
+            metadata["turn_index"] = active.turn_index
+        if active.tool_use_ids:
+            metadata["tool_use_ids"] = active.tool_use_ids
+        if active.has_thinking:
+            metadata["has_thinking"] = True
+        if active.stop_reason:
+            metadata["stop_reason"] = active.stop_reason
+
+    def _clear_pi_state(self, session_id: str) -> None:
+        """Reset all pi-local tracking state for a session.
+
+        Call ``_finalize_active_step`` first if the active step should be
+        properly closed; this method drops state without finalizing.
+        """
+        self._active_steps.pop(session_id, None)
+        self._step_indexes[session_id] = 0
+        self._turn_indexes.pop(session_id, None)
+        self._pending_llm.pop(session_id, None)
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -110,12 +290,22 @@ class PiHooksAPI:
         log.info("Pi model changed: %s → %s/%s", session_id, model_provider, model_id)
 
     def _handle_agent_start(self, session_id: str, body: Dict[str, Any]) -> None:
-        """Start a new trace for each user turn (equivalent to UserPromptSubmit)."""
+        """Start a new trace for each user turn (equivalent to UserPromptSubmit).
+
+        The root agent span represents the proposal's "turn" — the full agentic
+        response to one user input.
+        """
         session = self._get_or_create_session(session_id)
 
         # Finalize previous turn if it wasn't finalized
         if not session.root_span_emitted and getattr(session, "_root_span_ref", None) is not None:
+            self._finalize_active_step(session_id)
             self._hooks_api._finalize_interrupted_turn(session)
+
+        # Clear pi-local state for the new agent cycle.
+        # _finalize_active_step already ran above (if needed), so this
+        # second pop from _active_steps is a harmless no-op.
+        self._clear_pi_state(session_id)
 
         # Start fresh trace
         if session.root_span_emitted:
@@ -146,6 +336,19 @@ class PiHooksAPI:
         if model_provider:
             session.model_provider = model_provider
 
+        tags = [
+            f"ml_app:{_ML_APP}",
+            f"session_id:{session.session_id}",
+            f"service:{_ML_APP}",
+            "env:local",
+            "source:pi-hooks",
+            "language:python",
+            f"hostname:{_HOSTNAME}",
+            "trajectory.semantic_type:turn",
+        ]
+        if _USER_HANDLE:
+            tags.append(f"user_handle:{_USER_HANDLE}")
+
         root_span: Dict[str, Any] = {
             "span_id": session.root_span_id,
             "trace_id": session.trace_id,
@@ -158,16 +361,7 @@ class PiHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:pi-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-            ]
-            + ([f"user_handle:{_USER_HANDLE}"] if _USER_HANDLE else []),
+            "tags": tags,
             "meta": {
                 "span": {"kind": "agent"},
                 "input": {"value": prompt},
@@ -187,6 +381,9 @@ class PiHooksAPI:
         if not session:
             log.warning("agent_end for unknown session %s", session_id)
             return
+
+        # Finalize any open step before closing the turn
+        self._finalize_active_step(session_id)
 
         now_ns = int(time.time() * 1_000_000_000)
         duration = now_ns - session.start_ns
@@ -241,6 +438,18 @@ class PiHooksAPI:
                 self._hooks_api._set_hidden_metadata(root_span, **dd_fields)
         else:
             # Fallback: create root span
+            tags = [
+                f"ml_app:{_ML_APP}",
+                f"session_id:{session.session_id}",
+                f"service:{_ML_APP}",
+                "env:local",
+                "source:pi-hooks",
+                "language:python",
+                f"hostname:{_HOSTNAME}",
+                "trajectory.semantic_type:turn",
+            ]
+            if _USER_HANDLE:
+                tags.append(f"user_handle:{_USER_HANDLE}")
             root_span = {
                 "span_id": session.root_span_id,
                 "trace_id": session.trace_id,
@@ -253,16 +462,7 @@ class PiHooksAPI:
                 "service": _ML_APP,
                 "env": "local",
                 "session_id": session.session_id,
-                "tags": [
-                    f"ml_app:{_ML_APP}",
-                    f"session_id:{session.session_id}",
-                    f"service:{_ML_APP}",
-                    "env:local",
-                    "source:pi-hooks",
-                    "language:python",
-                    f"hostname:{_HOSTNAME}",
-                ]
-                + ([f"user_handle:{_USER_HANDLE}"] if _USER_HANDLE else []),
+                "tags": tags,
                 "meta": {
                     "span": {"kind": "agent"},
                     "input": {"value": input_value},
@@ -277,11 +477,35 @@ class PiHooksAPI:
 
         session.root_span_emitted = True
 
-    def _handle_message_start(self, session_id: str, body: Dict[str, Any]) -> None:
-        """Begin tracking an LLM call."""
+    def _handle_turn_start(self, session_id: str, body: Dict[str, Any]) -> None:
+        """Open a step span for this inference cycle (primary step open point)."""
         session = self._get_or_create_session(session_id)
+        turn_index = body.get("turn_index")
+        if turn_index is not None:
+            self._turn_indexes[session_id] = turn_index
+        self._start_step(session, turn_index=turn_index)
+        log.debug("Pi turn_start for session %s: turn_index=%s", session_id, turn_index)
+
+    def _handle_turn_end(self, session_id: str, body: Dict[str, Any]) -> None:
+        """Finalize the active step span (primary step finalization point)."""
+        self._finalize_active_step(session_id)
+        log.debug("Pi turn_end for session %s: turn_index=%s", session_id, body.get("turn_index"))
+
+    def _handle_message_start(self, session_id: str, body: Dict[str, Any]) -> None:
+        """Begin tracking an LLM call.
+
+        If no step is active (e.g. ``message_start`` arrived without a preceding
+        ``turn_start``), opens a fallback step so tools still have a parent.
+        """
+        session = self._get_or_create_session(session_id)
+
+        # Ensure a step exists (fallback if turn_start was missed)
+        if session_id not in self._active_steps:
+            turn_index = self._turn_indexes.get(session_id)
+            self._start_step(session, turn_index=turn_index)
+
+        parent_id = self._active_step_parent_id(session)
         span_id = _format_span_id()
-        parent_id = self._current_parent_id(session)
         now_ns = int(time.time() * 1_000_000_000)
         self._pending_llm[session_id] = PendingLLMSpan(
             span_id=span_id,
@@ -290,7 +514,13 @@ class PiHooksAPI:
         )
 
     def _handle_message_end(self, session_id: str, body: Dict[str, Any]) -> None:
-        """Emit an LLM span with token usage and tool calls."""
+        """Emit an LLM span with token usage and tool calls.
+
+        Also updates the active step's metadata with the assistant response
+        content (output text, tool_use_ids, stop_reason, etc.).  The step
+        itself is NOT finalized here — it stays open so downstream tool spans
+        can parent to it.  ``turn_end`` or ``agent_end`` finalizes it.
+        """
         session = self._hooks_api._sessions.get(session_id)
         if not session:
             return
@@ -304,7 +534,7 @@ class PiHooksAPI:
             start_ns = pending.start_ns
         else:
             span_id = _format_span_id()
-            parent_id = self._current_parent_id(session)
+            parent_id = self._active_step_parent_id(session)
             start_ns = now_ns
 
         duration = now_ns - start_ns
@@ -314,22 +544,25 @@ class PiHooksAPI:
         usage = body.get("usage") or {}
         stop_reason = body.get("stop_reason", "")
 
-        # Extract tool calls and output text from the content array (processing moved from extension)
+        # Extract tool calls and output text from the content array
         content = body.get("content", [])
-        tool_calls: List[Dict[str, Any]] = []
-        output_text = ""
         if content:
-            text_parts = []
-            for c in content:
-                if c.get("type") == "toolCall":
-                    tool_calls.append({"id": c.get("id"), "name": c.get("name"), "arguments": c.get("arguments")})
-                elif c.get("type") == "text" and c.get("text"):
-                    text_parts.append(c["text"])
-            output_text = "\n".join(text_parts)
+            output_text, tool_calls, tool_use_ids, has_thinking = _extract_output_text_and_tool_calls(content)
         else:
             # Fallback for older extension format
             output_text = body.get("output_text", "")
-            tool_calls = body.get("tool_calls", [])
+            raw_tool_calls = body.get("tool_calls", [])
+            tool_calls = raw_tool_calls
+            tool_use_ids = [tc.get("id", "") for tc in raw_tool_calls if tc.get("id")]
+            has_thinking = False
+
+        # Update active step metadata
+        active = self._active_steps.get(session_id)
+        if active:
+            active.output_text = output_text
+            active.tool_use_ids = tool_use_ids
+            active.has_thinking = has_thinking
+            active.stop_reason = stop_reason
 
         # Build input/output messages in LLMObs format
         output_messages: List[Dict[str, Any]] = []
@@ -413,7 +646,11 @@ class PiHooksAPI:
         self._append_span(span)
 
     def _handle_tool_execution_start(self, session_id: str, body: Dict[str, Any]) -> None:
-        """Create a pending tool span (equivalent to PreToolUse)."""
+        """Create a pending tool span (equivalent to PreToolUse).
+
+        Parent is set to the active step span so tools nest under the inference
+        cycle that requested them.
+        """
         session = self._get_or_create_session(session_id)
         tool_name = body.get("tool_name", "unknown_tool")
         tool_call_id = body.get("tool_call_id", tool_name)
@@ -421,7 +658,7 @@ class PiHooksAPI:
         session.tools_used.add(tool_name)
 
         span_id = _format_span_id()
-        parent_id = self._current_parent_id(session)
+        parent_id = self._active_step_parent_id(session)
         now_ns = int(time.time() * 1_000_000_000)
 
         # Parse args string back to dict for tool_input if possible
@@ -462,7 +699,7 @@ class PiHooksAPI:
             actual_tool_name = pending.tool_name
         else:
             span_id = _format_span_id()
-            parent_id = self._current_parent_id(session)
+            parent_id = self._active_step_parent_id(session)
             start_ns = now_ns
             input_value = ""
             actual_tool_name = tool_name
@@ -521,17 +758,13 @@ class PiHooksAPI:
             }
         )
 
-    def _handle_turn_start(self, session_id: str, body: Dict[str, Any]) -> None:
-        log.debug("Pi turn_start for session %s: turn_index=%s", session_id, body.get("turn_index"))
-
-    def _handle_turn_end(self, session_id: str, body: Dict[str, Any]) -> None:
-        log.debug("Pi turn_end for session %s: turn_index=%s", session_id, body.get("turn_index"))
-
     def _handle_session_shutdown(self, session_id: str, body: Dict[str, Any]) -> None:
         """Finalize session (equivalent to SessionEnd)."""
         session = self._hooks_api._sessions.get(session_id)
         if not session:
             return
+        # Finalize any open step before closing the session
+        self._finalize_active_step(session_id)
         if not session.root_span_emitted:
             self._hooks_api._finalize_interrupted_turn(session)
 

@@ -159,6 +159,247 @@ async def test_query_scalar_options(agent):
     assert resp.headers.get("Access-Control-Allow-Origin") == _TEST_ORIGIN
 
 
+def _scalar_request(queries, from_ms=None, to_ms=None, formulas=None):
+    attrs = {"queries": queries}
+    if from_ms is not None:
+        attrs["from"] = from_ms
+    if to_ms is not None:
+        attrs["to"] = to_ms
+    if formulas is not None:
+        attrs["formulas"] = formulas
+    return {"data": [{"type": "scalar_request", "attributes": attrs}]}
+
+
+async def test_query_scalar_count_no_groupby(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "query1",
+                    "data_source": "llm_observability",
+                    "indexes": ["llmobs"],
+                    "search": {"query": ""},
+                    "compute": {"aggregation": "count"},
+                }
+            ]
+        ),
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert len(data["data"]) == 1
+    cols = data["data"][0]["attributes"]["columns"]
+    assert len(cols) == 1
+    assert cols[0]["type"] == "number"
+    assert cols[0]["values"] == [2.0]
+
+
+async def test_query_scalar_group_by_kind(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "query1",
+                    "data_source": "llm_observability",
+                    "indexes": ["llmobs"],
+                    "search": {"query": ""},
+                    "compute": {"aggregation": "count"},
+                    "group_by": [{"facet": "@meta.span.kind", "limit": 10, "sort": {"order": "desc"}}],
+                }
+            ]
+        ),
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    cols = data["data"][0]["attributes"]["columns"]
+    assert len(cols) == 2
+    group_col, num_col = cols
+    assert group_col["type"] == "group"
+    assert group_col["name"] == "@meta.span.kind"
+    # Two kinds present in fixture: agent and llm, one span each.
+    assert sorted([v[0] for v in group_col["values"]]) == ["agent", "llm"]
+    assert num_col["type"] == "number"
+    assert num_col["values"] == [1.0, 1.0]
+
+
+async def test_query_scalar_avg_duration(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "query1",
+                    "data_source": "llm_observability",
+                    "indexes": ["llmobs"],
+                    "compute": {"aggregation": "avg", "metric": "@duration"},
+                }
+            ]
+        ),
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    cols = data["data"][0]["attributes"]["columns"]
+    assert len(cols) == 1
+    # Fixture durations: 5e9 + 2e9 averaged = 3.5e9.
+    assert cols[0]["values"] == [3_500_000_000.0]
+
+
+async def test_query_scalar_time_filter_excludes_spans(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    # Window entirely in the past — should exclude all fixture spans (start_ns = now).
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "query1",
+                    "data_source": "llm_observability",
+                    "indexes": ["llmobs"],
+                    "compute": {"aggregation": "count"},
+                }
+            ],
+            from_ms=1,
+            to_ms=1000,
+        ),
+    )
+    data = await resp.json()
+    assert data["data"][0]["attributes"]["columns"][0]["values"] == [0.0]
+
+
+async def test_query_scalar_search_query_filters(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "query1",
+                    "data_source": "llm_observability",
+                    "indexes": ["llmobs"],
+                    "search": {"query": "@meta.span.kind:llm"},
+                    "compute": {"aggregation": "count"},
+                }
+            ]
+        ),
+    )
+    data = await resp.json()
+    assert data["data"][0]["attributes"]["columns"][0]["values"] == [1.0]
+
+
+async def test_query_scalar_unknown_data_source(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "query1",
+                    "data_source": "metrics",
+                    "query": "sum:foo{*}",
+                    "aggregator": "sum",
+                }
+            ]
+        ),
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    cols = data["data"][0]["attributes"]["columns"]
+    assert len(cols) == 1
+    assert cols[0]["type"] == "number"
+    assert cols[0]["values"] == [0.0]
+
+
+async def test_query_scalar_multi_request(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    body = {
+        "data": [
+            {
+                "type": "scalar_request",
+                "attributes": {
+                    "queries": [
+                        {
+                            "name": "query1",
+                            "data_source": "llm_observability",
+                            "indexes": ["llmobs"],
+                            "compute": {"aggregation": "count"},
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "scalar_request",
+                "attributes": {
+                    "queries": [
+                        {
+                            "name": "query1",
+                            "data_source": "llm_observability",
+                            "indexes": ["llmobs"],
+                            "compute": {"aggregation": "sum", "metric": "@metrics.total_tokens"},
+                        }
+                    ]
+                },
+            },
+        ]
+    }
+    resp = await agent.post("/api/ui/query/scalar", json=body)
+    data = await resp.json()
+    assert len(data["data"]) == 2
+    assert data["data"][0]["attributes"]["columns"][0]["values"] == [2.0]
+    # Fixture total_tokens: 30 + 15 = 45.
+    assert data["data"][1]["attributes"]["columns"][0]["values"] == [45.0]
+
+
+async def test_query_scalar_trace_rollup_metric(agent, llmobs_payload):
+    # Fixture has 2 spans on the same trace with token counts 30 and 15.
+    # @trace.total_tokens rolls up per-trace: sum across spans = 45, but
+    # because both spans share trace-123, sum(@trace.total_tokens) over all
+    # spans must dedupe to 45 (not 90).
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "query1",
+                    "data_source": "llm_observability",
+                    "indexes": ["llmobs"],
+                    "compute": {"aggregation": "sum", "metric": "@trace.total_tokens"},
+                }
+            ]
+        ),
+    )
+    data = await resp.json()
+    cols = data["data"][0]["attributes"]["columns"]
+    assert cols[0]["values"] == [45.0]
+
+
+async def test_query_scalar_formulas_reference_query(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "q1",
+                    "data_source": "llm_observability",
+                    "indexes": ["llmobs"],
+                    "compute": {"aggregation": "count"},
+                }
+            ],
+            formulas=[{"formula": "q1", "alias": "span_count"}],
+        ),
+    )
+    data = await resp.json()
+    cols = data["data"][0]["attributes"]["columns"]
+    assert len(cols) == 1
+    assert cols[0]["name"] == "span_count"
+    assert cols[0]["values"] == [2.0]
+
+
 # Functional tests (testing actual span data flow)
 
 
