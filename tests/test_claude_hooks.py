@@ -1,17 +1,15 @@
 import json
 import os
-import tempfile
 from pathlib import Path
+import tempfile
 from typing import Any
 from typing import Dict
 from typing import cast
 
-from ddapm_test_agent.claude_hooks import (
-    CLAUDE_CODE_DEFAULT_MATCHER,
-    CLAUDE_CODE_HOOK,
-    CLAUDE_CODE_EVENTS,
-    write_claude_code_hooks,
-)
+from ddapm_test_agent.claude_hooks import CLAUDE_CODE_DEFAULT_MATCHER
+from ddapm_test_agent.claude_hooks import CLAUDE_CODE_EVENTS
+from ddapm_test_agent.claude_hooks import CLAUDE_CODE_HOOK
+from ddapm_test_agent.claude_hooks import write_claude_code_hooks
 
 
 def _read_settings(path: Path) -> Dict[str, Any]:
@@ -741,9 +739,7 @@ async def test_concurrent_subagents_parent_correctly(agent):
     assert len(root_spans) == 1
     root = root_spans[0]
 
-    agent_spans = [
-        s for s in session_spans if s["meta"]["span"]["kind"] == "agent" and s["parent_id"] != "undefined"
-    ]
+    agent_spans = [s for s in session_spans if s["meta"]["span"]["kind"] == "agent" and s["parent_id"] != "undefined"]
     assert len(agent_spans) == 2, f"Expected 2 subagent spans, got {len(agent_spans)}"
 
     # Both subagents should be parented to root — not to each other

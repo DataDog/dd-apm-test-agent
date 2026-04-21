@@ -448,6 +448,12 @@ def get_span_field_value(span: Dict[str, Any], field: str) -> Optional[Any]:
         "duration": lambda s: s.get("duration", 0),
         "session_id": lambda s: s.get("session_id", ""),
         "hostname": lambda s: s.get("hostname", ""),
+        # Span timestamp in milliseconds. The LLMObs UI treats the
+        # `timestamp` facet as ms since epoch, but span payloads store
+        # `start_ns` in nanoseconds — convert here so downstream
+        # aggregations (min/max/earliest/latest on `timestamp`) match
+        # production semantics.
+        "timestamp": lambda s: (s["start_ns"] / 1_000_000 if isinstance(s.get("start_ns"), (int, float)) else None),
     }
     if field in direct_fields:
         return direct_fields[field](span)
@@ -1216,9 +1222,31 @@ class LLMObsEventPlatformAPI:
                         if aggregation == "count":
                             metrics[output] = len(group_spans)
                         elif aggregation == "earliest":
-                            metrics[output] = str(get_span_field_value(earliest_span, metric_field) or "")
+                            _val = get_span_field_value(earliest_span, metric_field)
+                            metrics[output] = "" if _val is None else str(_val)
                         elif aggregation == "latest":
-                            metrics[output] = str(get_span_field_value(latest_span, metric_field) or "")
+                            _val = get_span_field_value(latest_span, metric_field)
+                            metrics[output] = "" if _val is None else str(_val)
+                        elif aggregation in ("min", "max", "sum", "avg"):
+                            numeric_values = []
+                            for s in group_spans:
+                                v = get_span_field_value(s, metric_field)
+                                try:
+                                    if v is None or v == "":
+                                        continue
+                                    numeric_values.append(float(v))
+                                except (TypeError, ValueError):
+                                    continue
+                            if not numeric_values:
+                                metrics[output] = 0
+                            elif aggregation == "min":
+                                metrics[output] = min(numeric_values)
+                            elif aggregation == "max":
+                                metrics[output] = max(numeric_values)
+                            elif aggregation == "sum":
+                                metrics[output] = sum(numeric_values)
+                            elif aggregation == "avg":
+                                metrics[output] = sum(numeric_values) / len(numeric_values)
                     elif "list" in compute_item:
                         cfg = compute_item["list"]
                         output = cfg.get("output", "")
