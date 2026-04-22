@@ -554,7 +554,12 @@ class ClaudeHooksAPI:
         active: ActiveStep,
         response_data: Dict[str, Any],
     ) -> None:
-        """Populate step metadata from an Anthropic Messages API response."""
+        """Populate step metadata from an Anthropic Messages API response.
+
+        Tool-use-only responses leave ``active.output_text`` empty; the step
+        finalizes with ``meta.output.value = ""`` by design — the inference
+        produced no assistant-visible text.
+        """
         content = response_data.get("content", []) or []
         text_parts: List[str] = []
         tool_use_ids: List[str] = []
@@ -616,6 +621,7 @@ class ClaudeHooksAPI:
             self._finalize_step(session, active, end_ns=now_ns, status="error", error_message="interrupted")
         session.active_steps_by_agent.clear()
         session.step_index_by_agent.clear()
+        session.step_agent_by_span_id.clear()
 
         # Finalize any in-progress subagent spans on the stack
         while session.agent_span_stack:
@@ -1237,6 +1243,9 @@ class ClaudeHooksAPI:
 
         # Finalize any still-open step on the root agent before aggregating the turn.
         self._finalize_all_steps_for_agent(session, session.root_span_id, now_ns)
+        session.active_steps_by_agent.clear()
+        session.step_index_by_agent.clear()
+        session.step_agent_by_span_id.clear()
 
         input_value = "\n\n".join(session.user_prompts) if session.user_prompts else ""
         transcript_path = body.get("transcript_path", "")
