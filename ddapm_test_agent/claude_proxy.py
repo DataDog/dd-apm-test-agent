@@ -515,6 +515,12 @@ class ClaudeProxyAPI:
             if resolved:
                 parent_id = resolved
 
+        # LLM.output -> Tool.input linking: register tool_use blocks from the response.
+        # Extracted before step creation so _start_step_for_llm can re-parent any
+        # tool/subagent children that raced ahead of us while the stream was open.
+        tool_uses = _extract_tool_uses_from_response(content_blocks)
+        tool_use_ids = [tu.get("id", "") for tu in tool_uses if tu.get("id")]
+
         # Open a step span for this inference cycle. Each LLM call on an
         # instrumented session becomes one step; the LLM span (and any tool
         # spans it triggers) parent to the step rather than directly to the
@@ -528,11 +534,10 @@ class ClaudeProxyAPI:
                 llm_span_id=span_id,
                 agent_parent_id=agent_parent_id,
                 llm_start_ns=start_ns,
+                tool_use_ids=tool_use_ids,
             )
             parent_id = active_step.span_id
 
-        # LLM.output -> Tool.input linking: register tool_use blocks from the response
-        tool_uses = _extract_tool_uses_from_response(content_blocks)
         for tu in tool_uses:
             self._link_tracker.on_llm_tool_choice(
                 tool_use_id=tu.get("id", ""),

@@ -437,6 +437,7 @@ class ClaudeHooksAPI:
         llm_span_id: str,
         agent_parent_id: str,
         llm_start_ns: int,
+        tool_use_ids: Optional[List[str]] = None,
     ) -> ActiveStep:
         """Open a new step span for a just-created LLM call.
 
@@ -449,6 +450,13 @@ class ClaudeHooksAPI:
         can happen if a caller derives the parent from a prior tool's
         tree parent), climb to the step's agent so the new step opens as
         a sibling, not a child, of the prior step.
+
+        When ``tool_use_ids`` is provided (the tool_use blocks in the LLM
+        response this step wraps), also retroactively re-parent any
+        already-tracked children of ``agent_parent_id`` whose IDs match —
+        this closes the race where ``PreToolUse``/``PostToolUse`` fires
+        before the proxy finishes creating the LLM span and the children
+        got cached with the agent as parent instead of this step.
         """
         agent_parent_id = session.step_agent_by_span_id.get(agent_parent_id, agent_parent_id)
 
@@ -507,7 +515,66 @@ class ClaudeHooksAPI:
         if self._link_tracker is not None:
             self._link_tracker.set_llm_parent(llm_span_id, step_span_id)
 
+        if tool_use_ids:
+            self._reparent_stale_children_to_step(
+                session=session,
+                agent_parent_id=agent_parent_id,
+                step_span_id=step_span_id,
+                tool_use_ids=tool_use_ids,
+            )
+
         return active
+
+    def _reparent_stale_children_to_step(
+        self,
+        session: SessionState,
+        agent_parent_id: str,
+        step_span_id: str,
+        tool_use_ids: List[str],
+    ) -> None:
+        """Move children that raced ahead of step creation under the new step.
+
+        When ``PreToolUse``/``PostToolUse`` (or ``SubagentStart``) fire
+        before the proxy finishes creating the LLM span, the link
+        tracker cannot yet map ``tool_use_id -> llm_span_id -> step``.
+        Those children end up cached with ``agent_parent_id`` as their
+        tree parent. Once the step is created we know the exact set of
+        ``tool_use_id``s this inference cycle owns, so we can upgrade
+        any still-stale parents. Updates are guarded by
+        ``current parent == agent_parent_id`` so we never disturb
+        children that were already correctly resolved (e.g. assigned
+        to an earlier, now-finalized step).
+        """
+        if not tool_use_ids:
+            return
+        tool_use_set = set(tool_use_ids)
+
+        for tid in tool_use_set:
+            pending = session.pending_tools.get(tid)
+            if pending is not None and pending.parent_id == agent_parent_id:
+                pending.parent_id = step_span_id
+
+        for span in self._assembled_spans:
+            if span.get("parent_id") != agent_parent_id:
+                continue
+            tool_id = span.get("meta", {}).get("metadata", {}).get("tool_id")
+            if tool_id and tool_id in tool_use_set:
+                span["parent_id"] = step_span_id
+
+        for tid in tool_use_set:
+            deferred = session.deferred_agent_spans.get(tid)
+            if deferred is not None and deferred.get("parent_id") == agent_parent_id:
+                deferred["parent_id"] = step_span_id
+                span_ref = deferred.get("_span_ref")
+                if span_ref is not None and span_ref.get("parent_id") == agent_parent_id:
+                    span_ref["parent_id"] = step_span_id
+
+        for entry in session.agent_span_stack:
+            if entry.get("task_tool_use_id") in tool_use_set and entry.get("parent_id") == agent_parent_id:
+                entry["parent_id"] = step_span_id
+                span_ref = entry.get("_span_ref")
+                if span_ref is not None and span_ref.get("parent_id") == agent_parent_id:
+                    span_ref["parent_id"] = step_span_id
 
     def _finalize_step(
         self,

@@ -645,3 +645,76 @@ def test_pretool_race_with_llm_span_creation():
         assert tool["parent_id"] == step["span_id"], (
             f"{tool['name']} parented to {tool['parent_id']!r}, expected step {step['span_id']!r}"
         )
+
+
+def test_subagent_posttool_race_reparents_under_step():
+    """Regression: a sub-agent's tools land under the sub-agent's step even
+    when PreToolUse *and* PostToolUse fire before the proxy finishes building
+    the sub-agent's LLM span.
+
+    This is the bug behind the original report: fast tools (e.g. Glob)
+    inside a sub-agent complete before the streamed LLM response is parsed
+    by the proxy, so the link tracker can't map ``tool_use_id -> llm_span
+    -> step`` at PostToolUse time. The tool span is emitted with the sub-
+    agent as parent. Step creation must retroactively repair it.
+    """
+    sid = "sess-subagent-race"
+    hooks_api, proxy_api, _ = _make_apis()
+
+    hooks_api._dispatch_hook(_session_start(sid))
+    hooks_api._dispatch_hook(_user_prompt(sid))
+
+    # Root agent dispatches Task and a sub-agent starts. No LLM calls have
+    # been observed yet (simulating the tight race where the root agent's
+    # LLM span hasn't been created either, but we focus on the sub-agent
+    # below).
+    hooks_api._dispatch_hook(_pre_tool(sid, "Task", "task-1", description="sub", prompt="do it"))
+    hooks_api._dispatch_hook(_subagent_start(sid))
+
+    # Sub-agent's fast tools race ahead of its LLM span creation.
+    hooks_api._dispatch_hook(_pre_tool(sid, "Glob", "tu-A", pattern="*.py"))
+    hooks_api._dispatch_hook(_post_tool(sid, "Glob", "tu-A", "a.py\nb.py"))
+    hooks_api._dispatch_hook(_pre_tool(sid, "Read", "tu-B", file_path="/tmp/x"))
+    hooks_api._dispatch_hook(_post_tool(sid, "Read", "tu-B", "contents"))
+
+    # Proxy finally finishes the sub-agent's LLM span. It knows the
+    # tool_use_ids the inference produced and must retroactively re-parent
+    # the already-emitted tool spans under the just-created step.
+    _simulate_llm_call(
+        proxy_api,
+        sid,
+        _response(
+            tool_uses=[
+                {"id": "tu-A", "name": "Glob", "input": {"pattern": "*.py"}},
+                {"id": "tu-B", "name": "Read", "input": {"file_path": "/tmp/x"}},
+            ],
+            stop_reason="tool_use",
+        ),
+    )
+
+    hooks_api._dispatch_hook(_subagent_stop(sid))
+    hooks_api._dispatch_hook(_post_tool(sid, "Task", "task-1", "result"))
+    hooks_api._dispatch_hook(_stop(sid))
+
+    spans = _spans_for_session(hooks_api, sid)
+    steps = _by_kind(spans, "step")
+    tools = _by_kind(spans, "tool")
+    agents = _by_kind(spans, "agent")
+    subagents = [a for a in agents if a["parent_id"] != "undefined"]
+
+    # Single sub-agent, single step under it.
+    assert len(subagents) == 1
+    subagent = subagents[0]
+    sub_steps = [s for s in steps if s["parent_id"] == subagent["span_id"]]
+    assert len(sub_steps) == 1
+    sub_step = sub_steps[0]
+
+    # Both sub-agent tools are parented to the sub-agent's step, not the
+    # sub-agent directly.
+    sub_tools = [t for t in tools if t["name"].startswith(("Glob", "Read"))]
+    assert len(sub_tools) == 2
+    for tool in sub_tools:
+        assert tool["parent_id"] == sub_step["span_id"], (
+            f"{tool['name']} parented to {tool['parent_id']!r}, "
+            f"expected sub-agent step {sub_step['span_id']!r}"
+        )
