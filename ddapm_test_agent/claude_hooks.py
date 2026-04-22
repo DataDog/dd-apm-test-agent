@@ -203,6 +203,11 @@ class SessionState:
         # Per-agent 0-based inference counter. Persists after a step finalizes so
         # consecutive steps on the same agent get consecutive indexes.
         self.step_index_by_agent: Dict[str, int] = {}
+        # step span_id -> agent span_id. Persists for the session so a step
+        # span id used as a parent hint can be dereferenced back to the real
+        # agent, even after the step has been finalized and removed from
+        # active_steps_by_agent.
+        self.step_agent_by_span_id: Dict[str, str] = {}
 
 
 _MAX_UINT_64 = (1 << 64) - 1
@@ -368,6 +373,16 @@ class ClaudeHooksAPI:
             return str(session.agent_span_stack[-1]["span_id"])
         return session.root_span_id
 
+    def _agent_for_span_id(self, session: SessionState, span_id: str) -> str:
+        """Dereference ``span_id`` to the owning agent span_id.
+
+        If ``span_id`` is a step span known to the session, return the
+        step's agent parent. Otherwise return ``span_id`` unchanged.
+        Used so tool_agent_id hints for subsequent LLM calls always name
+        an agent, never a step — preventing step-under-step nesting.
+        """
+        return session.step_agent_by_span_id.get(span_id, span_id)
+
     def _current_span_ref(self, session: SessionState) -> Optional[Dict[str, Any]]:
         """Return the span dict of the current active agent (top of stack), or root."""
         if session.agent_span_stack:
@@ -413,7 +428,14 @@ class ClaudeHooksAPI:
         sibling steps don't overlap (prior step ends at the new LLM's
         start_ns). Also routes downstream tool spans to the step by
         registering ``llm_span_id -> step_span_id`` on the link tracker.
+
+        Defensive: when ``agent_parent_id`` is itself a step span (which
+        can happen if a caller derives the parent from a prior tool's
+        tree parent), climb to the step's agent so the new step opens as
+        a sibling, not a child, of the prior step.
         """
+        agent_parent_id = session.step_agent_by_span_id.get(agent_parent_id, agent_parent_id)
+
         prior = session.active_steps_by_agent.get(agent_parent_id)
         if prior is not None:
             self._finalize_step(session, prior, end_ns=llm_start_ns)
@@ -462,6 +484,7 @@ class ClaudeHooksAPI:
             span_ref=step_span,
         )
         session.active_steps_by_agent[agent_parent_id] = active
+        session.step_agent_by_span_id[step_span_id] = agent_parent_id
 
         # Route future tool parent lookups (via tool_use_id -> llm_span_id -> parent)
         # to the step span rather than the agent span.
@@ -647,6 +670,7 @@ class ClaudeHooksAPI:
             session.active_agents = {}
             session.active_steps_by_agent = {}
             session.step_index_by_agent = {}
+            session.step_agent_by_span_id = {}
             # Don't reset conversation_title — it persists across turns so
             # subsequent interactions on the same topic reuse the title.
             # The haiku summarization call will update it when the topic changes.
@@ -768,8 +792,13 @@ class ClaudeHooksAPI:
 
             span_links = []
             if self._link_tracker:
+                deferred_parent = deferred["parent_id"]
                 links = self._link_tracker.on_tool_call(
-                    tool_use_id, agent_span_id, session.trace_id, deferred["parent_id"]
+                    tool_use_id,
+                    agent_span_id,
+                    session.trace_id,
+                    deferred_parent,
+                    tool_agent_id=self._agent_for_span_id(session, deferred_parent),
                 )
                 span_links = [link.to_dict() for link in links]
 
@@ -824,7 +853,13 @@ class ClaudeHooksAPI:
 
         span_links = []
         if self._link_tracker:
-            links = self._link_tracker.on_tool_call(tool_use_id, span_id, session.trace_id, parent_id)
+            links = self._link_tracker.on_tool_call(
+                tool_use_id,
+                span_id,
+                session.trace_id,
+                parent_id,
+                tool_agent_id=self._agent_for_span_id(session, parent_id),
+            )
             span_links = [link.to_dict() for link in links]
 
         span_name = f"{actual_tool_name} - {intent}" if intent else actual_tool_name
@@ -1374,7 +1409,13 @@ class ClaudeHooksAPI:
 
         span_links = []
         if self._link_tracker:
-            links = self._link_tracker.on_tool_call(tool_use_id, span_id, session.trace_id, parent_id)
+            links = self._link_tracker.on_tool_call(
+                tool_use_id,
+                span_id,
+                session.trace_id,
+                parent_id,
+                tool_agent_id=self._agent_for_span_id(session, parent_id),
+            )
             span_links = [link.to_dict() for link in links]
 
         span_name = f"{actual_tool_name} - {intent}" if intent else actual_tool_name

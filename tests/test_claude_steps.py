@@ -516,3 +516,80 @@ def test_concurrent_subagents_each_have_steps():
         assert step["parent_id"] in sub_ids
     # The two steps must not share a parent (one per subagent).
     assert steps[0]["parent_id"] != steps[1]["parent_id"]
+
+
+def test_consecutive_inferences_with_tool_result_are_siblings():
+    """Regression: when LLM N+1's request carries a tool_result for tool-N,
+    the parent_hint returned by the link tracker must resolve to the agent
+    (not to step-N), so step-(N+1) opens as a sibling of step-N — never as
+    a child. Without this, the tool_result correlation path produces
+    step-under-step nesting.
+    """
+    sid = "sess-step-nesting"
+    hooks_api, proxy_api, _ = _make_apis()
+
+    hooks_api._dispatch_hook(_session_start(sid))
+    hooks_api._dispatch_hook(_user_prompt(sid))
+
+    base_ns = 1_000_000_000_000
+
+    # LLM-1 dispatches tool-1
+    llm1 = _simulate_llm_call(
+        proxy_api,
+        sid,
+        _response(tool_uses=[{"id": "tu-1", "name": "Read"}], stop_reason="tool_use"),
+        start_ns=base_ns,
+    )
+    hooks_api._dispatch_hook(_pre_tool(sid, "Read", "tu-1"))
+    hooks_api._dispatch_hook(_post_tool(sid, "Read", "tu-1"))
+
+    # LLM-2 request carries a tool_result for tu-1 — this is the path
+    # that previously re-parented step-2 to step-1.
+    request_with_tool_result = {
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu-1", "content": "ok"},
+                ],
+            },
+        ],
+    }
+    llm2 = _simulate_llm_call(
+        proxy_api,
+        sid,
+        _response(tool_uses=[{"id": "tu-2", "name": "Edit"}], stop_reason="tool_use"),
+        request_body=request_with_tool_result,
+        start_ns=base_ns + 100_000_000,
+    )
+    hooks_api._dispatch_hook(_pre_tool(sid, "Edit", "tu-2"))
+    hooks_api._dispatch_hook(_post_tool(sid, "Edit", "tu-2"))
+    hooks_api._dispatch_hook(_stop(sid))
+
+    spans = _spans_for_session(hooks_api, sid)
+    root = _find_root(spans)
+    steps = _by_kind(spans, "step")
+    tools = _by_kind(spans, "tool")
+
+    assert len(steps) == 2
+    names = sorted(s["name"] for s in steps)
+    assert names == ["inference-0", "inference-1"]
+
+    # No step may parent to another step — siblings under root.
+    step_ids = {s["span_id"] for s in steps}
+    for step in steps:
+        assert step["parent_id"] == root["span_id"]
+        assert step["parent_id"] not in step_ids
+
+    # LLMs parent to their respective steps.
+    step0 = next(s for s in steps if s["name"] == "inference-0")
+    step1 = next(s for s in steps if s["name"] == "inference-1")
+    assert llm1["parent_id"] == step0["span_id"]
+    assert llm2["parent_id"] == step1["span_id"]
+
+    # Tools parent to the step that dispatched them.
+    tool1 = next(t for t in tools if "Read" in t.get("name", ""))
+    tool2 = next(t for t in tools if "Edit" in t.get("name", ""))
+    assert tool1["parent_id"] == step0["span_id"]
+    assert tool2["parent_id"] == step1["span_id"]
