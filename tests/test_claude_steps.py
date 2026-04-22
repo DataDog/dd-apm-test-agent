@@ -593,3 +593,55 @@ def test_consecutive_inferences_with_tool_result_are_siblings():
     tool2 = next(t for t in tools if "Edit" in t.get("name", ""))
     assert tool1["parent_id"] == step0["span_id"]
     assert tool2["parent_id"] == step1["span_id"]
+
+
+def test_pretool_race_with_llm_span_creation():
+    """Regression: parallel tools stay under the step even when PreToolUse
+    fires before ``_create_llm_span`` finishes (streaming-proxy race).
+
+    Claude Code's streaming proxy can hand back a response and trigger
+    PreToolUse before the proxy's span-creation task populates the link
+    tracker. Without re-resolution at PostToolUse, ``pending.parent_id``
+    stays frozen at the PreToolUse-time fallback (the current agent),
+    producing tool spans parented to the agent instead of the step.
+    """
+    sid = "sess-pretool-race"
+    hooks_api, proxy_api, _ = _make_apis()
+
+    hooks_api._dispatch_hook(_session_start(sid))
+    hooks_api._dispatch_hook(_user_prompt(sid))
+
+    # PreToolUse arrives BEFORE the LLM span is created. get_parent_for_tool
+    # returns None; pending.parent_id falls back to the root agent.
+    hooks_api._dispatch_hook(_pre_tool(sid, "Bash", "tu-A", command="a"))
+    hooks_api._dispatch_hook(_pre_tool(sid, "Bash", "tu-B", command="b"))
+
+    # LLM span creation registers the tool_use ids and sets
+    # _llm_span_parents[llm_id] = step_span_id.
+    _simulate_llm_call(
+        proxy_api,
+        sid,
+        _response(
+            tool_uses=[
+                {"id": "tu-A", "name": "Bash", "input": {"command": "a"}},
+                {"id": "tu-B", "name": "Bash", "input": {"command": "b"}},
+            ],
+            stop_reason="tool_use",
+        ),
+    )
+
+    hooks_api._dispatch_hook(_post_tool(sid, "Bash", "tu-A", "out-a"))
+    hooks_api._dispatch_hook(_post_tool(sid, "Bash", "tu-B", "out-b"))
+    hooks_api._dispatch_hook(_stop(sid))
+
+    spans = _spans_for_session(hooks_api, sid)
+    steps = _by_kind(spans, "step")
+    tools = _by_kind(spans, "tool")
+
+    assert len(steps) == 1
+    step = steps[0]
+    assert len(tools) == 2
+    for tool in tools:
+        assert tool["parent_id"] == step["span_id"], (
+            f"{tool['name']} parented to {tool['parent_id']!r}, expected step {step['span_id']!r}"
+        )

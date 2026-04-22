@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    claude hooks: Fix tool spans incorrectly parented to the agent (bypassing
+    the ``step`` span) when ``PreToolUse`` fires before the proxy finishes
+    creating the LLM span. This affected parallel tool calls from the same
+    inference cycle where the first tool raced ahead. The tool's tree parent
+    is now re-resolved against the link tracker at ``PostToolUse`` time.

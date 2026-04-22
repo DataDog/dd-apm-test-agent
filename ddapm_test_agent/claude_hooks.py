@@ -383,6 +383,22 @@ class ClaudeHooksAPI:
         """
         return session.step_agent_by_span_id.get(span_id, span_id)
 
+    def _resolve_tool_parent(self, tool_use_id: str, fallback: str) -> str:
+        """Resolve a tool's tree parent via the link tracker, falling back if unknown.
+
+        PreToolUse may fire before the proxy finishes creating the LLM span
+        (streaming) — in that case the cached ``pending.parent_id`` fell back
+        to the current agent rather than the step. By PostToolUse /
+        SubagentStart time the LLM span has been registered, so the link
+        tracker knows the correct parent (the step). Re-resolve here to
+        upgrade stale agent-parent values to the step.
+        """
+        if self._link_tracker is not None:
+            resolved = self._link_tracker.get_parent_for_tool(tool_use_id)
+            if resolved:
+                return resolved
+        return fallback
+
     def _current_span_ref(self, session: SessionState) -> Optional[Dict[str, Any]]:
         """Return the span dict of the current active agent (top of stack), or root."""
         if session.agent_span_stack:
@@ -759,14 +775,14 @@ class ClaudeHooksAPI:
         session.claimed_task_tools.discard(tool_use_id)
         if pending:
             span_id = pending.span_id
-            parent_id = pending.parent_id
+            parent_id = self._resolve_tool_parent(tool_use_id, pending.parent_id)
             start_ns = pending.start_ns
             input_value = _to_json_str(pending.tool_input) if pending.tool_input else ""
             actual_tool_name = pending.tool_name
             tool_input_dict = pending.tool_input if isinstance(pending.tool_input, dict) else {}
         else:
             span_id = _format_span_id()
-            parent_id = self._current_parent_id(session)
+            parent_id = self._resolve_tool_parent(tool_use_id, self._current_parent_id(session))
             start_ns = now_ns
             input_value = ""
             actual_tool_name = tool_name
@@ -932,7 +948,13 @@ class ClaudeHooksAPI:
         # Use the parent captured at PreToolUse time (before any SubagentStart fired).
         # This is correct for concurrent siblings — they all share the same parent
         # from when they were dispatched, not the stack top which may have changed.
-        parent_id = task_pending.parent_id if task_pending else self._current_parent_id(session)
+        # Re-resolve via the link tracker in case PreToolUse raced ahead of the
+        # LLM span's creation and cached a stale agent parent rather than the step.
+        fallback_parent = task_pending.parent_id if task_pending else self._current_parent_id(session)
+        if task_tool_use_id:
+            parent_id = self._resolve_tool_parent(task_tool_use_id, fallback_parent)
+        else:
+            parent_id = fallback_parent
 
         # Enrich agent name with the Task tool's description if available
         task_desc = ""
@@ -1368,14 +1390,14 @@ class ClaudeHooksAPI:
 
         if pending:
             span_id = pending.span_id
-            parent_id = pending.parent_id
+            parent_id = self._resolve_tool_parent(tool_use_id, pending.parent_id)
             start_ns = pending.start_ns
             input_value = _to_json_str(pending.tool_input) if pending.tool_input else ""
             actual_tool_name = pending.tool_name
             tool_input_dict = pending.tool_input if isinstance(pending.tool_input, dict) else {}
         else:
             span_id = _format_span_id()
-            parent_id = self._current_parent_id(session)
+            parent_id = self._resolve_tool_parent(tool_use_id, self._current_parent_id(session))
             start_ns = now_ns
             input_value = ""
             actual_tool_name = tool_name
