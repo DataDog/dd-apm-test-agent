@@ -42,6 +42,7 @@ setup(
         "protobuf>=3.19.0",
         "grpcio>=1.66.2,<2.0",
         "pywin32; sys_platform == 'win32'",
+        "keyring",
     ],
     tests_require=testing_deps,
     entry_points={

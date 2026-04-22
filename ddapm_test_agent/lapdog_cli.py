@@ -11,9 +11,11 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
-from lapdog_settings import load_settings
+from ddapm_test_agent.lapdog_settings import load_settings
 
 import requests
+
+LapdogSettings = Tuple[Optional[str], Optional[str], Optional[bool]]
 
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi"]
 LAPDOG_USAGE = (
@@ -107,22 +109,29 @@ def _remove_pid_file() -> None:
             pass
 
 
-def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: Optional[bool] = None) -> None:
+def _start_lapdog(
+    port: int,
+    extra_args: Optional[List[str]] = None,
+    forward_data: Optional[bool] = None,
+    lapdog_settings: Optional[LapdogSettings] = None,
+) -> None:
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     args = [sys.executable, "-m", "ddapm_test_agent.agent", "--enable-claude-code-hooks", "--lapdog-mode"]
 
-    dd_api_key, dd_site, data_forwarding_enabled = load_settings()
+    if lapdog_settings is not None:
+        dd_api_key, dd_site, data_forwarding_enabled = lapdog_settings
+    else:
+        dd_api_key, dd_site, data_forwarding_enabled = load_settings()
     forward_data = data_forwarding_enabled if forward_data is None else forward_data
 
     if not forward_data:
         args.append("--disable-llmobs-data-forwarding")
 
-    # TODO: what if DD_API_KEY/--dd-api-key or site are already set?
-    if dd_api_key:
+    if dd_api_key and (not extra_args or "--dd-api-key" not in extra_args):
         args += ["--dd-api-key", dd_api_key]
-    if dd_site:
+    if dd_site and (not extra_args or "--dd-site" not in extra_args):
         args += ["--dd-site", dd_site]
 
     if extra_args:
@@ -234,7 +243,7 @@ def cmd_status() -> None:
         sys.exit(1)
 
 
-def _start_lapdog_detached(port: int, forward_data: Optional[bool]) -> None:
+def _start_lapdog_detached(port: int, forward_data: Optional[bool], lapdog_settings: LapdogSettings) -> None:
     """Start lapdog in a forked child so it is not a child of the calling process.
 
     After os.execv replaces the current process with pi/claude, lapdog must not
@@ -243,12 +252,15 @@ def _start_lapdog_detached(port: int, forward_data: Optional[bool]) -> None:
     and starting lapdog in the child, the child exits immediately after lapdog
     is ready and lapdog gets re-parented to init/launchd — fully independent of
     the process that will become pi/claude.
+
+    ``lapdog_settings`` must be loaded in the parent before ``os.fork()``:
+    Keychain / keyring calls are not safe in a forked child on macOS and can hang.
     """
     child_pid = os.fork()
     if child_pid == 0:
         # Child: start lapdog, wait for it to be ready, then exit.
         try:
-            _start_lapdog(port, forward_data=forward_data)
+            _start_lapdog(port, forward_data=forward_data, lapdog_settings=lapdog_settings)
         except SystemExit:
             # _start_lapdog may call sys.exit on failure
             os._exit(1)
@@ -276,7 +288,7 @@ def cmd_claude(sub_cmd_args: List[str], forward_data: Optional[bool]) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        _start_lapdog_detached(port, forward_data=forward_data)
+        _start_lapdog_detached(port, forward_data=forward_data, lapdog_settings=load_settings())
 
     _run_claude(sub_cmd_args)
 
@@ -349,7 +361,7 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: Optional[bool]) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        _start_lapdog_detached(port, forward_data=forward_data)
+        _start_lapdog_detached(port, forward_data=forward_data, lapdog_settings=load_settings())
 
     _install_pi_extension()
     _run_pi(sub_cmd_args, port)
