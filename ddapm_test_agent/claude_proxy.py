@@ -14,28 +14,27 @@ import json
 import logging
 import os
 import socket
-import time
-from typing import cast
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import cast
 
 import aiohttp
 from aiohttp import web
 from aiohttp.web import Request
 
+from ._clock import monotonic_wall_ns
 from .claude_cost_tracker import compute_cost_metrics
-from .claude_hooks import _ML_APP
 from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import SessionState
+from .claude_hooks import _ML_APP
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _get_context_limit
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_link_tracker import SpanLink
 from .llmobs_event_platform import with_cors
-
 
 log = logging.getLogger(__name__)
 
@@ -650,7 +649,7 @@ class ClaudeProxyAPI:
 
         headers = {key: value for key, value in request.headers.items() if key.lower() not in SKIP_REQUEST_HEADERS}
 
-        start_ns = time.time_ns()
+        start_ns = monotonic_wall_ns()
         maybe_session_id = _get_session_id_from_claude_llm_request(request_body)
         session = self._get_active_session(maybe_session_id)
 
@@ -695,7 +694,7 @@ class ClaudeProxyAPI:
             buffered_chunks.append(chunk)
         await response.write_eof()
 
-        end_ns = time.time_ns()
+        end_ns = monotonic_wall_ns()
         duration_ns = end_ns - start_ns
 
         if upstream_resp.status == 200:
@@ -734,7 +733,7 @@ class ClaudeProxyAPI:
     ) -> web.Response:
         """Handle a non-streaming JSON response."""
         body = await upstream_resp.read()
-        end_ns = time.time_ns()
+        end_ns = monotonic_wall_ns()
         duration_ns = end_ns - start_ns
 
         if upstream_resp.status == 200:

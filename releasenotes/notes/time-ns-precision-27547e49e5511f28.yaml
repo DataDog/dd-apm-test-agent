@@ -1,8 +1,11 @@
 ---
 fixes:
   - |
-    Use ``time.time_ns()`` instead of ``int(time.time() * 1_000_000_000)`` for
-    nanosecond timestamps in ``claude_hooks``, ``pi_hooks``, ``claude_proxy``,
-    and ``llmobs_event_platform``. The float-based conversion lost precision
-    (only ~1ms effective resolution due to IEEE 754 double rounding), which
-    caused zero-duration step spans and flaky tests on fast runners.
+    Use a shared ``monotonic_wall_ns()`` helper for nanosecond timestamps in
+    ``claude_hooks``, ``pi_hooks``, ``claude_proxy``, and
+    ``llmobs_event_platform`` instead of ``int(time.time() * 1_000_000_000)``
+    or raw ``time.time_ns()``. The float-based conversion lost precision
+    (~1ms effective resolution from IEEE 754 double rounding), and on Windows
+    ``time.time_ns()`` can return identical values on back-to-back calls.
+    Both caused zero-duration step spans and flaky failures in
+    ``test_claude_steps.py`` and ``test_pi_hooks.py`` on fast runners.

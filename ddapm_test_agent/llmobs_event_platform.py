@@ -7,7 +7,6 @@ import json
 import logging
 import re
 import statistics
-import time
 from typing import Any
 from typing import Awaitable
 from typing import Callable
@@ -22,6 +21,7 @@ from aiohttp.web import Request
 import msgpack
 
 from . import llmobs_query_parser
+from ._clock import monotonic_wall_ns
 
 if TYPE_CHECKING:
     from .agent import Agent
@@ -904,7 +904,7 @@ def build_event_platform_list_response(
         status = span.get("status", "ok")
         name = span.get("name", "")
         duration = span.get("duration", 0)
-        start_ns = span.get("start_ns", time.time_ns())
+        start_ns = span.get("start_ns", monotonic_wall_ns())
         tags = span.get("tags", [])
         span_kind = meta.get("span", {}).get("kind", "llm")
         ml_app = span.get("ml_app", span.get("_ui_ml_app", "unknown"))
@@ -1316,7 +1316,7 @@ class LLMObsEventPlatformAPI:
             status = found_span.get("status", "ok")
             name = found_span.get("name", "")
             duration = found_span.get("duration", 0)
-            start_ns = found_span.get("start_ns", time.time_ns())
+            start_ns = found_span.get("start_ns", monotonic_wall_ns())
             tags = found_span.get("tags", [])
             span_kind = meta.get("span", {}).get("kind", "llm")
             ml_app = found_span.get("ml_app", found_span.get("_ui_ml_app", "unknown"))
