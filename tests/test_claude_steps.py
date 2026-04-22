@@ -117,7 +117,7 @@ def _simulate_llm_call(
     import time as _time
 
     if start_ns is None:
-        start_ns = int(_time.time() * 1_000_000_000)
+        start_ns = _time.time_ns()
     session = proxy_api._hooks_api._sessions.get(session_id)
     span = proxy_api._create_llm_span(
         session=session,

@@ -650,7 +650,7 @@ class ClaudeProxyAPI:
 
         headers = {key: value for key, value in request.headers.items() if key.lower() not in SKIP_REQUEST_HEADERS}
 
-        start_ns = int(time.time() * 1_000_000_000)
+        start_ns = time.time_ns()
         maybe_session_id = _get_session_id_from_claude_llm_request(request_body)
         session = self._get_active_session(maybe_session_id)
 
@@ -695,7 +695,7 @@ class ClaudeProxyAPI:
             buffered_chunks.append(chunk)
         await response.write_eof()
 
-        end_ns = int(time.time() * 1_000_000_000)
+        end_ns = time.time_ns()
         duration_ns = end_ns - start_ns
 
         if upstream_resp.status == 200:
@@ -734,7 +734,7 @@ class ClaudeProxyAPI:
     ) -> web.Response:
         """Handle a non-streaming JSON response."""
         body = await upstream_resp.read()
-        end_ns = int(time.time() * 1_000_000_000)
+        end_ns = time.time_ns()
         duration_ns = end_ns - start_ns
 
         if upstream_resp.status == 200:

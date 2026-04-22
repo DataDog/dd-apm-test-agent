@@ -358,7 +358,7 @@ class ClaudeHooksAPI:
         if session_id not in self._sessions:
             trace_id = _format_trace_id()
             root_span_id = _format_span_id()
-            now_ns = int(time.time() * 1_000_000_000)
+            now_ns = time.time_ns()
             self._sessions[session_id] = SessionState(
                 session_id=session_id,
                 trace_id=trace_id,
@@ -673,7 +673,7 @@ class ClaudeHooksAPI:
         turn's Stop hook never fired.  Updates all in-progress spans with their
         current duration so the trace is complete.
         """
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = time.time_ns()
         duration = now_ns - session.start_ns
 
         # Discard any pending permission wait — the turn was interrupted so we don't
@@ -746,7 +746,7 @@ class ClaudeHooksAPI:
 
         # If the previous turn's root span was emitted, start a fresh trace
         if session.root_span_emitted:
-            now_ns = int(time.time() * 1_000_000_000)
+            now_ns = time.time_ns()
             session.trace_id = _format_trace_id()
             session.root_span_id = _format_span_id()
             session.start_ns = now_ns
@@ -819,7 +819,7 @@ class ClaudeHooksAPI:
             parent_id = self._link_tracker.get_parent_for_tool(tool_use_id)
         if not parent_id:
             parent_id = self._current_parent_id(session)
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = time.time_ns()
 
         session.pending_tools[tool_use_id] = PendingToolSpan(
             span_id=span_id,
@@ -841,7 +841,7 @@ class ClaudeHooksAPI:
         tool_use_id = body.get("tool_use_id", tool_name)
         tool_output = body.get("tool_response", body.get("tool_output", ""))
 
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = time.time_ns()
 
         pending = session.pending_tools.pop(tool_use_id, None)
         # Clean up claimed_task_tools so the set doesn't grow unbounded
@@ -1000,7 +1000,7 @@ class ClaudeHooksAPI:
         """
         session = self._get_or_create_session(session_id)
         span_id = _format_span_id()
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = time.time_ns()
 
         agent_name = body.get("agent_type", body.get("agent_name", "subagent"))
 
@@ -1092,7 +1092,7 @@ class ClaudeHooksAPI:
         PostToolUse(Task) fires so the agent span can include the Task's output.
         """
         session = self._get_or_create_session(session_id)
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = time.time_ns()
 
         if not session.agent_span_stack:
             log.warning("SubagentStop with empty agent stack for session %s", session_id)
@@ -1305,7 +1305,7 @@ class ClaudeHooksAPI:
             log.warning("Stop event for unknown session %s", session_id)
             return
 
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = time.time_ns()
         duration = now_ns - session.start_ns
 
         # Finalize any still-open step on the root agent before aggregating the turn.
@@ -1459,7 +1459,7 @@ class ClaudeHooksAPI:
         error_message = body.get("error", "unknown error")
         is_interrupt = body.get("is_interrupt", False)
 
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = time.time_ns()
 
         pending = session.pending_tools.pop(tool_use_id, None)
         session.claimed_task_tools.discard(tool_use_id)
@@ -1609,7 +1609,7 @@ class ClaudeHooksAPI:
         session without span-level tagging.
         """
         session = self._get_or_create_session(session_id)
-        session.pending_permission_at_ns = int(time.time() * 1_000_000_000)
+        session.pending_permission_at_ns = time.time_ns()
         root_span: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
         if root_span is not None:
             root_span["duration"] = -1
