@@ -2,14 +2,4 @@
 features:
   - |
     claude hooks: Insert a ``step`` span between the agent span and its
-    ``llm``/``tool`` children for instrumented Claude Code sessions. Each
-    step represents one inference cycle (one LLM call plus the tools it
-    dispatches), is named ``inference-{N}`` per agent, carries the
-    ``trajectory.semantic_type:agent_message`` tag, and stores
-    ``message_index``, ``tool_use_ids``, ``stop_reason``, and
-    ``has_thinking`` in ``meta.metadata``. Tool spans (including
-    ``Task``-spawned sub-agent spans) are always re-parented under the
-    owning step even when ``PreToolUse``/``PostToolUse`` or
-    ``SubagentStart`` races ahead of the proxy finishing the LLM span —
-    covering the root agent, sub-agents, and parallel tool calls. Non-
-    instrumented sessions (no LLM proxy) are unchanged.
+    ``llm``/``tool`` children for instrumented Claude Code sessions.
