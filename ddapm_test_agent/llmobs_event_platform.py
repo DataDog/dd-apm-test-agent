@@ -126,7 +126,7 @@ def remap_sdk_span_to_ui_format(span: Dict[str, Any], event_ml_app: str = "") ->
     tags = span.get("tags", [])
     extracted = extract_fields_from_tags(tags)
 
-    ml_app = extracted.get("ml_app") or event_ml_app or span.get("ml_app", "unknown")
+    ml_app = extracted.get("ml_app") or event_ml_app or span.get("ml_app") or "lapdog"
     span["ml_app"] = ml_app
 
     if "service" not in span or not span["service"]:

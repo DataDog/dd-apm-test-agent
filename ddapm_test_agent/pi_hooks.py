@@ -27,6 +27,7 @@ Terminology mapping (pi → trajectory-dev proposal):
 
 import json
 import logging
+import os
 from typing import Any
 from typing import Dict
 from typing import List
@@ -43,7 +44,6 @@ from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import PendingToolSpan
 from .claude_hooks import SessionState
 from .claude_hooks import _HOSTNAME
-from .claude_hooks import _ML_APP
 from .claude_hooks import _USER_HANDLE
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
@@ -51,6 +51,8 @@ from .claude_hooks import _to_json_str
 from .llmobs_event_platform import with_cors
 
 log = logging.getLogger(__name__)
+
+_ML_APP = os.environ.get("DD_PI_CODING_AGENT_ML_APP", "pi-coding-agent")
 
 
 class PendingLLMSpan:

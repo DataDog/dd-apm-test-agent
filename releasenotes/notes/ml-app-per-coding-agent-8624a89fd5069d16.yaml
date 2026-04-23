@@ -1,0 +1,11 @@
+---
+features:
+  - |
+    Pi coding agent spans now default ``ml_app`` to ``pi-coding-agent`` instead
+    of inheriting the Claude Code value. Override with
+    ``DD_PI_CODING_AGENT_ML_APP``.
+fixes:
+  - |
+    LLMObs events that arrive without an explicit ``ml_app`` tag now fall back
+    to ``lapdog`` (previously ``unknown``), so unattributed lapdog traffic is
+    grouped under a meaningful app name.
