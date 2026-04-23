@@ -27,7 +27,6 @@ Terminology mapping (pi → trajectory-dev proposal):
 
 import json
 import logging
-import time
 from typing import Any
 from typing import Dict
 from typing import List
@@ -37,6 +36,7 @@ from typing import Tuple
 from aiohttp import web
 from aiohttp.web import Request
 
+from ._clock import monotonic_wall_ns
 from .claude_cost_tracker import compute_cost_metrics
 from .claude_cost_tracker import cost_from_provider_usage
 from .claude_hooks import ClaudeHooksAPI
@@ -171,7 +171,7 @@ class PiHooksAPI:
         idx = self._step_indexes.get(sid, 0)
         self._step_indexes[sid] = idx + 1
 
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = monotonic_wall_ns()
         span_id = _format_span_id()
         parent_id = self._current_parent_id(session)
 
@@ -229,7 +229,7 @@ class PiHooksAPI:
             return
 
         if end_ns is None:
-            end_ns = int(time.time() * 1_000_000_000)
+            end_ns = monotonic_wall_ns()
 
         ref = active.span_ref
         if ref is None:
@@ -308,7 +308,7 @@ class PiHooksAPI:
 
         # Start fresh trace
         if session.root_span_emitted:
-            now_ns = int(time.time() * 1_000_000_000)
+            now_ns = monotonic_wall_ns()
             session.trace_id = _format_trace_id()
             session.root_span_id = _format_span_id()
             session.start_ns = now_ns
@@ -384,7 +384,7 @@ class PiHooksAPI:
         # Finalize any open step before closing the turn
         self._finalize_active_step(session_id)
 
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = monotonic_wall_ns()
         duration = now_ns - session.start_ns
         input_value = "\n\n".join(session.user_prompts) if session.user_prompts else ""
 
@@ -507,7 +507,7 @@ class PiHooksAPI:
 
         parent_id = self._active_step_parent_id(session)
         span_id = _format_span_id()
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = monotonic_wall_ns()
         self._pending_llm[session_id] = PendingLLMSpan(
             span_id=span_id,
             parent_id=parent_id,
@@ -526,7 +526,7 @@ class PiHooksAPI:
         if not session:
             return
 
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = monotonic_wall_ns()
         pending = self._pending_llm.pop(session_id, None)
 
         if pending:
@@ -660,7 +660,7 @@ class PiHooksAPI:
 
         span_id = _format_span_id()
         parent_id = self._active_step_parent_id(session)
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = monotonic_wall_ns()
 
         # Parse args string back to dict for tool_input if possible
         tool_input: Any = args
@@ -689,7 +689,7 @@ class PiHooksAPI:
         result = body.get("result", "")
         is_error = body.get("is_error", False)
 
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = monotonic_wall_ns()
         pending = session.pending_tools.pop(tool_call_id, None)
 
         if pending:

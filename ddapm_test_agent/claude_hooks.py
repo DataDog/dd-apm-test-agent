@@ -28,6 +28,7 @@ from aiohttp.web import Request
 import msgpack
 from typing_extensions import cast
 
+from ._clock import monotonic_wall_ns
 from .claude_cost_tracker import COST_METRIC_KEYS
 from .claude_link_tracker import ClaudeLinkTracker
 from .llmobs_event_platform import with_cors
@@ -135,6 +136,33 @@ class PendingToolSpan:
         self.start_ns = start_ns
 
 
+class ActiveStep:
+    """Tracks the currently open step span for one agent stack frame.
+
+    A step represents a single inference cycle: one LLM call plus the tools
+    it dispatches. Finalized when the next LLM call arrives on the same
+    agent, or when the agent itself terminates.
+    """
+
+    def __init__(
+        self,
+        span_id: str,
+        parent_id: str,
+        start_ns: int,
+        message_index: int,
+        span_ref: Dict[str, Any],
+    ) -> None:
+        self.span_id = span_id
+        self.parent_id = parent_id
+        self.start_ns = start_ns
+        self.message_index = message_index
+        self.span_ref = span_ref
+        self.output_text: str = ""
+        self.tool_use_ids: List[str] = []
+        self.has_thinking: bool = False
+        self.stop_reason: str = ""
+
+
 class SessionState:
     """Tracks the state of a single Claude Code session."""
 
@@ -171,6 +199,16 @@ class SessionState:
         self.pending_permission_at_ns: Optional[int] = None
         # whether the session is instrumented with the claude_intercept.mjs script for LLM calls
         self.instrumented = False
+        # Per-agent-frame active step (keyed by agent span_id).
+        self.active_steps_by_agent: Dict[str, "ActiveStep"] = {}
+        # Per-agent 0-based inference counter. Persists after a step finalizes so
+        # consecutive steps on the same agent get consecutive indexes.
+        self.step_index_by_agent: Dict[str, int] = {}
+        # step span_id -> agent span_id. Persists for the session so a step
+        # span id used as a parent hint can be dereferenced back to the real
+        # agent, even after the step has been finalized and removed from
+        # active_steps_by_agent.
+        self.step_agent_by_span_id: Dict[str, str] = {}
 
 
 _MAX_UINT_64 = (1 << 64) - 1
@@ -321,7 +359,7 @@ class ClaudeHooksAPI:
         if session_id not in self._sessions:
             trace_id = _format_trace_id()
             root_span_id = _format_span_id()
-            now_ns = int(time.time() * 1_000_000_000)
+            now_ns = monotonic_wall_ns()
             self._sessions[session_id] = SessionState(
                 session_id=session_id,
                 trace_id=trace_id,
@@ -335,6 +373,32 @@ class ClaudeHooksAPI:
         if session.agent_span_stack:
             return str(session.agent_span_stack[-1]["span_id"])
         return session.root_span_id
+
+    def _agent_for_span_id(self, session: SessionState, span_id: str) -> str:
+        """Dereference ``span_id`` to the owning agent span_id.
+
+        If ``span_id`` is a step span known to the session, return the
+        step's agent parent. Otherwise return ``span_id`` unchanged.
+        Used so tool_agent_id hints for subsequent LLM calls always name
+        an agent, never a step — preventing step-under-step nesting.
+        """
+        return session.step_agent_by_span_id.get(span_id, span_id)
+
+    def _resolve_tool_parent(self, tool_use_id: str, fallback: str) -> str:
+        """Resolve a tool's tree parent via the link tracker, falling back if unknown.
+
+        PreToolUse may fire before the proxy finishes creating the LLM span
+        (streaming) — in that case the cached ``pending.parent_id`` fell back
+        to the current agent rather than the step. By PostToolUse /
+        SubagentStart time the LLM span has been registered, so the link
+        tracker knows the correct parent (the step). Re-resolve here to
+        upgrade stale agent-parent values to the step.
+        """
+        if self._link_tracker is not None:
+            resolved = self._link_tracker.get_parent_for_tool(tool_use_id)
+            if resolved:
+                return resolved
+        return fallback
 
     def _current_span_ref(self, session: SessionState) -> Optional[Dict[str, Any]]:
         """Return the span dict of the current active agent (top of stack), or root."""
@@ -368,6 +432,230 @@ class ClaudeHooksAPI:
         span.setdefault("evaluations", {}).setdefault("custom", {})["permission_wait_critical"] = is_critical
         span.setdefault("evaluation_assessments", {}).setdefault("custom", {})["permission_wait_critical"] = assessment
 
+    def _start_step_for_llm(
+        self,
+        session: SessionState,
+        llm_span_id: str,
+        agent_parent_id: str,
+        llm_start_ns: int,
+        tool_use_ids: Optional[List[str]] = None,
+    ) -> ActiveStep:
+        """Open a new step span for a just-created LLM call.
+
+        Finalizes any prior active step on the same agent frame first so
+        sibling steps don't overlap (prior step ends at the new LLM's
+        start_ns). Also routes downstream tool spans to the step by
+        registering ``llm_span_id -> step_span_id`` on the link tracker.
+
+        Defensive: when ``agent_parent_id`` is itself a step span (which
+        can happen if a caller derives the parent from a prior tool's
+        tree parent), climb to the step's agent so the new step opens as
+        a sibling, not a child, of the prior step.
+
+        When ``tool_use_ids`` is provided (the tool_use blocks in the LLM
+        response this step wraps), also retroactively re-parent any
+        already-tracked children of ``agent_parent_id`` whose IDs match —
+        this closes the race where ``PreToolUse``/``PostToolUse`` fires
+        before the proxy finishes creating the LLM span and the children
+        got cached with the agent as parent instead of this step.
+        """
+        agent_parent_id = session.step_agent_by_span_id.get(agent_parent_id, agent_parent_id)
+
+        prior = session.active_steps_by_agent.get(agent_parent_id)
+        if prior is not None:
+            self._finalize_step(session, prior, end_ns=llm_start_ns)
+
+        message_index = session.step_index_by_agent.get(agent_parent_id, 0)
+        session.step_index_by_agent[agent_parent_id] = message_index + 1
+
+        step_span_id = _format_span_id()
+        step_span: Dict[str, Any] = {
+            "span_id": step_span_id,
+            "trace_id": session.trace_id,
+            "parent_id": agent_parent_id,
+            "name": f"inference-{message_index}",
+            "status": "ok",
+            "start_ns": llm_start_ns,
+            "duration": 0,
+            "ml_app": _ML_APP,
+            "service": _ML_APP,
+            "env": "local",
+            "session_id": session.session_id,
+            "tags": [
+                f"ml_app:{_ML_APP}",
+                f"session_id:{session.session_id}",
+                f"service:{_ML_APP}",
+                "env:local",
+                "source:claude-code-hooks",
+                "language:python",
+                f"hostname:{_HOSTNAME}",
+                "trajectory.semantic_type:agent_message",
+            ],
+            "meta": {
+                "span": {"kind": "step"},
+                "input": {},
+                "output": {"value": ""},
+                "metadata": {},
+            },
+            "metrics": {},
+        }
+        self._assembled_spans.append(step_span)
+
+        active = ActiveStep(
+            span_id=step_span_id,
+            parent_id=agent_parent_id,
+            start_ns=llm_start_ns,
+            message_index=message_index,
+            span_ref=step_span,
+        )
+        session.active_steps_by_agent[agent_parent_id] = active
+        session.step_agent_by_span_id[step_span_id] = agent_parent_id
+
+        # Route future tool parent lookups (via tool_use_id -> llm_span_id -> parent)
+        # to the step span rather than the agent span.
+        if self._link_tracker is not None:
+            self._link_tracker.set_llm_parent(llm_span_id, step_span_id)
+
+        if tool_use_ids:
+            self._reparent_stale_children_to_step(
+                session=session,
+                agent_parent_id=agent_parent_id,
+                step_span_id=step_span_id,
+                tool_use_ids=tool_use_ids,
+            )
+
+        return active
+
+    def _reparent_stale_children_to_step(
+        self,
+        session: SessionState,
+        agent_parent_id: str,
+        step_span_id: str,
+        tool_use_ids: List[str],
+    ) -> None:
+        """Move children that raced ahead of step creation under the new step.
+
+        When ``PreToolUse``/``PostToolUse`` (or ``SubagentStart``) fire
+        before the proxy finishes creating the LLM span, the link
+        tracker cannot yet map ``tool_use_id -> llm_span_id -> step``.
+        Those children end up cached with ``agent_parent_id`` as their
+        tree parent. Once the step is created we know the exact set of
+        ``tool_use_id``s this inference cycle owns, so we can upgrade
+        any still-stale parents. Updates are guarded by
+        ``current parent == agent_parent_id`` so we never disturb
+        children that were already correctly resolved (e.g. assigned
+        to an earlier, now-finalized step).
+        """
+        if not tool_use_ids:
+            return
+        tool_use_set = set(tool_use_ids)
+
+        for tid in tool_use_set:
+            pending = session.pending_tools.get(tid)
+            if pending is not None and pending.parent_id == agent_parent_id:
+                pending.parent_id = step_span_id
+
+        for span in self._assembled_spans:
+            if span.get("parent_id") != agent_parent_id:
+                continue
+            tool_id = span.get("meta", {}).get("metadata", {}).get("tool_id")
+            if tool_id and tool_id in tool_use_set:
+                span["parent_id"] = step_span_id
+
+        for tid in tool_use_set:
+            deferred = session.deferred_agent_spans.get(tid)
+            if deferred is not None and deferred.get("parent_id") == agent_parent_id:
+                deferred["parent_id"] = step_span_id
+                span_ref = deferred.get("_span_ref")
+                if span_ref is not None and span_ref.get("parent_id") == agent_parent_id:
+                    span_ref["parent_id"] = step_span_id
+
+        for entry in session.agent_span_stack:
+            if entry.get("task_tool_use_id") in tool_use_set and entry.get("parent_id") == agent_parent_id:
+                entry["parent_id"] = step_span_id
+                span_ref = entry.get("_span_ref")
+                if span_ref is not None and span_ref.get("parent_id") == agent_parent_id:
+                    span_ref["parent_id"] = step_span_id
+
+    def _finalize_step(
+        self,
+        session: SessionState,
+        active: ActiveStep,
+        end_ns: int,
+        status: str = "ok",
+        error_message: str = "",
+    ) -> None:
+        """Populate the step span's duration, output, metadata, and status."""
+        duration = max(0, end_ns - active.start_ns)
+        span = active.span_ref
+        span["duration"] = duration
+        span["status"] = status
+        span["meta"]["output"]["value"] = active.output_text
+        metadata = span["meta"].setdefault("metadata", {})
+        metadata["message_index"] = active.message_index
+        metadata["tool_use_ids"] = list(active.tool_use_ids)
+        metadata["has_thinking"] = active.has_thinking
+        metadata["stop_reason"] = active.stop_reason
+        if status == "error" and error_message:
+            span["meta"]["error"] = {"message": error_message}
+
+        # Remove from the active map so subsequent finalize calls are no-ops.
+        existing = session.active_steps_by_agent.get(active.parent_id)
+        if existing is active:
+            session.active_steps_by_agent.pop(active.parent_id, None)
+
+    def _finalize_all_steps_for_agent(
+        self,
+        session: SessionState,
+        agent_span_id: str,
+        end_ns: int,
+        status: str = "ok",
+        error_message: str = "",
+    ) -> None:
+        """Finalize the open step (if any) for the given agent frame."""
+        active = session.active_steps_by_agent.get(agent_span_id)
+        if active is not None:
+            self._finalize_step(session, active, end_ns=end_ns, status=status, error_message=error_message)
+
+    def _update_step_from_llm_response(
+        self,
+        active: ActiveStep,
+        response_data: Dict[str, Any],
+    ) -> None:
+        """Populate step metadata from an Anthropic Messages API response.
+
+        Tool-use-only responses leave ``active.output_text`` empty; the step
+        finalizes with ``meta.output.value = ""`` by design — the inference
+        produced no assistant-visible text.
+        """
+        content = response_data.get("content", []) or []
+        text_parts: List[str] = []
+        tool_use_ids: List[str] = []
+        has_thinking = False
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type", "")
+            if btype == "text":
+                text = block.get("text", "")
+                if text:
+                    text_parts.append(text)
+            elif btype == "tool_use":
+                tool_id = block.get("id", "")
+                if tool_id:
+                    tool_use_ids.append(tool_id)
+            elif btype == "thinking":
+                has_thinking = True
+        if text_parts:
+            active.output_text = "\n\n".join(text_parts)
+        if tool_use_ids:
+            active.tool_use_ids = tool_use_ids
+        if has_thinking:
+            active.has_thinking = True
+        stop_reason = response_data.get("stop_reason", "")
+        if stop_reason:
+            active.stop_reason = stop_reason
+
     def _handle_session_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SessionStart hook event."""
         session = self._get_or_create_session(session_id)
@@ -386,7 +674,7 @@ class ClaudeHooksAPI:
         turn's Stop hook never fired.  Updates all in-progress spans with their
         current duration so the trace is complete.
         """
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = monotonic_wall_ns()
         duration = now_ns - session.start_ns
 
         # Discard any pending permission wait — the turn was interrupted so we don't
@@ -395,6 +683,13 @@ class ClaudeHooksAPI:
         root_span_ref: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
         if root_span_ref is not None and root_span_ref["duration"] == -1:
             root_span_ref["duration"] = 0
+
+        # Finalize any in-progress step spans before tearing down their agents.
+        for active in list(session.active_steps_by_agent.values()):
+            self._finalize_step(session, active, end_ns=now_ns, status="error", error_message="interrupted")
+        session.active_steps_by_agent.clear()
+        session.step_index_by_agent.clear()
+        session.step_agent_by_span_id.clear()
 
         # Finalize any in-progress subagent spans on the stack
         while session.agent_span_stack:
@@ -452,7 +747,7 @@ class ClaudeHooksAPI:
 
         # If the previous turn's root span was emitted, start a fresh trace
         if session.root_span_emitted:
-            now_ns = int(time.time() * 1_000_000_000)
+            now_ns = monotonic_wall_ns()
             session.trace_id = _format_trace_id()
             session.root_span_id = _format_span_id()
             session.start_ns = now_ns
@@ -463,6 +758,9 @@ class ClaudeHooksAPI:
             session.deferred_agent_spans = {}
             session.claimed_task_tools = set()
             session.active_agents = {}
+            session.active_steps_by_agent = {}
+            session.step_index_by_agent = {}
+            session.step_agent_by_span_id = {}
             # Don't reset conversation_title — it persists across turns so
             # subsequent interactions on the same topic reuse the title.
             # The haiku summarization call will update it when the topic changes.
@@ -522,7 +820,7 @@ class ClaudeHooksAPI:
             parent_id = self._link_tracker.get_parent_for_tool(tool_use_id)
         if not parent_id:
             parent_id = self._current_parent_id(session)
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = monotonic_wall_ns()
 
         session.pending_tools[tool_use_id] = PendingToolSpan(
             span_id=span_id,
@@ -544,21 +842,21 @@ class ClaudeHooksAPI:
         tool_use_id = body.get("tool_use_id", tool_name)
         tool_output = body.get("tool_response", body.get("tool_output", ""))
 
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = monotonic_wall_ns()
 
         pending = session.pending_tools.pop(tool_use_id, None)
         # Clean up claimed_task_tools so the set doesn't grow unbounded
         session.claimed_task_tools.discard(tool_use_id)
         if pending:
             span_id = pending.span_id
-            parent_id = pending.parent_id
+            parent_id = self._resolve_tool_parent(tool_use_id, pending.parent_id)
             start_ns = pending.start_ns
             input_value = _to_json_str(pending.tool_input) if pending.tool_input else ""
             actual_tool_name = pending.tool_name
             tool_input_dict = pending.tool_input if isinstance(pending.tool_input, dict) else {}
         else:
             span_id = _format_span_id()
-            parent_id = self._current_parent_id(session)
+            parent_id = self._resolve_tool_parent(tool_use_id, self._current_parent_id(session))
             start_ns = now_ns
             input_value = ""
             actual_tool_name = tool_name
@@ -584,8 +882,13 @@ class ClaudeHooksAPI:
 
             span_links = []
             if self._link_tracker:
+                deferred_parent = deferred["parent_id"]
                 links = self._link_tracker.on_tool_call(
-                    tool_use_id, agent_span_id, session.trace_id, deferred["parent_id"]
+                    tool_use_id,
+                    agent_span_id,
+                    session.trace_id,
+                    deferred_parent,
+                    tool_agent_id=self._agent_for_span_id(session, deferred_parent),
                 )
                 span_links = [link.to_dict() for link in links]
 
@@ -640,7 +943,13 @@ class ClaudeHooksAPI:
 
         span_links = []
         if self._link_tracker:
-            links = self._link_tracker.on_tool_call(tool_use_id, span_id, session.trace_id, parent_id)
+            links = self._link_tracker.on_tool_call(
+                tool_use_id,
+                span_id,
+                session.trace_id,
+                parent_id,
+                tool_agent_id=self._agent_for_span_id(session, parent_id),
+            )
             span_links = [link.to_dict() for link in links]
 
         span_name = f"{actual_tool_name} - {intent}" if intent else actual_tool_name
@@ -692,7 +1001,7 @@ class ClaudeHooksAPI:
         """
         session = self._get_or_create_session(session_id)
         span_id = _format_span_id()
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = monotonic_wall_ns()
 
         agent_name = body.get("agent_type", body.get("agent_name", "subagent"))
 
@@ -713,7 +1022,13 @@ class ClaudeHooksAPI:
         # Use the parent captured at PreToolUse time (before any SubagentStart fired).
         # This is correct for concurrent siblings — they all share the same parent
         # from when they were dispatched, not the stack top which may have changed.
-        parent_id = task_pending.parent_id if task_pending else self._current_parent_id(session)
+        # Re-resolve via the link tracker in case PreToolUse raced ahead of the
+        # LLM span's creation and cached a stale agent parent rather than the step.
+        fallback_parent = task_pending.parent_id if task_pending else self._current_parent_id(session)
+        if task_tool_use_id:
+            parent_id = self._resolve_tool_parent(task_tool_use_id, fallback_parent)
+        else:
+            parent_id = fallback_parent
 
         # Enrich agent name with the Task tool's description if available
         task_desc = ""
@@ -778,11 +1093,15 @@ class ClaudeHooksAPI:
         PostToolUse(Task) fires so the agent span can include the Task's output.
         """
         session = self._get_or_create_session(session_id)
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = monotonic_wall_ns()
 
         if not session.agent_span_stack:
             log.warning("SubagentStop with empty agent stack for session %s", session_id)
             return
+
+        # Finalize this subagent's active step (if any) before popping the frame.
+        subagent_span_id = str(session.agent_span_stack[-1]["span_id"])
+        self._finalize_all_steps_for_agent(session, subagent_span_id, now_ns)
 
         agent_info = session.agent_span_stack.pop()
         # Remove from active_agents map
@@ -987,8 +1306,14 @@ class ClaudeHooksAPI:
             log.warning("Stop event for unknown session %s", session_id)
             return
 
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = monotonic_wall_ns()
         duration = now_ns - session.start_ns
+
+        # Finalize any still-open step on the root agent before aggregating the turn.
+        self._finalize_all_steps_for_agent(session, session.root_span_id, now_ns)
+        session.active_steps_by_agent.clear()
+        session.step_index_by_agent.clear()
+        session.step_agent_by_span_id.clear()
 
         input_value = "\n\n".join(session.user_prompts) if session.user_prompts else ""
         transcript_path = body.get("transcript_path", "")
@@ -1135,21 +1460,21 @@ class ClaudeHooksAPI:
         error_message = body.get("error", "unknown error")
         is_interrupt = body.get("is_interrupt", False)
 
-        now_ns = int(time.time() * 1_000_000_000)
+        now_ns = monotonic_wall_ns()
 
         pending = session.pending_tools.pop(tool_use_id, None)
         session.claimed_task_tools.discard(tool_use_id)
 
         if pending:
             span_id = pending.span_id
-            parent_id = pending.parent_id
+            parent_id = self._resolve_tool_parent(tool_use_id, pending.parent_id)
             start_ns = pending.start_ns
             input_value = _to_json_str(pending.tool_input) if pending.tool_input else ""
             actual_tool_name = pending.tool_name
             tool_input_dict = pending.tool_input if isinstance(pending.tool_input, dict) else {}
         else:
             span_id = _format_span_id()
-            parent_id = self._current_parent_id(session)
+            parent_id = self._resolve_tool_parent(tool_use_id, self._current_parent_id(session))
             start_ns = now_ns
             input_value = ""
             actual_tool_name = tool_name
@@ -1183,7 +1508,13 @@ class ClaudeHooksAPI:
 
         span_links = []
         if self._link_tracker:
-            links = self._link_tracker.on_tool_call(tool_use_id, span_id, session.trace_id, parent_id)
+            links = self._link_tracker.on_tool_call(
+                tool_use_id,
+                span_id,
+                session.trace_id,
+                parent_id,
+                tool_agent_id=self._agent_for_span_id(session, parent_id),
+            )
             span_links = [link.to_dict() for link in links]
 
         span_name = f"{actual_tool_name} - {intent}" if intent else actual_tool_name
@@ -1279,7 +1610,7 @@ class ClaudeHooksAPI:
         session without span-level tagging.
         """
         session = self._get_or_create_session(session_id)
-        session.pending_permission_at_ns = int(time.time() * 1_000_000_000)
+        session.pending_permission_at_ns = monotonic_wall_ns()
         root_span: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
         if root_span is not None:
             root_span["duration"] = -1

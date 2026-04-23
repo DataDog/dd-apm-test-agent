@@ -12,7 +12,6 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
-
 log = logging.getLogger(__name__)
 
 
@@ -52,6 +51,11 @@ class TrackedToolCall:
         self.tool_span_id: Optional[str] = None
         self.tool_trace_id: Optional[str] = None
         self.tool_parent_id: Optional[str] = None
+        # tool_agent_id is the agent span that owns this tool, distinct
+        # from tool_parent_id which is the tree parent (may be a step
+        # span). The agent id is what's returned as a parent hint to
+        # resolve concurrent subagents on subsequent LLM calls.
+        self.tool_agent_id: Optional[str] = None
 
 
 class ClaudeLinkTracker:
@@ -92,13 +96,24 @@ class ClaudeLinkTracker:
         log.debug("Tracking tool choice: %s (%s)", tool_use_id, tool_name)
 
     def on_tool_call(
-        self, tool_use_id: str, tool_span_id: str, tool_trace_id: str, tool_parent_id: str
+        self,
+        tool_use_id: str,
+        tool_span_id: str,
+        tool_trace_id: str,
+        tool_parent_id: str,
+        tool_agent_id: Optional[str] = None,
     ) -> List[SpanLink]:
         """Create span links for a finished tool span (from PostToolUse hook).
 
         Return span links to add to the tool span (LLM.output -> Tool.input).
-        Also store the tool span's parent_id so the proxy can use it to determine
-        the correct parent for subsequent LLM spans (handles concurrent subagents).
+        Also store the tool span's ``tool_agent_id`` so the proxy can use it
+        as a parent hint for subsequent LLM spans (handles concurrent
+        subagents). The agent id is the span that semantically owns the
+        tool, not necessarily its tree parent — when a step span sits
+        between the agent and the tool, ``tool_parent_id`` points at the
+        step but ``tool_agent_id`` still points at the agent, so the next
+        inference cycle's step opens as a sibling, not a child, of prior
+        steps.
         """
         tc = self._tool_calls.get(tool_use_id)
         if not tc:
@@ -107,6 +122,7 @@ class ClaudeLinkTracker:
         tc.tool_span_id = tool_span_id
         tc.tool_trace_id = tool_trace_id
         tc.tool_parent_id = tool_parent_id
+        tc.tool_agent_id = tool_agent_id if tool_agent_id is not None else tool_parent_id
 
         log.debug("Linking LLM(%s).output -> Tool(%s).input via %s", tc.llm_span_id, tool_span_id, tool_use_id)
         return [
@@ -123,19 +139,22 @@ class ClaudeLinkTracker:
 
         Return ``(span_links, parent_id_hint)`` where *span_links* are
         Tool.output -> LLM.input links for the LLM span and *parent_id_hint*
-        is the parent of the tool span that produced this result (allowing the
-        proxy to assign the correct parent even with concurrent subagents).
-        Consume the tracked tool call.
+        is the **agent** that owns the tool span (not its tree parent). The
+        proxy uses this to assign the correct parent even with concurrent
+        subagents, and to open the next inference cycle's step as a sibling
+        of prior steps rather than nested inside them. Consume the tracked
+        tool call.
         """
         tc = self._tool_calls.pop(tool_use_id, None)
         if not tc or not tc.tool_span_id:
             return [], None
 
+        agent_hint = tc.tool_agent_id if tc.tool_agent_id is not None else tc.tool_parent_id
         log.debug(
-            "Linking Tool(%s).output -> LLM.input via %s (parent hint: %s)",
+            "Linking Tool(%s).output -> LLM.input via %s (agent hint: %s)",
             tc.tool_span_id,
             tool_use_id,
-            tc.tool_parent_id,
+            agent_hint,
         )
         links = [
             SpanLink(
@@ -145,18 +164,20 @@ class ClaudeLinkTracker:
                 to_io="input",
             )
         ]
-        return links, tc.tool_parent_id
+        return links, agent_hint
 
     def set_llm_parent(self, llm_span_id: str, parent_span_id: str) -> None:
         """Record which agent span an LLM span belongs to."""
         self._llm_span_parents[llm_span_id] = parent_span_id
 
     def get_parent_for_tool(self, tool_use_id: str) -> Optional[str]:
-        """Resolve the parent agent for a tool via: tool_use_id → LLM span → agent parent.
+        """Resolve the parent for a tool via: tool_use_id → LLM span → recorded parent.
 
         When an LLM response emits tool_use blocks, on_llm_tool_choice records which
         LLM span produced each tool_use_id.  This method walks that chain to find the
-        agent span that the LLM (and therefore the tool) belongs to.
+        span that the LLM (and therefore the tool) belongs to — either the agent span
+        directly, or a ``step`` span nested under the agent (when step tracking is
+        active for the session).
         """
         tc = self._tool_calls.get(tool_use_id)
         if not tc:
