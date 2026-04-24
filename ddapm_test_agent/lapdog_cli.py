@@ -11,18 +11,53 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
+from . import _get_version
+
 import requests
 
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
-    "  run     Start lapdog (background)\n"
+    "  start   Start lapdog (background)\n"
     "  stop    Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
     "  status  Show lapdog status (from /info)\n"
     "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi      Start lapdog in background if needed, install extension, then launch pi"
 )
+_LAPDOG_ART = (
+    "██      █████  ██████  ██████   ██████   ██████ ",
+    "██     ██   ██ ██   ██ ██   ██ ██    ██ ██      ",
+    "██     ███████ ██████  ██   ██ ██    ██ ██  ███ ",
+    "██     ██   ██ ██      ██   ██ ██    ██ ██   ██ ",
+    "██████ ██   ██ ██      ██████   ██████   ██████ ",
+)
+
+
+def _build_running_banner() -> str:
+    right_lines = [
+        f"\033[1mlapdog\033[0m v{_get_version()}",
+        "",
+        "Lapdog has started and is listening for data.",
+        "Open https://lapdog.datadoghq.com to view data",
+        "related to this coding session.",
+    ]
+    # Pad right_lines to match art height, centering vertically.
+    pad_top = (len(_LAPDOG_ART) - len(right_lines)) // 2
+    padded_right = [""] * max(pad_top, 0) + right_lines
+    while len(padded_right) < len(_LAPDOG_ART):
+        padded_right.append("")
+
+    purple = "\033[38;5;177m"
+    reset = "\033[0m"
+    lines = [""]
+    for art, text in zip(_LAPDOG_ART, padded_right):
+        lines.append(f"  {purple}{art}{reset}  {text}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+LAPDOG_CODING_AGENT_RUNNING = _build_running_banner()
 
 
 def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
@@ -105,8 +140,8 @@ def _remove_pid_file() -> None:
             pass
 
 
-def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False) -> None:
-    """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
+def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False) -> Tuple[int, int, str]:
+    """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (pid, port, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     args = [sys.executable, "-m", "ddapm_test_agent.agent", "--enable-claude-code-hooks"]
@@ -127,7 +162,7 @@ def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_dat
     _write_pid_file(proc.pid, port)
     _wait_for_lapdog(proc, log_path)
 
-    print(f"[lapdog] Lapdog running at {_url_for_port(port)} (pid={proc.pid}, logs: {log_path})")
+    return proc.pid, port, log_path
 
 
 def _port_in_use(port: Optional[int] = None) -> bool:
@@ -188,7 +223,9 @@ def cmd_start(sub_cmd_args: List[str], forward_data: bool) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    _start_lapdog(port, sub_cmd_args, forward_data)
+    pid, port, log_path = _start_lapdog(port, sub_cmd_args, forward_data)
+
+    print(f"[lapdog] Lapdog running at {_url_for_port(port)} (pid={pid}, logs: {log_path})")
 
 
 def cmd_stop() -> None:
@@ -267,6 +304,7 @@ def cmd_claude(sub_cmd_args: List[str], forward_data: bool) -> None:
             sys.exit(1)
         _start_lapdog_detached(port, forward_data=forward_data)
 
+    print(LAPDOG_CODING_AGENT_RUNNING)
     _run_claude(sub_cmd_args)
 
 
@@ -341,6 +379,8 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
         _start_lapdog_detached(port, forward_data=forward_data)
 
     _install_pi_extension()
+
+    print(LAPDOG_CODING_AGENT_RUNNING)
     _run_pi(sub_cmd_args, port)
 
 
