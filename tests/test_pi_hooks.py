@@ -62,8 +62,14 @@ def _turn_end(session_id=SESSION, turn_index=0):
     return {"session_id": session_id, "hook_event_name": "turn_end", "turn_index": turn_index}
 
 
-def _message_start(session_id=SESSION):
-    return {"session_id": session_id, "hook_event_name": "message_start", "message_role": "assistant"}
+def _message_start(session_id=SESSION, system_prompt="", messages=None):
+    return {
+        "session_id": session_id,
+        "hook_event_name": "message_start",
+        "message_role": "assistant",
+        "system_prompt": system_prompt,
+        "messages": messages or [],
+    }
 
 
 def _message_end(session_id=SESSION, content=None, usage=None, stop_reason="end_turn"):
@@ -460,6 +466,143 @@ async def test_second_agent_cycle_resets_step_index(agent):
     # Both cycles should have inference-0
     assert len(steps) == 2
     assert all(s["name"] == "inference-0" for s in steps)
+
+
+async def test_llm_input_messages_include_system_and_user(agent):
+    """LLM span input.messages includes the system prompt and user messages."""
+    sid = "pi-llm-input"
+    system_prompt = "You are a helpful assistant."
+    convo = [
+        {"role": "user", "content": "What is 2 + 2?"},
+    ]
+
+    await _post(agent, _session_start(sid))
+    await _post(agent, _agent_start(sid))
+    await _post(agent, _turn_start(sid, turn_index=0))
+    await _post(agent, _message_start(sid, system_prompt=system_prompt, messages=convo))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid, turn_index=0))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = _spans(await resp.json())
+    session_spans = [s for s in spans if s.get("session_id") == sid]
+
+    llms = _by_kind(session_spans, "llm")
+    assert len(llms) == 1
+    input_messages = llms[0]["meta"]["input"]["messages"]
+
+    assert input_messages[0] == {"role": "system", "content": system_prompt}
+    assert input_messages[1] == {"role": "user", "content": "What is 2 + 2?"}
+
+
+async def test_llm_input_messages_handle_user_content_blocks(agent):
+    """User messages with TextContent[] are flattened to a single string."""
+    sid = "pi-llm-input-blocks"
+    convo = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Look at this:"},
+                {"type": "image", "data": "...", "mimeType": "image/png"},
+                {"type": "text", "text": "What do you see?"},
+            ],
+        },
+    ]
+
+    await _post(agent, _session_start(sid))
+    await _post(agent, _agent_start(sid))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid, system_prompt="sys", messages=convo))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = _spans(await resp.json())
+    session_spans = [s for s in spans if s.get("session_id") == sid]
+
+    llm = _by_kind(session_spans, "llm")[0]
+    user_msg = llm["meta"]["input"]["messages"][1]
+    assert user_msg["role"] == "user"
+    assert "Look at this:" in user_msg["content"]
+    assert "[image]" in user_msg["content"]
+    assert "What do you see?" in user_msg["content"]
+
+
+async def test_llm_input_messages_include_assistant_and_tool_results(agent):
+    """Assistant tool_calls and toolResult messages are mapped to LLMObs format."""
+    sid = "pi-llm-input-tools"
+    # Second LLM call in a turn — conversation now contains the previous
+    # assistant tool call and its toolResult.
+    convo = [
+        {"role": "user", "content": "read foo.py"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Reading..."},
+                {"type": "toolCall", "id": "tc-1", "name": "read", "arguments": {"path": "foo.py"}},
+            ],
+        },
+        {
+            "role": "toolResult",
+            "toolCallId": "tc-1",
+            "toolName": "read",
+            "content": [{"type": "text", "text": "print('hi')"}],
+            "isError": False,
+        },
+    ]
+
+    await _post(agent, _session_start(sid))
+    await _post(agent, _agent_start(sid))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid, system_prompt="sys", messages=convo))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = _spans(await resp.json())
+    session_spans = [s for s in spans if s.get("session_id") == sid]
+
+    llm = _by_kind(session_spans, "llm")[0]
+    msgs = llm["meta"]["input"]["messages"]
+    # [system, user, assistant, tool]
+    assert [m["role"] for m in msgs] == ["system", "user", "assistant", "tool"]
+    assistant_msg = msgs[2]
+    assert assistant_msg["content"] == "Reading..."
+    assert assistant_msg["tool_calls"] == [
+        {
+            "name": "read",
+            "arguments": {"path": "foo.py"},
+            "tool_id": "tc-1",
+            "type": "tool_use",
+        }
+    ]
+    tool_msg = msgs[3]
+    assert tool_msg == {"role": "tool", "content": "print('hi')", "tool_id": "tc-1"}
+
+
+async def test_llm_input_messages_omit_system_when_empty(agent):
+    """No system message is emitted when system_prompt is empty."""
+    sid = "pi-llm-no-sys"
+    convo = [{"role": "user", "content": "hi"}]
+
+    await _post(agent, _session_start(sid))
+    await _post(agent, _agent_start(sid))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid, system_prompt="", messages=convo))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = _spans(await resp.json())
+    session_spans = [s for s in spans if s.get("session_id") == sid]
+
+    llm = _by_kind(session_spans, "llm")[0]
+    msgs = llm["meta"]["input"]["messages"]
+    assert [m["role"] for m in msgs] == ["user"]
 
 
 async def test_thinking_block_sets_has_thinking(agent):

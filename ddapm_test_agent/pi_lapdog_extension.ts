@@ -14,7 +14,7 @@
  * never blocks the agent.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { convertToLlm, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 const LAPDOG_URL = process.env.LAPDOG_URL || "http://localhost:8126";
 const HOOKS_ENDPOINT = `${LAPDOG_URL}/pi/hooks`;
@@ -41,6 +41,24 @@ function post(event: string, sessionId: string, data: Record<string, unknown>): 
 // Extension
 // ---------------------------------------------------------------------------
 
+// Pi LLM message types after `convertToLlm()`. Pi reduces every extended
+// AgentMessage type (bashExecution, custom, branchSummary, compactionSummary)
+// down to one of these three, so this matches what's actually sent to the
+// model.
+type TextContent = { type: "text"; text: string };
+type ImageContent = { type: "image"; data: string; mimeType: string };
+
+type LlmMessage =
+	| { role: "user"; content: string | (TextContent | ImageContent)[] }
+	| { role: "assistant"; content: unknown[] }
+	| {
+			role: "toolResult";
+			toolCallId: string;
+			toolName: string;
+			content: (TextContent | ImageContent)[];
+			isError?: boolean;
+		};
+
 export default function lapdog(pi: ExtensionAPI): void {
 	let sessionId = "";
 	let currentModel = "";
@@ -49,6 +67,18 @@ export default function lapdog(pi: ExtensionAPI): void {
 	// Track the user prompt that started the current agent run so we can
 	// attach it to the agent_start event (input event fires before agent_start).
 	let pendingUserPrompt = "";
+
+	// System prompt for the current turn, captured in before_agent_start.
+	// Reused for every LLM call inside the turn so each LLM span can record
+	// the system message as part of its input.
+	let currentSystemPrompt = "";
+
+	// Most recent LLM-shaped message list captured from the `context` event.
+	// `context` fires right before each LLM call with the full AgentMessage[]
+	// (including extended types like bashExecution / branchSummary /
+	// compactionSummary). We feed it through pi's own `convertToLlm()` so the
+	// snapshot matches what the provider actually receives.
+	let pendingContextMessages: LlmMessage[] = [];
 
 	// ------------------------------------------------------------------
 	// Session lifecycle
@@ -97,12 +127,25 @@ export default function lapdog(pi: ExtensionAPI): void {
 		pendingUserPrompt = event.text;
 	});
 
+	pi.on("before_agent_start", (_event, ctx) => {
+		// Capture the resolved system prompt for this turn so we can attach
+		// it to every LLM span in the turn. `event.systemPrompt` reflects the
+		// chained prompt as of this handler; ctx.getSystemPrompt() is the
+		// same value and works as a fallback.
+		try {
+			currentSystemPrompt = _event?.systemPrompt ?? ctx.getSystemPrompt() ?? "";
+		} catch {
+			currentSystemPrompt = "";
+		}
+	});
+
 	pi.on("agent_start", () => {
 		post("agent_start", sessionId, {
 			user_prompt: pendingUserPrompt,
 			model: `${currentProvider}/${currentModel}`,
 			model_provider: currentProvider,
 			model_id: currentModel,
+			system_prompt: currentSystemPrompt,
 		});
 		pendingUserPrompt = "";
 	});
@@ -131,6 +174,24 @@ export default function lapdog(pi: ExtensionAPI): void {
 	});
 
 	// ------------------------------------------------------------------
+	// Pre-LLM context (fires before each LLM call)
+	// ------------------------------------------------------------------
+
+	pi.on("context", (event) => {
+		// `event.messages` is a deep copy of the AgentMessage[] about to be
+		// sent to the LLM. Run it through pi's own `convertToLlm()` so we
+		// capture the same list the provider sees — bashExecution becomes a
+		// formatted user message, custom/branchSummary/compactionSummary are
+		// inlined as user text, and `excludeFromContext` bash entries are
+		// dropped.
+		try {
+			pendingContextMessages = convertToLlm(event.messages) as LlmMessage[];
+		} catch {
+			pendingContextMessages = [];
+		}
+	});
+
+	// ------------------------------------------------------------------
 	// LLM message lifecycle (creates LLM spans)
 	// ------------------------------------------------------------------
 
@@ -138,6 +199,10 @@ export default function lapdog(pi: ExtensionAPI): void {
 		if (event.message.role !== "assistant") return;
 		post("message_start", sessionId, {
 			message_role: "assistant",
+			system_prompt: currentSystemPrompt,
+			// Snapshot of the conversation that will be sent to the model for
+			// this LLM call. Used to populate input.messages on the LLM span.
+			messages: pendingContextMessages,
 		});
 	});
 
