@@ -14,7 +14,7 @@
  * never blocks the agent.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { convertToLlm, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 const LAPDOG_URL = process.env.LAPDOG_URL || "http://localhost:8126";
 const HOOKS_ENDPOINT = `${LAPDOG_URL}/pi/hooks`;
@@ -41,27 +41,23 @@ function post(event: string, sessionId: string, data: Record<string, unknown>): 
 // Extension
 // ---------------------------------------------------------------------------
 
-// Pi message types — copied from pi-coding-agent docs/session.md so we can
-// inspect them in the `context` hook without depending on the SDK's exports.
+// Pi LLM message types after `convertToLlm()`. Pi reduces every extended
+// AgentMessage type (bashExecution, custom, branchSummary, compactionSummary)
+// down to one of these three, so this matches what's actually sent to the
+// model.
 type TextContent = { type: "text"; text: string };
 type ImageContent = { type: "image"; data: string; mimeType: string };
-type ThinkingContent = { type: "thinking"; thinking: string };
-type ToolCall = { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> };
 
-type PiMessage =
+type LlmMessage =
 	| { role: "user"; content: string | (TextContent | ImageContent)[] }
-	| {
-			role: "assistant";
-			content: (TextContent | ThinkingContent | ToolCall)[];
-		}
+	| { role: "assistant"; content: unknown[] }
 	| {
 			role: "toolResult";
 			toolCallId: string;
 			toolName: string;
 			content: (TextContent | ImageContent)[];
 			isError?: boolean;
-		}
-	| { role: string; [k: string]: unknown };
+		};
 
 export default function lapdog(pi: ExtensionAPI): void {
 	let sessionId = "";
@@ -77,11 +73,12 @@ export default function lapdog(pi: ExtensionAPI): void {
 	// the system message as part of its input.
 	let currentSystemPrompt = "";
 
-	// Most recent message list seen in `context`. The `context` event fires
-	// right before each LLM call and gives us the full conversation that's
-	// about to be sent to the model — exactly what we want to attach as
-	// `input.messages` on the LLM span.
-	let pendingContextMessages: PiMessage[] = [];
+	// Most recent LLM-shaped message list captured from the `context` event.
+	// `context` fires right before each LLM call with the full AgentMessage[]
+	// (including extended types like bashExecution / branchSummary /
+	// compactionSummary). We feed it through pi's own `convertToLlm()` so the
+	// snapshot matches what the provider actually receives.
+	let pendingContextMessages: LlmMessage[] = [];
 
 	// ------------------------------------------------------------------
 	// Session lifecycle
@@ -181,10 +178,17 @@ export default function lapdog(pi: ExtensionAPI): void {
 	// ------------------------------------------------------------------
 
 	pi.on("context", (event) => {
-		// `event.messages` is a safe-to-modify deep copy of the conversation
-		// about to be sent to the LLM. Stash it so the next assistant
-		// message_start can include it as the LLM span's input.
-		pendingContextMessages = (event.messages as PiMessage[]) ?? [];
+		// `event.messages` is a deep copy of the AgentMessage[] about to be
+		// sent to the LLM. Run it through pi's own `convertToLlm()` so we
+		// capture the same list the provider sees — bashExecution becomes a
+		// formatted user message, custom/branchSummary/compactionSummary are
+		// inlined as user text, and `excludeFromContext` bash entries are
+		// dropped.
+		try {
+			pendingContextMessages = convertToLlm(event.messages) as LlmMessage[];
+		} catch {
+			pendingContextMessages = [];
+		}
 	});
 
 	// ------------------------------------------------------------------

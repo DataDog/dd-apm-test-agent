@@ -132,17 +132,21 @@ def _pi_messages_to_llmobs_input(
     system_prompt: str,
     messages: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Convert pi's conversation messages into LLMObs ``input.messages`` format.
+    """Convert pi's LLM-shaped messages into LLMObs ``input.messages`` format.
+
+    The extension runs pi's own ``convertToLlm()`` on the ``context`` event
+    payload before sending, so by the time messages reach this function they
+    are already reduced to plain ``user`` / ``assistant`` / ``toolResult``
+    entries — i.e. exactly what the provider receives. Extended types
+    (``bashExecution``, ``custom``, ``branchSummary``, ``compactionSummary``)
+    have been inlined as user text upstream.
 
     Mapping:
-        * Prepend a ``{role: system}`` message when ``system_prompt`` is set.
-        * pi ``user`` → LLMObs ``{role: "user", content: <text>}``.
-        * pi ``assistant`` → ``{role: "assistant", content, tool_calls}``
-          where ``tool_calls`` mirrors the format used by ``claude_proxy.py``.
+        * Prepend ``{role: "system"}`` when ``system_prompt`` is non-empty.
+        * pi ``user`` → ``{role: "user", content: <text>}``.
+        * pi ``assistant`` → ``{role: "assistant", content, tool_calls}``,
+          tool_calls shaped like ``claude_proxy.py``'s output.
         * pi ``toolResult`` → ``{role: "tool", content, tool_id}``.
-        * Other extended message types (bashExecution, custom, branchSummary,
-          compactionSummary) are skipped — they are not part of the LLM
-          conversation context.
     """
     out: List[Dict[str, Any]] = []
     if system_prompt:
@@ -182,9 +186,6 @@ def _pi_messages_to_llmobs_input(
                     "tool_id": msg.get("toolCallId", ""),
                 }
             )
-        # Extended message types (bashExecution / custom / branchSummary /
-        # compactionSummary) are intentionally skipped — they aren't sent to
-        # the LLM as standalone messages.
 
     return out
 
