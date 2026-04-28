@@ -8,7 +8,6 @@ import logging
 import re
 import sqlite3
 import statistics
-import time
 from typing import Any
 from typing import Awaitable
 from typing import Callable
