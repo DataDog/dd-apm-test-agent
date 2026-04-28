@@ -7,4 +7,4 @@ def _get_version() -> str:
     except PackageNotFoundError:
         import pkg_resources
 
-        return pkg_resources.get_distribution(__name__).version
+        return str(pkg_resources.get_distribution(__name__).version)
