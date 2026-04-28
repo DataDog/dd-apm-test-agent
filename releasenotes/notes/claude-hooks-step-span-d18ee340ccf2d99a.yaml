@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    claude hooks: Insert a ``step`` span between the agent span and its
+    ``llm``/``tool`` children for instrumented Claude Code sessions.

@@ -1,11 +1,13 @@
 """LLM Observability Event Platform API."""
 
+from collections import defaultdict
 from datetime import datetime
 import gzip
 import json
 import logging
 import re
 import sqlite3
+import statistics
 import time
 from typing import Any
 from typing import Awaitable
@@ -21,6 +23,7 @@ from aiohttp.web import Request
 import msgpack
 
 from . import llmobs_query_parser
+from ._clock import monotonic_wall_ns
 from .llmobs_persistence import init_llmobs_db
 from .llmobs_persistence import load_all_spans
 from .llmobs_persistence import upsert_spans
@@ -128,7 +131,7 @@ def remap_sdk_span_to_ui_format(span: Dict[str, Any], event_ml_app: str = "") ->
     tags = span.get("tags", [])
     extracted = extract_fields_from_tags(tags)
 
-    ml_app = extracted.get("ml_app") or event_ml_app or span.get("ml_app", "unknown")
+    ml_app = extracted.get("ml_app") or event_ml_app or span.get("ml_app") or "lapdog"
     span["ml_app"] = ml_app
 
     if "service" not in span or not span["service"]:
@@ -450,6 +453,12 @@ def get_span_field_value(span: Dict[str, Any], field: str) -> Optional[Any]:
         "duration": lambda s: s.get("duration", 0),
         "session_id": lambda s: s.get("session_id", ""),
         "hostname": lambda s: s.get("hostname", ""),
+        # Span timestamp in milliseconds. The LLMObs UI treats the
+        # `timestamp` facet as ms since epoch, but span payloads store
+        # `start_ns` in nanoseconds — convert here so downstream
+        # aggregations (min/max/earliest/latest on `timestamp`) match
+        # production semantics.
+        "timestamp": lambda s: (s["start_ns"] / 1_000_000 if isinstance(s.get("start_ns"), (int, float)) else None),
     }
     if field in direct_fields:
         return direct_fields[field](span)
@@ -497,12 +506,397 @@ def _tags_to_dict(tags: List[str]) -> Dict[str, Any]:
     return tag_obj
 
 
+def _build_trace_aggregates(
+    all_spans: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Pre-compute @trace.* aggregates grouped by trace_id.
+
+    Mirrors what the production llm-obs-query-rewriter computes via Trino SQL.
+    Add new @trace.* metrics here to extend coverage for the static app.
+    """
+    by_trace: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for span in all_spans:
+        by_trace[span.get("trace_id", "")].append(span)
+
+    result: Dict[str, Dict[str, Any]] = {}
+    for tid, trace_spans in by_trace.items():
+        num_evaluations_failed = sum(
+            sum(
+                1
+                for metric in span.get("evaluation", {}).values()
+                if isinstance(metric, dict) and metric.get("assessment") == "fail"
+            )
+            for span in trace_spans
+        )
+        number_of_errors = sum(1 for span in trace_spans if span.get("status") == "error")
+        result[tid] = {
+            "num_evaluations_failed": num_evaluations_failed,
+            "number_of_errors": number_of_errors,
+            "input_tokens": sum(span.get("metrics", {}).get("input_tokens", 0) for span in trace_spans),
+            "output_tokens": sum(span.get("metrics", {}).get("output_tokens", 0) for span in trace_spans),
+            "total_tokens": sum(span.get("metrics", {}).get("total_tokens", 0) for span in trace_spans),
+            "estimated_total_cost": sum(span.get("metrics", {}).get("estimated_total_cost", 0) for span in trace_spans),
+        }
+    return result
+
+
+_LLMOBS_SCALAR_DATA_SOURCES = {"llm_observability", "llm_observability_stream"}
+
+
+def _resolve_field_value(
+    span: Dict[str, Any],
+    field: Optional[str],
+    trace_aggregates: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Optional[Any]:
+    """Resolve a facet path, with trace-level rollup support.
+
+    ``@trace.*`` paths are served from pre-computed per-trace aggregates
+    (mirrors what the production query rewriter does via Trino). All other
+    paths fall back to ``get_span_field_value``.
+    """
+    if not field:
+        return None
+    stripped = field.lstrip("@")
+    if stripped.startswith("trace.") and trace_aggregates is not None:
+        agg = trace_aggregates.get(span.get("trace_id", ""))
+        if not agg:
+            return None
+        return agg.get(stripped[len("trace.") :])
+    return get_span_field_value(span, stripped)
+
+
+def _filter_spans_by_time_ms(
+    spans: List[Dict[str, Any]],
+    from_ms: Optional[Any],
+    to_ms: Optional[Any],
+) -> List[Dict[str, Any]]:
+    """Filter spans by ``start_ns`` using millisecond bounds from the UI.
+
+    Either bound may be ``None``/missing, in which case that side of the
+    window is open. Values that don't parse as numbers are ignored.
+    """
+
+    def _to_ns(value: Any) -> Optional[int]:
+        try:
+            return int(float(value)) * 1_000_000
+        except (TypeError, ValueError):
+            return None
+
+    lo = _to_ns(from_ms)
+    hi = _to_ns(to_ms)
+    if lo is None and hi is None:
+        return spans
+    out = []
+    for s in spans:
+        start = s.get("start_ns", 0) or 0
+        if lo is not None and start < lo:
+            continue
+        if hi is not None and start > hi:
+            continue
+        out.append(s)
+    return out
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _scalar_compute(
+    spans: List[Dict[str, Any]],
+    aggregation: str,
+    metric_field: Optional[str],
+    trace_aggregates: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> float:
+    """Compute a single scalar value for a list of spans.
+
+    Supported aggregations: ``count``, ``cardinality``, ``sum``, ``avg``,
+    ``min``, ``max``, ``median``, ``pc75``/``pc90``/``pc95``/``pc99``,
+    ``latest``, ``earliest``. Unknown aggregations return ``0.0``.
+
+    When ``metric_field`` is a ``@trace.*`` path, spans are deduplicated by
+    ``trace_id`` before aggregation so trace-rollup metrics aren't
+    multi-counted.
+    """
+    agg = (aggregation or "count").lower()
+
+    if agg == "count":
+        return float(len(spans))
+
+    if not metric_field:
+        return 0.0
+    field = metric_field.lstrip("@")
+    is_trace_field = field.startswith("trace.")
+
+    # Trace-level rollups are one value per trace; dedupe before aggregating.
+    source_spans: List[Dict[str, Any]] = spans
+    if is_trace_field:
+        seen_traces: set = set()  # type: ignore[type-arg]
+        deduped: List[Dict[str, Any]] = []
+        for s in spans:
+            tid = s.get("trace_id", "")
+            if tid in seen_traces:
+                continue
+            seen_traces.add(tid)
+            deduped.append(s)
+        source_spans = deduped
+
+    if agg == "cardinality":
+        seen = set()
+        for s in source_spans:
+            v = _resolve_field_value(s, field, trace_aggregates)
+            if v is not None:
+                seen.add(v)
+        return float(len(seen))
+
+    if agg in ("latest", "earliest"):
+        if not source_spans:
+            return 0.0
+        # get_llmobs_spans sorts desc by start_ns; first = latest, last = earliest.
+        pick = source_spans[0] if agg == "latest" else source_spans[-1]
+        return _coerce_float(_resolve_field_value(pick, field, trace_aggregates)) or 0.0
+
+    values: List[float] = []
+    for s in source_spans:
+        fv = _coerce_float(_resolve_field_value(s, field, trace_aggregates))
+        if fv is not None:
+            values.append(fv)
+
+    if not values:
+        return 0.0
+    if agg == "sum":
+        return sum(values)
+    if agg == "avg":
+        return sum(values) / len(values)
+    if agg == "min":
+        return min(values)
+    if agg == "max":
+        return max(values)
+    if agg == "median":
+        return float(statistics.median(values))
+    if agg.startswith("pc"):
+        try:
+            pct = int(agg[2:])
+        except ValueError:
+            return 0.0
+        if len(values) == 1:
+            return values[0]
+        vs = sorted(values)
+        # Nearest-rank percentile — simple and good enough for tests.
+        idx = max(0, min(len(vs) - 1, int(round((pct / 100.0) * (len(vs) - 1)))))
+        return vs[idx]
+    return 0.0
+
+
+def _query_compute_spec(query: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalise the compute portion of a scalar query.
+
+    Handles both the dashboard-style ``{aggregator, metric}`` shape and the
+    logs/LLMObs ``{compute: {aggregation, metric}}`` shape.
+    """
+    if isinstance(query.get("compute"), dict):
+        c = query["compute"]
+        return {
+            "aggregation": c.get("aggregation") or c.get("aggregator") or "count",
+            "metric": c.get("metric"),
+        }
+    return {
+        "aggregation": query.get("aggregator") or query.get("aggregation") or "count",
+        "metric": query.get("metric"),
+    }
+
+
+def _query_group_by_fields(query: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Normalise group_by entries into ``{field, limit, sort}`` dicts."""
+    result: List[Dict[str, Any]] = []
+    for gb in query.get("group_by") or []:
+        if not isinstance(gb, dict):
+            continue
+        raw_field = gb.get("facet") or gb.get("field") or ""
+        if isinstance(raw_field, dict):
+            raw_field = raw_field.get("id") or raw_field.get("name") or ""
+        if not raw_field:
+            continue
+        sort_cfg = gb.get("sort") or {}
+        result.append(
+            {
+                "name": raw_field,
+                "field": raw_field.lstrip("@"),
+                "limit": gb.get("limit", 50),
+                "sort_order": sort_cfg.get("order", "desc") if isinstance(sort_cfg, dict) else "desc",
+                "sort_aggregation": sort_cfg.get("aggregation") if isinstance(sort_cfg, dict) else None,
+            }
+        )
+    return result
+
+
+def _query_column_name(query: Dict[str, Any]) -> str:
+    spec = _query_compute_spec(query)
+    name = query.get("name")
+    if name:
+        return str(name)
+    agg = str(spec["aggregation"])
+    metric = spec["metric"]
+    return f"{agg}({metric})" if metric else agg
+
+
+def _build_scalar_columns(
+    spans: List[Dict[str, Any]],
+    queries: List[Dict[str, Any]],
+    formulas: List[Dict[str, Any]],
+    trace_aggregates: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Build the ``columns`` array for a single scalar_response.
+
+    Only the first query drives group_by dimensions and row order; additional
+    queries reuse those groups (null-filled if missing). Formulas are
+    supported as direct references to a query ``name`` (no arithmetic yet).
+    """
+    if not queries:
+        return []
+
+    # Partition queries into LLMObs-backed and unsupported (still emit a column).
+    supported_spans_by_query: List[List[Dict[str, Any]]] = []
+    for q in queries:
+        if (q.get("data_source") or "").lower() in _LLMOBS_SCALAR_DATA_SOURCES:
+            query_str = (q.get("search") or {}).get("query") if isinstance(q.get("search"), dict) else None
+            if query_str:
+                supported_spans_by_query.append(apply_filters(spans, parse_filter_query(query_str)))
+            else:
+                supported_spans_by_query.append(list(spans))
+        else:
+            supported_spans_by_query.append([])
+
+    def _compute(spans_: List[Dict[str, Any]], spec: Dict[str, Any]) -> float:
+        return _scalar_compute(spans_, spec["aggregation"], spec["metric"], trace_aggregates)
+
+    # Group-by based on the first query's dimensions.
+    group_defs = _query_group_by_fields(queries[0])
+    columns: List[Dict[str, Any]] = []
+
+    if not group_defs:
+        # No grouping: one row, one number column per query/formula.
+        number_values_by_query: Dict[str, float] = {}
+        for i, q in enumerate(queries):
+            spec = _query_compute_spec(q)
+            val = _compute(supported_spans_by_query[i], spec)
+            number_values_by_query[str(q.get("name") or f"query{i + 1}")] = val
+            if not formulas:
+                columns.append(
+                    {
+                        "name": _query_column_name(q),
+                        "type": "number",
+                        "meta": {"unit": None},
+                        "values": [val],
+                    }
+                )
+        if formulas:
+            for f in formulas:
+                ref = str(f.get("formula") or "")
+                val = number_values_by_query.get(ref, 0.0)
+                columns.append(
+                    {
+                        "name": str(f.get("alias") or ref),
+                        "type": "number",
+                        "meta": {"unit": None},
+                        "values": [val],
+                    }
+                )
+        return columns
+
+    # Grouped: bucket the first query's spans, then compute per-group values.
+    first_spans = supported_spans_by_query[0]
+
+    def _group_key(span: Dict[str, Any]) -> tuple:  # type: ignore[type-arg]
+        return tuple(str(_resolve_field_value(span, gd["field"], trace_aggregates) or "") for gd in group_defs)
+
+    buckets: Dict[tuple, List[Dict[str, Any]]] = {}  # type: ignore[type-arg]
+    order: List[tuple] = []  # type: ignore[type-arg]
+    for s in first_spans:
+        k = _group_key(s)
+        if k not in buckets:
+            buckets[k] = []
+            order.append(k)
+        buckets[k].append(s)
+
+    # Sort by first query's compute (descending by default) so the biggest groups win.
+    primary_spec = _query_compute_spec(queries[0])
+    primary_values = {k: _compute(buckets[k], primary_spec) for k in order}
+    sort_order = group_defs[0]["sort_order"]
+    order.sort(key=lambda k: primary_values[k], reverse=(sort_order == "desc"))
+
+    # Apply the first dimension's limit (Datadog applies per-dimension limits;
+    # for v1 we just cap total rows at the minimum configured limit).
+    row_limit = min((gd["limit"] for gd in group_defs if isinstance(gd.get("limit"), int)), default=50)
+    order = order[:row_limit]
+
+    # Emit group columns (one per dimension).
+    for i, gd in enumerate(group_defs):
+        columns.append(
+            {
+                "name": gd["name"],
+                "type": "group",
+                "meta": None,
+                "values": [[k[i]] for k in order],
+            }
+        )
+
+    # For non-first queries, re-bucket their (independently-filtered) spans by
+    # the same group key so the rows line up.
+    per_query_values: List[List[float]] = []
+    for qi, q in enumerate(queries):
+        spec = _query_compute_spec(q)
+        if qi == 0:
+            per_query_values.append([primary_values[k] for k in order])
+            continue
+        qbuckets: Dict[tuple, List[Dict[str, Any]]] = {k: [] for k in order}  # type: ignore[type-arg]
+        for s in supported_spans_by_query[qi]:
+            k = _group_key(s)
+            if k in qbuckets:
+                qbuckets[k].append(s)
+        per_query_values.append([_compute(qbuckets[k], spec) for k in order])
+
+    if formulas:
+        name_to_idx = {str(q.get("name") or f"query{i + 1}"): i for i, q in enumerate(queries)}
+        for f in formulas:
+            ref = str(f.get("formula") or "")
+            idx = name_to_idx.get(ref)
+            vals = per_query_values[idx] if idx is not None else [0.0 for _ in order]
+            columns.append(
+                {
+                    "name": str(f.get("alias") or ref),
+                    "type": "number",
+                    "meta": {"unit": None},
+                    "values": vals,
+                }
+            )
+    else:
+        for qi, q in enumerate(queries):
+            columns.append(
+                {
+                    "name": _query_column_name(q),
+                    "type": "number",
+                    "meta": {"unit": None},
+                    "values": per_query_values[qi],
+                }
+            )
+
+    return columns
+
+
 def build_event_platform_list_response(
     spans: List[Dict[str, Any]],
     request_id: str,
     limit: int = 100,
+    all_spans: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Build Event Platform list response from spans."""
+    _all_spans = all_spans if all_spans is not None else spans
+    trace_aggregates = _build_trace_aggregates(_all_spans)
     children_map = compute_children_ids(spans[:limit])
     events = []
 
@@ -515,7 +909,7 @@ def build_event_platform_list_response(
         status = span.get("status", "ok")
         name = span.get("name", "")
         duration = span.get("duration", 0)
-        start_ns = span.get("start_ns", int(time.time() * 1_000_000_000))
+        start_ns = span.get("start_ns", monotonic_wall_ns())
         tags = span.get("tags", [])
         span_kind = meta.get("span", {}).get("kind", "llm")
         ml_app = span.get("ml_app", span.get("_ui_ml_app", "unknown"))
@@ -575,9 +969,9 @@ def build_event_platform_list_response(
                 "cache_read_input_tokens": metrics.get("cache_read_input_tokens", 0),
                 "cache_write_input_tokens": metrics.get("cache_write_input_tokens", 0),
                 "non_cached_input_tokens": metrics.get("non_cached_input_tokens", 0),
-                "estimated_input_cost": 0,
-                "estimated_output_cost": 0,
-                "estimated_total_cost": 0,
+                "estimated_input_cost": metrics.get("estimated_input_cost", 0),
+                "estimated_output_cost": metrics.get("estimated_output_cost", 0),
+                "estimated_total_cost": metrics.get("estimated_total_cost", 0),
             },
             "ml_app": ml_app,
             "name": name,
@@ -595,8 +989,11 @@ def build_event_platform_list_response(
             "service": service,
             "env": env,
             "trace": {
-                "estimated_total_cost": 0,
+                **trace_aggregates.get(trace_id, {}),
             },
+            "evaluation": span.get("evaluation", {}),
+            "evaluations": span.get("evaluations", {}),
+            "evaluation_assessments": span.get("evaluation_assessments", {}),
         }
 
         # Build columns array [status, ?, ?, ml_app, service, ?, ?, duration]
@@ -755,7 +1152,8 @@ class LLMObsEventPlatformAPI:
             limit = list_params.get("limit", 100)
             query_str = list_params.get("search", {}).get("query", "")
 
-            spans = self.get_llmobs_spans()
+            all_spans = self.get_llmobs_spans()
+            spans = all_spans
             if query_str:
                 spans = apply_filters(spans, parse_filter_query(query_str))
 
@@ -766,7 +1164,7 @@ class LLMObsEventPlatformAPI:
                 spans = list(reversed(spans))
 
             request_id = str(uuid.uuid4())
-            response = build_event_platform_list_response(spans, request_id, limit)
+            response = build_event_platform_list_response(spans, request_id, limit, all_spans=all_spans)
             self._query_results[request_id] = response
 
             return web.json_response(response)
@@ -788,11 +1186,131 @@ class LLMObsEventPlatformAPI:
     async def handle_aggregate(self, request: Request) -> web.Response:
         """Handle POST /api/unstable/llm-obs-query-rewriter/aggregate endpoint."""
         try:
-            spans = self.get_llmobs_spans()
+            body = await request.json()
+            agg_params = body.get("aggregate", {})
+            query_str = agg_params.get("search", {}).get("query", "")
+            group_by_list = agg_params.get("groupBy", [])
+            compute_list = agg_params.get("compute", [])
+
+            all_spans = self.get_llmobs_spans()
+            spans = all_spans
+            if query_str:
+                spans = apply_filters(spans, parse_filter_query(query_str))
+
+            # Determine groupBy field (support one group-by field)
+            group_by_field: Optional[str] = None
+            group_by_output: Optional[str] = None
+            group_by_limit = 50
+            group_by_sort_order = "desc"
+            if group_by_list:
+                field_cfg = group_by_list[0].get("field", {})
+                raw_field = field_cfg.get("id", "")
+                group_by_output = field_cfg.get("output", raw_field)
+                group_by_field = raw_field.lstrip("@")
+                group_by_limit = field_cfg.get("limit", 50)
+                sort_cfg = field_cfg.get("sort", {})
+                metric_sort = sort_cfg.get("metric", {})
+                group_by_sort_order = metric_sort.get("order", "desc")
+
+            # Group spans (spans are already sorted desc by start_ns)
+            groups: Dict[str, List[Dict[str, Any]]] = {}
+            group_order: List[str] = []
+            for span in spans:
+                key = str(get_span_field_value(span, group_by_field) or "") if group_by_field else ""
+                if key not in groups:
+                    groups[key] = []
+                    group_order.append(key)
+                groups[key].append(span)
+
+            # Sort group keys by min timestamp (spans sorted desc, so last span = earliest)
+            if group_by_sort_order == "desc":
+                group_order.sort(
+                    key=lambda k: groups[k][0].get("start_ns", 0),
+                    reverse=True,
+                )
+            else:
+                group_order.sort(
+                    key=lambda k: groups[k][-1].get("start_ns", 0),
+                )
+
+            group_order = group_order[:group_by_limit]
+
+            # Build compute results per group
+            values = []
+            for key in group_order:
+                group_spans = groups[key]
+                # spans are sorted desc by start_ns; earliest = last, latest = first
+                latest_span = group_spans[0]
+                earliest_span = group_spans[-1]
+
+                metrics: Dict[str, Any] = {}
+                for compute_item in compute_list:
+                    if "total" in compute_item:
+                        cfg = compute_item["total"]
+                        output = cfg.get("output", "")
+                        aggregation = cfg.get("aggregation", "")
+                        metric_field = cfg.get("metric", "").lstrip("@")
+                        if aggregation == "count":
+                            metrics[output] = len(group_spans)
+                        elif aggregation == "earliest":
+                            _val = get_span_field_value(earliest_span, metric_field)
+                            metrics[output] = "" if _val is None else str(_val)
+                        elif aggregation == "latest":
+                            _val = get_span_field_value(latest_span, metric_field)
+                            metrics[output] = "" if _val is None else str(_val)
+                        elif aggregation in ("min", "max", "sum", "avg"):
+                            numeric_values = []
+                            for s in group_spans:
+                                v = get_span_field_value(s, metric_field)
+                                try:
+                                    if v is None or v == "":
+                                        continue
+                                    numeric_values.append(float(v))
+                                except (TypeError, ValueError):
+                                    continue
+                            if not numeric_values:
+                                metrics[output] = 0
+                            elif aggregation == "min":
+                                metrics[output] = min(numeric_values)
+                            elif aggregation == "max":
+                                metrics[output] = max(numeric_values)
+                            elif aggregation == "sum":
+                                metrics[output] = sum(numeric_values)
+                            elif aggregation == "avg":
+                                metrics[output] = sum(numeric_values) / len(numeric_values)
+                    elif "list" in compute_item:
+                        cfg = compute_item["list"]
+                        output = cfg.get("output", "")
+                        columns = cfg.get("columns", [])
+                        sort_cfg = cfg.get("sort", {})
+                        sort_order = (
+                            sort_cfg.get("time", {}).get("order", "desc") if isinstance(sort_cfg, dict) else "desc"
+                        )
+                        sorted_spans = group_spans if sort_order == "desc" else list(reversed(group_spans))
+                        rows = []
+                        for s in sorted_spans:
+                            row = [str(get_span_field_value(s, col.lstrip("@")) or "") for col in columns]
+                            rows.append(row)
+                        metrics[output] = rows
+
+                by_val: Any = key
+                try:
+                    by_val = int(key)
+                except (ValueError, TypeError):
+                    pass
+                values.append({"by": {group_by_output or group_by_field or "": by_val}, "metrics": metrics})
+
+            paging_after: Dict[str, Any] = {}
+            if group_by_output:
+                paging_after[group_by_output] = group_order
+
             response = {
                 "elapsed": 50,
                 "requestId": str(uuid.uuid4()),
-                "result": {"buckets": [{"computes": {"c0": len(spans)}}], "status": "done"},
+                "result": {
+                    "paging": {"after": paging_after},
+                    "values": values,
+                },
                 "status": "done",
                 "type": "aggregate",
             }
@@ -829,7 +1347,7 @@ class LLMObsEventPlatformAPI:
             status = found_span.get("status", "ok")
             name = found_span.get("name", "")
             duration = found_span.get("duration", 0)
-            start_ns = found_span.get("start_ns", int(time.time() * 1_000_000_000))
+            start_ns = found_span.get("start_ns", monotonic_wall_ns())
             tags = found_span.get("tags", [])
             span_kind = meta.get("span", {}).get("kind", "llm")
             ml_app = found_span.get("ml_app", found_span.get("_ui_ml_app", "unknown"))
@@ -1001,6 +1519,9 @@ class LLMObsEventPlatformAPI:
                         "model_provider": model_provider,
                     },
                     "metrics": metrics,
+                    "evaluation": span.get("evaluation", {}),
+                    "evaluations": span.get("evaluations", {}),
+                    "evaluation_assessments": span.get("evaluation_assessments", {}),
                     "_dd": {"apm_trace_id": span.get("trace_id", "")},
                 }
 
@@ -1139,19 +1660,65 @@ class LLMObsEventPlatformAPI:
             return web.json_response({"error": str(e)}, status=500)
 
     async def handle_query_scalar(self, request: Request) -> web.Response:
-        """Handle POST /api/ui/query/scalar endpoint."""
-        return web.json_response(
-            {
-                "data": [
-                    {
-                        "type": "scalar_response",
-                        "attributes": {
-                            "columns": [],
-                        },
-                    }
-                ],
-            }
-        )
+        """Handle POST /api/ui/query/scalar endpoint.
+
+        Implements a subset of the Datadog formulas-and-functions scalar API
+        against the LLMObs spans tracked in-memory by the test agent.
+
+        Supports ``data_source`` values ``llm_observability`` and
+        ``llm_observability_stream``; unknown data sources return a single
+        zero-valued number column so tiles render "no data" instead of erroring.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        requests = body.get("data") if isinstance(body, dict) else None
+        if not requests:
+            # Preserve legacy empty-in / empty-out behaviour.
+            return web.json_response(
+                {
+                    "data": [
+                        {
+                            "type": "scalar_response",
+                            "attributes": {"columns": []},
+                        }
+                    ],
+                }
+            )
+
+        all_spans = self.get_llmobs_spans()
+        # Pre-compute @trace.* rollups once over the unscoped span set. The UI
+        # sums/avgs these values per trace (a trace’s rollup is identical
+        # regardless of time window), so computing once is correct and cheaper.
+        trace_aggregates = _build_trace_aggregates(all_spans)
+        out: List[Dict[str, Any]] = []
+
+        for req in requests:
+            if not isinstance(req, dict):
+                out.append({"type": "scalar_response", "attributes": {"columns": []}})
+                continue
+            attrs = req.get("attributes") or {}
+            queries = attrs.get("queries") or []
+            # Intentionally ignore the request's ``from``/``to`` window. The
+            # sibling list/aggregate endpoints (handle_logs_analytics_list,
+            # handle_aggregate) return spans regardless of time, so callers
+            # like the LLMObs Sessions table see rows for older sessions even
+            # when the UI sends a short (e.g. 15m) window. Filtering here
+            # would make scalar aggregates (cost, tokens) come back empty
+            # for exactly those rows — the bug this file used to have.
+            columns = _build_scalar_columns(
+                all_spans, queries, attrs.get("formulas") or [], trace_aggregates=trace_aggregates
+            )
+            out.append(
+                {
+                    "type": "scalar_response",
+                    "attributes": {"columns": columns},
+                }
+            )
+
+        return web.json_response({"data": out})
 
     def get_routes(self) -> List[web.RouteDef]:
         """Return the routes for this API (all handlers wrapped with CORS support)."""

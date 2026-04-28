@@ -1,24 +1,23 @@
 import json
 import os
-import tempfile
 from pathlib import Path
+import tempfile
 from typing import Any
-from typing_extensions import cast
+from typing import Dict
+from typing import cast
 
-from ddapm_test_agent.claude_hooks import (
-    CLAUDE_CODE_DEFAULT_MATCHER,
-    CLAUDE_CODE_HOOK,
-    CLAUDE_CODE_EVENTS,
-    write_claude_code_hooks,
-)
+from ddapm_test_agent.claude_hooks import CLAUDE_CODE_DEFAULT_MATCHER
+from ddapm_test_agent.claude_hooks import CLAUDE_CODE_EVENTS
+from ddapm_test_agent.claude_hooks import CLAUDE_CODE_HOOK
+from ddapm_test_agent.claude_hooks import write_claude_code_hooks
 
 
-def _read_settings(path: Path) -> dict[str, Any]:
+def _read_settings(path: Path) -> Dict[str, Any]:
     with open(path, "r") as f:
-        return cast(dict[str, Any], json.load(f))
+        return cast(Dict[str, Any], json.load(f))
 
 
-def _default_hooks_structure() -> dict[str, Any]:
+def _default_hooks_structure() -> Dict[str, Any]:
     return {event: [CLAUDE_CODE_DEFAULT_MATCHER] for event in CLAUDE_CODE_EVENTS}
 
 
@@ -215,6 +214,12 @@ async def test_hook_tool_use_creates_tool_span(agent):
     # Root agent span output comes from transcript (no transcript in tests, so empty)
     root_spans = [s for s in spans if s["parent_id"] == "undefined"]
     assert len(root_spans) == 1
+
+    # Non-instrumented sessions (default) don't produce step spans — the tool
+    # parents directly to the root agent.
+    step_spans = [s for s in spans if s["meta"]["span"]["kind"] == "step"]
+    assert step_spans == []
+    assert tool["parent_id"] == root_spans[0]["span_id"]
 
 
 async def test_hook_subagent_creates_nested_agent(agent):
@@ -740,9 +745,7 @@ async def test_concurrent_subagents_parent_correctly(agent):
     assert len(root_spans) == 1
     root = root_spans[0]
 
-    agent_spans = [
-        s for s in session_spans if s["meta"]["span"]["kind"] == "agent" and s["parent_id"] != "undefined"
-    ]
+    agent_spans = [s for s in session_spans if s["meta"]["span"]["kind"] == "agent" and s["parent_id"] != "undefined"]
     assert len(agent_spans) == 2, f"Expected 2 subagent spans, got {len(agent_spans)}"
 
     # Both subagents should be parented to root — not to each other

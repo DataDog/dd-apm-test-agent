@@ -175,6 +175,250 @@ async def test_query_scalar_options(agent):
     assert resp.headers.get("Access-Control-Allow-Origin") == _TEST_ORIGIN
 
 
+def _scalar_request(queries, from_ms=None, to_ms=None, formulas=None):
+    attrs = {"queries": queries}
+    if from_ms is not None:
+        attrs["from"] = from_ms
+    if to_ms is not None:
+        attrs["to"] = to_ms
+    if formulas is not None:
+        attrs["formulas"] = formulas
+    return {"data": [{"type": "scalar_request", "attributes": attrs}]}
+
+
+async def test_query_scalar_count_no_groupby(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "query1",
+                    "data_source": "llm_observability",
+                    "indexes": ["llmobs"],
+                    "search": {"query": ""},
+                    "compute": {"aggregation": "count"},
+                }
+            ]
+        ),
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert len(data["data"]) == 1
+    cols = data["data"][0]["attributes"]["columns"]
+    assert len(cols) == 1
+    assert cols[0]["type"] == "number"
+    assert cols[0]["values"] == [2.0]
+
+
+async def test_query_scalar_group_by_kind(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "query1",
+                    "data_source": "llm_observability",
+                    "indexes": ["llmobs"],
+                    "search": {"query": ""},
+                    "compute": {"aggregation": "count"},
+                    "group_by": [{"facet": "@meta.span.kind", "limit": 10, "sort": {"order": "desc"}}],
+                }
+            ]
+        ),
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    cols = data["data"][0]["attributes"]["columns"]
+    assert len(cols) == 2
+    group_col, num_col = cols
+    assert group_col["type"] == "group"
+    assert group_col["name"] == "@meta.span.kind"
+    # Two kinds present in fixture: agent and llm, one span each.
+    assert sorted([v[0] for v in group_col["values"]]) == ["agent", "llm"]
+    assert num_col["type"] == "number"
+    assert num_col["values"] == [1.0, 1.0]
+
+
+async def test_query_scalar_avg_duration(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "query1",
+                    "data_source": "llm_observability",
+                    "indexes": ["llmobs"],
+                    "compute": {"aggregation": "avg", "metric": "@duration"},
+                }
+            ]
+        ),
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    cols = data["data"][0]["attributes"]["columns"]
+    assert len(cols) == 1
+    # Fixture durations: 5e9 + 2e9 averaged = 3.5e9.
+    assert cols[0]["values"] == [3_500_000_000.0]
+
+
+async def test_query_scalar_ignores_time_window(agent, llmobs_payload):
+    # The sibling list/aggregate endpoints return spans regardless of the
+    # UI's time window, so the scalar endpoint must do the same — otherwise
+    # the LLMObs Sessions table renders rows with blank cost / token columns
+    # for any session older than the UI's (short) timeframe.
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "query1",
+                    "data_source": "llm_observability",
+                    "indexes": ["llmobs"],
+                    "compute": {"aggregation": "count"},
+                }
+            ],
+            from_ms=1,
+            to_ms=1000,
+        ),
+    )
+    data = await resp.json()
+    assert data["data"][0]["attributes"]["columns"][0]["values"] == [2.0]
+
+
+async def test_query_scalar_search_query_filters(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "query1",
+                    "data_source": "llm_observability",
+                    "indexes": ["llmobs"],
+                    "search": {"query": "@meta.span.kind:llm"},
+                    "compute": {"aggregation": "count"},
+                }
+            ]
+        ),
+    )
+    data = await resp.json()
+    assert data["data"][0]["attributes"]["columns"][0]["values"] == [1.0]
+
+
+async def test_query_scalar_unknown_data_source(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "query1",
+                    "data_source": "metrics",
+                    "query": "sum:foo{*}",
+                    "aggregator": "sum",
+                }
+            ]
+        ),
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    cols = data["data"][0]["attributes"]["columns"]
+    assert len(cols) == 1
+    assert cols[0]["type"] == "number"
+    assert cols[0]["values"] == [0.0]
+
+
+async def test_query_scalar_multi_request(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    body = {
+        "data": [
+            {
+                "type": "scalar_request",
+                "attributes": {
+                    "queries": [
+                        {
+                            "name": "query1",
+                            "data_source": "llm_observability",
+                            "indexes": ["llmobs"],
+                            "compute": {"aggregation": "count"},
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "scalar_request",
+                "attributes": {
+                    "queries": [
+                        {
+                            "name": "query1",
+                            "data_source": "llm_observability",
+                            "indexes": ["llmobs"],
+                            "compute": {"aggregation": "sum", "metric": "@metrics.total_tokens"},
+                        }
+                    ]
+                },
+            },
+        ]
+    }
+    resp = await agent.post("/api/ui/query/scalar", json=body)
+    data = await resp.json()
+    assert len(data["data"]) == 2
+    assert data["data"][0]["attributes"]["columns"][0]["values"] == [2.0]
+    # Fixture total_tokens: 30 + 15 = 45.
+    assert data["data"][1]["attributes"]["columns"][0]["values"] == [45.0]
+
+
+async def test_query_scalar_trace_rollup_metric(agent, llmobs_payload):
+    # Fixture has 2 spans on the same trace with token counts 30 and 15.
+    # @trace.total_tokens rolls up per-trace: sum across spans = 45, but
+    # because both spans share trace-123, sum(@trace.total_tokens) over all
+    # spans must dedupe to 45 (not 90).
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "query1",
+                    "data_source": "llm_observability",
+                    "indexes": ["llmobs"],
+                    "compute": {"aggregation": "sum", "metric": "@trace.total_tokens"},
+                }
+            ]
+        ),
+    )
+    data = await resp.json()
+    cols = data["data"][0]["attributes"]["columns"]
+    assert cols[0]["values"] == [45.0]
+
+
+async def test_query_scalar_formulas_reference_query(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/ui/query/scalar",
+        json=_scalar_request(
+            [
+                {
+                    "name": "q1",
+                    "data_source": "llm_observability",
+                    "indexes": ["llmobs"],
+                    "compute": {"aggregation": "count"},
+                }
+            ],
+            formulas=[{"formula": "q1", "alias": "span_count"}],
+        ),
+    )
+    data = await resp.json()
+    cols = data["data"][0]["attributes"]["columns"]
+    assert len(cols) == 1
+    assert cols[0]["name"] == "span_count"
+    assert cols[0]["values"] == [2.0]
+
+
 # Functional tests (testing actual span data flow)
 
 
@@ -285,6 +529,129 @@ async def test_llmobs_aggregate(agent, llmobs_payload):
     assert data["status"] == "done"
 
 
+async def test_llmobs_aggregate_group_by_session_id(agent):
+    now = int(time.time() * 1_000_000_000)
+    session_a_early = {
+        "ml_app": "test-app",
+        "tags": [],
+        "spans": [
+            {
+                "name": "root-a-early",
+                "span_id": "span-a1",
+                "trace_id": "trace-a1",
+                "parent_id": "undefined",
+                "session_id": "session-a",
+                "status": "ok",
+                "start_ns": now - 2000,
+                "duration": 1_000_000,
+                "meta": {"span": {"kind": "agent"}},
+                "metrics": {},
+                "tags": [],
+            }
+        ],
+    }
+    session_a_late = {
+        "ml_app": "test-app",
+        "tags": [],
+        "spans": [
+            {
+                "name": "root-a-late",
+                "span_id": "span-a2",
+                "trace_id": "trace-a2",
+                "parent_id": "undefined",
+                "session_id": "session-a",
+                "status": "ok",
+                "start_ns": now - 1000,
+                "duration": 1_000_000,
+                "meta": {"span": {"kind": "agent"}},
+                "metrics": {},
+                "tags": [],
+            }
+        ],
+    }
+    session_b = {
+        "ml_app": "test-app",
+        "tags": [],
+        "spans": [
+            {
+                "name": "root-b",
+                "span_id": "span-b1",
+                "trace_id": "trace-b1",
+                "parent_id": "undefined",
+                "session_id": "session-b",
+                "status": "ok",
+                "start_ns": now,
+                "duration": 1_000_000,
+                "meta": {"span": {"kind": "agent"}},
+                "metrics": {},
+                "tags": [],
+            }
+        ],
+    }
+    for payload in [session_a_early, session_a_late, session_b]:
+        await _submit_llmobs_payload(agent, payload)
+
+    aggregate_query = {
+        "aggregate": {
+            "groupBy": [
+                {
+                    "field": {
+                        "id": "@session_id",
+                        "output": "@session_id",
+                        "limit": 50,
+                        "sort": {"metric": {"order": "desc", "id": "timestamp:min"}},
+                    }
+                }
+            ],
+            "compute": [
+                {"total": {"metric": "@trace_id", "output": "@trace_id:earliest", "aggregation": "earliest"}},
+                {"total": {"metric": "@trace_id", "output": "@trace_id:latest", "aggregation": "latest"}},
+                {"total": {"metric": "count", "output": "count:count", "aggregation": "count"}},
+                {
+                    "list": {
+                        "columns": ["@session_id"],
+                        "output": "@session_id:latest",
+                        "sort": {"time": {"order": "desc"}},
+                    }
+                },
+            ],
+            "search": {"query": "@parent_id:undefined @session_id:*"},
+            "indexes": ["llmobs"],
+        }
+    }
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/aggregate?type=llmobs",
+        json=aggregate_query,
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["status"] == "done"
+    assert data["type"] == "aggregate"
+
+    values = data["result"]["values"]
+    assert len(values) == 2
+
+    # Groups are sorted desc by latest start_ns; session-b has the most recent span
+    session_b_entry = values[0]
+    session_a_entry = values[1]
+
+    assert session_b_entry["by"]["@session_id"] == "session-b"
+    assert session_b_entry["metrics"]["count:count"] == 1
+    assert session_b_entry["metrics"]["@trace_id:earliest"] == "trace-b1"
+    assert session_b_entry["metrics"]["@trace_id:latest"] == "trace-b1"
+    assert session_b_entry["metrics"]["@session_id:latest"] == [["session-b"]]
+
+    assert session_a_entry["by"]["@session_id"] == "session-a"
+    assert session_a_entry["metrics"]["count:count"] == 2
+    # earliest = span with the smallest start_ns
+    assert session_a_entry["metrics"]["@trace_id:earliest"] == "trace-a1"
+    # latest = span with the largest start_ns
+    assert session_a_entry["metrics"]["@trace_id:latest"] == "trace-a2"
+
+    paging_sessions = data["result"]["paging"]["after"]["@session_id"]
+    assert set(paging_sessions) == {"session-a", "session-b"}
+
+
 async def test_llmobs_cors_headers(agent):
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
@@ -372,6 +739,130 @@ async def test_facet_info_with_filter_query(agent):
     field_map = {f["field"]: f["value"] for f in fields}
     assert field_map.get("app-1") == 1  # Only 1 llm span in app-1
     assert field_map.get("app-2") == 1  # 1 llm span in app-2
+
+
+async def test_span_cost_metrics_surfaced_in_list(agent):
+    """Span-level estimated cost metrics are passed through to the list response."""
+    span = _create_span_for_facet_test(1, 200)
+    span["metrics"].update(
+        {
+            "estimated_input_cost": 3_000_000,
+            "estimated_output_cost": 15_000_000,
+            "estimated_total_cost": 18_000_000,
+        }
+    )
+    await _submit_spans_for_facet_test(agent, [span])
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["hitCount"] == 1
+
+    metrics = data["result"]["events"][0]["event"]["custom"]["metrics"]
+    assert metrics["estimated_input_cost"] == 3_000_000
+    assert metrics["estimated_output_cost"] == 15_000_000
+    assert metrics["estimated_total_cost"] == 18_000_000
+
+
+async def test_trace_estimated_total_cost_aggregated_across_spans(agent):
+    """@trace.estimated_total_cost is the sum of estimated_total_cost across all spans in the trace."""
+    span_a = _create_span_for_facet_test(1, 300)
+    span_a["metrics"]["estimated_total_cost"] = 10_000_000
+    span_b = _create_span_for_facet_test(2, 300)
+    span_b["metrics"]["estimated_total_cost"] = 5_000_000
+    await _submit_spans_for_facet_test(agent, [span_a, span_b])
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+
+    # Both spans share trace 300; each should report the aggregated trace total
+    for event in data["result"]["events"]:
+        assert event["event"]["custom"]["trace"]["estimated_total_cost"] == 15_000_000
+
+
+async def test_trace_token_metrics_aggregated_across_spans(agent):
+    """@trace.input_tokens, output_tokens, and total_tokens are summed across all spans in the trace."""
+    span_a = _create_span_for_facet_test(1, 400)
+    span_a["metrics"] = {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}
+    span_b = _create_span_for_facet_test(2, 400)
+    span_b["metrics"] = {"input_tokens": 5, "output_tokens": 10, "total_tokens": 15}
+    await _submit_spans_for_facet_test(agent, [span_a, span_b])
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+
+    for event in data["result"]["events"]:
+        trace = event["event"]["custom"]["trace"]
+        assert trace["input_tokens"] == 15
+        assert trace["output_tokens"] == 30
+        assert trace["total_tokens"] == 45
+
+
+async def test_trace_level_fields_populated_for_session_query(agent):
+    """Trace-level token and cost fields are present for session-id-filtered queries (non-static app path)."""
+    now = int(time.time() * 1_000_000_000)
+    root_span = {
+        "span_id": "span-sess-root",
+        "trace_id": "trace-sess-1",
+        "parent_id": "undefined",
+        "name": "root",
+        "status": "ok",
+        "start_ns": now,
+        "duration": 1_000_000_000,
+        "session_id": "session-xyz",
+        "tags": ["session_id:session-xyz"],
+        "meta": {"span": {"kind": "agent"}},
+        "metrics": {
+            "input_tokens": 8,
+            "output_tokens": 12,
+            "total_tokens": 20,
+            "estimated_total_cost": 7_000_000,
+        },
+    }
+    child_span = {
+        "span_id": "span-sess-child",
+        "trace_id": "trace-sess-1",
+        "parent_id": "span-sess-root",
+        "name": "llm-call",
+        "status": "ok",
+        "start_ns": now,
+        "duration": 500_000_000,
+        "session_id": "session-xyz",
+        "tags": ["session_id:session-xyz"],
+        "meta": {"span": {"kind": "llm"}},
+        "metrics": {
+            "input_tokens": 4,
+            "output_tokens": 6,
+            "total_tokens": 10,
+            "estimated_total_cost": 3_000_000,
+        },
+    }
+    await _submit_spans_for_facet_test(agent, [root_span, child_span])
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": "@parent_id:undefined @session_id:session-xyz"}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["hitCount"] == 1
+
+    trace = data["result"]["events"][0]["event"]["custom"]["trace"]
+    assert trace["input_tokens"] == 12
+    assert trace["output_tokens"] == 18
+    assert trace["total_tokens"] == 30
+    assert trace["estimated_total_cost"] == 10_000_000
 
 
 async def test_facet_range_info_with_filter_query(agent):

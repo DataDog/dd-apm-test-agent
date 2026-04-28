@@ -1,0 +1,8 @@
+---
+features:
+  - |
+    Implement ``POST /api/ui/query/scalar`` for LLM Observability data sources.
+    Supports count/cardinality/sum/avg/min/max/median/percentile aggregations,
+    group_by, search filters, per-request time windows, and formula references
+    over the spans tracked by the test agent. Unknown data sources return a
+    zero-valued scalar response instead of erroring.

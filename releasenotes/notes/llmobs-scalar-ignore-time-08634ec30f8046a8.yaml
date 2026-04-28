@@ -1,0 +1,10 @@
+---
+fixes:
+  - |
+    ``POST /api/ui/query/scalar`` no longer filters LLMObs spans by the
+    request's ``from``/``to`` window. The sibling list and aggregate
+    endpoints ignore the time window, so filtering here caused the LLMObs
+    Sessions table to render rows for older sessions with blank cost and
+    token columns whenever the UI sent a short (e.g. 15 minute) timeframe.
+    Aggregates are now computed over all tracked spans, consistent with the
+    other endpoints.

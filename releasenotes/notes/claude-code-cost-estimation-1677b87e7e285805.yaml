@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Calculates cost estimation for a handful of popular Anthropic models for Claude Code CLI instrumentation.

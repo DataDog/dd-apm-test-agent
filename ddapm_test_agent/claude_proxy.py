@@ -14,24 +14,27 @@ import json
 import logging
 import os
 import socket
-import time
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import cast
 
 import aiohttp
 from aiohttp import web
 from aiohttp.web import Request
 
+from ._clock import monotonic_wall_ns
+from .claude_cost_tracker import compute_cost_metrics
 from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import SessionState
+from .claude_hooks import _ML_APP
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
+from .claude_hooks import _get_context_limit
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_link_tracker import SpanLink
 from .llmobs_event_platform import with_cors
-
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +45,66 @@ ANTHROPIC_API_BASE = "https://api.anthropic.com"
 
 SKIP_REQUEST_HEADERS = {"host", "transfer-encoding", "content-length", "x-ddapm-upstream"}
 SKIP_RESPONSE_HEADERS = {"content-length", "transfer-encoding", "content-encoding", "connection"}
+
+
+def _compute_context_breakdown(
+    request_body: Dict[str, Any],
+    total_input_tokens: int,
+    model: str,
+) -> Dict[str, Any]:
+    """Estimate how input tokens are distributed across request sections.
+
+    Serializes each section to JSON, measures byte lengths, and distributes
+    total_input_tokens proportionally.
+    """
+    sections_raw: Dict[str, Any] = {}
+
+    system = request_body.get("system")
+    if system:
+        sections_raw["system"] = system
+
+    tools = request_body.get("tools")
+    if tools:
+        sections_raw["tools"] = tools
+
+    user_msgs: List[Dict[str, Any]] = []
+    assistant_msgs: List[Dict[str, Any]] = []
+    for msg in request_body.get("messages", []):
+        role = msg.get("role", "")
+        if role == "user":
+            user_msgs.append(msg)
+        elif role == "assistant":
+            assistant_msgs.append(msg)
+
+    if user_msgs:
+        sections_raw["user_messages"] = user_msgs
+    if assistant_msgs:
+        sections_raw["assistant_messages"] = assistant_msgs
+
+    section_bytes: Dict[str, int] = {}
+    for name, data in sections_raw.items():
+        section_bytes[name] = len(json.dumps(data, separators=(",", ":")))
+
+    total_bytes = sum(section_bytes.values()) or 1
+
+    context_window_size = _get_context_limit(model)
+    sections: List[Dict[str, Any]] = []
+    for name in ["system", "tools", "user_messages", "assistant_messages"]:
+        if name not in section_bytes:
+            continue
+        proportion = section_bytes[name] / total_bytes
+        tokens = round(total_input_tokens * proportion)
+        pct = round(tokens / total_input_tokens * 100, 1) if total_input_tokens > 0 else 0.0
+        sections.append({"name": name, "tokens": tokens, "pct": pct})
+
+    context_usage_pct = round(total_input_tokens / context_window_size * 100, 1) if context_window_size > 0 else 0.0
+
+    return {
+        "context_window_size": context_window_size,
+        "total_input_tokens": total_input_tokens,
+        "context_usage_pct": context_usage_pct,
+        "sections": sections,
+    }
 
 
 def _parse_sse_events(raw: bytes) -> List[Dict[str, Any]]:
@@ -204,25 +267,32 @@ def _extract_tool_uses_from_response(content_blocks: List[Dict[str, Any]]) -> Li
 def _format_input_messages(body: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Format request messages for the LLM span input."""
     messages: List[Dict[str, Any]] = []
+    system = body.get("system")
+    if system:
+        if isinstance(system, str):
+            messages.append({"role": "system", "content": system})
+        elif isinstance(system, list):
+            parts = [b.get("text", "") for b in system if isinstance(b, dict) and b.get("type") == "text"]
+            messages.append({"role": "system", "content": "\n".join(parts)})
     for msg in body.get("messages", []):
         role = msg.get("role", "")
         content = msg.get("content", "")
         if isinstance(content, str):
             messages.append({"role": role, "content": content})
         elif isinstance(content, list):
-            parts: List[str] = []
+            content_parts: List[str] = []
             for block in content:
                 if isinstance(block, dict):
                     btype = block.get("type", "")
                     if btype == "text":
-                        parts.append(block.get("text", ""))
+                        content_parts.append(block.get("text", ""))
                     elif btype == "tool_result":
-                        parts.append(f"[tool_result:{block.get('tool_use_id', '')}]")
+                        content_parts.append(f"[tool_result:{block.get('tool_use_id', '')}]")
                     elif btype == "tool_use":
-                        parts.append(f"[tool_use:{block.get('name', '')}]")
+                        content_parts.append(f"[tool_use:{block.get('name', '')}]")
                     else:
-                        parts.append(f"[{btype}]")
-            messages.append({"role": role, "content": " ".join(parts)})
+                        content_parts.append(f"[{btype}]")
+            messages.append({"role": role, "content": " ".join(content_parts)})
     return messages
 
 
@@ -251,6 +321,20 @@ def _format_output_messages(content_blocks: List[Dict[str, Any]]) -> List[Dict[s
     return messages
 
 
+def _get_session_id_from_claude_llm_request(request_body: Dict[str, Any]) -> Optional[str]:
+    metadata = cast(Dict[str, Any], request_body.get("metadata", {}))
+    user_id: str = metadata.get("user_id", "")
+
+    user_id_parsed: Dict[str, Any] = {}
+    try:
+        if user_id:
+            user_id_parsed = json.loads(user_id)
+    except json.JSONDecodeError:
+        pass
+
+    return user_id_parsed.get("session_id")
+
+
 class ClaudeProxyAPI:
     """Transparent proxy for Anthropic API calls that creates LLM spans."""
 
@@ -270,8 +354,8 @@ class ClaudeProxyAPI:
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
 
-    def _get_active_session(self) -> Optional[SessionState]:
-        """Get the most likely active Claude session.
+    def _get_active_session(self, maybe_session_id: Optional[str] = None) -> Optional[SessionState]:
+        """Get the most likely active Claude session. If a recorded session_id is passed in, use that instead.
 
         Prefers sessions that have pending tools or an active agent stack
         (indicating they are mid-turn), then falls back to sessions that
@@ -279,6 +363,9 @@ class ClaudeProxyAPI:
         prevents LLM spans from being assigned to a finished/test session
         when multiple sessions exist.
         """
+        if maybe_session_id and maybe_session_id in self._hooks_api._sessions:
+            return self._hooks_api._sessions[maybe_session_id]
+
         sessions = self._hooks_api._sessions
         if not sessions:
             return None
@@ -427,8 +514,29 @@ class ClaudeProxyAPI:
             if resolved:
                 parent_id = resolved
 
-        # LLM.output -> Tool.input linking: register tool_use blocks from the response
+        # LLM.output -> Tool.input linking: register tool_use blocks from the response.
+        # Extracted before step creation so _start_step_for_llm can re-parent any
+        # tool/subagent children that raced ahead of us while the stream was open.
         tool_uses = _extract_tool_uses_from_response(content_blocks)
+        tool_use_ids = [tu.get("id", "") for tu in tool_uses if tu.get("id")]
+
+        # Open a step span for this inference cycle. Each LLM call on an
+        # instrumented session becomes one step; the LLM span (and any tool
+        # spans it triggers) parent to the step rather than directly to the
+        # agent. Skipped for non-instrumented sessions and orphan spans so
+        # they keep the flat hierarchy.
+        agent_parent_id = parent_id
+        active_step = None
+        if session is not None and session.instrumented and agent_parent_id and agent_parent_id != "undefined":
+            active_step = self._hooks_api._start_step_for_llm(
+                session=session,
+                llm_span_id=span_id,
+                agent_parent_id=agent_parent_id,
+                llm_start_ns=start_ns,
+                tool_use_ids=tool_use_ids,
+            )
+            parent_id = active_step.span_id
+
         for tu in tool_uses:
             self._link_tracker.on_llm_tool_choice(
                 tool_use_id=tu.get("id", ""),
@@ -438,10 +546,14 @@ class ClaudeProxyAPI:
                 llm_trace_id=trace_id,
             )
 
-        # Record which agent this LLM span belongs to, so tools from its
-        # tool_use blocks can resolve their parent via the link tracker.
-        if parent_id and parent_id != "undefined":
+        # Record which agent/step this LLM span belongs to. When an active_step
+        # exists, _start_step_for_llm already registered the step as the LLM's
+        # parent for tool-use resolution.
+        if active_step is None and parent_id and parent_id != "undefined":
             self._link_tracker.set_llm_parent(span_id, parent_id)
+
+        if active_step is not None:
+            self._hooks_api._update_step_from_llm_response(active_step, response_data)
 
         input_messages = _format_input_messages(request_body)
         output_messages = _format_output_messages(content_blocks)
@@ -453,6 +565,11 @@ class ClaudeProxyAPI:
         # Attach session_id so LLM spans can be grouped with the session
         session_id = session.session_id if session else ""
 
+        context_breakdown = _compute_context_breakdown(
+            request_body,
+            total_input_tokens,
+            model,
+        )
         span: Dict[str, Any] = {
             "span_id": span_id,
             "trace_id": trace_id,
@@ -461,13 +578,13 @@ class ClaudeProxyAPI:
             "status": "ok",
             "start_ns": start_ns,
             "duration": duration_ns,
-            "ml_app": "claude-code",
-            "service": "claude-code",
+            "ml_app": _ML_APP,
+            "service": _ML_APP,
             "env": "local",
             "session_id": session_id,
             "tags": [
-                "ml_app:claude-code",
-                "service:claude-code",
+                f"ml_app:{_ML_APP}",
+                f"service:{_ML_APP}",
                 "env:local",
                 "source:claude-code-proxy",
                 "language:python",
@@ -484,6 +601,9 @@ class ClaudeProxyAPI:
                 "metadata": {
                     "stop_reason": response_data.get("stop_reason", ""),
                     "stream": request_body.get("stream", False),
+                    "_dd": {
+                        "context_breakdown": context_breakdown,
+                    },
                 },
             },
             "metrics": {
@@ -493,6 +613,16 @@ class ClaudeProxyAPI:
                 "cache_read_input_tokens": cache_read,
                 "cache_write_input_tokens": cache_creation,
                 "non_cached_input_tokens": raw_input_tokens,
+                **(
+                    compute_cost_metrics(
+                        model_id=model,
+                        non_cached_input_tokens=raw_input_tokens,
+                        cache_write_tokens=cache_creation,
+                        cache_read_tokens=cache_read,
+                        output_tokens=usage.get("output_tokens", 0),
+                    )
+                    or {}
+                ),
             },
             "span_links": [link.to_dict() for link in span_links],
         }
@@ -519,8 +649,9 @@ class ClaudeProxyAPI:
 
         headers = {key: value for key, value in request.headers.items() if key.lower() not in SKIP_REQUEST_HEADERS}
 
-        start_ns = int(time.time() * 1_000_000_000)
-        session = self._get_active_session()
+        start_ns = monotonic_wall_ns()
+        maybe_session_id = _get_session_id_from_claude_llm_request(request_body)
+        session = self._get_active_session(maybe_session_id)
 
         http_session = await self._get_http_session()
 
@@ -563,7 +694,7 @@ class ClaudeProxyAPI:
             buffered_chunks.append(chunk)
         await response.write_eof()
 
-        end_ns = int(time.time() * 1_000_000_000)
+        end_ns = monotonic_wall_ns()
         duration_ns = end_ns - start_ns
 
         if upstream_resp.status == 200:
@@ -602,7 +733,7 @@ class ClaudeProxyAPI:
     ) -> web.Response:
         """Handle a non-streaming JSON response."""
         body = await upstream_resp.read()
-        end_ns = int(time.time() * 1_000_000_000)
+        end_ns = monotonic_wall_ns()
         duration_ns = end_ns - start_ns
 
         if upstream_resp.status == 200:

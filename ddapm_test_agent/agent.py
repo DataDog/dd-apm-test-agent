@@ -13,6 +13,7 @@ from pathlib import Path
 import platform
 import pprint
 import re
+import requests
 import socket
 import sys
 import threading
@@ -59,6 +60,7 @@ from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import write_claude_code_hooks
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_proxy import ClaudeProxyAPI
+from .pi_hooks import PiHooksAPI
 from .integration import Integration
 from .llmobs_event_platform import LLMObsEventPlatformAPI
 from .logs import LOGS_ENDPOINT
@@ -256,23 +258,17 @@ def default_value_trace_results_summary():
     }
 
 
-async def _is_valid_api_key_and_site_combination(dd_api_key: str, dd_site: str) -> bool:
+def _is_valid_api_key_and_site_combination(dd_api_key: str, dd_site: str) -> bool:
     """Check if the api key + site is a valid DD auth combo"""
     url = f"https://api.{dd_site}/api/v1/validate"
     headers = {
         "DD-API-KEY": dd_api_key
     }
 
-    async with ClientSession() as session:
-        async with session.get(
-            url,
-            headers=headers,
-        ) as resp:
-            if resp.status == 403:
-                return False
+    response = requests.get(url=url, headers=headers)
+    result = cast(Dict[str, bool], response.json())
 
-            result = cast(dict[str, bool], await resp.json())
-            return result.get("valid", False)
+    return result.get("valid", False)
 
 
 class MockQuery:
@@ -1084,7 +1080,7 @@ class Agent:
             return web.Response(status=200, headers=headers)
 
         raw_data = await request.read()
-        data = cast(dict[str, Any], json.loads(raw_data))
+        data = cast(Dict[str, Any], json.loads(raw_data))
 
         # First pass to validate the data
         for key in data:
@@ -1098,7 +1094,7 @@ class Agent:
             dd_api_key = data.get("dd_api_key", request.app["dd_api_key"])
             dd_site = data.get("dd_site", request.app["dd_site"])
 
-            is_valid = await _is_valid_api_key_and_site_combination(
+            is_valid = _is_valid_api_key_and_site_combination(
                 dd_api_key=dd_api_key,
                 dd_site=dd_site
             )
@@ -1152,7 +1148,7 @@ class Agent:
                 # Just a random selection of some peer_tags to aggregate on for testing, not exhaustive
                 "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
                 "span_events": True,  # Advertise support for the top-level Span field for Span Events
-                "llmobs_data_forwarding": not request.app["disable_llmobs_data_forwarding"] and request.app["dd_api_key"] is not None and request.app["dd_site"] is not None,
+                "llmobs_data_forwarding": not request.app["disable_llmobs_data_forwarding"] and request.app["dd_api_key"] and request.app["dd_site"],  # api key and site not empty strings
             },
             headers=headers,
         )
@@ -1636,7 +1632,7 @@ class Agent:
                 raise web.HTTPBadRequest(body=msg)
         return response
 
-    def _parse_http_request(self, data: bytes) -> tuple[str, str, Dict[str, str], bytes]:
+    def _parse_http_request(self, data: bytes) -> Tuple[str, str, Dict[str, str], bytes]:
         """Parse HTTP request from raw bytes.
 
         Returns:
@@ -1884,8 +1880,9 @@ def make_app(
     vcr_ci_mode: bool,
     vcr_provider_map: str,
     vcr_ignore_headers: str,
+    vcr_json_body_normalizers: str,
     dd_site: str,
-    dd_api_key: str | None,
+    dd_api_key: Optional[str],
     disable_llmobs_data_forwarding: bool,
     enable_web_ui: bool = False,
     persist_llmobs_traces: bool = False,
@@ -1967,13 +1964,7 @@ def make_app(
             web.options("/test/settings", agent.handle_settings),
             web.post("/vcr/test/start", agent.check_vcr_proxy_suffix),
             web.post("/vcr/test/stop", agent.unset_vcr_proxy_suffix),
-            web.route(
-                "*",
-                "/vcr/{path:.*}",
-                lambda request: proxy_request(
-                    request, vcr_cassettes_directory, vcr_ci_mode, vcr_provider_map, vcr_ignore_headers
-                ),
-            ),
+            web.route("*", "/vcr/{path:.*}", proxy_request),
         ]
     )
 
@@ -1996,6 +1987,9 @@ def make_app(
 
     claude_proxy_api = ClaudeProxyAPI(hooks_api=claude_hooks_api, link_tracker=claude_link_tracker)
     app.add_routes(claude_proxy_api.get_routes())
+
+    pi_hooks_api = PiHooksAPI(hooks_api=claude_hooks_api)
+    app.add_routes(pi_hooks_api.get_routes())
 
     async def _cleanup_claude_proxy(app: web.Application) -> None:
         await claude_proxy_api.close()
@@ -2033,9 +2027,20 @@ def make_app(
     app["snapshot_removed_attrs"] = snapshot_removed_attrs
     app["snapshot_regex_placeholders"] = snapshot_regex_placeholders
     app["vcr_cassettes_directory"] = vcr_cassettes_directory
+    app["vcr_ci_mode"] = vcr_ci_mode
+    app["vcr_provider_map"] = vcr_provider_map
+    app["vcr_ignore_headers"] = vcr_ignore_headers
+    app["vcr_json_body_normalizers"] = vcr_json_body_normalizers
     app["dd_site"] = dd_site
     app["dd_api_key"] = dd_api_key
+
+    if dd_api_key and dd_site and not disable_llmobs_data_forwarding:
+        valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site)
+        if not valid_auth:
+            log.warning("Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding.")
+            disable_llmobs_data_forwarding = True
     app["disable_llmobs_data_forwarding"] = disable_llmobs_data_forwarding
+
     return app
 
 
@@ -2328,6 +2333,12 @@ def main(args: Optional[List[str]] = None) -> None:
         help="Comma-separated list of headers to ignore when recording VCR cassettes.",
     )
     parser.add_argument(
+        "--vcr-json-body-normalizers",
+        type=str,
+        default=os.environ.get("VCR_JSON_BODY_NORMALIZERS", ""),
+        help="Comma-separated list of normalizers to apply when recording VCR cassettes.",
+    )
+    parser.add_argument(
         "--web-ui-port",
         type=int,
         default=int(os.environ.get("WEB_UI_PORT", 0)),
@@ -2427,6 +2438,7 @@ def main(args: Optional[List[str]] = None) -> None:
         vcr_ci_mode=parsed_args.vcr_ci_mode,
         vcr_provider_map=parsed_args.vcr_provider_map,
         vcr_ignore_headers=parsed_args.vcr_ignore_headers,
+        vcr_json_body_normalizers=parsed_args.vcr_json_body_normalizers,
         dd_site=parsed_args.dd_site,
         dd_api_key=parsed_args.dd_api_key,
         disable_llmobs_data_forwarding=parsed_args.disable_llmobs_data_forwarding,
