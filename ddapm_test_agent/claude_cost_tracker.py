@@ -11,8 +11,18 @@ and the metric keys expected by the web-ui LLM observability span detail view:
     estimated_cache_write_input_cost
     estimated_cache_read_input_cost
 
-Pricing data last updated 2025-10 based on Anthropic public pricing and
-dd-go/domains/ml-observability/libs/costtracker/model_prices.go.
+Pricing data last updated 2025-11 based on:
+  * Anthropic public pricing: https://www.anthropic.com/pricing#api
+  * pi-ai models.generated.js (the data Claude Code itself uses to compute
+    the self-reported per-turn cost shown in its UI):
+    @mariozechner/pi-ai/dist/models.generated.js
+  * dd-go/domains/ml-observability/libs/costtracker/model_prices.go
+
+Note: Anthropic significantly reduced Opus prices starting with Opus 4.5
+(Nov 2025).  Opus 4.5 / 4.6 / 4.7 cost $5 / $25 / $0.50 / $6.25 per Mtok,
+whereas Opus 4 / 4.1 / 3 still cost $15 / $75 / $1.50 / $18.75 per Mtok.
+Using the old Opus rates for 4.5+ overcharges by exactly 3x.
+
 Only the popular models used with Claude Code are included.
 """
 
@@ -44,8 +54,14 @@ class _PriceTier:
 # "claude-opus-4-6-20250514", are matched by iterating these prefixes in
 # order from most- to least-specific.
 #
-# Pricing source: dd-go costtracker model_prices.go (updated 2025-10-21) and
-# Anthropic public pricing pages.  All costs are nanodollars / token.
+# Pricing sources (see module docstring):
+#   * Anthropic public pricing: https://www.anthropic.com/pricing#api
+#   * pi-ai @mariozechner/pi-ai models.generated.js (matches what Claude Code
+#     reports as its own per-turn cost)
+#   * dd-go costtracker model_prices.go
+# All costs are nanodollars / token (1 nanodollar = 1e-9 USD).
+# Per-Mtok USD pricing translates directly: $1/Mtok = 1_000 nano/token,
+# $5/Mtok = 5_000 nano/token, $15/Mtok = 15_000 nano/token, etc.
 # ---------------------------------------------------------------------------
 
 # Keys added by the local cost tracker that must be stripped before forwarding
@@ -65,13 +81,35 @@ COST_METRIC_KEYS: FrozenSet[str] = frozenset(
 _ONE_TIER = 0  # sentinel: no upper bound on a single tier
 
 _PRICING: List[Tuple[str, List[_PriceTier]]] = [
-    # ---- Opus ---------------------------------------------------------------
-    # claude-opus-4-6 / claude-opus-4.6  (latest)
+    # ---- Opus 4.5+ (reduced pricing, Nov 2025) ------------------------------
+    # $5 / $25 / $0.50 cache-read / $6.25 cache-write per Mtok.
+    # Source: Anthropic pricing page; pi-ai models.generated.js entries
+    # "anthropic.claude-opus-4-5-...", "...claude-opus-4-6-v1", "...claude-opus-4-7".
+    #
+    # claude-opus-4-7 / claude-opus-4.7  (latest)
+    (
+        "claude-opus-4-7",
+        [_PriceTier(0, _ONE_TIER, 5_000, 6_250, 500, 25_000)],
+    ),
+    # claude-opus-4-6 / claude-opus-4.6
     (
         "claude-opus-4-6",
+        [_PriceTier(0, _ONE_TIER, 5_000, 6_250, 500, 25_000)],
+    ),
+    # claude-opus-4-5 / claude-opus-4.5
+    (
+        "claude-opus-4-5",
+        [_PriceTier(0, _ONE_TIER, 5_000, 6_250, 500, 25_000)],
+    ),
+    # ---- Opus 4 / 4.1 / 3 (legacy higher pricing) ---------------------------
+    # $15 / $75 / $1.50 cache-read / $18.75 cache-write per Mtok.
+    #
+    # claude-opus-4-1 / claude-opus-4.1  (must come before "claude-opus-4")
+    (
+        "claude-opus-4-1",
         [_PriceTier(0, _ONE_TIER, 15_000, 18_750, 1_500, 75_000)],
     ),
-    # claude-opus-4 / claude-opus-4.5  (same unit prices as 4-6)
+    # claude-opus-4  (base 4.0)
     (
         "claude-opus-4",
         [_PriceTier(0, _ONE_TIER, 15_000, 18_750, 1_500, 75_000)],
