@@ -1,0 +1,8 @@
+---
+features:
+  - |
+    Pi hooks LLM spans now include ``input.messages`` with the system prompt
+    and full conversation (user, assistant, and toolResult messages) sent to
+    the model. The pi lapdog extension captures the system prompt from
+    ``before_agent_start`` and snapshots the messages array from each
+    ``context`` event, forwarding both with ``message_start``.

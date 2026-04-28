@@ -58,10 +58,17 @@ _ML_APP = os.environ.get("DD_PI_CODING_AGENT_ML_APP", "pi-coding-agent")
 class PendingLLMSpan:
     """Tracks an LLM call between message_start and message_end."""
 
-    def __init__(self, span_id: str, parent_id: str, start_ns: int) -> None:
+    def __init__(
+        self,
+        span_id: str,
+        parent_id: str,
+        start_ns: int,
+        input_messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
         self.span_id = span_id
         self.parent_id = parent_id
         self.start_ns = start_ns
+        self.input_messages: List[Dict[str, Any]] = input_messages or []
 
 
 class ActiveStepSpan:
@@ -90,6 +97,96 @@ class ActiveStepSpan:
         self.has_thinking = False
         self.stop_reason = ""
         self.span_ref: Optional[Dict[str, Any]] = None
+
+
+def _pi_content_to_text(content: Any) -> str:
+    """Flatten a pi message ``content`` field to plain text.
+
+    pi messages use either a string or a list of typed content blocks
+    (``text``, ``image``, ``thinking``, ``toolCall``).  For the LLMObs span
+    input we want a single string — image and thinking blocks are summarized
+    as ``[image]`` / ``[thinking]`` placeholders so they don't get dropped
+    silently.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: List[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type", "")
+        if btype == "text":
+            text = block.get("text", "")
+            if text:
+                parts.append(text)
+        elif btype == "image":
+            parts.append("[image]")
+        elif btype in ("thinking", "reasoning"):
+            parts.append("[thinking]")
+    return "\n".join(parts)
+
+
+def _pi_messages_to_llmobs_input(
+    system_prompt: str,
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Convert pi's conversation messages into LLMObs ``input.messages`` format.
+
+    Mapping:
+        * Prepend a ``{role: system}`` message when ``system_prompt`` is set.
+        * pi ``user`` → LLMObs ``{role: "user", content: <text>}``.
+        * pi ``assistant`` → ``{role: "assistant", content, tool_calls}``
+          where ``tool_calls`` mirrors the format used by ``claude_proxy.py``.
+        * pi ``toolResult`` → ``{role: "tool", content, tool_id}``.
+        * Other extended message types (bashExecution, custom, branchSummary,
+          compactionSummary) are skipped — they are not part of the LLM
+          conversation context.
+    """
+    out: List[Dict[str, Any]] = []
+    if system_prompt:
+        out.append({"role": "system", "content": system_prompt})
+
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role", "")
+
+        if role == "user":
+            out.append({"role": "user", "content": _pi_content_to_text(msg.get("content"))})
+
+        elif role == "assistant":
+            content = msg.get("content", [])
+            text, tool_calls, _tool_use_ids, _has_thinking = _extract_output_text_and_tool_calls(
+                content if isinstance(content, list) else []
+            )
+            entry: Dict[str, Any] = {"role": "assistant", "content": text}
+            if tool_calls:
+                entry["tool_calls"] = [
+                    {
+                        "name": tc.get("name", ""),
+                        "arguments": tc.get("arguments", {}),
+                        "tool_id": tc.get("id", ""),
+                        "type": "tool_use",
+                    }
+                    for tc in tool_calls
+                ]
+            out.append(entry)
+
+        elif role == "toolResult":
+            out.append(
+                {
+                    "role": "tool",
+                    "content": _pi_content_to_text(msg.get("content")),
+                    "tool_id": msg.get("toolCallId", ""),
+                }
+            )
+        # Extended message types (bashExecution / custom / branchSummary /
+        # compactionSummary) are intentionally skipped — they aren't sent to
+        # the LLM as standalone messages.
+
+    return out
 
 
 def _extract_output_text_and_tool_calls(
@@ -510,10 +607,21 @@ class PiHooksAPI:
         parent_id = self._active_step_parent_id(session)
         span_id = _format_span_id()
         now_ns = monotonic_wall_ns()
+
+        # The extension snapshots `system_prompt` and the pre-call `messages`
+        # array (from the pi `context` event) and forwards both on every
+        # assistant message_start so we can populate `input.messages` on the
+        # LLM span.
+        input_messages = _pi_messages_to_llmobs_input(
+            body.get("system_prompt", "") or "",
+            body.get("messages", []) or [],
+        )
+
         self._pending_llm[session_id] = PendingLLMSpan(
             span_id=span_id,
             parent_id=parent_id,
             start_ns=now_ns,
+            input_messages=input_messages,
         )
 
     def _handle_message_end(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -535,10 +643,18 @@ class PiHooksAPI:
             span_id = pending.span_id
             parent_id = pending.parent_id
             start_ns = pending.start_ns
+            input_messages = pending.input_messages
         else:
             span_id = _format_span_id()
             parent_id = self._active_step_parent_id(session)
             start_ns = now_ns
+            # Fallback path — message_start was missed, so we have no
+            # context-event snapshot. Build a minimal input from system_prompt
+            # + messages on this event if present, else leave empty.
+            input_messages = _pi_messages_to_llmobs_input(
+                body.get("system_prompt", "") or "",
+                body.get("messages", []) or [],
+            )
 
         duration = now_ns - start_ns
 
@@ -630,7 +746,7 @@ class PiHooksAPI:
                 "span": {"kind": "llm"},
                 "model_name": model_id,
                 "model_provider": model_provider,
-                "input": {"messages": []},
+                "input": {"messages": input_messages},
                 "output": {"messages": output_messages},
                 "metadata": {
                     "stop_reason": stop_reason,

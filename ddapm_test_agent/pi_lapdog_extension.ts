@@ -41,6 +41,28 @@ function post(event: string, sessionId: string, data: Record<string, unknown>): 
 // Extension
 // ---------------------------------------------------------------------------
 
+// Pi message types — copied from pi-coding-agent docs/session.md so we can
+// inspect them in the `context` hook without depending on the SDK's exports.
+type TextContent = { type: "text"; text: string };
+type ImageContent = { type: "image"; data: string; mimeType: string };
+type ThinkingContent = { type: "thinking"; thinking: string };
+type ToolCall = { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> };
+
+type PiMessage =
+	| { role: "user"; content: string | (TextContent | ImageContent)[] }
+	| {
+			role: "assistant";
+			content: (TextContent | ThinkingContent | ToolCall)[];
+		}
+	| {
+			role: "toolResult";
+			toolCallId: string;
+			toolName: string;
+			content: (TextContent | ImageContent)[];
+			isError?: boolean;
+		}
+	| { role: string; [k: string]: unknown };
+
 export default function lapdog(pi: ExtensionAPI): void {
 	let sessionId = "";
 	let currentModel = "";
@@ -49,6 +71,17 @@ export default function lapdog(pi: ExtensionAPI): void {
 	// Track the user prompt that started the current agent run so we can
 	// attach it to the agent_start event (input event fires before agent_start).
 	let pendingUserPrompt = "";
+
+	// System prompt for the current turn, captured in before_agent_start.
+	// Reused for every LLM call inside the turn so each LLM span can record
+	// the system message as part of its input.
+	let currentSystemPrompt = "";
+
+	// Most recent message list seen in `context`. The `context` event fires
+	// right before each LLM call and gives us the full conversation that's
+	// about to be sent to the model — exactly what we want to attach as
+	// `input.messages` on the LLM span.
+	let pendingContextMessages: PiMessage[] = [];
 
 	// ------------------------------------------------------------------
 	// Session lifecycle
@@ -97,12 +130,25 @@ export default function lapdog(pi: ExtensionAPI): void {
 		pendingUserPrompt = event.text;
 	});
 
+	pi.on("before_agent_start", (_event, ctx) => {
+		// Capture the resolved system prompt for this turn so we can attach
+		// it to every LLM span in the turn. `event.systemPrompt` reflects the
+		// chained prompt as of this handler; ctx.getSystemPrompt() is the
+		// same value and works as a fallback.
+		try {
+			currentSystemPrompt = _event?.systemPrompt ?? ctx.getSystemPrompt() ?? "";
+		} catch {
+			currentSystemPrompt = "";
+		}
+	});
+
 	pi.on("agent_start", () => {
 		post("agent_start", sessionId, {
 			user_prompt: pendingUserPrompt,
 			model: `${currentProvider}/${currentModel}`,
 			model_provider: currentProvider,
 			model_id: currentModel,
+			system_prompt: currentSystemPrompt,
 		});
 		pendingUserPrompt = "";
 	});
@@ -131,6 +177,17 @@ export default function lapdog(pi: ExtensionAPI): void {
 	});
 
 	// ------------------------------------------------------------------
+	// Pre-LLM context (fires before each LLM call)
+	// ------------------------------------------------------------------
+
+	pi.on("context", (event) => {
+		// `event.messages` is a safe-to-modify deep copy of the conversation
+		// about to be sent to the LLM. Stash it so the next assistant
+		// message_start can include it as the LLM span's input.
+		pendingContextMessages = (event.messages as PiMessage[]) ?? [];
+	});
+
+	// ------------------------------------------------------------------
 	// LLM message lifecycle (creates LLM spans)
 	// ------------------------------------------------------------------
 
@@ -138,6 +195,10 @@ export default function lapdog(pi: ExtensionAPI): void {
 		if (event.message.role !== "assistant") return;
 		post("message_start", sessionId, {
 			message_role: "assistant",
+			system_prompt: currentSystemPrompt,
+			// Snapshot of the conversation that will be sent to the model for
+			// this LLM call. Used to populate input.messages on the LLM span.
+			messages: pendingContextMessages,
 		});
 	});
 
