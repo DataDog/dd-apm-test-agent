@@ -143,7 +143,7 @@ def _build_running_banner() -> str:
         "",
         f"{dim}Lapdog has started and is listening for data.{reset}",
         f"{dim}Open {reset}{face}https://lapdog.datadoghq.com{reset}{dim} to view data{reset}",
-        f"{dim}related to this coding session.{reset}",
+        f"{dim}costs, optimizations and more related to this coding session.{reset}",
     ]
     # Vertically center the text block against the art.
     pad_top = max((len(art_lines) - len(right_lines)) // 2, 0)
