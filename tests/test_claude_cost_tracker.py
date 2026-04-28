@@ -33,33 +33,34 @@ class TestModelLookup:
 class TestCostCalculation:
     """Correctness of the nanodollar arithmetic for each cost type."""
 
-    # claude-opus-4-6: input=15000, cache_write=18750, cache_read=1500, output=75000
+    # Opus 4.5+ (4-5 / 4-6 / 4-7): input=5000, cache_write=6250, cache_read=500, output=25000
+    # Opus 4 / 4.1 / 3: input=15000, cache_write=18750, cache_read=1500, output=75000
 
     def test_non_cached_input_cost(self) -> None:
         result = compute_cost_metrics("claude-opus-4-6", non_cached_input_tokens=100, cache_write_tokens=0, cache_read_tokens=0, output_tokens=0)
         assert result is not None
-        assert result["estimated_non_cached_input_cost"] == 100 * 15_000
+        assert result["estimated_non_cached_input_cost"] == 100 * 5_000
         assert result["estimated_cache_write_input_cost"] == 0
         assert result["estimated_cache_read_input_cost"] == 0
         assert result["estimated_output_cost"] == 0
-        assert result["estimated_input_cost"] == 100 * 15_000
-        assert result["estimated_total_cost"] == 100 * 15_000
+        assert result["estimated_input_cost"] == 100 * 5_000
+        assert result["estimated_total_cost"] == 100 * 5_000
 
     def test_cache_write_cost(self) -> None:
         result = compute_cost_metrics("claude-opus-4-6", non_cached_input_tokens=0, cache_write_tokens=200, cache_read_tokens=0, output_tokens=0)
         assert result is not None
-        assert result["estimated_cache_write_input_cost"] == 200 * 18_750
+        assert result["estimated_cache_write_input_cost"] == 200 * 6_250
         assert result["estimated_non_cached_input_cost"] == 0
 
     def test_cache_read_cost(self) -> None:
         result = compute_cost_metrics("claude-opus-4-6", non_cached_input_tokens=0, cache_write_tokens=0, cache_read_tokens=500, output_tokens=0)
         assert result is not None
-        assert result["estimated_cache_read_input_cost"] == 500 * 1_500
+        assert result["estimated_cache_read_input_cost"] == 500 * 500
 
     def test_output_cost(self) -> None:
         result = compute_cost_metrics("claude-opus-4-6", non_cached_input_tokens=0, cache_write_tokens=0, cache_read_tokens=0, output_tokens=50)
         assert result is not None
-        assert result["estimated_output_cost"] == 50 * 75_000
+        assert result["estimated_output_cost"] == 50 * 25_000
 
     def test_all_token_types_combined(self) -> None:
         result = compute_cost_metrics(
@@ -70,11 +71,31 @@ class TestCostCalculation:
             output_tokens=50,
         )
         assert result is not None
-        expected_input = 100 * 15_000 + 200 * 18_750 + 500 * 1_500
-        expected_output = 50 * 75_000
+        expected_input = 100 * 5_000 + 200 * 6_250 + 500 * 500
+        expected_output = 50 * 25_000
         assert result["estimated_input_cost"] == expected_input
         assert result["estimated_output_cost"] == expected_output
         assert result["estimated_total_cost"] == expected_input + expected_output
+
+    def test_legacy_opus_4_pricing(self) -> None:
+        # claude-opus-4 (base 4.0) and claude-opus-4-1 keep the older higher rates.
+        for model in ("claude-opus-4", "claude-opus-4-20250514", "claude-opus-4-1", "claude-opus-4-1-20250805"):
+            result = compute_cost_metrics(model, 100, 200, 500, 50)
+            assert result is not None, model
+            assert result["estimated_non_cached_input_cost"] == 100 * 15_000, model
+            assert result["estimated_cache_write_input_cost"] == 200 * 18_750, model
+            assert result["estimated_cache_read_input_cost"] == 500 * 1_500, model
+            assert result["estimated_output_cost"] == 50 * 75_000, model
+
+    def test_opus_share_reduced_pricing(self) -> None:
+        # Opus 4.5 / 4.6 / 4.7 all use the post-Nov-2025 reduced rates.
+        for model in ("claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7"):
+            result = compute_cost_metrics(model, 100, 200, 500, 50)
+            assert result is not None, model
+            assert result["estimated_non_cached_input_cost"] == 100 * 5_000, model
+            assert result["estimated_cache_write_input_cost"] == 200 * 6_250, model
+            assert result["estimated_cache_read_input_cost"] == 500 * 500, model
+            assert result["estimated_output_cost"] == 50 * 25_000, model
 
     def test_zero_tokens_returns_all_zeros(self) -> None:
         result = compute_cost_metrics("claude-sonnet-4-6", 0, 0, 0, 0)

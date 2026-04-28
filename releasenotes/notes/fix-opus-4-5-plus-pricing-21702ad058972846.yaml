@@ -1,0 +1,13 @@
+---
+fixes:
+  - |
+    Fix Claude Code cost tracking to use the reduced Anthropic
+    pricing for Claude Opus 4.5 / 4.6 / 4.7 ($5 / $25 / $0.50 cache-read /
+    $6.25 cache-write per Mtok).  Previously these models were priced at the
+    legacy Opus 4 rates, overestimating cost by exactly 3x.  Opus 4 / 4.1 / 3
+    continue to use the legacy higher rates, and an explicit ``claude-opus-4-5``
+    entry has been added so it no longer falls through to the ``claude-opus-4``
+    prefix.
+features:
+  - |
+    Add ``claude-opus-4-7`` and ``claude-opus-4-1`` to the cost tracking table.
