@@ -11,7 +11,7 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
-from . import _get_version
+from ddapm_test_agent._lapdog_ascii_art import LAPDOG_RUNNING
 
 import requests
 
@@ -25,39 +25,6 @@ LAPDOG_USAGE = (
     "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi      Start lapdog in background if needed, install extension, then launch pi"
 )
-_LAPDOG_ART = (
-    "██      █████  ██████  ██████   ██████   ██████ ",
-    "██     ██   ██ ██   ██ ██   ██ ██    ██ ██      ",
-    "██     ███████ ██████  ██   ██ ██    ██ ██  ███ ",
-    "██     ██   ██ ██      ██   ██ ██    ██ ██   ██ ",
-    "██████ ██   ██ ██      ██████   ██████   ██████ ",
-)
-
-
-def _build_running_banner() -> str:
-    right_lines = [
-        f"\033[1mlapdog\033[0m v{_get_version()}",
-        "",
-        "Lapdog has started and is listening for data.",
-        "Open https://lapdog.datadoghq.com to view data",
-        "related to this coding session.",
-    ]
-    # Pad right_lines to match art height, centering vertically.
-    pad_top = (len(_LAPDOG_ART) - len(right_lines)) // 2
-    padded_right = [""] * max(pad_top, 0) + right_lines
-    while len(padded_right) < len(_LAPDOG_ART):
-        padded_right.append("")
-
-    purple = "\033[38;5;177m"
-    reset = "\033[0m"
-    lines = [""]
-    for art, text in zip(_LAPDOG_ART, padded_right):
-        lines.append(f"  {purple}{art}{reset}  {text}")
-    lines.append("")
-    return "\n".join(lines)
-
-
-LAPDOG_CODING_AGENT_RUNNING = _build_running_banner()
 
 
 def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
@@ -304,7 +271,7 @@ def cmd_claude(sub_cmd_args: List[str], forward_data: bool) -> None:
             sys.exit(1)
         _start_lapdog_detached(port, forward_data=forward_data)
 
-    print(LAPDOG_CODING_AGENT_RUNNING)
+    print(LAPDOG_RUNNING)
     _run_claude(sub_cmd_args)
 
 
@@ -380,7 +347,7 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
 
     _install_pi_extension()
 
-    print(LAPDOG_CODING_AGENT_RUNNING)
+    print(LAPDOG_RUNNING)
     _run_pi(sub_cmd_args, port)
 
 
