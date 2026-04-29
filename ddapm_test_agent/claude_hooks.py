@@ -44,6 +44,7 @@ _ML_APP = os.environ.get("DD_CLAUDE_CODE_ML_APP", "claude-code")
 # All other models default to 200k.
 _1M_CONTEXT_MODELS = {
     "claude-opus-4-6",
+    "claude-opus-4-7",
     "claude-sonnet-4-6",
 }
 
@@ -1249,18 +1250,29 @@ class ClaudeHooksAPI:
     ) -> Optional[Dict[str, Any]]:
         """Return context delta for an agent span.
 
-        parent_span_id: only consider LLM spans whose parent is this span.
+        parent_span_id: agent span_id. Considers LLM spans parented directly
+        under this agent, and LLM spans parented under a step span whose
+        parent is this agent (instrumented sessions interpose step spans
+        between agent and LLM).
         first_input_tokens: context size at the beginning of this span.
         - Root agent: session.last_known_input_tokens (persists across turns)
         - Subagent:   0 (each subagent has its own fresh context window)
         """
+        step_span_ids = {
+            s.get("span_id")
+            for s in self._assembled_spans
+            if s.get("trace_id") == trace_id
+            and s.get("meta", {}).get("span", {}).get("kind") == "step"
+            and s.get("parent_id") == parent_span_id
+        }
+        llm_parent_ids = step_span_ids | {parent_span_id}
         llm_spans = sorted(
             [
                 s
                 for s in self._assembled_spans
                 if s.get("trace_id") == trace_id
                 and s.get("meta", {}).get("span", {}).get("kind") == "llm"
-                and s.get("parent_id") == parent_span_id
+                and s.get("parent_id") in llm_parent_ids
             ],
             key=lambda s: s.get("start_ns", 0),
         )

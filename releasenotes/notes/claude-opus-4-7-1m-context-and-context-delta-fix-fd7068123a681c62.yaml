@@ -1,0 +1,9 @@
+---
+features:
+  - |
+    Add ``claude-opus-4-7`` to the set of models recognized as having a 1M
+    token context window.
+fixes:
+  - |
+    claude hooks: ``context_delta`` is now correctly reported on agent spans
+    in instrumented Claude Code sessions that nest llm spans within step spans.
