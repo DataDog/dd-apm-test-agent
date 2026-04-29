@@ -2026,7 +2026,6 @@ def make_app(
     app["dd_site"] = dd_site
     app["dd_api_key"] = dd_api_key
 
-    # if dd_api_key and dd_site and not disable_llmobs_data_forwarding:
     valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site) if dd_api_key and dd_site else False
     app["authenticated"] = valid_auth
     if not disable_llmobs_data_forwarding and not valid_auth:
