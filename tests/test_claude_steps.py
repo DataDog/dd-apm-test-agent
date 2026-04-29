@@ -723,7 +723,8 @@ def test_subagent_posttool_race_reparents_under_step():
 def test_context_delta_attached_to_root_agent_through_step():
     """Root agent span carries ``context_delta`` aggregated from LLM spans
     that sit under its step children. Instrumented sessions interpose a
-    ``step`` span between agent and llm, so the lookup must traverse it."""
+    ``step`` span between agent and llm, so the lookup must traverse it.
+    """
     sid = "sess-context-delta-step"
     hooks_api, proxy_api, _ = _make_apis()
 
