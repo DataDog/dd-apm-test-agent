@@ -2026,12 +2026,13 @@ def make_app(
     app["dd_site"] = dd_site
     app["dd_api_key"] = dd_api_key
 
-    if dd_api_key and dd_site and not disable_llmobs_data_forwarding:
-        valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site)
-        app["authenticated"] = valid_auth
-        if not valid_auth:
-            log.warning("Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding.")
-            disable_llmobs_data_forwarding = True
+    # if dd_api_key and dd_site and not disable_llmobs_data_forwarding:
+    valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site)
+    app["authenticated"] = valid_auth
+    if not disable_llmobs_data_forwarding and not valid_auth:
+        log.warning("Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding.")
+        disable_llmobs_data_forwarding = True
+    
     app["disable_llmobs_data_forwarding"] = disable_llmobs_data_forwarding
 
     return app
