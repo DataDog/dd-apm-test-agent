@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Adds an ``authenticated`` field to the ``/info`` endpoint that is ``true`` if the test agent is configured with a valid Datadog API key and site.
