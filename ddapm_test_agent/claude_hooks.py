@@ -44,6 +44,7 @@ _ML_APP = os.environ.get("DD_CLAUDE_CODE_ML_APP", "claude-code")
 # All other models default to 200k.
 _1M_CONTEXT_MODELS = {
     "claude-opus-4-6",
+    "claude-opus-4-7",
     "claude-sonnet-4-6",
 }
 
