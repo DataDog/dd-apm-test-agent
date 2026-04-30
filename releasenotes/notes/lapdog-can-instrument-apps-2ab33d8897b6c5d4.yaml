@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    ``lapdog`` can instrument any Python or Node.js application (or process that spawns a Python or Node.js application). Install via ``pip install ddapm-test-agent[ddtrace]``, and run ``lapdog [your app command]``.
