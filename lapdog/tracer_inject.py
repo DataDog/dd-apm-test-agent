@@ -9,8 +9,8 @@ from typing import Dict
 from typing import Optional
 from typing import Tuple
 
-from ddapm_test_agent.lapdog_paths import LAPDOG_DIR
-from ddapm_test_agent.lapdog_paths import NODE_MODULES_DIR
+from lapdog.paths import LAPDOG_DIR
+from lapdog.paths import NODE_MODULES_DIR
 
 
 def _ddtrace_bootstrap_path() -> Optional[str]:
