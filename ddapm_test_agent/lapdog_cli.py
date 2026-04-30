@@ -11,6 +11,8 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
+from ddapm_test_agent._lapdog_ascii_art import LAPDOG_RUNNING
+
 import requests
 
 from ddapm_test_agent.lapdog_paths import LOG_FILE, PID_FILE
@@ -20,7 +22,7 @@ LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "install"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
-    "  run     Start lapdog (background)\n"
+    "  start   Start lapdog (background)\n"
     "  stop    Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
     "  status  Show lapdog status (from /info)\n"
     "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
@@ -135,8 +137,8 @@ def _remove_pid_file() -> None:
             pass
 
 
-def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False) -> None:
-    """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
+def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False) -> Tuple[int, int, str]:
+    """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (pid, port, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     args = [sys.executable, "-m", "ddapm_test_agent.agent", "--enable-claude-code-hooks"]
@@ -157,7 +159,7 @@ def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_dat
     _write_pid_file(proc.pid, port)
     _wait_for_lapdog(proc, log_path)
 
-    print(f"[lapdog] Lapdog running at {_url_for_port(port)} (pid={proc.pid}, logs: {log_path})")
+    return proc.pid, port, log_path
 
 
 def _port_in_use(port: Optional[int] = None) -> bool:
@@ -218,7 +220,9 @@ def cmd_start(sub_cmd_args: List[str], forward_data: bool) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    _start_lapdog(port, sub_cmd_args, forward_data)
+    pid, port, log_path = _start_lapdog(port, sub_cmd_args, forward_data)
+
+    print(f"[lapdog] Lapdog running at {_url_for_port(port)} (pid={pid}, logs: {log_path})")
 
 
 def cmd_stop() -> None:
@@ -312,6 +316,8 @@ def cmd_exec(app_cmd: List[str], forward_data: bool, disable_hooks: bool = False
 def cmd_claude(sub_cmd_args: List[str], forward_data: bool) -> None:
     """Ensure lapdog is running in background, then launch Claude with intercept."""
     _ensure_lapdog_running(forward_data, detached=True)
+    print(LAPDOG_RUNNING)
+
     _run_claude(sub_cmd_args)
 
 
@@ -376,6 +382,8 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
     """Ensure lapdog is running, install the pi extension, then launch pi."""
     port = _ensure_lapdog_running(forward_data, detached=True)
     _install_pi_extension()
+
+    print(LAPDOG_RUNNING)
     _run_pi(args=sub_cmd_args, port=port)
 
 
