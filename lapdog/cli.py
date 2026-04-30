@@ -12,7 +12,7 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
-from ddapm_test_agent._lapdog_ascii_art import build_running_banner
+from lapdog.lapdog_ascii_art import build_running_banner
 
 import requests
 
