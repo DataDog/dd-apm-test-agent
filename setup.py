@@ -56,6 +56,7 @@ setup(
     },
     extras_require={
         "testing": testing_deps,
+        "ddtrace": ["ddtrace"],  # todo: pin?
     },
     # Required for mypy compatibility, see
     # https://mypy.readthedocs.io/en/stable/installed_packages.html#making-pep-561-compatible-packages

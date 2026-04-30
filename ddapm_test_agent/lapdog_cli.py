@@ -13,7 +13,10 @@ from typing import Tuple
 
 import requests
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi"]
+from ddapm_test_agent.lapdog_paths import LOG_FILE, PID_FILE
+from ddapm_test_agent import tracer_inject
+
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "install"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -22,6 +25,12 @@ LAPDOG_USAGE = (
     "  status  Show lapdog status (from /info)\n"
     "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi      Start lapdog in background if needed, install extension, then launch pi"
+    "  install  Install Node.js tracer (dd-trace) to ~/.lapdog/node_modules\n"
+    "\n"
+    "Any other command is treated as an app to run with tracing instrumentation:\n"
+    "  lapdog python app.py\n"
+    "  lapdog node server.js\n"
+    "  lapdog npm run dev"
 )
 
 
@@ -42,11 +51,11 @@ def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
 
 
 def _pid_file_path() -> str:
-    return os.environ.get("LAPDOG_PID_FILE", os.path.expanduser("~/.lapdog/lapdog.pid"))
+    return os.environ.get("LAPDOG_PID_FILE", PID_FILE)
 
 
 def _log_file_path() -> str:
-    return os.environ.get("LAPDOG_LOG_FILE", os.path.expanduser("~/.lapdog/lapdog.log"))
+    return os.environ.get("LAPDOG_LOG_FILE", LOG_FILE)
 
 
 def _url_for_port(port: int) -> str:
@@ -87,6 +96,27 @@ def _process_exists(pid: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def _ensure_lapdog_running(forward_data: bool = False, detached: bool = False) -> Optional[int]:
+    """Start lapdog in background if it is not already running. Exits if the port is taken."""
+    if _lapdog_alive():
+        _, port = _read_pid_file()
+        return port
+    port = _resolved_port()
+    if _port_in_use(port):
+        print(
+            f"[lapdog] Port {port} is already in use. Stop the existing lapdog instance first (e.g. 'lapdog stop').",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if detached:
+        _start_lapdog_detached(port, forward_data=forward_data)
+    else:
+        _start_lapdog(port, forward_data=forward_data)
+
+    return port
 
 
 def _write_pid_file(pid: int, port: int) -> None:
@@ -255,18 +285,33 @@ def _start_lapdog_detached(port: int, forward_data: bool) -> None:
     # refused that would make a re-check flaky.
 
 
+def cmd_install() -> None:
+    """Install the Node.js tracer (dd-trace) to ~/.lapdog/node_modules."""
+    tracer_inject.install_node_tracer(required=True)
+
+
+def cmd_exec(app_cmd: List[str], forward_data: bool, disable_hooks: bool = False) -> None:
+    """Auto-start lapdog if needed, inject tracer env vars, then exec the app command. Never returns."""
+    _ensure_lapdog_running(forward_data)
+
+    _, port = _read_pid_file()
+    if port is None:
+        print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+        sys.exit(1)
+
+    env = tracer_inject.build_instrumented_env(port=port)
+
+    resolved = shutil.which(app_cmd[0])
+    if not resolved:
+        print(f"[lapdog] Command not found: {app_cmd[0]}", file=sys.stderr)
+        sys.exit(1)
+
+    os.execvpe(resolved, app_cmd, env)
+
+
 def cmd_claude(sub_cmd_args: List[str], forward_data: bool) -> None:
     """Ensure lapdog is running in background, then launch Claude with intercept."""
-    if not _lapdog_alive():
-        port = _resolved_port()
-        if _port_in_use(port):
-            print(
-                f"[lapdog] Port {port} is already in use. Stop the existing lapdog instance first (e.g. 'lapdog stop').",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        _start_lapdog_detached(port, forward_data=forward_data)
-
+    _ensure_lapdog_running(forward_data, detached=True)
     _run_claude(sub_cmd_args)
 
 
@@ -315,7 +360,7 @@ def _install_pi_extension() -> None:
         print(f"[lapdog] Installed pi extension → {_PI_EXT_DEST}")
 
 
-def _run_pi(args: Optional[List[str]] = None, port: int = 8126) -> None:
+def _run_pi(args: Optional[List[str]] = None, port: Optional[int] = 8126) -> None:
     """Exec the pi binary, forwarding arguments.  Never returns."""
     if args is None:
         args = []
@@ -329,31 +374,21 @@ def _run_pi(args: Optional[List[str]] = None, port: int = 8126) -> None:
 
 def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
     """Ensure lapdog is running, install the pi extension, then launch pi."""
-    port = _resolved_port()
-
-    if not _lapdog_alive():
-        if _port_in_use(port):
-            print(
-                f"[lapdog] Port {port} is already in use. Stop the existing instance first (e.g. 'lapdog stop').",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        _start_lapdog_detached(port, forward_data=forward_data)
-
+    port = _ensure_lapdog_running(forward_data, detached=True)
     _install_pi_extension()
-    _run_pi(sub_cmd_args, port)
+    _run_pi(args=sub_cmd_args, port=port)
 
 
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
     lapdog_args: List[str] = []
 
     for arg_idx, arg in enumerate(cmd_args):
-        if arg in LAPDOG_COMMANDS:
+        if not arg.startswith('--'):
             return lapdog_args, cmd_args[arg_idx:]
 
         lapdog_args.append(arg)
 
-    # no lapdog command found
+    # no sub command found
     print(LAPDOG_USAGE, file=sys.stderr)
     sys.exit(1)
 
@@ -388,8 +423,12 @@ def main() -> None:
     sub_cmd_args = remaining[1:]
 
     if sub_cmd not in LAPDOG_COMMANDS:
-        print(f"[lapdog] Unknown command: {sub_cmd}", file=sys.stderr)
-        sys.exit(1)
+        cmd_exec(
+            app_cmd=remaining,
+            forward_data=lapdog_parsed_args.forward,
+        )
+
+        return
 
     if sub_cmd == "start":
         cmd_start(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
@@ -401,3 +440,5 @@ def main() -> None:
         cmd_claude(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
     elif sub_cmd == "pi":
         cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+    elif sub_cmd == "install":
+        cmd_install()
