@@ -151,6 +151,7 @@ async def test_info(agent):
         "client_drop_p0s": True,
         "span_events": True,
         "llmobs_data_forwarding": False,
+        "authenticated": False,
     }
 
 
