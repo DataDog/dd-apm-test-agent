@@ -718,3 +718,33 @@ def test_subagent_posttool_race_reparents_under_step():
             f"{tool['name']} parented to {tool['parent_id']!r}, "
             f"expected sub-agent step {sub_step['span_id']!r}"
         )
+
+
+def test_context_delta_attached_to_root_agent_through_step():
+    """Root agent span carries ``context_delta`` aggregated from LLM spans
+    that sit under its step children. Instrumented sessions interpose a
+    ``step`` span between agent and llm, so the lookup must traverse it.
+    """
+    sid = "sess-context-delta-step"
+    hooks_api, proxy_api, _ = _make_apis()
+
+    hooks_api._dispatch_hook(_session_start(sid))
+    hooks_api._dispatch_hook(_user_prompt(sid))
+
+    llm_span = _simulate_llm_call(
+        proxy_api,
+        sid,
+        _response(text="Hello!", stop_reason="end_turn"),
+    )
+    hooks_api._dispatch_hook(_stop(sid))
+
+    spans = _spans_for_session(hooks_api, sid)
+    root = _find_root(spans)
+    step = _by_kind(spans, "step")[0]
+
+    assert llm_span["parent_id"] == step["span_id"]
+    assert step["parent_id"] == root["span_id"]
+
+    context_delta = root.get("meta", {}).get("metadata", {}).get("_dd", {}).get("context_delta")
+    assert context_delta is not None, "context_delta missing on root agent span"
+    assert context_delta["last_input_tokens"] == 100

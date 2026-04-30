@@ -1104,6 +1104,8 @@ class Agent:
                     text="Incorrect DD API key and site combination to update", headers=headers
                 )
 
+            request.app["authenticated"] = True
+
         # Second pass to apply the config
         for key in data:
             request.app[key] = data[key]
@@ -1148,7 +1150,8 @@ class Agent:
                 # Just a random selection of some peer_tags to aggregate on for testing, not exhaustive
                 "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
                 "span_events": True,  # Advertise support for the top-level Span field for Span Events
-                "llmobs_data_forwarding": not request.app["disable_llmobs_data_forwarding"] and request.app["dd_api_key"] and request.app["dd_site"],  # api key and site not empty strings
+                "llmobs_data_forwarding": not request.app["disable_llmobs_data_forwarding"],
+                "authenticated": request.app.get("authenticated", False),
             },
             headers=headers,
         )
@@ -2034,11 +2037,12 @@ def make_app(
     app["dd_site"] = dd_site
     app["dd_api_key"] = dd_api_key
 
-    if dd_api_key and dd_site and not disable_llmobs_data_forwarding:
-        valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site)
-        if not valid_auth:
-            log.warning("Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding.")
-            disable_llmobs_data_forwarding = True
+    valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site) if dd_api_key and dd_site else False
+    app["authenticated"] = valid_auth
+    if not disable_llmobs_data_forwarding and not valid_auth:
+        log.warning("Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding.")
+        disable_llmobs_data_forwarding = True
+
     app["disable_llmobs_data_forwarding"] = disable_llmobs_data_forwarding
 
     return app
