@@ -20,7 +20,7 @@ from lapdog.hooks import write_claude_code_hooks
 from lapdog.paths import LOG_FILE, PID_FILE
 from lapdog import tracer_inject
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "install"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -28,12 +28,10 @@ LAPDOG_USAGE = (
     "  stop    Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
     "  status  Show lapdog status (from /info)\n"
     "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
-    "  pi      Start lapdog in background if needed, install extension, then launch pi"
-    "  install  Install Node.js tracer (dd-trace) to ~/.lapdog/node_modules\n"
+    "  pi      Start lapdog in background if needed, install extension, then launch pi\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
     "  lapdog python app.py\n"
-    "  lapdog node server.js\n"
     "  lapdog npm run dev"
 )
 
@@ -298,11 +296,6 @@ def _start_lapdog_detached(port: int, forward_data: bool) -> None:
     # refused that would make a re-check flaky.
 
 
-def cmd_install() -> None:
-    """Install the Node.js tracer (dd-trace) to ~/.lapdog/node_modules."""
-    tracer_inject.install_node_tracer(required=True)
-
-
 def cmd_exec(app_cmd: List[str], forward_data: bool, disable_hooks: bool = False) -> None:
     """Auto-start lapdog if needed, inject tracer env vars, then exec the app command. Never returns."""
     _ensure_lapdog_running(forward_data)
@@ -470,5 +463,3 @@ def main() -> None:
         )
     elif sub_cmd == "pi":
         cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
-    elif sub_cmd == "install":
-        cmd_install()
