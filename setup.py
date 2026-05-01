@@ -24,7 +24,10 @@ setup(
     long_description_content_type="text/markdown",
     license="BSD 3",
     packages=find_packages(exclude=["tests*", "releasenotes", "scripts"]),
-    package_data={"ddapm_test_agent": ["py.typed", "templates/*", "static/*", "claude_intercept.mjs", "pi_lapdog_extension.ts"]},
+    package_data={
+        "ddapm_test_agent": ["py.typed", "templates/*", "static/*",],
+        "lapdog": ["py.typed", "claude_intercept.mjs", "pi_lapdog_extension.ts"],
+    },
     python_requires=">=3.8",
     install_requires=[
         "aiohttp",
@@ -50,12 +53,12 @@ setup(
             "ddapm-test-agent-fmt=ddapm_test_agent.fmt:main",
             "ddapm-test-agent-session-start=ddapm_test_agent.cmd:main_session_start",
             "ddapm-test-agent-snapshot=ddapm_test_agent.cmd:main_snapshot",
-            "lapdog-run=ddapm_test_agent.run:main",
-            "lapdog=ddapm_test_agent.lapdog_cli:main",
+            "lapdog=lapdog.cli:main",
         ]
     },
     extras_require={
         "testing": testing_deps,
+        "ddtrace": ["ddtrace"],  # todo: pin?
     },
     # Required for mypy compatibility, see
     # https://mypy.readthedocs.io/en/stable/installed_packages.html#making-pep-561-compatible-packages

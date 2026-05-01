@@ -2,7 +2,7 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
-from . import _get_version
+from ddapm_test_agent import _get_version
 
 # Letter masks (5 rows tall). '#' = filled, ' ' = blank. All letters share the
 # same height so they can be rendered side-by-side with a drop shadow.
@@ -129,7 +129,11 @@ def _render_lapdog_art(face: str, shadow: str, reset: str) -> List[str]:
     return lines
 
 
-def _build_running_banner() -> str:
+def build_running_banner(data_type: str) -> str:
+    """
+    Arguments:
+        data_type: The type of data (coding session, application)
+    """
     face = "\033[38;5;177m"  # light purple
     shadow = "\033[38;5;54m"  # deep purple
     dim = "\033[2m"
@@ -143,7 +147,8 @@ def _build_running_banner() -> str:
         "",
         f"{dim}Lapdog has started and is listening for data.{reset}",
         f"{dim}Open {reset}{face}https://lapdog.datadoghq.com{reset}{dim} to view insights,{reset}",
-        f"{dim}costs, optimizations and more related to this coding session.{reset}",
+        f"{dim}costs, optimizations and more related to this {data_type}.{reset}",
+        f"{dim}Run {bold}lapdog stop{reset} {dim}to stop Lapdog from running.{reset}",
     ]
     # Vertically center the text block against the art.
     pad_top = max((len(art_lines) - len(right_lines)) // 2, 0)
@@ -156,6 +161,3 @@ def _build_running_banner() -> str:
         lines.append(f"  {art}  {text}")
     lines.append("")
     return "\n".join(lines)
-
-
-LAPDOG_RUNNING = _build_running_banner()

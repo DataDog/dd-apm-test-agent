@@ -9,7 +9,6 @@ from dataclasses import field
 import json
 import logging
 import os
-from pathlib import Path
 import platform
 import pprint
 import re
@@ -57,7 +56,6 @@ from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
 from .claude_hooks import ClaudeHooksAPI
-from .claude_hooks import write_claude_code_hooks
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_proxy import ClaudeProxyAPI
 from .pi_hooks import PiHooksAPI
@@ -2470,12 +2468,6 @@ def main(args: Optional[List[str]] = None) -> None:
         web_ui_app._webui_instance = web_ui
         # Also store on main app for middleware access
         app._webui_instance = web_ui
-
-    # write claude code hooks
-    if parsed_args.enable_claude_code_hooks:
-        claude_settings_path = Path.home() / ".claude" / "settings.json"
-        log.info(f"Merging Claude Code hooks to {claude_settings_path}")
-        write_claude_code_hooks(claude_settings_path)
 
     async def run_servers():
         """Run APM and OTLP HTTP servers concurrently."""

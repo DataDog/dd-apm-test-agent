@@ -10,7 +10,6 @@ import gzip
 import json
 import logging
 import os
-from pathlib import Path
 import random
 import socket
 import time
@@ -26,7 +25,6 @@ from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 import msgpack
-from typing_extensions import cast
 
 from ._clock import monotonic_wall_ns
 from .claude_cost_tracker import COST_METRIC_KEYS
@@ -47,65 +45,6 @@ _1M_CONTEXT_MODELS = {
     "claude-opus-4-7",
     "claude-sonnet-4-6",
 }
-
-
-CLAUDE_CODE_EVENTS = [
-    "PreToolUse",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "Notification",
-    "Stop",
-    "SubagentStart",
-    "SubagentStop",
-    "UserPromptSubmit",
-    "SessionStart",
-    "SessionEnd",
-    "PreCompact",
-    "PermissionRequest",
-]
-CLAUDE_CODE_HOOK = {
-    "type": "command",
-    "command": "curl -s --max-time 2 -X POST -H 'Content-Type: application/json' -d @- http://localhost:8126/claude/hooks >/dev/null 2>&1 || true",
-    "async": True,
-}
-CLAUDE_CODE_DEFAULT_MATCHER = {"matcher": "", "hooks": [CLAUDE_CODE_HOOK]}
-
-
-def write_claude_code_hooks(claude_settings_path: Path) -> None:
-    try:
-        with open(claude_settings_path, "r") as claude_settings:
-            try:
-                claude_code_settings = json.load(claude_settings)
-            except json.JSONDecodeError:
-                claude_code_settings = {"hooks": {}}
-    except FileNotFoundError:
-        claude_code_settings = {"hooks": {}}
-
-    hooks = claude_code_settings.get("hooks", {})
-    for event in CLAUDE_CODE_EVENTS:
-        existing_hooks = cast(Optional[List[Dict[str, Any]]], hooks.get(event, None))
-        if existing_hooks is None:
-            hooks[event] = [CLAUDE_CODE_DEFAULT_MATCHER]
-
-            continue
-
-        star_matcher_hook = next(
-            (hook_matcher for hook_matcher in existing_hooks if hook_matcher.get("matcher", None) == ""), None
-        )
-
-        if star_matcher_hook is None:
-            existing_hooks.append(CLAUDE_CODE_DEFAULT_MATCHER)
-
-            continue
-
-        all_hooks_for_star_matcher = cast(List[Dict[str, Any]], star_matcher_hook.get("hooks", []))
-
-        if not any(hook == CLAUDE_CODE_HOOK for hook in all_hooks_for_star_matcher):
-            all_hooks_for_star_matcher.append(CLAUDE_CODE_HOOK)
-
-    claude_code_settings["hooks"] = hooks
-    with open(claude_settings_path, "w") as claude_settings:
-        json.dump(claude_code_settings, claude_settings, indent=2)
 
 
 def _get_context_limit(model: str) -> int:
