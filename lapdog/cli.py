@@ -32,7 +32,6 @@ LAPDOG_USAGE = (
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
     "  lapdog python app.py\n"
-    "  lapdog npm run dev"
 )
 
 
