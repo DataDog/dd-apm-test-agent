@@ -305,7 +305,7 @@ def cmd_exec(app_cmd: List[str], forward_data: bool, disable_hooks: bool = False
         print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
         sys.exit(1)
 
-    env = tracer_inject.build_instrumented_env(port=port)
+    env = tracer_inject.build_instrumented_env(port=port, app_cmd=app_cmd)
 
     resolved = shutil.which(app_cmd[0])
     if not resolved:

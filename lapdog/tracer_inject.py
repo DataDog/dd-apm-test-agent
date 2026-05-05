@@ -1,29 +1,43 @@
 """Tracer injection helpers for lapdog: builds an instrumented environment for Python processes."""
-import importlib.util
 import os
+import shutil
+import subprocess
 import sys
 from typing import Dict
+from typing import List
 from typing import Optional
 
 
-def _ddtrace_bootstrap_path() -> Optional[str]:
-    """Return the ddtrace sitecustomize bootstrap directory, or None if ddtrace is not installed."""
-    spec = importlib.util.find_spec("ddtrace")
-    if spec is None or spec.origin is None:
+def _ddtrace_bootstrap_path_for(python_path: str) -> Optional[str]:
+    """Return ddtrace's bootstrap directory inside the given Python's environment.
+
+    We probe the target Python because the user's app may use a different
+    Python than lapdog itself (different version, different venv).
+    """
+    try:
+        result = subprocess.run(
+            [
+                python_path,
+                "-c",
+                "import ddtrace, os; "
+                "print(os.path.join(os.path.dirname(ddtrace.__file__), 'bootstrap'))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
         return None
-    bootstrap = os.path.join(os.path.dirname(spec.origin), "bootstrap")
-    return bootstrap if os.path.isdir(bootstrap) else None
+    path = result.stdout.strip()
+    return path if path and os.path.isdir(path) else None
 
 
-def _ddtrace_install_command() -> str:
-    """Return the right pip install command for the current install method."""
-    # check for homebrew install
-    if "/Cellar/lapdog/" in sys.executable:
-        return "/opt/homebrew/opt/lapdog/libexec/bin/python -m pip install ddtrace"
-    return "pip install 'ddapm-test-agent[ddtrace]'"
-
-
-def build_instrumented_env(port: int, base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def build_instrumented_env(
+    port: int,
+    app_cmd: Optional[List[str]] = None,
+    base_env: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
     """Return a copy of base_env with tracer env vars injected for Python processes."""
     env = dict(base_env if base_env is not None else os.environ)
 
@@ -33,14 +47,21 @@ def build_instrumented_env(port: int, base_env: Optional[Dict[str, str]] = None)
     env["DD_LLMOBS_ENABLED"] = "true"
     env["DD_LLMOBS_AGENTLESS_ENABLED"] = "false"
 
-    bootstrap = _ddtrace_bootstrap_path()
+    if not app_cmd:
+        return env
+
+    target = shutil.which(app_cmd[0])
+    if target is None or not os.path.basename(target).startswith("python"):
+        return env
+
+    bootstrap = _ddtrace_bootstrap_path_for(target)
     if bootstrap:
         existing = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = f"{bootstrap}{os.pathsep}{existing}" if existing else bootstrap
     else:
         print(
-            "[lapdog] ddtrace not installed; Python processes will not be traced. "
-            f"Install with: {_ddtrace_install_command()}",
+            "[lapdog] ddtrace not installed in your Python environment; "
+            "processes will not be traced. Install with: pip install ddtrace",
             file=sys.stderr,
         )
 
