@@ -297,6 +297,11 @@ def _start_lapdog_detached(port: int, forward_data: bool) -> None:
 
 def cmd_exec(app_cmd: List[str], forward_data: bool, disable_hooks: bool = False) -> None:
     """Auto-start lapdog if needed, inject tracer env vars, then exec the app command. Never returns."""
+    resolved = shutil.which(app_cmd[0])
+    if not resolved:
+        print(f"[lapdog] Command not found: {app_cmd[0]}", file=sys.stderr)
+        sys.exit(1)
+
     _ensure_lapdog_running(forward_data)
     print(build_running_banner(data_type="application"))
 
@@ -306,12 +311,6 @@ def cmd_exec(app_cmd: List[str], forward_data: bool, disable_hooks: bool = False
         sys.exit(1)
 
     env = tracer_inject.build_instrumented_env(port=port)
-
-    resolved = shutil.which(app_cmd[0])
-    if not resolved:
-        print(f"[lapdog] Command not found: {app_cmd[0]}", file=sys.stderr)
-        sys.exit(1)
-
     os.execvpe(resolved, app_cmd, env)
 
 
