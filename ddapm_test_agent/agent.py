@@ -905,7 +905,7 @@ class Agent:
         dd_site = request.app["dd_site"]
         dd_api_key = request.app["dd_api_key"]
         agent_url = request.app["agent_url"]
-        headers = request.headers.copy()
+        headers = dict(request.headers)
         if agent_url:
             url = f"{agent_url}/evp_proxy/v2/api/v2/llmobs"  # use configured agent URL if provided
         elif dd_api_key is None:
@@ -991,7 +991,7 @@ class Agent:
         dd_site = request.app["dd_site"]
         dd_api_key = request.app["dd_api_key"]
         agent_url = request.app["agent_url"]
-        headers = request.headers.copy()
+        headers = dict(request.headers)
         if agent_url:
             url = f"{agent_url}/evp_proxy/v4/api/v2/llmobs"
         elif dd_api_key is None:
