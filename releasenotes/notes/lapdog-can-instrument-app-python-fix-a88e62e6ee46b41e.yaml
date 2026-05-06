@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    ``lapdog`` properly prioritizes using a user's ``ddtrace`` dependency before trying its own, and on any issues, logs an instruction to install ``ddtrace``, when using ``lapdog`` to instrument Python applications or processes.

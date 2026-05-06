@@ -6,24 +6,22 @@ from typing import Dict
 from typing import Optional
 
 
-def _ddtrace_bootstrap_path() -> Optional[str]:
-    """Return the ddtrace sitecustomize bootstrap directory, or None if ddtrace is not installed."""
+def _lapdog_bootstrap_dir() -> str:
+    return os.path.join(os.path.dirname(__file__), "bootstrap")
+
+
+def _lapdog_ddtrace_site_packages() -> Optional[str]:
+    """Return the site-packages dir containing lapdog's own ddtrace, or None if not installed."""
     spec = importlib.util.find_spec("ddtrace")
     if spec is None or spec.origin is None:
         return None
-    bootstrap = os.path.join(os.path.dirname(spec.origin), "bootstrap")
-    return bootstrap if os.path.isdir(bootstrap) else None
+    return os.path.dirname(os.path.dirname(spec.origin))
 
 
-def _ddtrace_install_command() -> str:
-    """Return the right pip install command for the current install method."""
-    # check for homebrew install
-    if "/Cellar/lapdog/" in sys.executable:
-        return "/opt/homebrew/opt/lapdog/libexec/bin/python -m pip install ddtrace"
-    return "pip install 'ddapm-test-agent[ddtrace]'"
-
-
-def build_instrumented_env(port: int, base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def build_instrumented_env(
+    port: int,
+    base_env: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
     """Return a copy of base_env with tracer env vars injected for Python processes."""
     env = dict(base_env if base_env is not None else os.environ)
 
@@ -33,15 +31,13 @@ def build_instrumented_env(port: int, base_env: Optional[Dict[str, str]] = None)
     env["DD_LLMOBS_ENABLED"] = "true"
     env["DD_LLMOBS_AGENTLESS_ENABLED"] = "false"
 
-    bootstrap = _ddtrace_bootstrap_path()
-    if bootstrap:
-        existing = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = f"{bootstrap}{os.pathsep}{existing}" if existing else bootstrap
-    else:
-        print(
-            "[lapdog] ddtrace not installed; Python processes will not be traced. "
-            f"Install with: {_ddtrace_install_command()}",
-            file=sys.stderr,
-        )
+    bootstrap = _lapdog_bootstrap_dir()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{bootstrap}{os.pathsep}{existing}" if existing else bootstrap
+
+    lapdog_sp = _lapdog_ddtrace_site_packages()
+    if lapdog_sp:
+        env["_LAPDOG_DDTRACE_SITE_PACKAGES"] = lapdog_sp
+        env["_LAPDOG_PYTHON_VERSION"] = f"{sys.version_info.major}.{sys.version_info.minor}"
 
     return env
