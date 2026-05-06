@@ -71,11 +71,13 @@ class TestSitecustomize:
         return str(tmp_path)
 
     def test_loads_ddtrace_when_installed(self) -> None:
+        existing = os.environ.get("PYTHONPATH", "")
+        pythonpath = f"{BOOTSTRAP_DIR}{os.pathsep}{existing}" if existing else BOOTSTRAP_DIR
         result = subprocess.run(
             [sys.executable, "-c", "import ddtrace; print('ok')"],
             capture_output=True,
             text=True,
-            env={**os.environ, "PYTHONPATH": BOOTSTRAP_DIR},
+            env={**os.environ, "PYTHONPATH": pythonpath},
         )
         assert result.returncode == 0, result.stderr
         assert "ok" in result.stdout
