@@ -87,7 +87,7 @@ class TestSitecustomize:
             [sys.executable, "-c", "print('should not reach')"],
             capture_output=True,
             text=True,
-            env={"PYTHONPATH": f"{BOOTSTRAP_DIR}{os.pathsep}{fake_broken_ddtrace}"},
+            env={**os.environ, "PYTHONPATH": f"{BOOTSTRAP_DIR}{os.pathsep}{fake_broken_ddtrace}"},
         )
         assert result.returncode == 1
         assert "ddtrace is not installed" in result.stderr
@@ -98,6 +98,7 @@ class TestSitecustomize:
             capture_output=True,
             text=True,
             env={
+                **os.environ,
                 "PYTHONPATH": f"{BOOTSTRAP_DIR}{os.pathsep}{fake_broken_ddtrace}",
                 "_LAPDOG_DDTRACE_SITE_PACKAGES": "/nonexistent/site-packages",
                 "_LAPDOG_PYTHON_VERSION": "3.99",
