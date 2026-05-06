@@ -1175,31 +1175,32 @@ class Agent:
         if request.method == "OPTIONS":
             return web.Response(status=200, headers=headers)
 
-        return web.json_response(
-            {
-                "version": os.environ.get("TEST_AGENT_VERSION", "test"),
-                "endpoints": [
-                    "/v0.4/traces",
-                    "/v0.5/traces",
-                    "/v0.7/traces",
-                    "/v0.6/stats",
-                    "/telemetry/proxy/",
-                    "/v0.7/config",
-                    "/tracer_flare/v1",
-                    "/evp_proxy/v2/",
-                    "/evp_proxy/v4/",
-                ],
-                "feature_flags": [],
-                "config": {},
-                "client_drop_p0s": True,
-                # Just a random selection of some peer_tags to aggregate on for testing, not exhaustive
-                "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
-                "span_events": True,  # Advertise support for the top-level Span field for Span Events
-                "llmobs_data_forwarding": not request.app["disable_llmobs_data_forwarding"],
-                "authenticated": request.app.get("authenticated", False),
-            },
-            headers=headers,
-        )
+        info: Dict[str, Any] = {
+            "version": os.environ.get("TEST_AGENT_VERSION", "test"),
+            "endpoints": [
+                "/v0.4/traces",
+                "/v0.5/traces",
+                "/v0.7/traces",
+                "/v0.6/stats",
+                "/telemetry/proxy/",
+                "/v0.7/config",
+                "/tracer_flare/v1",
+                "/evp_proxy/v2/",
+                "/evp_proxy/v4/",
+            ],
+            "feature_flags": [],
+            "config": {},
+            "client_drop_p0s": True,
+            # Just a random selection of some peer_tags to aggregate on for testing, not exhaustive
+            "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
+            "span_events": True,  # Advertise support for the top-level Span field for Span Events
+            "llmobs_data_forwarding": not request.app["disable_llmobs_data_forwarding"],
+            "authenticated": request.app.get("authenticated", False),
+        }
+        org_prop_marker = request.app.get("org_prop_marker", "")
+        if org_prop_marker:
+            info["org_prop_marker"] = org_prop_marker
+        return web.json_response(info, headers=headers)
 
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5", "v0.7", "v1"]) -> web.Response:
         token = request["session_token"]
@@ -1933,6 +1934,7 @@ def make_app(
     dd_api_key: Optional[str],
     disable_llmobs_data_forwarding: bool,
     lapdog_mode: bool = False,
+    org_prop_marker: str = "",
     enable_web_ui: bool = False,
 ) -> web.Application:
     agent = Agent()
@@ -2071,6 +2073,7 @@ def make_app(
     app["vcr_json_body_normalizers"] = vcr_json_body_normalizers
     app["dd_site"] = dd_site
     app["dd_api_key"] = dd_api_key
+    app["org_prop_marker"] = org_prop_marker
 
     valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site) if dd_api_key and dd_site else False
     app["authenticated"] = valid_auth
@@ -2403,6 +2406,12 @@ def main(args: Optional[List[str]] = None) -> None:
         help="Datadog API key to use for the agent. Example: --dd-api-key=1234567890",
     )
     parser.add_argument(
+        "--org-prop-marker",
+        type=str,
+        default=os.environ.get("ORG_PROP_MARKER", ""),
+        help="Organization property marker advertised in the /info endpoint response.",
+    )
+    parser.add_argument(
         "--disable-llmobs-data-forwarding",
         action="store_true",
         default=os.environ.get("DISABLE_LLMOBS_DATA_FORWARDING", "").lower() in ("true", "1", "yes"),
@@ -2470,6 +2479,7 @@ def main(args: Optional[List[str]] = None) -> None:
         dd_api_key=parsed_args.dd_api_key,
         disable_llmobs_data_forwarding=parsed_args.disable_llmobs_data_forwarding,
         lapdog_mode=parsed_args.lapdog_mode,
+        org_prop_marker=parsed_args.org_prop_marker,
         enable_web_ui=parsed_args.web_ui_port > 0,
     )
 

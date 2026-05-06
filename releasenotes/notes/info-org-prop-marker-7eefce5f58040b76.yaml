@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Add ``org_prop_marker`` field to the ``/info`` endpoint, configurable via the
+    ``ORG_PROP_MARKER`` environment variable or ``--org-prop-marker`` CLI flag.
