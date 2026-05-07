@@ -147,7 +147,7 @@ def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_dat
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    args = [sys.executable, "-m", "ddapm_test_agent.agent", "--enable-claude-code-hooks"]
+    args = [sys.executable, "-m", "ddapm_test_agent.agent", "--enable-claude-code-hooks", "--lapdog-mode"]
 
     if not forward_data:
         args.append("--disable-llmobs-data-forwarding")

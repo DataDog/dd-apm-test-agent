@@ -6,6 +6,7 @@ from collections import OrderedDict
 from collections import defaultdict
 from dataclasses import dataclass
 from dataclasses import field
+import gzip
 import json
 import logging
 import os
@@ -38,6 +39,7 @@ from aiohttp.web import HTTPException
 from aiohttp.web import Request
 from aiohttp.web import middleware
 from grpc import aio as grpc_aio
+import msgpack
 from msgpack.exceptions import ExtraData as MsgPackExtraDataException
 from multidict import CIMultiDict
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceResponse
@@ -92,6 +94,33 @@ from .traces_otlp import decode_traces_request
 from .tracestats import decode_v06 as tracestats_decode_v06
 from .tracestats import v06StatsPayload
 from .vcr_proxy import proxy_request
+
+
+def _inject_lapdog_forwarded(data: bytes, content_encoding: str) -> bytes:
+    """Decode a forwarded LLM obs msgpack payload, add lapdog_forwarded:true to each span's tags, and re-encode.
+
+    Falls back to the original bytes if decoding fails (e.g. unexpected format).
+    """
+    try:
+        is_gzipped = "gzip" in content_encoding.lower()
+        if is_gzipped:
+            data = gzip.decompress(data)
+        payload = msgpack.unpackb(data, raw=False)
+        if isinstance(payload, dict):
+            ml_obs = payload.get("ml_obs")
+            spans = (ml_obs.get("spans") if isinstance(ml_obs, dict) else None) or payload.get("spans") or []
+            for span in spans:
+                if not isinstance(span, dict):
+                    continue
+                tags = span.get("tags") or []
+                if "lapdog_forwarded:true" not in tags:
+                    span["tags"] = tags + ["lapdog_forwarded:true"]
+        data = msgpack.packb(payload, use_bin_type=True)
+        if is_gzipped:
+            data = gzip.compress(data)
+    except Exception:
+        pass
+    return data
 
 
 # Default ports
@@ -876,7 +905,7 @@ class Agent:
         dd_site = request.app["dd_site"]
         dd_api_key = request.app["dd_api_key"]
         agent_url = request.app["agent_url"]
-        headers = request.headers.copy()
+        headers = dict(request.headers)
         if agent_url:
             url = f"{agent_url}/evp_proxy/v2/api/v2/llmobs"  # use configured agent URL if provided
         elif dd_api_key is None:
@@ -889,8 +918,12 @@ class Agent:
             url = f"https://llmobs-intake.{dd_site}/api/v2/llmobs"
             headers["DD-API-KEY"] = dd_api_key
 
+        raw = await request.read()
+        if request.app["lapdog_mode"]:
+            raw = _inject_lapdog_forwarded(raw, request.headers.get("Content-Encoding", ""))
+            headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
         async with ClientSession() as session:
-            async with session.post(url, headers=headers, data=await request.read()) as resp:
+            async with session.post(url, headers=headers, data=raw) as resp:
                 if not resp.ok:
                     log.warning(
                         f"Failed to forward LLM Observability events to Datadog: {resp.status} {await resp.text()}"
@@ -921,8 +954,13 @@ class Agent:
 
             if url:
                 try:
+                    fwd_data = data
+                    fwd_headers = headers
+                    if request.app["lapdog_mode"]:
+                        fwd_data = _inject_lapdog_forwarded(data, headers.get("Content-Encoding", ""))
+                        fwd_headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
                     async with ClientSession() as session:
-                        async with session.post(url, headers=headers, data=data) as resp:
+                        async with session.post(url, headers=fwd_headers, data=fwd_data) as resp:
                             if not resp.ok:
                                 log.warning("Failed to forward LLMObs update: %s %s", resp.status, await resp.text())
                             else:
@@ -953,7 +991,7 @@ class Agent:
         dd_site = request.app["dd_site"]
         dd_api_key = request.app["dd_api_key"]
         agent_url = request.app["agent_url"]
-        headers = request.headers.copy()
+        headers = dict(request.headers)
         if agent_url:
             url = f"{agent_url}/evp_proxy/v4/api/v2/llmobs"
         elif dd_api_key is None:
@@ -966,8 +1004,12 @@ class Agent:
             url = f"https://llmobs-intake.{dd_site}/api/v2/llmobs"
             headers["DD-API-KEY"] = dd_api_key
 
+        raw = await request.read()
+        if request.app["lapdog_mode"]:
+            raw = _inject_lapdog_forwarded(raw, request.headers.get("Content-Encoding", ""))
+            headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
         async with ClientSession() as session:
-            async with session.post(url, headers=headers, data=await request.read()) as resp:
+            async with session.post(url, headers=headers, data=raw) as resp:
                 if not resp.ok:
                     log.warning(
                         f"Failed to forward LLM Observability events to Datadog: {resp.status} {await resp.text()}"
@@ -997,8 +1039,13 @@ class Agent:
 
             if url:
                 try:
+                    fwd_data = data
+                    fwd_headers = headers
+                    if request.app["lapdog_mode"]:
+                        fwd_data = _inject_lapdog_forwarded(data, headers.get("Content-Encoding", ""))
+                        fwd_headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
                     async with ClientSession() as session:
-                        async with session.post(url, headers=headers, data=data) as resp:
+                        async with session.post(url, headers=fwd_headers, data=fwd_data) as resp:
                             if not resp.ok:
                                 log.warning("Failed to forward LLMObs update: %s %s", resp.status, await resp.text())
                             else:
@@ -1886,6 +1933,7 @@ def make_app(
     dd_site: str,
     dd_api_key: Optional[str],
     disable_llmobs_data_forwarding: bool,
+    lapdog_mode: bool = False,
     org_prop_marker: str = "",
     enable_web_ui: bool = False,
 ) -> web.Application:
@@ -2034,6 +2082,7 @@ def make_app(
         disable_llmobs_data_forwarding = True
 
     app["disable_llmobs_data_forwarding"] = disable_llmobs_data_forwarding
+    app["lapdog_mode"] = lapdog_mode
 
     return app
 
@@ -2369,6 +2418,11 @@ def main(args: Optional[List[str]] = None) -> None:
         help="Disable data forwarding to Datadog.",
     )
     parser.add_argument(
+        "--lapdog-mode",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
         "--enable-claude-code-hooks",
         action="store_true",
         default=os.environ.get("ENABLE_CLAUDE_CODE_HOOKS", "").lower() in ("true", "1", "yes"),
@@ -2424,6 +2478,7 @@ def main(args: Optional[List[str]] = None) -> None:
         dd_site=parsed_args.dd_site,
         dd_api_key=parsed_args.dd_api_key,
         disable_llmobs_data_forwarding=parsed_args.disable_llmobs_data_forwarding,
+        lapdog_mode=parsed_args.lapdog_mode,
         org_prop_marker=parsed_args.org_prop_marker,
         enable_web_ui=parsed_args.web_ui_port > 0,
     )
