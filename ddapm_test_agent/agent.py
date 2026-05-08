@@ -62,6 +62,7 @@ from .claude_link_tracker import ClaudeLinkTracker
 from .claude_proxy import ClaudeProxyAPI
 from .pi_hooks import PiHooksAPI
 from .integration import Integration
+from .leash import LeashAPI
 from .llmobs_event_platform import LLMObsEventPlatformAPI
 from .logs import LOGS_ENDPOINT
 from .logs import OTLPLogsGRPCServicer
@@ -2035,6 +2036,11 @@ def make_app(
 
     pi_hooks_api = PiHooksAPI(hooks_api=claude_hooks_api)
     app.add_routes(pi_hooks_api.get_routes())
+
+    # Leash — feedback-loop harness for coding agents
+    leash_api = LeashAPI(agent, llmobs_event_platform_api, claude_hooks_api)
+    app["leash_api"] = leash_api
+    app.add_routes(leash_api.get_routes())
 
     async def _cleanup_claude_proxy(app: web.Application) -> None:
         await claude_proxy_api.close()

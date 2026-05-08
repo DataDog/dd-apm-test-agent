@@ -137,6 +137,12 @@ class SessionState:
         self.last_known_input_tokens: int = 0
         # Tracks the time when the permission dialog appeared, so we can compute the elapsed time.
         self.pending_permission_at_ns: Optional[int] = None
+        # Timestamp (ns) when the user submitted the current turn's prompt.
+        # Distinct from start_ns, which is the session start on the first turn
+        # and the turn-start on subsequent turns; this field is always the
+        # latest UserPromptSubmit and drives the "how long has the agent been
+        # working on this task" display in Leash.
+        self.current_task_started_ns: Optional[int] = None
         # whether the session is instrumented with the claude_intercept.mjs script for LLM calls
         self.instrumented = False
         # Per-agent-frame active step (keyed by agent span_id).
@@ -705,6 +711,8 @@ class ClaudeHooksAPI:
             # subsequent interactions on the same topic reuse the title.
             # The haiku summarization call will update it when the topic changes.
             session.root_span_emitted = False
+
+        session.current_task_started_ns = int(time.time() * 1_000_000_000)
 
         prompt = body.get("user_prompt", body.get("prompt", ""))
         if prompt:
