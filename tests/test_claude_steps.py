@@ -642,9 +642,9 @@ def test_pretool_race_with_llm_span_creation():
     step = steps[0]
     assert len(tools) == 2
     for tool in tools:
-        assert tool["parent_id"] == step["span_id"], (
-            f"{tool['name']} parented to {tool['parent_id']!r}, expected step {step['span_id']!r}"
-        )
+        assert (
+            tool["parent_id"] == step["span_id"]
+        ), f"{tool['name']} parented to {tool['parent_id']!r}, expected step {step['span_id']!r}"
 
 
 def test_subagent_posttool_race_reparents_under_step():
@@ -715,8 +715,7 @@ def test_subagent_posttool_race_reparents_under_step():
     assert len(sub_tools) == 2
     for tool in sub_tools:
         assert tool["parent_id"] == sub_step["span_id"], (
-            f"{tool['name']} parented to {tool['parent_id']!r}, "
-            f"expected sub-agent step {sub_step['span_id']!r}"
+            f"{tool['name']} parented to {tool['parent_id']!r}, " f"expected sub-agent step {sub_step['span_id']!r}"
         )
 
 

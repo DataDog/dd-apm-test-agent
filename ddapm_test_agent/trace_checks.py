@@ -10,7 +10,6 @@ from multidict import CIMultiDictProxy
 from .checks import Check
 from .trace import Span
 
-
 log = logging.getLogger(__name__)
 
 

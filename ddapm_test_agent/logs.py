@@ -12,7 +12,6 @@ from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsSer
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceResponse
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import LogsServiceServicer
 
-
 LOGS_ENDPOINT = "/v1/logs"
 
 

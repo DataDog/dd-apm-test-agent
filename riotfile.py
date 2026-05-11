@@ -1,7 +1,6 @@
 from riot import Venv
 from riot import latest
 
-
 with open("test_deps.txt") as f:
     testing_deps = [line.strip() for line in f.readlines()]
 

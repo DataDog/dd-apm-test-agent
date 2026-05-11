@@ -5,7 +5,6 @@ from ddsketch import DDSketch
 from ddsketch.pb.ddsketch_pb2 import DDSketch as DDSketchProto
 import msgpack
 
-
 # Note that class attributes are golang style to match the payload.
 
 

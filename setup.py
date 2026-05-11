@@ -1,7 +1,6 @@
 from setuptools import find_packages
 from setuptools import setup
 
-
 with open("README.md", "r") as f:
     long_description = f.read()
 
@@ -25,7 +24,11 @@ setup(
     license="BSD 3",
     packages=find_packages(exclude=["tests*", "releasenotes", "scripts"]),
     package_data={
-        "ddapm_test_agent": ["py.typed", "templates/*", "static/*",],
+        "ddapm_test_agent": [
+            "py.typed",
+            "templates/*",
+            "static/*",
+        ],
         "lapdog": ["py.typed", "claude_intercept.mjs", "pi_lapdog_extension.ts", "bootstrap/*"],
     },
     python_requires=">=3.8",

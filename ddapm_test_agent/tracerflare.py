@@ -6,7 +6,6 @@ from aiohttp import MultipartReader
 from aiohttp import StreamReader
 from aiohttp.web import Request
 
-
 TracerFlareEvent = Dict[str, str]
 
 

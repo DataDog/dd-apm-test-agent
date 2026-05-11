@@ -1,4 +1,5 @@
 """Fixed filesystem paths for lapdog's working directory."""
+
 import os
 
 LAPDOG_DIR = os.path.expanduser("~/.lapdog")

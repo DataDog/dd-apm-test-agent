@@ -37,7 +37,9 @@ class TestCostCalculation:
     # Opus 4 / 4.1 / 3: input=15000, cache_write=18750, cache_read=1500, output=75000
 
     def test_non_cached_input_cost(self) -> None:
-        result = compute_cost_metrics("claude-opus-4-6", non_cached_input_tokens=100, cache_write_tokens=0, cache_read_tokens=0, output_tokens=0)
+        result = compute_cost_metrics(
+            "claude-opus-4-6", non_cached_input_tokens=100, cache_write_tokens=0, cache_read_tokens=0, output_tokens=0
+        )
         assert result is not None
         assert result["estimated_non_cached_input_cost"] == 100 * 5_000
         assert result["estimated_cache_write_input_cost"] == 0
@@ -47,18 +49,24 @@ class TestCostCalculation:
         assert result["estimated_total_cost"] == 100 * 5_000
 
     def test_cache_write_cost(self) -> None:
-        result = compute_cost_metrics("claude-opus-4-6", non_cached_input_tokens=0, cache_write_tokens=200, cache_read_tokens=0, output_tokens=0)
+        result = compute_cost_metrics(
+            "claude-opus-4-6", non_cached_input_tokens=0, cache_write_tokens=200, cache_read_tokens=0, output_tokens=0
+        )
         assert result is not None
         assert result["estimated_cache_write_input_cost"] == 200 * 6_250
         assert result["estimated_non_cached_input_cost"] == 0
 
     def test_cache_read_cost(self) -> None:
-        result = compute_cost_metrics("claude-opus-4-6", non_cached_input_tokens=0, cache_write_tokens=0, cache_read_tokens=500, output_tokens=0)
+        result = compute_cost_metrics(
+            "claude-opus-4-6", non_cached_input_tokens=0, cache_write_tokens=0, cache_read_tokens=500, output_tokens=0
+        )
         assert result is not None
         assert result["estimated_cache_read_input_cost"] == 500 * 500
 
     def test_output_cost(self) -> None:
-        result = compute_cost_metrics("claude-opus-4-6", non_cached_input_tokens=0, cache_write_tokens=0, cache_read_tokens=0, output_tokens=50)
+        result = compute_cost_metrics(
+            "claude-opus-4-6", non_cached_input_tokens=0, cache_write_tokens=0, cache_read_tokens=0, output_tokens=50
+        )
         assert result is not None
         assert result["estimated_output_cost"] == 50 * 25_000
 
@@ -129,19 +137,43 @@ class TestTieredPricing:
 
     def test_low_volume_tier(self) -> None:
         # 100k total input tokens → tier 1: input=3000, output=15000
-        result = compute_cost_metrics("claude-sonnet-4-5", non_cached_input_tokens=100_000, cache_write_tokens=0, cache_read_tokens=0, output_tokens=0)
+        result = compute_cost_metrics(
+            "claude-sonnet-4-5",
+            non_cached_input_tokens=100_000,
+            cache_write_tokens=0,
+            cache_read_tokens=0,
+            output_tokens=0,
+        )
         assert result is not None
         assert result["estimated_non_cached_input_cost"] == 100_000 * 3_000
 
     def test_high_volume_tier(self) -> None:
         # 300k total input tokens → tier 2: input=6000, output=22500
-        result = compute_cost_metrics("claude-sonnet-4-5", non_cached_input_tokens=300_000, cache_write_tokens=0, cache_read_tokens=0, output_tokens=0)
+        result = compute_cost_metrics(
+            "claude-sonnet-4-5",
+            non_cached_input_tokens=300_000,
+            cache_write_tokens=0,
+            cache_read_tokens=0,
+            output_tokens=0,
+        )
         assert result is not None
         assert result["estimated_non_cached_input_cost"] == 300_000 * 6_000
 
     def test_tier_boundary_at_200k(self) -> None:
-        at_boundary = compute_cost_metrics("claude-sonnet-4-5", non_cached_input_tokens=200_000, cache_write_tokens=0, cache_read_tokens=0, output_tokens=0)
-        over_boundary = compute_cost_metrics("claude-sonnet-4-5", non_cached_input_tokens=200_001, cache_write_tokens=0, cache_read_tokens=0, output_tokens=0)
+        at_boundary = compute_cost_metrics(
+            "claude-sonnet-4-5",
+            non_cached_input_tokens=200_000,
+            cache_write_tokens=0,
+            cache_read_tokens=0,
+            output_tokens=0,
+        )
+        over_boundary = compute_cost_metrics(
+            "claude-sonnet-4-5",
+            non_cached_input_tokens=200_001,
+            cache_write_tokens=0,
+            cache_read_tokens=0,
+            output_tokens=0,
+        )
         assert at_boundary is not None
         assert over_boundary is not None
         # Cost per token doubles at tier boundary
@@ -149,6 +181,12 @@ class TestTieredPricing:
 
     def test_high_volume_output_rate(self) -> None:
         # Tier 2 output rate is 22500 nanodollars/token
-        result = compute_cost_metrics("claude-sonnet-4-5", non_cached_input_tokens=300_000, cache_write_tokens=0, cache_read_tokens=0, output_tokens=100)
+        result = compute_cost_metrics(
+            "claude-sonnet-4-5",
+            non_cached_input_tokens=300_000,
+            cache_write_tokens=0,
+            cache_read_tokens=0,
+            output_tokens=100,
+        )
         assert result is not None
         assert result["estimated_output_cost"] == 100 * 22_500

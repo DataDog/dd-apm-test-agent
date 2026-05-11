@@ -7,7 +7,6 @@ from typing import Optional
 
 from typing_extensions import cast
 
-
 _CLAUDE_CODE_EVENTS = [
     "PreToolUse",
     "PostToolUse",

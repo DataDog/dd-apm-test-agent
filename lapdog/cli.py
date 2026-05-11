@@ -12,15 +12,15 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
-from lapdog.lapdog_ascii_art import build_running_banner
-
 import requests
 
-from lapdog.hooks import write_claude_code_hooks
-from lapdog.paths import LOG_FILE, PID_FILE
 from lapdog import tracer_inject
+from lapdog.hooks import write_claude_code_hooks
+from lapdog.lapdog_ascii_art import build_running_banner
+from lapdog.paths import LOG_FILE
+from lapdog.paths import PID_FILE
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -29,6 +29,7 @@ LAPDOG_USAGE = (
     "  status  Show lapdog status (from /info)\n"
     "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi      Start lapdog in background if needed, install extension, then launch pi\n"
+    "  codex   Start lapdog in background if needed, then launch Codex with tracing\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
     "  lapdog python app.py\n"
@@ -143,7 +144,9 @@ def _maybe_write_claude_hooks(disable: bool) -> None:
     write_claude_code_hooks(claude_settings_path)
 
 
-def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False) -> Tuple[int, int, str]:
+def _start_lapdog(
+    port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False
+) -> Tuple[int, int, str]:
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -389,11 +392,74 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
     _run_pi(args=sub_cmd_args, port=port)
 
 
+def _start_codex_watcher(port: int) -> None:
+    """Start the bundled Codex JSONL watcher for this working directory."""
+    log_path = _log_file_path()
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    ready_path = os.path.join(os.path.dirname(log_path), f"codex-watcher-{os.getpid()}.ready")
+    try:
+        os.unlink(ready_path)
+    except OSError:
+        pass
+    args = [
+        sys.executable,
+        "-m",
+        "lapdog.codex_watcher",
+        "--lapdog-url",
+        f"http://localhost:{port}",
+        "--cwd",
+        os.getcwd(),
+        "--parent-pid",
+        str(os.getpid()),
+        "--ready-file",
+        ready_path,
+    ]
+    with open(log_path, "a") as log_file:
+        process = subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        if os.path.exists(ready_path):
+            return
+        if process.poll() is not None:
+            break
+        time.sleep(0.05)
+    print("[lapdog] Codex watcher did not confirm startup; continuing without startup confirmation.", file=sys.stderr)
+
+
+def _run_codex(args: Optional[List[str]] = None) -> None:
+    """Exec the codex binary, forwarding arguments. Never returns."""
+    if args is None:
+        args = []
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        print("[lapdog] 'codex' not found in PATH", file=sys.stderr)
+        sys.exit(1)
+    os.execv(codex_bin, [codex_bin] + args)
+
+
+def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
+    """Ensure lapdog is running, start the Codex JSONL watcher, then launch Codex."""
+    port = _ensure_lapdog_running(forward_data, detached=True)
+    if port is None:
+        print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+        sys.exit(1)
+    _start_codex_watcher(port)
+
+    print(build_running_banner(data_type="coding session"))
+    _run_codex(args=sub_cmd_args)
+
+
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
     lapdog_args: List[str] = []
 
     for arg_idx, arg in enumerate(cmd_args):
-        if not arg.startswith('--'):
+        if not arg.startswith("--"):
             return lapdog_args, cmd_args[arg_idx:]
 
         lapdog_args.append(arg)
@@ -461,3 +527,9 @@ def main() -> None:
         )
     elif sub_cmd == "pi":
         cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+    elif sub_cmd == "codex":
+        cmd_codex(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+
+
+if __name__ == "__main__":
+    main()

@@ -50,15 +50,7 @@ def parent_span_id():
 
 
 @pytest.fixture
-def otlp_traces_protobuf(
-    service_name,
-    environment,
-    version,
-    span_name,
-    trace_id,
-    span_id,
-    parent_span_id
-):
+def otlp_traces_protobuf(service_name, environment, version, span_name, trace_id, span_id, parent_span_id):
     resource = Resource()
     resource.attributes.extend(
         [
@@ -171,9 +163,7 @@ async def test_session_traces_endpoint_http(
     parent_span_id,
     loop,
 ):
-    resp = await testagent.post(
-        f"{otlp_http_url}{TRACES_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_traces_string
-    )
+    resp = await testagent.post(f"{otlp_http_url}{TRACES_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_traces_string)
     assert resp.status == 200
 
     resp = await testagent.get(f"{otlp_http_url}/test/session/traces")
@@ -205,9 +195,7 @@ async def test_session_traces_endpoint_http(
 
 
 async def test_otlp_client_traces(testagent, otlp_test_client, otlp_http_url, otlp_traces_string, loop):
-    resp = await testagent.post(
-        f"{otlp_http_url}{TRACES_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_traces_string
-    )
+    resp = await testagent.post(f"{otlp_http_url}{TRACES_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_traces_string)
     assert resp.status == 200
 
     otlp_test_client.wait_for_num_traces(1)
@@ -237,9 +225,7 @@ async def test_traces_endpoint_integration_http(
     resp = await testagent.get(f"{otlp_http_url}/test/session/clear")
     assert resp.status == 200
 
-    resp = await testagent.post(
-        f"{otlp_http_url}{TRACES_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_traces_string
-    )
+    resp = await testagent.post(f"{otlp_http_url}{TRACES_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_traces_string)
     assert resp.status == 200
 
     resp = await testagent.get(f"{otlp_http_url}/test/session/traces")
@@ -269,17 +255,13 @@ async def test_traces_endpoint_integration_http(
 
 async def test_multiple_traces_sessions_http(testagent, otlp_http_url, otlp_traces_string, loop):
     """Traces are isolated between sessions."""
-    resp = await testagent.post(
-        f"{otlp_http_url}{TRACES_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_traces_string
-    )
+    resp = await testagent.post(f"{otlp_http_url}{TRACES_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_traces_string)
     assert resp.status == 200
 
     resp = await testagent.get(f"{otlp_http_url}/test/session/start")
     assert resp.status == 200
 
-    resp = await testagent.post(
-        f"{otlp_http_url}{TRACES_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_traces_string
-    )
+    resp = await testagent.post(f"{otlp_http_url}{TRACES_ENDPOINT}", headers=PROTOBUF_HEADERS, data=otlp_traces_string)
     assert resp.status == 200
 
     resp = await testagent.get(f"{otlp_http_url}/test/session/traces")
@@ -362,7 +344,7 @@ async def test_session_traces_endpoint_grpc_forwarding(
     environment,
     version,
     span_name,
-    loop
+    loop,
 ):
     call = otlp_traces_grpc_client.Export(otlp_traces_protobuf)
     response = await call

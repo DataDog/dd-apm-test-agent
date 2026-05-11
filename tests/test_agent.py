@@ -11,7 +11,6 @@ import pytest
 from ddapm_test_agent.trace import decode_v1
 from ddapm_test_agent.trace import trace_id
 
-
 _FAST_EXIT_ARGS = ["--port=4318", "--otlp-http-port=4318"]
 
 

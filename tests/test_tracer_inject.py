@@ -1,14 +1,14 @@
 """Tests for lapdog.tracer_inject and lapdog/bootstrap/sitecustomize.py."""
+
 import os
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
 from unittest import mock
 
 import pytest
 
 from lapdog import tracer_inject
-
 
 BOOTSTRAP_DIR = str(Path(tracer_inject.__file__).parent / "bootstrap")
 

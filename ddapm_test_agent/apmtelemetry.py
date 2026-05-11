@@ -7,7 +7,6 @@ from typing import cast
 
 from aiohttp.web import Request
 
-
 log = logging.getLogger(__name__)
 TelemetryEvent = Dict[str, Any]
 

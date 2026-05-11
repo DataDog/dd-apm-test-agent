@@ -1685,7 +1685,11 @@ class ClaudeHooksAPI:
         # Strip locally-computed cost estimates before forwarding — let real cost tracking happen on ingestion
         forwarded_spans = []
         for s in spans:
-            span = {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}} if s.get("metrics") else dict(s)
+            span = (
+                {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}}
+                if s.get("metrics")
+                else dict(s)
+            )
             tags: List[Any] = span.get("tags") or []
             if "lapdog_forwarded:true" not in tags:
                 span["tags"] = tags + ["lapdog_forwarded:true"]

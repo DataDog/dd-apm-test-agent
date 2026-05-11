@@ -21,7 +21,6 @@ import requests
 from requests_aws4auth import AWS4Auth
 import yaml
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -460,9 +459,7 @@ async def _request(
     return response
 
 
-async def proxy_request(
-    request: Request
-) -> Response:
+async def proxy_request(request: Request) -> Response:
     vcr_cassettes_directory: str = request.app["vcr_cassettes_directory"]
     vcr_ci_mode: bool = request.app["vcr_ci_mode"]
     vcr_provider_map: str = request.app["vcr_provider_map"]
