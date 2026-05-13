@@ -780,8 +780,9 @@ class CodexHooksAPI:
             "content": _to_json_str(tool_input),
             "tool_calls": [{"id": call_id, "name": tool_name, "arguments": tool_input}],
         }
-        if appending_to_existing_llm:
-            output_messages = turn.last_llm_span_ref["meta"]["output"].setdefault("messages", [])
+        llm_span = turn.last_llm_span_ref
+        if appending_to_existing_llm and llm_span is not None:
+            output_messages = llm_span["meta"]["output"].setdefault("messages", [])
             _append_or_update_tool_call_message(output_messages, tool_call_message)
         else:
             _append_or_update_tool_call_message(turn.llm_output_messages, tool_call_message)
