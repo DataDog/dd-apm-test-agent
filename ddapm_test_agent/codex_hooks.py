@@ -26,6 +26,8 @@ from .llmobs_event_platform import with_cors
 
 log = logging.getLogger(__name__)
 
+CompletedTrace = Tuple[str, str]
+
 
 def _timestamp_to_ns(timestamp: str) -> int:
     if not timestamp:
@@ -62,6 +64,47 @@ def _append_unique_message(messages: List[Dict[str, Any]], message: Dict[str, An
         messages.append(message)
 
 
+def _append_or_update_tool_call_message(messages: List[Dict[str, Any]], message: Dict[str, Any]) -> None:
+    tool_calls = message.get("tool_calls", [])
+    if not tool_calls:
+        _append_unique_message(messages, message)
+        return
+
+    call_id = tool_calls[0].get("id", "")
+    for existing in messages:
+        existing_tool_calls = existing.get("tool_calls", [])
+        if not isinstance(existing_tool_calls, list):
+            continue
+        for existing_tool_call in existing_tool_calls:
+            if isinstance(existing_tool_call, dict) and existing_tool_call.get("id") == call_id:
+                incoming_tool_call = tool_calls[0]
+                if not existing_tool_call.get("arguments") and incoming_tool_call.get("arguments") is not None:
+                    existing_tool_call["arguments"] = incoming_tool_call.get("arguments")
+                if not existing_tool_call.get("name") and incoming_tool_call.get("name"):
+                    existing_tool_call["name"] = incoming_tool_call.get("name")
+                if not existing.get("content") and message.get("content"):
+                    existing["content"] = message["content"]
+                return
+    messages.append(message)
+
+
+def _is_assistant_tool_call_message(message: Dict[str, Any]) -> bool:
+    return message.get("role") == "assistant" and bool(message.get("tool_calls"))
+
+
+def _has_llm_output(messages: List[Dict[str, Any]]) -> bool:
+    return any(message.get("content") or message.get("tool_calls") for message in messages)
+
+
+def _llm_has_text_output(span: Optional[Dict[str, Any]], message: str) -> bool:
+    if span is None:
+        return False
+    output_messages = span.get("meta", {}).get("output", {}).get("messages", [])
+    if not isinstance(output_messages, list):
+        return False
+    return any(output.get("role") == "assistant" and output.get("content") == message for output in output_messages)
+
+
 class CodexTurn:
     def __init__(self, turn_id: str, trace_id: str, root_span_id: str, step_span_id: str, start_ns: int) -> None:
         self.turn_id = turn_id
@@ -81,10 +124,15 @@ class CodexTurn:
         self.active_llm_input_messages: Optional[List[Dict[str, Any]]] = None
         self.llm_output_messages: List[Dict[str, Any]] = []
         self.pending_llm_input_messages: List[Dict[str, Any]] = []
+        self.pending_llm_usage: Optional[Dict[str, Any]] = None
+        self.pending_llm_end_ns: Optional[int] = None
         self.last_step_span_ref: Optional[Dict[str, Any]] = None
         self.last_llm_span_ref: Optional[Dict[str, Any]] = None
         self.last_ns = start_ns
         self.closed = False
+        self.proxy_llm_calls_started = 0
+        self.proxy_llm_spans_completed = 0
+        self.proxy_llm_usage_events_seen = 0
 
 
 class CodexSession:
@@ -128,6 +176,7 @@ class CodexHooksAPI:
         self._sessions: Dict[str, CodexSession] = {}
         self._raw_events: List[Dict[str, Any]] = []
         self._last_session_id = ""
+        self._orphan_proxy_llm_spans: List[Dict[str, Any]] = []
 
     def _append_span(self, span: Dict[str, Any]) -> None:
         self._hooks_api._assembled_spans.append(span)
@@ -144,13 +193,13 @@ class CodexHooksAPI:
                 )
         return self._sessions[session_id]
 
-    def _base_tags(self, session: CodexSession) -> List[str]:
+    def _base_tags(self, session: CodexSession, source: str = "codex-jsonl") -> List[str]:
         tags = [
             f"ml_app:{self._config.ml_app}",
             f"session_id:{session.session_id}",
             f"service:{self._config.service}",
             f"env:{self._config.env}",
-            "source:codex-jsonl",
+            f"source:{source}",
             "language:python",
             f"hostname:{self._config.hostname}",
         ]
@@ -191,7 +240,11 @@ class CodexHooksAPI:
         return []
 
     def _llm_input_value(self, session: CodexSession, turn: CodexTurn) -> str:
-        messages = self._llm_input_messages(session, turn)
+        messages = [
+            message
+            for message in self._llm_input_messages(session, turn)
+            if not _is_assistant_tool_call_message(message)
+        ]
         if not messages:
             return ""
         if len(messages) == 1 and messages[0].get("role") == "user":
@@ -209,6 +262,12 @@ class CodexHooksAPI:
         if turn.active_llm_input_messages is None:
             turn.active_llm_input_messages = self._llm_input_messages(session, turn)
 
+    def _begin_llm_in_step(self, session: CodexSession, turn: CodexTurn, start_ns: int) -> None:
+        if turn.step_span_ref is not None and turn.current_step_has_llm and not session.pending_tools:
+            self._close_current_step(turn)
+        self._ensure_step(session, turn, start_ns)
+        self._mark_llm_start(session, turn, start_ns)
+
     def _set_step_output(self, turn: CodexTurn, message: str) -> None:
         if not message:
             return
@@ -220,7 +279,7 @@ class CodexHooksAPI:
         if not message:
             return
         output_message = {"role": "assistant", "content": message}
-        if turn.llm_start_ns is not None:
+        if turn.llm_start_ns is not None and not turn.current_step_has_llm:
             _append_unique_message(turn.llm_output_messages, output_message)
         if turn.last_llm_span_ref is not None and not turn.last_llm_span_ref["meta"]["output"].get("messages"):
             turn.last_llm_span_ref["meta"]["output"]["messages"] = [dict(output_message)]
@@ -241,7 +300,7 @@ class CodexHooksAPI:
             self._hooks_api._assembled_spans.insert(insert_at, span)
         turn.last_llm_span_ref = span
 
-    def _start_turn(self, session: CodexSession, record: Dict[str, Any]) -> List[str]:
+    def _start_turn(self, session: CodexSession, record: Dict[str, Any]) -> List[CompletedTrace]:
         completed = self._finalize_turn(session, status="ok")
 
         payload = record.get("payload", {})
@@ -302,6 +361,7 @@ class CodexHooksAPI:
         }
         self._append_span(root_span)
         turn.root_span_ref = root_span
+        self._adopt_orphan_proxy_llm_spans(session, turn)
         return completed
 
     def _ensure_step(self, session: CodexSession, turn: CodexTurn, start_ns: int) -> Dict[str, Any]:
@@ -364,18 +424,20 @@ class CodexHooksAPI:
         turn.current_step_last_ns = None
         turn.current_step_has_llm = False
         turn.llm_start_ns = None
+        turn.active_llm_input_messages = None
         turn.llm_output_messages = []
+        turn.pending_llm_usage = None
+        turn.pending_llm_end_ns = None
 
     def _begin_llm_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
         turn = self._active_turn(session, record)
         ns = _timestamp_to_ns(record.get("timestamp", ""))
-        if turn.step_span_ref is not None and turn.current_step_has_llm and not session.pending_tools:
-            self._close_current_step(turn)
-        self._ensure_step(session, turn, ns)
-        self._mark_llm_start(session, turn, ns)
+        self._begin_llm_in_step(session, turn, ns)
         turn.last_ns = max(turn.last_ns, ns)
 
-    def _finalize_turn(self, session: CodexSession, status: str = "ok", end_ns: Optional[int] = None) -> List[str]:
+    def _finalize_turn(
+        self, session: CodexSession, status: str = "ok", end_ns: Optional[int] = None
+    ) -> List[CompletedTrace]:
         turn = session.active_turn
         if turn is None or turn.closed:
             return []
@@ -388,13 +450,14 @@ class CodexHooksAPI:
             turn.root_span_ref["meta"]["input"]["value"] = "\n\n".join(session.user_prompts)
             turn.root_span_ref["meta"]["metadata"]["tools"] = sorted(session.tools_used)
             self._update_agent_manifest(session)
+        self._emit_pending_llm_span(session, turn)
         for pending in list(session.pending_tools.values()):
             self._emit_tool_span(session, pending, end_ns, output_value="", is_error=True)
         session.pending_tools.clear()
         self._close_current_step(turn, end_ns=turn.current_step_last_ns or end_ns)
         turn.closed = True
         session.completed_turns.append(turn.turn_id)
-        return [session.session_id]
+        return [(session.session_id, turn.trace_id)]
 
     def _active_turn(self, session: CodexSession, record: Dict[str, Any]) -> CodexTurn:
         if session.active_turn is None or session.active_turn.closed:
@@ -411,7 +474,8 @@ class CodexHooksAPI:
             if turn.root_span_ref:
                 turn.root_span_ref["duration"] = duration
             if turn.step_span_ref and turn.current_step_last_ns is not None:
-                self._update_step_end(turn, turn.step_span_ref["span_id"], ns)
+                if not turn.current_step_has_llm or session.pending_tools:
+                    self._update_step_end(turn, turn.step_span_ref["span_id"], ns)
         return ns
 
     def _handle_session_meta(self, session: CodexSession, record: Dict[str, Any]) -> None:
@@ -421,7 +485,7 @@ class CodexHooksAPI:
         session.cli_version = payload.get("cli_version", session.cli_version)
         session.model_provider = payload.get("model_provider", session.model_provider) or "openai"
 
-    def _handle_event_msg(self, session: CodexSession, record: Dict[str, Any]) -> List[str]:
+    def _handle_event_msg(self, session: CodexSession, record: Dict[str, Any]) -> List[CompletedTrace]:
         event = record.get("payload", {})
         event_type = event.get("type", "")
 
@@ -451,6 +515,7 @@ class CodexHooksAPI:
                     turn.root_span_ref["meta"]["output"]["value"] = message
                 self._set_step_output(turn, message)
                 self._set_llm_output(turn, message)
+                self._emit_pending_llm_span(session, turn)
             return []
 
         if event_type == "task_complete":
@@ -463,6 +528,7 @@ class CodexHooksAPI:
                 if step is None or not step["meta"]["output"]["value"]:
                     self._set_step_output(turn, message)
                 self._set_llm_output(turn, message)
+                self._emit_pending_llm_span(session, turn)
             return self._finalize_turn(session, status="ok", end_ns=ns)
 
         if event_type == "turn_aborted":
@@ -482,14 +548,17 @@ class CodexHooksAPI:
         elif item_type == "reasoning":
             turn = self._active_turn(session, record)
             ns = _timestamp_to_ns(record.get("timestamp", ""))
-            self._ensure_step(session, turn, ns)
-            self._mark_llm_start(session, turn, ns)
+            self._begin_llm_in_step(session, turn, ns)
         elif item_type == "message" and payload.get("role") == "assistant":
             turn = self._active_turn(session, record)
             ns = _timestamp_to_ns(record.get("timestamp", ""))
-            self._ensure_step(session, turn, ns)
-            self._mark_llm_start(session, turn, ns)
             message = _content_text(payload.get("content"))
+            if turn.current_step_has_llm and _llm_has_text_output(turn.last_llm_span_ref, message):
+                if turn.root_span_ref:
+                    turn.root_span_ref["meta"]["output"]["value"] = message
+                self._set_step_output(turn, message)
+                return
+            self._begin_llm_in_step(session, turn, ns)
             if message:
                 _append_unique_message(turn.llm_output_messages, {"role": "assistant", "content": message})
                 if turn.root_span_ref:
@@ -497,23 +566,19 @@ class CodexHooksAPI:
                 self._set_step_output(turn, message)
                 if turn.last_llm_span_ref is not None and not turn.last_llm_span_ref["meta"]["output"].get("messages"):
                     turn.last_llm_span_ref["meta"]["output"]["messages"] = [{"role": "assistant", "content": message}]
+                self._emit_pending_llm_span(session, turn)
 
-    def _handle_token_count(self, session: CodexSession, record: Dict[str, Any]) -> None:
-        turn = self._active_turn(session, record)
-        event = record.get("payload", {})
-        info = event.get("info") or {}
-        if not info:
-            self._begin_llm_call(session, record)
+    def _emit_pending_llm_span(self, session: CodexSession, turn: CodexTurn) -> None:
+        usage = turn.pending_llm_usage
+        if usage is None or turn.pending_llm_end_ns is None:
             return
-        usage = info.get("last_token_usage") or info.get("total_token_usage") or {}
-        if not usage:
+        if turn.current_step_has_llm or not _has_llm_output(turn.llm_output_messages):
             return
-
-        end_ns = self._update_last_ns(session, record)
         if turn.step_span_ref is None:
-            self._ensure_step(session, turn, end_ns)
-        self._mark_llm_start(session, turn, turn.llm_start_ns or turn.current_step_start_ns or end_ns)
-        llm_start_ns = turn.llm_start_ns or turn.current_step_start_ns or end_ns
+            self._ensure_step(session, turn, turn.pending_llm_end_ns)
+        self._mark_llm_start(session, turn, turn.llm_start_ns or turn.current_step_start_ns or turn.pending_llm_end_ns)
+        llm_start_ns = turn.llm_start_ns or turn.current_step_start_ns or turn.pending_llm_end_ns
+        end_ns = turn.pending_llm_end_ns
         llm_input_messages = turn.active_llm_input_messages or self._llm_input_messages(session, turn)
         llm_output_messages = _copy_messages(turn.llm_output_messages)
         cached_input_tokens = usage.get("cached_input_tokens", 0)
@@ -540,7 +605,7 @@ class CodexHooksAPI:
             "span_id": _format_span_id(),
             "trace_id": turn.trace_id,
             "parent_id": turn.step_span_id,
-            "name": session.model or "codex-model",
+            "name": session.model or "unknown",
             "status": "ok",
             "start_ns": llm_start_ns,
             "duration": max(end_ns - llm_start_ns, 0),
@@ -569,8 +634,121 @@ class CodexHooksAPI:
         turn.llm_start_ns = None
         turn.active_llm_input_messages = None
         turn.llm_output_messages = []
-        if not session.pending_tools:
-            self._close_current_step(turn, end_ns=end_ns)
+        turn.pending_llm_usage = None
+        turn.pending_llm_end_ns = None
+
+    def _handle_token_count(self, session: CodexSession, record: Dict[str, Any]) -> None:
+        turn = self._active_turn(session, record)
+        event = record.get("payload", {})
+        info = event.get("info") or {}
+        if not info:
+            self._begin_llm_call(session, record)
+            return
+        usage = info.get("last_token_usage") or info.get("total_token_usage") or {}
+        if not usage:
+            return
+        if turn.proxy_llm_spans_completed > turn.proxy_llm_usage_events_seen:
+            turn.proxy_llm_usage_events_seen += 1
+            return
+
+        end_ns = self._update_last_ns(session, record)
+        if turn.current_step_has_llm and not turn.llm_output_messages:
+            return
+        if turn.step_span_ref is None:
+            self._ensure_step(session, turn, end_ns)
+        self._mark_llm_start(session, turn, turn.llm_start_ns or turn.current_step_start_ns or end_ns)
+        turn.pending_llm_usage = dict(usage)
+        turn.pending_llm_end_ns = end_ns
+        self._emit_pending_llm_span(session, turn)
+
+    def _active_proxy_session(self, maybe_session_id: Optional[str] = None) -> Optional[CodexSession]:
+        if maybe_session_id:
+            session = self._sessions.get(maybe_session_id)
+            if session is not None:
+                return session
+        for session in reversed(list(self._sessions.values())):
+            turn = session.active_turn
+            if turn is not None and not turn.closed:
+                return session
+        if self._sessions:
+            return next(reversed(self._sessions.values()))
+        return None
+
+    def begin_proxy_llm_call(self, maybe_session_id: Optional[str], start_ns: int) -> Optional[str]:
+        """Reserve the active Codex step for a proxied LLM call."""
+        session = self._active_proxy_session(maybe_session_id)
+        if session is None or session.active_turn is None or session.active_turn.closed:
+            return None
+        turn = session.active_turn
+        if turn.step_span_ref is not None and turn.current_step_has_llm and not session.pending_tools:
+            self._close_current_step(turn)
+        turn.proxy_llm_calls_started += 1
+        turn.last_ns = max(turn.last_ns, start_ns)
+        return session.session_id
+
+    def register_proxy_llm_span(
+        self,
+        maybe_session_id: Optional[str],
+        span: Dict[str, Any],
+        start_ns: int,
+        end_ns: int,
+    ) -> None:
+        """Attach a proxied LLM span to the active Codex turn, or buffer it."""
+        session = self._active_proxy_session(maybe_session_id)
+        if session is None or session.active_turn is None or session.active_turn.closed:
+            span["parent_id"] = "undefined"
+            self._orphan_proxy_llm_spans.append(span)
+            self._append_span(span)
+            return
+
+        self._attach_proxy_llm_span(session, session.active_turn, span, start_ns, end_ns)
+
+    def _attach_proxy_llm_span(
+        self,
+        session: CodexSession,
+        turn: CodexTurn,
+        span: Dict[str, Any],
+        start_ns: int,
+        end_ns: int,
+        append: bool = True,
+    ) -> None:
+        if turn.step_span_ref is None:
+            self._ensure_step(session, turn, start_ns)
+        if turn.proxy_llm_calls_started <= turn.proxy_llm_spans_completed:
+            turn.proxy_llm_calls_started += 1
+
+        span["trace_id"] = turn.trace_id
+        span["parent_id"] = turn.step_span_id
+        span["session_id"] = session.session_id
+        span["ml_app"] = self._config.ml_app
+        span["service"] = self._config.service
+        span["env"] = self._config.env
+        span["tags"] = self._base_tags(session, source="codex-proxy")
+        if append:
+            self._append_llm_span(turn, span)
+        else:
+            turn.last_llm_span_ref = span
+
+        turn.proxy_llm_spans_completed += 1
+        turn.current_step_has_llm = True
+        turn.last_ns = max(turn.last_ns, end_ns)
+        self._update_step_end(turn, turn.step_span_id, end_ns)
+        turn.llm_start_ns = None
+        turn.active_llm_input_messages = None
+        turn.llm_output_messages = []
+
+    def _adopt_orphan_proxy_llm_spans(self, session: CodexSession, turn: CodexTurn) -> None:
+        if not self._orphan_proxy_llm_spans:
+            return
+        remaining: List[Dict[str, Any]] = []
+        for span in self._orphan_proxy_llm_spans:
+            if span.get("session_id") and span.get("session_id") != session.session_id:
+                remaining.append(span)
+                continue
+            start_ns = int(span.get("start_ns", turn.start_ns))
+            end_ns = start_ns + int(span.get("duration", 0))
+            self._attach_proxy_llm_span(session, turn, span, start_ns, end_ns, append=False)
+        self._orphan_proxy_llm_spans = remaining
 
     def _handle_function_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
         turn = self._active_turn(session, record)
@@ -581,7 +759,14 @@ class CodexHooksAPI:
         self._update_agent_manifest(session)
         start_ns = _timestamp_to_ns(record.get("timestamp", ""))
         self._ensure_step(session, turn, start_ns)
-        self._mark_llm_start(session, turn, start_ns)
+        appending_to_existing_llm = (
+            turn.current_step_has_llm
+            and turn.last_llm_span_ref is not None
+            and turn.last_llm_span_ref.get("parent_id") == turn.step_span_id
+        )
+        if not appending_to_existing_llm:
+            self._mark_llm_start(session, turn, start_ns)
+        self._update_step_end(turn, turn.step_span_id, start_ns)
 
         arguments = payload.get("arguments", "")
         tool_input: Any = arguments
@@ -590,16 +775,19 @@ class CodexHooksAPI:
                 tool_input = json.loads(arguments)
             except (ValueError, TypeError):
                 tool_input = arguments
-        _append_unique_message(
-            turn.llm_output_messages,
-            {
-                "role": "assistant",
-                "content": _to_json_str(tool_input),
-                "tool_calls": [{"id": call_id, "name": tool_name, "arguments": tool_input}],
-            },
-        )
+        tool_call_message = {
+            "role": "assistant",
+            "content": _to_json_str(tool_input),
+            "tool_calls": [{"id": call_id, "name": tool_name, "arguments": tool_input}],
+        }
+        if appending_to_existing_llm:
+            output_messages = turn.last_llm_span_ref["meta"]["output"].setdefault("messages", [])
+            _append_or_update_tool_call_message(output_messages, tool_call_message)
+        else:
+            _append_or_update_tool_call_message(turn.llm_output_messages, tool_call_message)
         if turn.step_span_ref is not None and not turn.step_span_ref["meta"]["output"]["value"]:
             turn.step_span_ref["meta"]["output"]["value"] = _to_json_str(tool_input)
+        self._emit_pending_llm_span(session, turn)
 
         session.pending_tools[call_id] = PendingToolSpan(
             span_id=_format_span_id(),
@@ -665,7 +853,7 @@ class CodexHooksAPI:
             is_error=False,
         )
 
-    def _dispatch(self, session_id: str, record: Dict[str, Any]) -> List[str]:
+    def _dispatch(self, session_id: str, record: Dict[str, Any]) -> List[CompletedTrace]:
         start_ns = _timestamp_to_ns(record.get("timestamp", ""))
         session = self._get_or_create_session(session_id, start_ns=start_ns)
         try:
@@ -721,9 +909,9 @@ class CodexHooksAPI:
         self._raw_events.append(body)
         self._last_session_id = session_id
         completed = self._dispatch(session_id, record)
-        for completed_session_id in completed:
-            await self._hooks_api._forward_trace_to_backend(completed_session_id)
-            await self._hooks_api._forward_eval_metrics_to_backend(completed_session_id)
+        for completed_session_id, completed_trace_id in completed:
+            await self._hooks_api._forward_trace_to_backend(completed_session_id, trace_id=completed_trace_id)
+            await self._hooks_api._forward_eval_metrics_to_backend(completed_session_id, trace_id=completed_trace_id)
         return web.json_response({"status": "ok"})
 
     async def handle_raw_events(self, request: Request) -> web.Response:

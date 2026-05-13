@@ -432,7 +432,7 @@ def _start_codex_watcher(port: int) -> None:
     print("[lapdog] Codex watcher did not confirm startup; continuing without startup confirmation.", file=sys.stderr)
 
 
-def _run_codex(args: Optional[List[str]] = None) -> None:
+def _run_codex(args: Optional[List[str]] = None, port: Optional[int] = None) -> None:
     """Exec the codex binary, forwarding arguments. Never returns."""
     if args is None:
         args = []
@@ -440,7 +440,27 @@ def _run_codex(args: Optional[List[str]] = None) -> None:
     if not codex_bin:
         print("[lapdog] 'codex' not found in PATH", file=sys.stderr)
         sys.exit(1)
-    os.execv(codex_bin, [codex_bin] + args)
+    env = os.environ.copy()
+    proxy_args: List[str] = []
+    if port is not None:
+        base_url = f"http://localhost:{port}/codex/proxy/v1"
+        env["OPENAI_BASE_URL"] = base_url
+        if env.get("OPENAI_API_KEY"):
+            proxy_args = [
+                "-c",
+                'model_provider="openai-lapdog"',
+                "-c",
+                (
+                    'model_providers.openai-lapdog={name="OpenAI via Lapdog",'
+                    f' base_url="{base_url}", env_key="OPENAI_API_KEY", wire_api="responses"' + "}"
+                ),
+            ]
+        else:
+            print(
+                "[lapdog] Codex proxy capture requires OPENAI_API_KEY; continuing with JSONL-only tracing.",
+                file=sys.stderr,
+            )
+    os.execve(codex_bin, [codex_bin] + proxy_args + args, env)
 
 
 def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
@@ -452,7 +472,7 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
     _start_codex_watcher(port)
 
     print(build_running_banner(data_type="coding session"))
-    _run_codex(args=sub_cmd_args)
+    _run_codex(args=sub_cmd_args, port=port)
 
 
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:

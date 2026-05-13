@@ -61,6 +61,29 @@ def test_drain_file_drops_non_matching_cwd(monkeypatch, tmp_path):
     assert posts == []
 
 
+def test_drain_file_preserves_partial_jsonl_record(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    partial = '{"type":"session_meta","payload":{"id":"sess-partial","cwd":'
+    session_file.write_text(partial)
+
+    state = FileState()
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
+
+    assert posts == []
+    assert state.offset == 0
+
+    with session_file.open("a") as f:
+        f.write(json.dumps(str(tmp_path)) + "}}\n")
+
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
+
+    assert [post["record"]["type"] for post in posts] == ["session_meta"]
+    assert posts[0]["session_id"] == "sess-partial"
+    assert state.offset == session_file.stat().st_size
+
+
 def test_prime_file_state_learns_old_session_metadata(tmp_path):
     session_file = tmp_path / "rollout.jsonl"
     _append(

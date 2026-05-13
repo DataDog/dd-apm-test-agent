@@ -77,12 +77,24 @@ def _record_session_id(record: Dict[str, Any]) -> str:
 
 def _drain_file(path: Path, state: FileState, lapdog_url: str, cwd: str) -> None:
     try:
-        with path.open("r") as f:
+        with path.open("rb") as f:
             f.seek(state.offset)
-            lines = f.readlines()
-            state.offset = f.tell()
+            data = f.read()
+            end_offset = f.tell()
     except OSError:
         return
+
+    if not data:
+        return
+    if data.endswith(b"\n"):
+        lines = data.splitlines()
+        state.offset = end_offset
+    else:
+        complete_end = data.rfind(b"\n") + 1
+        if complete_end <= 0:
+            return
+        lines = data[:complete_end].splitlines()
+        state.offset += complete_end
 
     for line in lines:
         line = line.strip()

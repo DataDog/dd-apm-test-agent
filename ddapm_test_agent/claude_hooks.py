@@ -1666,13 +1666,13 @@ class ClaudeHooksAPI:
         data = gzip.compress(msgpack.packb(payload))
         await self._post_to_backend(url, headers, data, f"forward {len(spans)} span updates")
 
-    async def _forward_trace_to_backend(self, session_id: str) -> None:
+    async def _forward_trace_to_backend(self, session_id: str, trace_id: Optional[str] = None) -> None:
         """Forward all assembled spans for a session's trace to the backend via the EVP proxy path."""
         session = self._sessions.get(session_id)
         if not session:
             return
 
-        trace_id = session.trace_id
+        trace_id = trace_id or session.trace_id
         spans = [s for s in self._assembled_spans if s.get("trace_id") == trace_id]
         if not spans:
             return
@@ -1703,7 +1703,7 @@ class ClaudeHooksAPI:
         data = gzip.compress(msgpack.packb(payload))
         await self._post_to_backend(url, headers, data, f"forward {len(spans)} Claude hooks spans for trace {trace_id}")
 
-    async def _forward_eval_metrics_to_backend(self, session_id: str) -> None:
+    async def _forward_eval_metrics_to_backend(self, session_id: str, trace_id: Optional[str] = None) -> None:
         """Forward evaluation metrics for all spans in a session's trace to the Datadog backend.
 
         Collects evaluation entries from every span in the trace (not just root),
@@ -1724,7 +1724,7 @@ class ClaudeHooksAPI:
             return
         url, headers = target
 
-        trace_id = session.trace_id
+        trace_id = trace_id or session.trace_id
         spans = [s for s in self._assembled_spans if s.get("trace_id") == trace_id]
 
         timestamp_ms = int(time.time() * 1000)

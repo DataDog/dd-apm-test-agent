@@ -61,6 +61,7 @@ from .claude_hooks import ClaudeHooksAPI
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_proxy import ClaudeProxyAPI
 from .codex_hooks import CodexHooksAPI
+from .codex_proxy import CodexProxyAPI
 from .integration import Integration
 from .llmobs_event_platform import LLMObsEventPlatformAPI
 from .logs import LOGS_ENDPOINT
@@ -2035,10 +2036,18 @@ def make_app(
     codex_hooks_api = CodexHooksAPI(hooks_api=claude_hooks_api)
     app.add_routes(codex_hooks_api.get_routes())
 
+    codex_proxy_api = CodexProxyAPI(hooks_api=codex_hooks_api)
+    app.add_routes(codex_proxy_api.get_routes())
+
     async def _cleanup_claude_proxy(app: web.Application) -> None:
         await claude_proxy_api.close()
 
     app.on_cleanup.append(_cleanup_claude_proxy)
+
+    async def _cleanup_codex_proxy(app: web.Application) -> None:
+        await codex_proxy_api.close()
+
+    app.on_cleanup.append(_cleanup_codex_proxy)
 
     checks = Checks(
         checks=[

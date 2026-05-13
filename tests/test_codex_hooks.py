@@ -1,8 +1,12 @@
 """Tests for Codex JSONL hooks."""
 
+import gzip
 import json
 
+import msgpack
 import pytest
+
+from ddapm_test_agent.claude_hooks import ClaudeHooksAPI
 
 
 @pytest.fixture
@@ -194,6 +198,76 @@ async def test_codex_populates_step_and_late_llm_output(agent):
     assert llm["meta"]["output"]["messages"] == [{"role": "assistant", "content": "Hello."}]
 
 
+async def test_codex_ignores_token_usage_without_model_output(agent):
+    sid = "codex-empty-usage"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:02.000Z", message="hello"))
+    await _post(
+        agent,
+        sid,
+        _event(
+            "token_count",
+            timestamp="2026-05-11T17:00:03.000Z",
+            info={
+                "last_token_usage": {
+                    "input_tokens": 10,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 10,
+                }
+            },
+        ),
+    )
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    llms = _by_kind(session_spans, "llm")
+
+    assert llms == []
+    assert all(span["name"] != "codex-model" for span in session_spans)
+
+
+async def test_codex_duplicate_usage_does_not_create_second_llm_in_step(agent):
+    sid = "codex-duplicate-usage"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:02.000Z", message="hello"))
+    await _post(agent, sid, _event("token_count", timestamp="2026-05-11T17:00:03.000Z", info=None))
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "message",
+            timestamp="2026-05-11T17:00:04.000Z",
+            role="assistant",
+            content=[{"type": "output_text", "text": "Hello."}],
+        ),
+    )
+    usage_event = _event(
+        "token_count",
+        timestamp="2026-05-11T17:00:05.000Z",
+        info={
+            "last_token_usage": {
+                "input_tokens": 10,
+                "cached_input_tokens": 0,
+                "output_tokens": 2,
+                "total_tokens": 12,
+            }
+        },
+    )
+    await _post(agent, sid, usage_event)
+    await _post(agent, sid, {**usage_event, "timestamp": "2026-05-11T17:00:06.000Z"})
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    steps = _by_kind(session_spans, "step")
+    llms = _by_kind(session_spans, "llm")
+
+    assert len(steps) == 1
+    assert len(llms) == 1
+    assert llms[0]["parent_id"] == steps[0]["span_id"]
+
+
 async def test_codex_creates_step_and_llm_span_per_model_call(agent):
     sid = "codex-multi-llm"
     await _post(agent, sid, _session_meta(sid))
@@ -290,6 +364,17 @@ async def test_codex_creates_step_and_llm_span_per_model_call(agent):
     assert steps[0]["meta"]["input"]["value"] == "use a tool"
     assert json.loads(steps[1]["meta"]["input"]["value"]) == [
         {"role": "user", "content": "use a tool"},
+        {"role": "tool", "tool_call_id": "call-1", "content": "/repo"},
+    ]
+    assert steps[0]["meta"]["output"]["value"] == '{"cmd": "pwd"}'
+    assert llms[0]["meta"]["output"]["messages"] == [
+        {
+            "role": "assistant",
+            "content": '{"cmd": "pwd"}',
+            "tool_calls": [{"id": "call-1", "name": "exec_command", "arguments": {"cmd": "pwd"}}],
+        }
+    ]
+    assert llms[1]["meta"]["input"]["messages"][-2:] == [
         {
             "role": "assistant",
             "content": '{"cmd": "pwd"}',
@@ -297,11 +382,6 @@ async def test_codex_creates_step_and_llm_span_per_model_call(agent):
         },
         {"role": "tool", "tool_call_id": "call-1", "content": "/repo"},
     ]
-    assert llms[1]["meta"]["input"]["messages"][-1] == {
-        "role": "tool",
-        "tool_call_id": "call-1",
-        "content": "/repo",
-    }
 
 
 async def test_codex_orders_tool_call_llm_before_tool_when_usage_arrives_late(agent):
@@ -364,6 +444,68 @@ async def test_codex_orders_tool_call_llm_before_tool_when_usage_arrives_late(ag
     ]
 
 
+async def test_codex_late_tool_call_stays_in_completed_llm_step(agent):
+    sid = "codex-late-tool-call"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:02.000Z", message="list files"))
+    await _post(agent, sid, _event("token_count", timestamp="2026-05-11T17:00:03.000Z", info=None))
+    await _post(
+        agent,
+        sid,
+        _event(
+            "token_count",
+            timestamp="2026-05-11T17:00:04.000Z",
+            info={
+                "last_token_usage": {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 10,
+                    "total_tokens": 110,
+                }
+            },
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "function_call",
+            timestamp="2026-05-11T17:00:05.000Z",
+            name="exec_command",
+            call_id="call-1",
+            arguments='{"cmd": "rg --files"}',
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "function_call_output",
+            timestamp="2026-05-11T17:00:06.000Z",
+            call_id="call-1",
+            output="README.md",
+        ),
+    )
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    steps = _by_kind(session_spans, "step")
+    llm = _by_kind(session_spans, "llm")[0]
+    tool = _by_kind(session_spans, "tool")[0]
+
+    assert len(steps) == 1
+    assert llm["parent_id"] == steps[0]["span_id"]
+    assert tool["parent_id"] == steps[0]["span_id"]
+    assert llm["meta"]["output"]["messages"] == [
+        {
+            "role": "assistant",
+            "content": '{"cmd": "rg --files"}',
+            "tool_calls": [{"id": "call-1", "name": "exec_command", "arguments": {"cmd": "rg --files"}}],
+        }
+    ]
+
+
 async def test_codex_new_turn_finalizes_previous_turn(agent):
     sid = "codex-two-turns"
     await _post(agent, sid, _session_meta(sid))
@@ -382,6 +524,31 @@ async def test_codex_new_turn_finalizes_previous_turn(agent):
     assert first["duration"] > 0
     assert first["meta"]["output"]["value"] == "done first"
     assert second["meta"]["input"]["value"] == "second"
+
+
+async def test_codex_new_turn_forwards_completed_trace_before_repointing_session(agent, monkeypatch):
+    forwarded_payloads = []
+
+    def fake_resolve_backend_target(self, *args, **kwargs):
+        return "http://backend.example", {}
+
+    async def fake_post_to_backend(self, url, headers, data, description):
+        forwarded_payloads.append(msgpack.unpackb(gzip.decompress(data), raw=False))
+
+    monkeypatch.setattr(ClaudeHooksAPI, "_resolve_backend_target", fake_resolve_backend_target)
+    monkeypatch.setattr(ClaudeHooksAPI, "_post_to_backend", fake_post_to_backend)
+
+    sid = "codex-forward-two-turns"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context("turn-a"))
+    await _post(agent, sid, _event("user_message", message="first"))
+    await _post(agent, sid, _event("agent_message", message="done first"))
+    await _post(agent, sid, _turn_context("turn-b"))
+
+    assert len(forwarded_payloads) == 1
+    forwarded_spans = forwarded_payloads[0]["spans"]
+    forwarded_turn_ids = {span["meta"]["metadata"].get("turn_id") for span in forwarded_spans}
+    assert forwarded_turn_ids == {"turn-a"}
 
 
 async def test_codex_accepts_raw_jsonl_records_like_curl(agent):

@@ -17,7 +17,7 @@ def test_cmd_codex_starts_watcher_and_execs_codex():
 
     ensure.assert_called_once_with(True, detached=True)
     start_watcher.assert_called_once_with(8126)
-    run_codex.assert_called_once_with(args=["--model", "gpt-5.5"])
+    run_codex.assert_called_once_with(args=["--model", "gpt-5.5"], port=8126)
 
 
 def test_start_codex_watcher_waits_for_ready_file(tmp_path, monkeypatch):
@@ -38,3 +38,59 @@ def test_start_codex_watcher_waits_for_ready_file(tmp_path, monkeypatch):
     cli._start_codex_watcher(8126)
 
     assert ready_paths
+
+
+def test_run_codex_injects_lapdog_provider(monkeypatch):
+    exec_call = {}
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/codex")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    def fake_execve(binary, argv, env):
+        exec_call["binary"] = binary
+        exec_call["argv"] = argv
+        exec_call["env"] = env
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli.os, "execve", fake_execve)
+
+    try:
+        cli._run_codex(args=["exec", "hello"], port=8126)
+    except SystemExit:
+        pass
+
+    assert exec_call["binary"] == "/usr/local/bin/codex"
+    assert exec_call["env"]["OPENAI_BASE_URL"] == "http://localhost:8126/codex/proxy/v1"
+    assert exec_call["argv"][:5] == [
+        "/usr/local/bin/codex",
+        "-c",
+        'model_provider="openai-lapdog"',
+        "-c",
+        (
+            'model_providers.openai-lapdog={name="OpenAI via Lapdog",'
+            ' base_url="http://localhost:8126/codex/proxy/v1", env_key="OPENAI_API_KEY", wire_api="responses"}'
+        ),
+    ]
+    assert exec_call["argv"][5:] == ["exec", "hello"]
+
+
+def test_run_codex_falls_back_without_openai_api_key(monkeypatch):
+    exec_call = {}
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/codex")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    def fake_execve(binary, argv, env):
+        exec_call["argv"] = argv
+        exec_call["env"] = env
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli.os, "execve", fake_execve)
+
+    try:
+        cli._run_codex(args=["exec", "hello"], port=8126)
+    except SystemExit:
+        pass
+
+    assert exec_call["env"]["OPENAI_BASE_URL"] == "http://localhost:8126/codex/proxy/v1"
+    assert exec_call["argv"] == ["/usr/local/bin/codex", "exec", "hello"]
