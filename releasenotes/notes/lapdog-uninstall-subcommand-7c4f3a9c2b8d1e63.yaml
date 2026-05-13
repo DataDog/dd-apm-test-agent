@@ -1,0 +1,10 @@
+---
+features:
+  - |
+    Add ``lapdog uninstall`` subcommand. Stops the background agent,
+    removes ``~/.lapdog/``, strips lapdog's hook entries from Claude Code
+    settings (leaving any other hooks the user has configured untouched),
+    and deletes the pi extension. Intended to be run before uninstalling
+    the package via ``brew uninstall lapdog`` / ``pip uninstall
+    ddapm-test-agent``, since package managers cannot clean up state
+    lapdog writes to the user's home directory.

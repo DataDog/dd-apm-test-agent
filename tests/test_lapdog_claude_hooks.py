@@ -8,6 +8,7 @@ from lapdog.hooks import (
     _CLAUDE_CODE_DEFAULT_MATCHER as CLAUDE_CODE_DEFAULT_MATCHER,
     _CLAUDE_CODE_HOOK as CLAUDE_CODE_HOOK,
     _CLAUDE_CODE_EVENTS as CLAUDE_CODE_EVENTS,
+    remove_claude_code_hooks,
     write_claude_code_hooks,
 )
 
@@ -109,3 +110,65 @@ class TestClaudeCodeHooksWriting:
             },
         }
         assert _read_settings(settings_path) == expected
+
+
+class TestClaudeCodeHooksRemoval:
+    """Tests for ``remove_claude_code_hooks`` (inverse of write)."""
+
+    def test_round_trip_clears_lapdog_hooks(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_text("{}")
+        write_claude_code_hooks(settings_path)
+        changed = remove_claude_code_hooks(settings_path)
+        assert changed is True
+        # Every event's matcher list should be empty after removal — the
+        # default-matcher entries lapdog wrote contained only its own hook.
+        expected = {"hooks": {event: [] for event in CLAUDE_CODE_EVENTS}}
+        assert _read_settings(settings_path) == expected
+
+    def test_preserves_unrelated_user_hooks(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        user_hook = {"type": "command", "command": "echo bash"}
+        starting = {
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [user_hook]},
+                    {"matcher": "", "hooks": [CLAUDE_CODE_HOOK]},
+                ],
+                "Stop": [{"matcher": "", "hooks": [CLAUDE_CODE_HOOK, user_hook]}],
+            },
+            "other": "kept",
+        }
+        settings_path.write_text(json.dumps(starting, indent=2))
+        changed = remove_claude_code_hooks(settings_path)
+        assert changed is True
+        # PreToolUse: the Bash matcher survives untouched; the default-matcher
+        # entry that held only lapdog's hook is dropped entirely.
+        # Stop: the default matcher keeps user_hook, just minus lapdog's.
+        expected = {
+            "hooks": {
+                "PreToolUse": [{"matcher": "Bash", "hooks": [user_hook]}],
+                "Stop": [{"matcher": "", "hooks": [user_hook]}],
+            },
+            "other": "kept",
+        }
+        assert _read_settings(settings_path) == expected
+
+    def test_noop_when_file_missing(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        assert remove_claude_code_hooks(settings_path) is False
+        assert not settings_path.exists()
+
+    def test_noop_when_no_lapdog_hooks(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        other = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "x"}]}]}}
+        settings_path.write_text(json.dumps(other, indent=2))
+        assert remove_claude_code_hooks(settings_path) is False
+        assert _read_settings(settings_path) == other
+
+    def test_noop_when_unparseable(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_text("not json {{")
+        assert remove_claude_code_hooks(settings_path) is False
+        # File contents unchanged.
+        assert settings_path.read_text() == "not json {{"

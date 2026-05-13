@@ -179,66 +179,22 @@ No other state is created. There is no daemon installed at the OS level
 
 ## Uninstallation
 
-### 1. Stop the running agent
+> Package managers (Homebrew, pip, pipx) only remove their own files. They
+> do **not** clean up `~/.lapdog/`, the Claude Code hook entries in
+> `~/.claude/settings.json`, or `~/.pi/agent/extensions/lapdog.ts`. Run
+> `lapdog uninstall` first.
+
+### 1. Run `lapdog uninstall`
 
 ```bash
-lapdog stop
+lapdog uninstall
 ```
 
-If `lapdog stop` reports no PID file but you still see something on port 8126,
-find and kill it manually:
+This stops the background agent, removes `~/.lapdog/`, strips lapdog's hook
+entries from `~/.claude/settings.json` (leaving any other hooks you've
+configured untouched), and deletes `~/.pi/agent/extensions/lapdog.ts`.
 
-```bash
-lsof -ti tcp:8126 | xargs kill
-```
-
-### 2. Remove the Claude Code hooks
-
-`lapdog claude` adds hook entries to `~/.claude/settings.json` so Claude Code
-posts events to `localhost:8126/claude/hooks`. They look like:
-
-```json
-{
-  "type": "command",
-  "command": "curl -s --max-time 2 -X POST -H 'Content-Type: application/json' -d @- http://localhost:8126/claude/hooks >/dev/null 2>&1 || true",
-  "async": true
-}
-```
-
-You can either delete just the entries that POST to
-`localhost:8126/claude/hooks` (leaving any other hooks you've configured
-alone), or `jq` them out:
-
-```bash
-jq '
-  .hooks |= with_entries(
-    .value |= map(
-      .hooks |= map(select(
-        (.command // "") | contains("localhost:8126/claude/hooks") | not
-      ))
-    )
-  )
-' ~/.claude/settings.json > ~/.claude/settings.json.tmp \
-  && mv ~/.claude/settings.json.tmp ~/.claude/settings.json
-```
-
-The hooks are harmless when the agent is not running (the `curl` returns
-non-zero and the `|| true` swallows it), so removing them is optional unless
-you want a fully clean Claude Code config.
-
-### 3. Remove the Pi extension (only if you used `lapdog pi`)
-
-```bash
-rm -f ~/.pi/agent/extensions/lapdog.ts
-```
-
-### 4. Remove lapdog's working directory
-
-```bash
-rm -rf ~/.lapdog
-```
-
-### 5. Uninstall the package
+### 2. Uninstall the package
 
 Match the install method you used:
 
@@ -258,3 +214,36 @@ docker rmi ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest
 ```
 
 After this nothing lapdog wrote remains on the system.
+
+### Manual cleanup (if `lapdog uninstall` isn't available)
+
+If you're on a lapdog build that pre-dates the `uninstall` subcommand, or
+you've already removed the package without running it, do the cleanup by
+hand:
+
+```bash
+# 1. Stop the agent (or kill anything still on port 8126).
+lapdog stop 2>/dev/null || lsof -ti tcp:8126 | xargs -r kill
+
+# 2. Remove ~/.lapdog/.
+rm -rf ~/.lapdog
+
+# 3. Remove the pi extension (only if you used `lapdog pi`).
+rm -f ~/.pi/agent/extensions/lapdog.ts
+
+# 4. Strip the lapdog hook entries from ~/.claude/settings.json.
+jq '
+  .hooks |= with_entries(
+    .value |= map(
+      .hooks |= map(select(
+        (.command // "") | contains("localhost:8126/claude/hooks") | not
+      ))
+    )
+  )
+' ~/.claude/settings.json > ~/.claude/settings.json.tmp \
+  && mv ~/.claude/settings.json.tmp ~/.claude/settings.json
+```
+
+The hook entries are harmless when the agent is not running (the `curl`
+returns non-zero and the `|| true` swallows it), so removing them is
+optional unless you want a fully clean Claude Code config.

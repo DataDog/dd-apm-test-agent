@@ -16,19 +16,21 @@ from lapdog.lapdog_ascii_art import build_running_banner
 
 import requests
 
+from lapdog.hooks import remove_claude_code_hooks
 from lapdog.hooks import write_claude_code_hooks
-from lapdog.paths import LOG_FILE, PID_FILE
+from lapdog.paths import LAPDOG_DIR, LOG_FILE, PID_FILE
 from lapdog import tracer_inject
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "uninstall"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
-    "  start   Start lapdog (background)\n"
-    "  stop    Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
-    "  status  Show lapdog status (from /info)\n"
-    "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
-    "  pi      Start lapdog in background if needed, install extension, then launch pi\n"
+    "  start      Start lapdog (background)\n"
+    "  stop       Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
+    "  status     Show lapdog status (from /info)\n"
+    "  claude     Start lapdog in background if needed, then launch Claude with intercept\n"
+    "  pi         Start lapdog in background if needed, install extension, then launch pi\n"
+    "  uninstall  Stop lapdog and remove all state it wrote (~/.lapdog, Claude hooks, pi extension)\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
     "  lapdog python app.py\n"
@@ -143,7 +145,9 @@ def _maybe_write_claude_hooks(disable: bool) -> None:
     write_claude_code_hooks(claude_settings_path)
 
 
-def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False) -> Tuple[int, int, str]:
+def _start_lapdog(
+    port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False
+) -> Tuple[int, int, str]:
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -389,11 +393,56 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
     _run_pi(args=sub_cmd_args, port=port)
 
 
+def cmd_uninstall() -> None:
+    """Tear down everything lapdog has written outside the package install dir.
+
+    Run this *before* `brew uninstall lapdog` / `pip uninstall ddapm-test-agent`;
+    package managers only remove their own files and have no record of the
+    runtime state lapdog creates in the user's home directory.
+    """
+    # 1. Stop the background agent if it's running.
+    pid, _ = _read_pid_file()
+    if pid is not None:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            print(f"[lapdog] Stopped background agent (pid {pid}).")
+        except ProcessLookupError:
+            pass
+        except OSError as e:
+            print(f"[lapdog] Failed to stop background agent (pid {pid}): {e}", file=sys.stderr)
+    _remove_pid_file()
+
+    # 2. Remove the ~/.lapdog working directory.
+    if os.path.isdir(LAPDOG_DIR):
+        shutil.rmtree(LAPDOG_DIR, ignore_errors=True)
+        print(f"[lapdog] Removed {LAPDOG_DIR}/")
+
+    # 3. Strip lapdog's hook entries from Claude Code settings.
+    claude_settings_path = Path.home() / ".claude" / "settings.json"
+    if claude_settings_path.exists() and remove_claude_code_hooks(claude_settings_path):
+        print(f"[lapdog] Removed lapdog hook entries from {claude_settings_path}.")
+
+    # 4. Remove the pi extension.
+    if os.path.isfile(_PI_EXT_DEST):
+        try:
+            os.remove(_PI_EXT_DEST)
+            print(f"[lapdog] Removed {_PI_EXT_DEST}.")
+        except OSError as e:
+            print(f"[lapdog] Failed to remove {_PI_EXT_DEST}: {e}", file=sys.stderr)
+
+    print(
+        "[lapdog] Cleanup complete. Now uninstall the package:\n"
+        "[lapdog]   brew uninstall lapdog\n"
+        "[lapdog]   pipx uninstall ddapm-test-agent\n"
+        "[lapdog]   pip uninstall ddapm-test-agent"
+    )
+
+
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
     lapdog_args: List[str] = []
 
     for arg_idx, arg in enumerate(cmd_args):
-        if not arg.startswith('--'):
+        if not arg.startswith("--"):
             return lapdog_args, cmd_args[arg_idx:]
 
         lapdog_args.append(arg)
@@ -461,3 +510,5 @@ def main() -> None:
         )
     elif sub_cmd == "pi":
         cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+    elif sub_cmd == "uninstall":
+        cmd_uninstall()
