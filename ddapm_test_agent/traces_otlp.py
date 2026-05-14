@@ -12,6 +12,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTrace
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import TraceServiceServicer
 
+
 TRACES_ENDPOINT = "/v1/traces"
 
 

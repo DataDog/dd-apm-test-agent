@@ -10,6 +10,7 @@ from typing import List
 from typing import Tuple
 from typing import Type
 
+
 CHECK_TRACE: contextvars.ContextVar["CheckTrace"] = contextvars.ContextVar("check_trace")
 
 

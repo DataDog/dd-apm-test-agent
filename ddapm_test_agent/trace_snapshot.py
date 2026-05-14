@@ -27,6 +27,7 @@ from .trace import copy_trace
 from .trace import root_span
 from .trace import trace_id as get_trace_id
 
+
 log = logging.getLogger(__name__)
 
 
@@ -181,7 +182,7 @@ def _normalize_traces(traces: List[Trace], attribute_regex_replaces: Dict[str, P
             if "span_links" in span:
                 for link in span["span_links"]:
                     if link["trace_id"] in trace_id_map:
-                        trace_id, span_id_map = trace_id_map[link["trace_id"]]
+                        (trace_id, span_id_map) = trace_id_map[link["trace_id"]]
                         link["trace_id"] = trace_id
                         if link["span_id"] in span_id_map:
                             link["span_id"] = span_id_map[link["span_id"]]

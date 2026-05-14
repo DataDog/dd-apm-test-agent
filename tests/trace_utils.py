@@ -10,6 +10,7 @@ from ddapm_test_agent.trace import dfs_order
 from ddapm_test_agent.trace import root_span
 from ddapm_test_agent.trace import verify_span
 
+
 # Fix the seed for deterministic results between runs
 _random = Random(1234)
 

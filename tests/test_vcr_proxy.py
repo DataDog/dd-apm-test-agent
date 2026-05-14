@@ -20,6 +20,7 @@ import pytest
 
 from ddapm_test_agent.vcr_proxy import _generate_cassette_name
 
+
 LEGACY_CASSETTE_CONTENT = """
 interactions:
 - request:

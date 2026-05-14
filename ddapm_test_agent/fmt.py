@@ -10,6 +10,7 @@ from typing import Optional
 from . import _get_version
 from .trace_snapshot import generate_snapshot
 
+
 log = logging.getLogger(__name__)
 
 

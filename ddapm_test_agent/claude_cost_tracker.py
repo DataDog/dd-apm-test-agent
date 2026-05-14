@@ -206,7 +206,6 @@ def cost_from_provider_usage(
 
     Returns a dict with the same metric keys as ``compute_cost_metrics``.
     """
-
     def _to_nano(v: float) -> int:
         return int(round(v * _NANODOLLARS_PER_DOLLAR))
 

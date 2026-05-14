@@ -4,10 +4,12 @@ from typing import Any
 from typing import Dict
 from typing import cast
 
-from lapdog.hooks import _CLAUDE_CODE_DEFAULT_MATCHER as CLAUDE_CODE_DEFAULT_MATCHER
-from lapdog.hooks import _CLAUDE_CODE_EVENTS as CLAUDE_CODE_EVENTS
-from lapdog.hooks import _CLAUDE_CODE_HOOK as CLAUDE_CODE_HOOK
-from lapdog.hooks import write_claude_code_hooks
+from lapdog.hooks import (
+    _CLAUDE_CODE_DEFAULT_MATCHER as CLAUDE_CODE_DEFAULT_MATCHER,
+    _CLAUDE_CODE_HOOK as CLAUDE_CODE_HOOK,
+    _CLAUDE_CODE_EVENTS as CLAUDE_CODE_EVENTS,
+    write_claude_code_hooks,
+)
 
 
 def _read_settings(path: Path) -> Dict[str, Any]:

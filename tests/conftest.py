@@ -39,10 +39,11 @@ from ddapm_test_agent.apmtelemetry import TelemetryEvent
 from ddapm_test_agent.client import TestOTLPClient
 from ddapm_test_agent.logs import LOGS_ENDPOINT
 from ddapm_test_agent.metrics import METRICS_ENDPOINT
+from ddapm_test_agent.traces_otlp import TRACES_ENDPOINT
 from ddapm_test_agent.trace import Span
 from ddapm_test_agent.trace import Trace
 from ddapm_test_agent.trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
-from ddapm_test_agent.traces_otlp import TRACES_ENDPOINT
+
 
 # Fix the service name to make tests consistently pass local and in CI.
 config.service = ""
@@ -881,9 +882,7 @@ async def grpc_client_with_failure_type(agent_app, available_port, aiohttp_serve
     if service_type not in ["logs", "metrics", "traces"]:
         raise ValueError(f"service_type must be 'logs', 'metrics', or 'traces', got: {service_type}")
 
-    endpoint = (
-        LOGS_ENDPOINT if service_type == "logs" else METRICS_ENDPOINT if service_type == "metrics" else TRACES_ENDPOINT
-    )
+    endpoint = LOGS_ENDPOINT if service_type == "logs" else METRICS_ENDPOINT if service_type == "metrics" else TRACES_ENDPOINT
 
     http_handlers = {
         "http_400": lambda _: web.HTTPBadRequest(text="invalid"),

@@ -18,6 +18,7 @@ import msgpack
 from typing_extensions import NotRequired
 from typing_extensions import TypedDict
 
+
 SpanId = int
 TraceId = int
 
