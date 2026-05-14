@@ -138,8 +138,8 @@ def _remove_pid_file() -> None:
             pass
 
 
-def _maybe_write_claude_hooks(disable: bool) -> None:
-    if disable:
+def _maybe_write_claude_hooks(enable: bool) -> None:
+    if not enable:
         return
     claude_settings_path = Path.home() / ".claude" / "settings.json"
     write_claude_code_hooks(claude_settings_path)
@@ -299,7 +299,7 @@ def _start_lapdog_detached(port: int, forward_data: bool) -> None:
     # refused that would make a re-check flaky.
 
 
-def cmd_exec(app_cmd: List[str], forward_data: bool, disable_hooks: bool = False) -> None:
+def cmd_exec(app_cmd: List[str], forward_data: bool) -> None:
     """Auto-start lapdog if needed, inject tracer env vars, then exec the app command. Never returns."""
     resolved = shutil.which(app_cmd[0])
     if not resolved:
@@ -318,9 +318,9 @@ def cmd_exec(app_cmd: List[str], forward_data: bool, disable_hooks: bool = False
     os.execvpe(resolved, app_cmd, env)
 
 
-def cmd_claude(sub_cmd_args: List[str], forward_data: bool, disable_hooks: bool) -> None:
+def cmd_claude(sub_cmd_args: List[str], forward_data: bool, enable_hooks: bool) -> None:
     """Ensure lapdog is running in background, then launch Claude with intercept."""
-    _maybe_write_claude_hooks(disable_hooks)
+    _maybe_write_claude_hooks(enable_hooks)
     _ensure_lapdog_running(forward_data, detached=True)
     print(build_running_banner(data_type="coding session"))
 
@@ -511,10 +511,15 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--disable-claude-code-hooks",
+        "--hooks",
         action="store_true",
         default=False,
-        help="Skip writing Claude Code hooks to ~/.claude/settings.json.",
+        help=(
+            "Write Claude Code hooks to ~/.claude/settings.json so Claude Code posts "
+            "events to the local lapdog agent. Prefer installing the 'lapdog' Claude "
+            "Code plugin (claude plugin marketplace add DataDog/dd-apm-test-agent && "
+            "claude plugin install lapdog@lapdog) instead of this flag."
+        ),
     )
 
     return parser.parse_args(args=lapdog_args)
@@ -550,7 +555,7 @@ def main() -> None:
         cmd_claude(
             sub_cmd_args=sub_cmd_args,
             forward_data=lapdog_parsed_args.forward,
-            disable_hooks=lapdog_parsed_args.disable_claude_code_hooks,
+            enable_hooks=lapdog_parsed_args.hooks,
         )
     elif sub_cmd == "pi":
         cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)

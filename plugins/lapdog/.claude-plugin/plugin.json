@@ -1,0 +1,5 @@
+{
+  "name": "lapdog",
+  "version": "0.1.0",
+  "description": "Forward Claude Code hook events to a locally running lapdog / dd-apm-test-agent on http://localhost:8126 for trace, prompt, tool-call, and cost visibility."
+}
