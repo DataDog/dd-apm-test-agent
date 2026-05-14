@@ -1,0 +1,16 @@
+---
+features:
+  - |
+    Ship a `lapdog` Claude Code plugin from a marketplace homed in this
+    repository. After `claude plugin marketplace add DataDog/dd-apm-test-agent`
+    and `claude plugin install lapdog@lapdog`, Claude Code POSTs every hook
+    event (PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, ...) to
+    `http://localhost:8126/claude/hooks` without `lapdog claude` having to
+    mutate `~/.claude/settings.json`.
+upgrade:
+  - |
+    `lapdog claude` no longer writes Claude Code hook entries to
+    `~/.claude/settings.json` by default. The previous
+    `--disable-claude-code-hooks` flag is replaced by an opt-in `--hooks`
+    flag for users who cannot install the plugin. The recommended path is
+    `claude plugin install lapdog@lapdog`.

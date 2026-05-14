@@ -22,6 +22,7 @@ want to know what `lapdog start` actually does).
   - [pip (Linux, macOS, Windows)](#pip-linux-macos-windows)
   - [Docker](#docker)
   - [From source](#from-source)
+- [Claude Code plugin](#claude-code-plugin)
 - [Quickstart](#quickstart)
 - [What lapdog touches on your machine](#what-lapdog-touches-on-your-machine)
 - [Uninstallation](#uninstallation)
@@ -130,6 +131,36 @@ pip install "git+https://github.com/DataDog/dd-apm-test-agent@<branch-or-sha>"
 
 ---
 
+## Claude Code plugin
+
+The recommended way to capture Claude Code sessions is the `lapdog` Claude
+Code plugin, vended from a marketplace inside this same repository. The plugin
+registers a non-blocking `curl` hook for every Claude Code event so the local
+lapdog agent can record traces, prompts, tool calls, and permission requests.
+
+```bash
+# One-time: add this repo as a marketplace and install the plugin.
+claude plugin marketplace add DataDog/dd-apm-test-agent
+claude plugin install lapdog@lapdog
+
+# Then in any session:
+lapdog start                  # run the local agent
+claude                        # plugin-installed hooks POST to localhost:8126
+```
+
+Open <http://localhost:8126/leash/> while a session is running.
+
+The plugin lives entirely under `~/.claude/plugins/...` — it does **not**
+modify `~/.claude/settings.json`. `claude plugin uninstall lapdog@lapdog`
+fully removes it.
+
+If you cannot or do not want to install the plugin, `lapdog claude --hooks`
+writes the equivalent hook entries directly into `~/.claude/settings.json`.
+This is opt-in: by default `lapdog claude` no longer touches your Claude Code
+settings.
+
+---
+
 ## Quickstart
 
 ```bash
@@ -156,7 +187,9 @@ sessions, costs, and permission friction in real time.
 Useful flags:
 
 - `--forward` — also forward LLMObs events to Datadog (requires `DD_API_KEY`).
-- `--disable-claude-code-hooks` — do not modify `~/.claude/settings.json`.
+- `--hooks` — opt-in: write Claude Code hook entries into
+  `~/.claude/settings.json` so Claude Code posts events to the local agent.
+  Prefer installing the [Claude Code plugin](#claude-code-plugin) instead.
 - `-p <port>` / `--port <port>` — bind to a different port (default `8126`).
 
 ---
@@ -169,7 +202,7 @@ Knowing this up front makes the uninstall list below easy to verify.
 | --- | --- | --- |
 | `~/.lapdog/lapdog.pid` | `lapdog start` / `lapdog claude` / `lapdog pi` | PID + port of the background agent |
 | `~/.lapdog/lapdog.log` | same | stdout/stderr of the background agent |
-| `~/.claude/settings.json` | `lapdog claude` (unless `--disable-claude-code-hooks`) | adds a `curl` hook to `localhost:8126/claude/hooks` for each Claude Code event |
+| `~/.claude/settings.json` | only `lapdog claude --hooks` (opt-in) | adds a `curl` hook to `localhost:8126/claude/hooks` for each Claude Code event. The Claude Code plugin path leaves this file alone. |
 | `~/.pi/agent/extensions/lapdog.ts` | `lapdog pi` | Pi extension that reports tool calls to the local agent |
 
 No other state is created. There is no daemon installed at the OS level
@@ -192,10 +225,19 @@ find and kill it manually:
 lsof -ti tcp:8126 | xargs kill
 ```
 
-### 2. Remove the Claude Code hooks
+### 2. Remove the Claude Code plugin (if installed)
 
-`lapdog claude` adds hook entries to `~/.claude/settings.json` so Claude Code
-posts events to `localhost:8126/claude/hooks`. They look like:
+If you installed the plugin from the marketplace:
+
+```bash
+claude plugin uninstall lapdog@lapdog
+claude plugin marketplace remove lapdog
+```
+
+### 3. Remove the Claude Code hooks (only if you used `lapdog claude --hooks`)
+
+`lapdog claude --hooks` adds hook entries to `~/.claude/settings.json` so
+Claude Code posts events to `localhost:8126/claude/hooks`. They look like:
 
 ```json
 {
@@ -226,19 +268,19 @@ The hooks are harmless when the agent is not running (the `curl` returns
 non-zero and the `|| true` swallows it), so removing them is optional unless
 you want a fully clean Claude Code config.
 
-### 3. Remove the Pi extension (only if you used `lapdog pi`)
+### 4. Remove the Pi extension (only if you used `lapdog pi`)
 
 ```bash
 rm -f ~/.pi/agent/extensions/lapdog.ts
 ```
 
-### 4. Remove lapdog's working directory
+### 5. Remove lapdog's working directory
 
 ```bash
 rm -rf ~/.lapdog
 ```
 
-### 5. Uninstall the package
+### 6. Uninstall the package
 
 Match the install method you used:
 
