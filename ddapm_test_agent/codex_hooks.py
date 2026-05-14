@@ -106,6 +106,10 @@ def _llm_has_text_output(span: Optional[Dict[str, Any]], message: str) -> bool:
     return any(output.get("role") == "assistant" and output.get("content") == message for output in output_messages)
 
 
+def _normalized_text(value: Any) -> str:
+    return " ".join(str(value).split())
+
+
 class CodexTurn:
     def __init__(self, turn_id: str, trace_id: str, root_span_id: str, step_span_id: str, start_ns: int) -> None:
         self.turn_id = turn_id
@@ -252,6 +256,56 @@ class CodexHooksAPI:
         if len(messages) == 1 and messages[0].get("role") == "user":
             return str(messages[0].get("content", ""))
         return _to_json_str(messages)
+
+    def _proxy_span_user_inputs(self, span: Dict[str, Any]) -> Set[str]:
+        messages = span.get("meta", {}).get("input", {}).get("messages", [])
+        if not isinstance(messages, list):
+            return set()
+        values: Set[str] = set()
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") not in ("user", None):
+                continue
+            text = _normalized_text(message.get("content", ""))
+            if text:
+                values.add(text)
+        return values
+
+    def _session_user_inputs(self, session: CodexSession) -> Set[str]:
+        values = {_normalized_text(prompt) for prompt in session.user_prompts if _normalized_text(prompt)}
+        joined_prompts = _normalized_text("\n\n".join(session.user_prompts))
+        if joined_prompts:
+            values.add(joined_prompts)
+        turn = session.active_turn
+        if turn is not None:
+            for message in turn.llm_input_messages:
+                if message.get("role") != "user":
+                    continue
+                text = _normalized_text(message.get("content", ""))
+                if text:
+                    values.add(text)
+        return values
+
+    def _proxy_span_matches_session(self, span: Dict[str, Any], session: CodexSession) -> bool:
+        proxy_inputs = self._proxy_span_user_inputs(span)
+        if not proxy_inputs:
+            return False
+        return bool(proxy_inputs & self._session_user_inputs(session))
+
+    def _matching_proxy_span_session(
+        self, proxy_session_key: Optional[str], span: Dict[str, Any]
+    ) -> Optional[CodexSession]:
+        if not proxy_session_key:
+            return None
+        for session in reversed(list(self._sessions.values())):
+            turn = session.active_turn
+            if turn is None or turn.closed:
+                continue
+            if self._proxy_span_matches_session(span, session):
+                self._proxy_session_ids[proxy_session_key] = session.session_id
+                return session
+        return None
 
     def _set_step_input(self, session: CodexSession, turn: CodexTurn, step: Dict[str, Any]) -> None:
         input_value = self._llm_input_value(session, turn)
@@ -507,6 +561,7 @@ class CodexHooksAPI:
                     turn.root_span_ref["meta"]["input"]["value"] = "\n\n".join(session.user_prompts)
                 if turn.step_span_ref:
                     self._set_step_input(session, turn, turn.step_span_ref)
+                self._adopt_orphan_proxy_llm_spans(session, turn)
             return []
 
         if event_type == "agent_message":
@@ -700,6 +755,8 @@ class CodexHooksAPI:
         """Attach a proxied LLM span to the active Codex turn, or buffer it."""
         session = self._active_proxy_session(maybe_session_id)
         if session is None or session.active_turn is None or session.active_turn.closed:
+            session = self._matching_proxy_span_session(maybe_session_id, span)
+        if session is None or session.active_turn is None or session.active_turn.closed:
             span["parent_id"] = "undefined"
             self._orphan_proxy_llm_spans.append((maybe_session_id, span))
             self._append_span(span)
@@ -747,8 +804,14 @@ class CodexHooksAPI:
         remaining: List[OrphanProxySpan] = []
         for maybe_session_id, span in self._orphan_proxy_llm_spans:
             if maybe_session_id:
-                mapped_session_id = self._proxy_session_ids.get(maybe_session_id, maybe_session_id)
-                if mapped_session_id != session.session_id:
+                mapped_session_id = self._proxy_session_ids.get(maybe_session_id)
+                if mapped_session_id:
+                    if mapped_session_id != session.session_id:
+                        remaining.append((maybe_session_id, span))
+                        continue
+                elif self._proxy_span_matches_session(span, session):
+                    self._proxy_session_ids[maybe_session_id] = session.session_id
+                else:
                     remaining.append((maybe_session_id, span))
                     continue
             elif span.get("session_id") and span.get("session_id") != session.session_id:
@@ -868,8 +931,6 @@ class CodexHooksAPI:
     ) -> List[CompletedTrace]:
         start_ns = _timestamp_to_ns(record.get("timestamp", ""))
         session = self._get_or_create_session(session_id, start_ns=start_ns)
-        if proxy_session_key:
-            self._proxy_session_ids.setdefault(proxy_session_key, session.session_id)
         try:
             record_fingerprint = json.dumps(record, sort_keys=True, separators=(",", ":"))
         except (TypeError, ValueError):

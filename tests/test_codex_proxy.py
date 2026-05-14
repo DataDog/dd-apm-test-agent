@@ -414,7 +414,39 @@ async def test_codex_proxy_keyed_orphan_waits_for_matching_session(agent, aiohtt
     sid_a = "codex-proxy-matching"
     await _post_codex(agent, sid_a, _session_meta(sid_a), proxy_session_key="proxy-a")
     await _post_codex(agent, sid_a, _turn_context("turn-a"), proxy_session_key="proxy-a")
+    await _post_codex(agent, sid_a, _event("user_message", message="prompt a"), proxy_session_key="proxy-a")
 
     llms_a = _by_kind(await _spans(agent, sid_a), "llm")
     assert len(llms_a) == 1
     assert llms_a[0]["parent_id"] != "undefined"
+
+
+async def test_codex_proxy_keyed_orphan_ignores_same_key_non_matching_session(agent, aiohttp_server):
+    async def handle(request):
+        return web.json_response(_responses_body(text="second answer"))
+
+    upstream_app = web.Application()
+    upstream_app.router.add_post("/v1/responses", handle)
+    upstream = await aiohttp_server(upstream_app)
+
+    resp = await agent.post(
+        "/codex/proxy/proxy-shared/v1/responses",
+        headers={"X-DDAPM-Upstream": str(upstream.make_url("")).rstrip("/")},
+        json=_responses_request(text="prompt b"),
+    )
+    assert resp.status == 200
+
+    sid_a = "codex-proxy-first-file"
+    await _post_codex(agent, sid_a, _session_meta(sid_a), proxy_session_key="proxy-shared")
+    await _post_codex(agent, sid_a, _turn_context("turn-a"), proxy_session_key="proxy-shared")
+    await _post_codex(agent, sid_a, _event("user_message", message="prompt a"), proxy_session_key="proxy-shared")
+    assert _by_kind(await _spans(agent, sid_a), "llm") == []
+
+    sid_b = "codex-proxy-second-file"
+    await _post_codex(agent, sid_b, _session_meta(sid_b), proxy_session_key="proxy-shared")
+    await _post_codex(agent, sid_b, _turn_context("turn-b"), proxy_session_key="proxy-shared")
+    await _post_codex(agent, sid_b, _event("user_message", message="prompt b"), proxy_session_key="proxy-shared")
+
+    llms_b = _by_kind(await _spans(agent, sid_b), "llm")
+    assert len(llms_b) == 1
+    assert llms_b[0]["parent_id"] != "undefined"

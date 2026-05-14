@@ -90,7 +90,6 @@ def _drain_file(
     lapdog_url: str,
     cwd: str,
     proxy_session_key: Optional[str] = None,
-    allowed_session_id: Optional[str] = None,
 ) -> Optional[str]:
     try:
         with path.open("rb") as f:
@@ -125,10 +124,6 @@ def _drain_file(
         session_id = _record_session_id(record)
         if session_id:
             state.session_id = session_id
-
-        if allowed_session_id and state.session_id and state.session_id != allowed_session_id:
-            state.buffer.clear()
-            continue
 
         record_cwd = _record_cwd(record)
         if record_cwd and state.matches_cwd is None:
@@ -206,7 +201,6 @@ def watch_codex_sessions(
     states: Dict[Path, FileState] = {}
     started_at = time.time()
     initial_paths = set(_iter_jsonl_files(session_dir)) if proxy_session_key else set()
-    claimed_session_id: Optional[str] = None
     parent_dead_at: Optional[float] = None
     if ready_file is not None:
         try:
@@ -243,16 +237,13 @@ def watch_codex_sessions(
                 states[path] = FileState(offset=initial_offset)
                 if initial_offset and not proxy_session_key:
                     _prime_file_state(path, states[path], cwd, initial_offset)
-            posted_session_id = _drain_file(
+            _drain_file(
                 path,
                 states[path],
                 lapdog_url,
                 cwd,
                 proxy_session_key=proxy_session_key,
-                allowed_session_id=claimed_session_id,
             )
-            if proxy_session_key and posted_session_id and claimed_session_id is None:
-                claimed_session_id = posted_session_id
 
         if not _process_exists(parent_pid):
             if parent_dead_at is None:
@@ -271,7 +262,6 @@ def watch_codex_sessions(
             lapdog_url,
             cwd,
             proxy_session_key=proxy_session_key,
-            allowed_session_id=claimed_session_id,
         )
 
 
