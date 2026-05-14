@@ -11,6 +11,7 @@ import time
 from typing import List
 from typing import Optional
 from typing import Tuple
+import uuid
 
 import requests
 
@@ -392,7 +393,7 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
     _run_pi(args=sub_cmd_args, port=port)
 
 
-def _start_codex_watcher(port: int) -> None:
+def _start_codex_watcher(port: int, proxy_session_key: Optional[str] = None) -> None:
     """Start the bundled Codex JSONL watcher for this working directory."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -414,6 +415,8 @@ def _start_codex_watcher(port: int) -> None:
         "--ready-file",
         ready_path,
     ]
+    if proxy_session_key:
+        args += ["--proxy-session-key", proxy_session_key]
     with open(log_path, "a") as log_file:
         process = subprocess.Popen(
             args,
@@ -432,7 +435,9 @@ def _start_codex_watcher(port: int) -> None:
     print("[lapdog] Codex watcher did not confirm startup; continuing without startup confirmation.", file=sys.stderr)
 
 
-def _run_codex(args: Optional[List[str]] = None, port: Optional[int] = None) -> None:
+def _run_codex(
+    args: Optional[List[str]] = None, port: Optional[int] = None, proxy_session_key: Optional[str] = None
+) -> None:
     """Exec the codex binary, forwarding arguments. Never returns."""
     if args is None:
         args = []
@@ -443,7 +448,8 @@ def _run_codex(args: Optional[List[str]] = None, port: Optional[int] = None) -> 
     env = os.environ.copy()
     proxy_args: List[str] = []
     if port is not None:
-        base_url = f"http://localhost:{port}/codex/proxy/v1"
+        proxy_path = f"/codex/proxy/{proxy_session_key}/v1" if proxy_session_key else "/codex/proxy/v1"
+        base_url = f"http://localhost:{port}{proxy_path}"
         env["OPENAI_BASE_URL"] = base_url
         if env.get("OPENAI_API_KEY"):
             proxy_args = [
@@ -469,10 +475,11 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
     if port is None:
         print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
         sys.exit(1)
-    _start_codex_watcher(port)
+    proxy_session_key = uuid.uuid4().hex
+    _start_codex_watcher(port, proxy_session_key=proxy_session_key)
 
     print(build_running_banner(data_type="coding session"))
-    _run_codex(args=sub_cmd_args, port=port)
+    _run_codex(args=sub_cmd_args, port=port, proxy_session_key=proxy_session_key)
 
 
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:

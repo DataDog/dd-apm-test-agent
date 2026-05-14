@@ -27,6 +27,7 @@ from .llmobs_event_platform import with_cors
 log = logging.getLogger(__name__)
 
 CompletedTrace = Tuple[str, str]
+OrphanProxySpan = Tuple[Optional[str], Dict[str, Any]]
 
 
 def _timestamp_to_ns(timestamp: str) -> int:
@@ -176,7 +177,8 @@ class CodexHooksAPI:
         self._sessions: Dict[str, CodexSession] = {}
         self._raw_events: List[Dict[str, Any]] = []
         self._last_session_id = ""
-        self._orphan_proxy_llm_spans: List[Dict[str, Any]] = []
+        self._proxy_session_ids: Dict[str, str] = {}
+        self._orphan_proxy_llm_spans: List[OrphanProxySpan] = []
 
     def _append_span(self, span: Dict[str, Any]) -> None:
         self._hooks_api._assembled_spans.append(span)
@@ -663,9 +665,11 @@ class CodexHooksAPI:
 
     def _active_proxy_session(self, maybe_session_id: Optional[str] = None) -> Optional[CodexSession]:
         if maybe_session_id:
-            session = self._sessions.get(maybe_session_id)
+            session_id = self._proxy_session_ids.get(maybe_session_id, maybe_session_id)
+            session = self._sessions.get(session_id)
             if session is not None:
                 return session
+            return None
         for session in reversed(list(self._sessions.values())):
             turn = session.active_turn
             if turn is not None and not turn.closed:
@@ -678,7 +682,7 @@ class CodexHooksAPI:
         """Reserve the active Codex step for a proxied LLM call."""
         session = self._active_proxy_session(maybe_session_id)
         if session is None or session.active_turn is None or session.active_turn.closed:
-            return None
+            return maybe_session_id
         turn = session.active_turn
         if turn.step_span_ref is not None and turn.current_step_has_llm and not session.pending_tools:
             self._close_current_step(turn)
@@ -697,7 +701,7 @@ class CodexHooksAPI:
         session = self._active_proxy_session(maybe_session_id)
         if session is None or session.active_turn is None or session.active_turn.closed:
             span["parent_id"] = "undefined"
-            self._orphan_proxy_llm_spans.append(span)
+            self._orphan_proxy_llm_spans.append((maybe_session_id, span))
             self._append_span(span)
             return
 
@@ -740,10 +744,15 @@ class CodexHooksAPI:
     def _adopt_orphan_proxy_llm_spans(self, session: CodexSession, turn: CodexTurn) -> None:
         if not self._orphan_proxy_llm_spans:
             return
-        remaining: List[Dict[str, Any]] = []
-        for span in self._orphan_proxy_llm_spans:
-            if span.get("session_id") and span.get("session_id") != session.session_id:
-                remaining.append(span)
+        remaining: List[OrphanProxySpan] = []
+        for maybe_session_id, span in self._orphan_proxy_llm_spans:
+            if maybe_session_id:
+                mapped_session_id = self._proxy_session_ids.get(maybe_session_id, maybe_session_id)
+                if mapped_session_id != session.session_id:
+                    remaining.append((maybe_session_id, span))
+                    continue
+            elif span.get("session_id") and span.get("session_id") != session.session_id:
+                remaining.append((maybe_session_id, span))
                 continue
             start_ns = int(span.get("start_ns", turn.start_ns))
             end_ns = start_ns + int(span.get("duration", 0))
@@ -854,9 +863,13 @@ class CodexHooksAPI:
             is_error=False,
         )
 
-    def _dispatch(self, session_id: str, record: Dict[str, Any]) -> List[CompletedTrace]:
+    def _dispatch(
+        self, session_id: str, record: Dict[str, Any], proxy_session_key: Optional[str] = None
+    ) -> List[CompletedTrace]:
         start_ns = _timestamp_to_ns(record.get("timestamp", ""))
         session = self._get_or_create_session(session_id, start_ns=start_ns)
+        if proxy_session_key:
+            self._proxy_session_ids.setdefault(proxy_session_key, session.session_id)
         try:
             record_fingerprint = json.dumps(record, sort_keys=True, separators=(",", ":"))
         except (TypeError, ValueError):
@@ -880,9 +893,10 @@ class CodexHooksAPI:
             self._update_last_ns(session, record)
         return []
 
-    def _unwrap_body(self, body: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    def _unwrap_body(self, body: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Optional[str]]:
         record = body.get("record", body)
         session_id = body.get("session_id", "")
+        proxy_session_key = body.get("proxy_session_key") or None
         if isinstance(record, dict):
             payload = record.get("payload", {})
             if not isinstance(payload, dict):
@@ -895,7 +909,7 @@ class CodexHooksAPI:
                 session_id = self._last_session_id
             if not session_id and len(self._sessions) == 1:
                 session_id = next(iter(self._sessions))
-        return session_id, record
+        return session_id, record, proxy_session_key
 
     async def handle_hook(self, request: Request) -> web.Response:
         try:
@@ -903,15 +917,17 @@ class CodexHooksAPI:
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
 
-        session_id, record = self._unwrap_body(body)
+        session_id, record, proxy_session_key = self._unwrap_body(body)
         if not session_id:
             return web.json_response({"error": "missing session_id"}, status=400)
 
         self._raw_events.append(body)
         self._last_session_id = session_id
-        completed = self._dispatch(session_id, record)
+        completed = self._dispatch(session_id, record, proxy_session_key=proxy_session_key)
         for completed_session_id, completed_trace_id in completed:
-            await self._hooks_api._forward_trace_to_backend(completed_session_id, trace_id=completed_trace_id)
+            await self._hooks_api._forward_trace_to_backend(
+                completed_session_id, trace_id=completed_trace_id, span_source="Codex"
+            )
             await self._hooks_api._forward_eval_metrics_to_backend(completed_session_id, trace_id=completed_trace_id)
         return web.json_response({"status": "ok"})
 

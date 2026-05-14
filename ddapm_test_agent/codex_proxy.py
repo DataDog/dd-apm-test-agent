@@ -26,6 +26,12 @@ SKIP_REQUEST_HEADERS = {"host", "transfer-encoding", "content-length", "x-ddapm-
 SKIP_RESPONSE_HEADERS = {"content-length", "transfer-encoding", "content-encoding", "connection"}
 
 
+def _is_client_disconnect_error(exc: BaseException) -> bool:
+    if isinstance(exc, (aiohttp.ClientConnectionResetError, ConnectionResetError, BrokenPipeError)):
+        return True
+    return isinstance(exc, RuntimeError) and "closing transport" in str(exc)
+
+
 def _parse_sse_events(raw: bytes) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
     text = raw.decode("utf-8", errors="replace")
@@ -278,6 +284,7 @@ class CodexProxyAPI:
 
     async def handle_proxy(self, request: Request) -> web.StreamResponse:
         path = request.match_info.get("path", "")
+        proxy_session_key = request.match_info.get("proxy_session_key", "") or None
         upstream_origin = request.headers.get("X-DDAPM-Upstream", OPENAI_API_BASE).rstrip("/")
         target_url = f"{upstream_origin}/v1/{path}"
         if request.query_string:
@@ -292,7 +299,7 @@ class CodexProxyAPI:
             pass
 
         start_ns = monotonic_wall_ns()
-        maybe_session_id = self._hooks_api.begin_proxy_llm_call(None, start_ns)
+        maybe_session_id = self._hooks_api.begin_proxy_llm_call(proxy_session_key, start_ns)
         headers = {key: value for key, value in request.headers.items() if key.lower() not in SKIP_REQUEST_HEADERS}
         http_session = await self._get_http_session()
 
@@ -304,9 +311,14 @@ class CodexProxyAPI:
                 data=body_bytes,
             ) as upstream_resp:
                 if request_body.get("stream", False):
-                    return await self._handle_streaming(request, upstream_resp, request_body, maybe_session_id, start_ns)
+                    return await self._handle_streaming(
+                        request, upstream_resp, request_body, maybe_session_id, start_ns
+                    )
                 return await self._handle_non_streaming(upstream_resp, request_body, maybe_session_id, start_ns)
         except Exception as exc:
+            if _is_client_disconnect_error(exc):
+                log.debug("Codex proxy client disconnected while forwarding to %s: %s", target_url, exc)
+                return web.Response(status=499)
             log.error("Codex proxy error forwarding to %s: %s", target_url, exc)
             return web.json_response({"error": {"type": "proxy_error", "message": str(exc)}}, status=502)
 
@@ -325,10 +337,25 @@ class CodexProxyAPI:
         await response.prepare(request)
 
         buffered_chunks: List[bytes] = []
+        downstream_closed = False
         async for chunk in upstream_resp.content.iter_any():
-            await response.write(chunk)
             buffered_chunks.append(chunk)
-        await response.write_eof()
+            if downstream_closed:
+                continue
+            try:
+                await response.write(chunk)
+            except Exception as exc:
+                if not _is_client_disconnect_error(exc):
+                    raise
+                downstream_closed = True
+                log.debug("Codex proxy client disconnected while streaming response: %s", exc)
+        if not downstream_closed:
+            try:
+                await response.write_eof()
+            except Exception as exc:
+                if not _is_client_disconnect_error(exc):
+                    raise
+                log.debug("Codex proxy client disconnected before stream EOF: %s", exc)
 
         if upstream_resp.status == 200:
             end_ns = monotonic_wall_ns()
@@ -369,5 +396,6 @@ class CodexProxyAPI:
 
     def get_routes(self) -> List[web.RouteDef]:
         return [
+            web.route("*", "/codex/proxy/{proxy_session_key}/v1/{path:.*}", with_cors(self.handle_proxy)),
             web.route("*", "/codex/proxy/v1/{path:.*}", with_cors(self.handle_proxy)),
         ]

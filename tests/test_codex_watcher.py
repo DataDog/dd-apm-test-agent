@@ -40,6 +40,37 @@ def test_drain_file_buffers_until_matching_cwd(monkeypatch, tmp_path):
     assert all(post["session_id"] == "sess-1" for post in posts)
 
 
+def test_drain_file_includes_proxy_session_key(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-keyed", "cwd": str(tmp_path)}})
+
+    _drain_file(session_file, FileState(), "http://localhost:8126", str(tmp_path), proxy_session_key="proxy-key")
+
+    assert posts[0]["session_id"] == "sess-keyed"
+    assert posts[0]["proxy_session_key"] == "proxy-key"
+
+
+def test_drain_file_respects_allowed_session_id(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-other", "cwd": str(tmp_path)}})
+
+    posted_session_id = _drain_file(
+        session_file,
+        FileState(),
+        "http://localhost:8126",
+        str(tmp_path),
+        proxy_session_key="proxy-key",
+        allowed_session_id="sess-claimed",
+    )
+
+    assert posted_session_id is None
+    assert posts == []
+
+
 def test_drain_file_drops_non_matching_cwd(monkeypatch, tmp_path):
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))

@@ -2,12 +2,22 @@ import json
 
 from aiohttp import web
 
+from ddapm_test_agent.codex_proxy import _is_client_disconnect_error
 
-async def _post_codex(agent, session_id, record):
+
+def test_codex_proxy_identifies_closing_transport_as_client_disconnect():
+    assert _is_client_disconnect_error(RuntimeError("Cannot write to closing transport"))
+    assert not _is_client_disconnect_error(RuntimeError("upstream failed"))
+
+
+async def _post_codex(agent, session_id, record, proxy_session_key=None):
+    body = {"session_id": session_id, "record": record}
+    if proxy_session_key:
+        body["proxy_session_key"] = proxy_session_key
     return await agent.post(
         "/codex/hooks",
         headers={"Content-Type": "application/json"},
-        data=json.dumps({"session_id": session_id, "record": record}),
+        data=json.dumps(body),
     )
 
 
@@ -49,11 +59,11 @@ def _event(event_type, timestamp="2026-05-11T17:00:02.000Z", **kwargs):
     }
 
 
-def _responses_request(stream=False):
+def _responses_request(stream=False, text="hello"):
     return {
         "model": "gpt-5.5",
         "stream": stream,
-        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": text}]}],
     }
 
 
@@ -346,3 +356,65 @@ async def test_codex_proxy_orphan_is_reparented_when_turn_arrives(agent, aiohttp
     assert len(steps) == 1
     assert len(llms) == 1
     assert llms[0]["parent_id"] == steps[0]["span_id"]
+
+
+async def test_codex_proxy_session_key_routes_to_matching_active_session(agent, aiohttp_server):
+    sid_a = "codex-proxy-a"
+    sid_b = "codex-proxy-b"
+    await _post_codex(agent, sid_a, _session_meta(sid_a), proxy_session_key="proxy-a")
+    await _post_codex(agent, sid_a, _turn_context("turn-a"), proxy_session_key="proxy-a")
+    await _post_codex(agent, sid_a, _event("user_message", message="prompt a"), proxy_session_key="proxy-a")
+    await _post_codex(agent, sid_b, _session_meta(sid_b), proxy_session_key="proxy-b")
+    await _post_codex(agent, sid_b, _turn_context("turn-b"), proxy_session_key="proxy-b")
+    await _post_codex(agent, sid_b, _event("user_message", message="prompt b"), proxy_session_key="proxy-b")
+
+    async def handle(request):
+        return web.json_response(_responses_body(text="answer a"))
+
+    upstream_app = web.Application()
+    upstream_app.router.add_post("/v1/responses", handle)
+    upstream = await aiohttp_server(upstream_app)
+
+    resp = await agent.post(
+        "/codex/proxy/proxy-a/v1/responses",
+        headers={"X-DDAPM-Upstream": str(upstream.make_url("")).rstrip("/")},
+        json=_responses_request(text="prompt a"),
+    )
+    assert resp.status == 200
+
+    spans_a = await _spans(agent, sid_a)
+    spans_b = await _spans(agent, sid_b)
+    llms_a = _by_kind(spans_a, "llm")
+    llms_b = _by_kind(spans_b, "llm")
+    assert len(llms_a) == 1
+    assert llms_b == []
+    assert llms_a[0]["meta"]["input"]["messages"] == [{"role": "user", "content": "prompt a"}]
+
+
+async def test_codex_proxy_keyed_orphan_waits_for_matching_session(agent, aiohttp_server):
+    async def handle(request):
+        return web.json_response(_responses_body(text="keyed orphan"))
+
+    upstream_app = web.Application()
+    upstream_app.router.add_post("/v1/responses", handle)
+    upstream = await aiohttp_server(upstream_app)
+
+    resp = await agent.post(
+        "/codex/proxy/proxy-a/v1/responses",
+        headers={"X-DDAPM-Upstream": str(upstream.make_url("")).rstrip("/")},
+        json=_responses_request(text="prompt a"),
+    )
+    assert resp.status == 200
+
+    sid_b = "codex-proxy-unrelated"
+    await _post_codex(agent, sid_b, _session_meta(sid_b), proxy_session_key="proxy-b")
+    await _post_codex(agent, sid_b, _turn_context("turn-b"), proxy_session_key="proxy-b")
+    assert _by_kind(await _spans(agent, sid_b), "llm") == []
+
+    sid_a = "codex-proxy-matching"
+    await _post_codex(agent, sid_a, _session_meta(sid_a), proxy_session_key="proxy-a")
+    await _post_codex(agent, sid_a, _turn_context("turn-a"), proxy_session_key="proxy-a")
+
+    llms_a = _by_kind(await _spans(agent, sid_a), "llm")
+    assert len(llms_a) == 1
+    assert llms_a[0]["parent_id"] != "undefined"

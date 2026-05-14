@@ -528,11 +528,13 @@ async def test_codex_new_turn_finalizes_previous_turn(agent):
 
 async def test_codex_new_turn_forwards_completed_trace_before_repointing_session(agent, monkeypatch):
     forwarded_payloads = []
+    descriptions = []
 
     def fake_resolve_backend_target(self, *args, **kwargs):
         return "http://backend.example", {}
 
     async def fake_post_to_backend(self, url, headers, data, description):
+        descriptions.append(description)
         forwarded_payloads.append(msgpack.unpackb(gzip.decompress(data), raw=False))
 
     monkeypatch.setattr(ClaudeHooksAPI, "_resolve_backend_target", fake_resolve_backend_target)
@@ -549,6 +551,7 @@ async def test_codex_new_turn_forwards_completed_trace_before_repointing_session
     forwarded_spans = forwarded_payloads[0]["spans"]
     forwarded_turn_ids = {span["meta"]["metadata"].get("turn_id") for span in forwarded_spans}
     assert forwarded_turn_ids == {"turn-a"}
+    assert "Codex spans" in descriptions[0]
 
 
 async def test_codex_accepts_raw_jsonl_records_like_curl(agent):
