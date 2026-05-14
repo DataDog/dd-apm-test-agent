@@ -24,6 +24,7 @@ from .claude_hooks import _to_json_str
 from .codex_cost_tracker import compute_openai_cost_metrics
 from .llmobs_event_platform import with_cors
 
+
 log = logging.getLogger(__name__)
 
 CompletedTrace = Tuple[str, str]
@@ -156,6 +157,15 @@ class CodexSession:
         self.active_turn: Optional[CodexTurn] = None
         self.completed_turns: List[str] = []
         self.seen_records: Set[str] = set()
+        # Codex reuses tool call_ids like "web_search_2" across turns. Track
+        # how many times each id has been seen and the unique id currently in
+        # flight so PendingToolSpan keys stay unique and outputs pair correctly.
+        self.seen_tool_use_ids: Dict[str, int] = {}
+        self.tool_use_id_map: Dict[str, str] = {}
+        # Subagent (collab_agent_spawn) stack — mirrors the Claude agent_span_stack
+        # pattern so spans emitted while a subagent is active nest beneath it.
+        self.agent_span_stack: List[Dict[str, Any]] = []
+        self.pending_subagents: Dict[str, Dict[str, Any]] = {}
 
 
 class CodexConfig:
@@ -384,6 +394,9 @@ class CodexHooksAPI:
         session.user_prompts = []
         session.tools_used = set()
         session.pending_tools = {}
+        session.tool_use_id_map = {}
+        session.agent_span_stack = []
+        session.pending_subagents = {}
 
         root_tags = self._base_tags(session) + ["trajectory.semantic_type:turn"]
         root_span: Dict[str, Any] = {
@@ -510,6 +523,17 @@ class CodexHooksAPI:
         for pending in list(session.pending_tools.values()):
             self._emit_tool_span(session, pending, end_ns, output_value="", is_error=True)
         session.pending_tools.clear()
+        session.tool_use_id_map.clear()
+        # Any subagent that never received a spawn_end is finalized here so its
+        # span has a non-zero duration rather than hanging open.
+        for entry in session.agent_span_stack:
+            span = entry.get("_span_ref")
+            if isinstance(span, dict):
+                span["duration"] = max(end_ns - int(span.get("start_ns", end_ns)), 0)
+                span.setdefault("status", "error")
+                span["meta"].setdefault("metadata", {}).setdefault("subagent", {})["status"] = "unterminated"
+        session.agent_span_stack.clear()
+        session.pending_subagents.clear()
         self._close_current_step(turn, end_ns=turn.current_step_last_ns or end_ns)
         turn.closed = True
         session.completed_turns.append(turn.turn_id)
@@ -547,6 +571,21 @@ class CodexHooksAPI:
 
         if event_type == "token_count":
             self._handle_token_count(session, record)
+            return []
+
+        if event_type == "collab_agent_spawn_begin":
+            self._update_last_ns(session, record)
+            self._handle_collab_agent_spawn_begin(session, record, event)
+            return []
+
+        if event_type == "collab_agent_spawn_end":
+            self._update_last_ns(session, record)
+            self._handle_collab_agent_spawn_end(session, record, event)
+            return []
+
+        if event_type == "context_compacted":
+            self._update_last_ns(session, record)
+            self._handle_compaction(session, record, trigger="context_compacted")
             return []
 
         ns = self._update_last_ns(session, record)
@@ -822,10 +861,157 @@ class CodexHooksAPI:
             self._attach_proxy_llm_span(session, turn, span, start_ns, end_ns, append=False)
         self._orphan_proxy_llm_spans = remaining
 
+    def _tool_parent_id(self, session: CodexSession, turn: CodexTurn) -> str:
+        """Return the parent span id for a new tool span.
+
+        When a subagent (``collab_agent_spawn_begin``) is active, tool spans
+        nest under the subagent span; otherwise they hang off the active step.
+        """
+        if session.agent_span_stack:
+            return str(session.agent_span_stack[-1]["span_id"])
+        return turn.step_span_id
+
+    def _current_active_span_ref(self, session: CodexSession) -> Optional[Dict[str, Any]]:
+        """Return the span dict most appropriate to annotate (e.g. compaction)."""
+        if session.agent_span_stack:
+            return session.agent_span_stack[-1].get("_span_ref")
+        turn = session.active_turn
+        if turn is None:
+            return None
+        return turn.step_span_ref or turn.last_step_span_ref or turn.root_span_ref
+
+    def _handle_collab_agent_spawn_begin(
+        self, session: CodexSession, record: Dict[str, Any], event: Dict[str, Any]
+    ) -> None:
+        turn = self._active_turn(session, record)
+        start_ns = _timestamp_to_ns(record.get("timestamp", ""))
+        self._ensure_step(session, turn, start_ns)
+        call_id = str(event.get("call_id", "")) or _format_span_id()
+        prompt = event.get("prompt", "")
+        sender_thread_id = event.get("sender_thread_id", "")
+        agent_name = event.get("new_agent_nickname") or event.get("agent_nickname") or "subagent"
+        parent_id = self._tool_parent_id(session, turn)
+        span_id = _format_span_id()
+        span: Dict[str, Any] = {
+            "span_id": span_id,
+            "trace_id": turn.trace_id,
+            "parent_id": parent_id,
+            "name": str(agent_name),
+            "status": "ok",
+            "start_ns": start_ns,
+            "duration": 0,
+            "ml_app": self._config.ml_app,
+            "service": self._config.service,
+            "env": self._config.env,
+            "session_id": session.session_id,
+            "tags": self._base_tags(session) + ["subagent:true"],
+            "meta": {
+                "span": {"kind": "agent"},
+                "input": {"value": prompt if isinstance(prompt, str) else _to_json_str(prompt)},
+                "output": {"value": ""},
+                "metadata": {
+                    "subagent": {
+                        "call_id": call_id,
+                        "sender_thread_id": sender_thread_id,
+                        "agent_nickname": str(agent_name),
+                    }
+                },
+            },
+            "metrics": {},
+            "span_links": [],
+        }
+        self._append_span(span)
+        entry: Dict[str, Any] = {
+            "span_id": span_id,
+            "parent_id": parent_id,
+            "call_id": call_id,
+            "start_ns": start_ns,
+            "agent_name": str(agent_name),
+            "_span_ref": span,
+        }
+        session.pending_subagents[call_id] = entry
+        session.agent_span_stack.append(entry)
+
+    def _handle_collab_agent_spawn_end(
+        self, session: CodexSession, record: Dict[str, Any], event: Dict[str, Any]
+    ) -> None:
+        call_id = str(event.get("call_id", ""))
+        entry = session.pending_subagents.pop(call_id, None)
+        if entry is None:
+            return
+        end_ns = _timestamp_to_ns(record.get("timestamp", ""))
+        # Unwind any subagents stacked above this one (out-of-order completion).
+        try:
+            idx = session.agent_span_stack.index(entry)
+        except ValueError:
+            idx = -1
+        if idx >= 0:
+            stale = session.agent_span_stack[idx + 1 :]
+            del session.agent_span_stack[idx:]
+            for stale_entry in stale:
+                stale_span = stale_entry.get("_span_ref")
+                if isinstance(stale_span, dict):
+                    stale_span["duration"] = max(end_ns - int(stale_span.get("start_ns", end_ns)), 0)
+                    stale_span["status"] = "error"
+                    stale_span["meta"].setdefault("metadata", {}).setdefault("subagent", {})["status"] = "unwound"
+                session.pending_subagents.pop(str(stale_entry.get("call_id", "")), None)
+        span = entry.get("_span_ref")
+        if isinstance(span, dict):
+            span["duration"] = max(end_ns - int(span.get("start_ns", end_ns)), 0)
+            status = str(event.get("status", "")) or "ok"
+            span["status"] = "ok" if status in ("ok", "success", "") else "error"
+            metadata = span["meta"].setdefault("metadata", {}).setdefault("subagent", {})
+            metadata["status"] = status
+            new_thread_id = event.get("new_thread_id")
+            if new_thread_id:
+                metadata["child_session_id"] = str(new_thread_id)
+            new_agent_role = event.get("new_agent_role")
+            if new_agent_role:
+                metadata["agent_role"] = str(new_agent_role)
+            new_agent_nickname = event.get("new_agent_nickname")
+            if new_agent_nickname:
+                metadata["agent_nickname"] = str(new_agent_nickname)
+                # Only nickname becomes available at spawn_end — backfill the
+                # preliminary span's display name if we haven't already.
+                if span.get("name") in ("", "subagent", entry.get("agent_name")):
+                    span["name"] = str(new_agent_nickname)
+
+    def _handle_compaction(self, session: CodexSession, record: Dict[str, Any], trigger: str) -> None:
+        span_ref = self._current_active_span_ref(session)
+        if span_ref is None:
+            return
+        meta = span_ref.setdefault("meta", {})
+        metadata = meta.setdefault("metadata", {})
+        dd = metadata.setdefault("_dd", {})
+        compactions = dd.setdefault("compactions", [])
+        compactions.append(
+            {
+                "trigger": trigger,
+                "timestamp_ns": _timestamp_to_ns(record.get("timestamp", "")),
+            }
+        )
+
+    def _deduplicate_tool_use_id(self, session: CodexSession, call_id: str) -> str:
+        """Return a session-unique tool_use_id.
+
+        Codex sometimes reuses ``call_id`` across turns (e.g. ``web_search_2``).
+        Suffix repeats with an occurrence counter so trace consumers can pair
+        each ``function_call`` with its matching ``function_call_output``
+        without collisions. Direct port of trajectory's ``deduplicateToolUseID``
+        (``trajectory/codex/mapper/mapper.go``).
+        """
+        count = session.seen_tool_use_ids.get(call_id, 0) + 1
+        session.seen_tool_use_ids[call_id] = count
+        if count == 1:
+            return call_id
+        return f"{call_id}_{count}"
+
     def _handle_function_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
         turn = self._active_turn(session, record)
         payload = record.get("payload", {})
         call_id = payload.get("call_id", "") or _format_span_id()
+        unique_id = self._deduplicate_tool_use_id(session, call_id)
+        session.tool_use_id_map[call_id] = unique_id
         tool_name = payload.get("name", "unknown_tool") or "unknown_tool"
         session.tools_used.add(tool_name)
         self._update_agent_manifest(session)
@@ -850,7 +1036,7 @@ class CodexHooksAPI:
         tool_call_message = {
             "role": "assistant",
             "content": _to_json_str(tool_input),
-            "tool_calls": [{"id": call_id, "name": tool_name, "arguments": tool_input}],
+            "tool_calls": [{"id": unique_id, "name": tool_name, "arguments": tool_input}],
         }
         llm_span = turn.last_llm_span_ref
         if appending_to_existing_llm and llm_span is not None:
@@ -862,11 +1048,11 @@ class CodexHooksAPI:
             turn.step_span_ref["meta"]["output"]["value"] = _to_json_str(tool_input)
         self._emit_pending_llm_span(session, turn)
 
-        session.pending_tools[call_id] = PendingToolSpan(
+        session.pending_tools[unique_id] = PendingToolSpan(
             span_id=_format_span_id(),
             tool_name=tool_name,
             tool_input=tool_input,
-            parent_id=turn.step_span_id,
+            parent_id=self._tool_parent_id(session, turn),
             start_ns=start_ns,
         )
 
@@ -908,12 +1094,13 @@ class CodexHooksAPI:
     def _handle_function_call_output(self, session: CodexSession, record: Dict[str, Any]) -> None:
         payload = record.get("payload", {})
         call_id = payload.get("call_id", "")
-        pending = session.pending_tools.pop(call_id, None)
+        unique_id = session.tool_use_id_map.pop(call_id, call_id)
+        pending = session.pending_tools.pop(unique_id, None)
         if pending is None:
             return
         output = payload.get("output", "")
         output_value = output if isinstance(output, str) else _to_json_str(output)
-        tool_message = {"role": "tool", "tool_call_id": call_id, "content": output_value}
+        tool_message = {"role": "tool", "tool_call_id": unique_id, "content": output_value}
         if session.active_turn is not None and session.active_turn.active_llm_input_messages is not None:
             session.active_turn.pending_llm_input_messages.append(tool_message)
         elif session.active_turn is not None:
@@ -950,6 +1137,9 @@ class CodexHooksAPI:
             return self._handle_event_msg(session, record)
         elif record_type == "response_item":
             self._handle_response_item(session, record)
+        elif record_type == "compacted":
+            self._update_last_ns(session, record)
+            self._handle_compaction(session, record, trigger="compacted")
         else:
             self._update_last_ns(session, record)
         return []

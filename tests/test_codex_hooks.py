@@ -715,6 +715,162 @@ async def test_codex_only_uses_own_ml_app_override(codex_env_overrides, agent):
     assert manifest["tools"] == [{"name": "exec_command"}]
 
 
+async def test_codex_duplicate_call_id_emits_distinct_tool_spans(agent):
+    """Codex reuses tool call_ids (e.g. ``web_search_2``) across turns.
+
+    Each occurrence must produce its own tool span with a unique
+    ``tool_use_id`` so trace consumers can pair calls with outputs.
+    """
+    sid = "codex-dedup"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="search twice"))
+    await _post(
+        agent,
+        sid,
+        _response_item("function_call", name="web_search", call_id="web_search_2", arguments='{"q": "a"}'),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item("function_call_output", call_id="web_search_2", output="result-a"),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item("function_call", name="web_search", call_id="web_search_2", arguments='{"q": "b"}'),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item("function_call_output", call_id="web_search_2", output="result-b"),
+    )
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    tools = _by_kind(session_spans, "tool")
+    # Without dedup, the second call would have overwritten the first
+    # ``pending_tools["web_search_2"]`` and the first output would land
+    # nowhere, producing only one (mis-paired) tool span.
+    assert len(tools) == 2
+    inputs = sorted(t["meta"]["input"]["value"] for t in tools)
+    outputs = sorted(t["meta"]["output"]["value"] for t in tools)
+    assert inputs == ['{"q": "a"}', '{"q": "b"}']
+    assert outputs == ["result-a", "result-b"]
+    # Spans must have distinct span_ids — the second was not a no-op overwrite.
+    assert tools[0]["span_id"] != tools[1]["span_id"]
+
+
+async def test_codex_subagent_spawn_emits_agent_span(agent):
+    sid = "codex-subagent"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="delegate"))
+    await _post(
+        agent,
+        sid,
+        _event(
+            "collab_agent_spawn_begin",
+            timestamp="2026-05-11T17:00:02.500Z",
+            call_id="spawn-1",
+            sender_thread_id="parent-thread",
+            prompt="do the thing",
+        ),
+    )
+    # Tool call emitted while the subagent is active should nest under it.
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "function_call",
+            timestamp="2026-05-11T17:00:03.000Z",
+            name="exec_command",
+            call_id="call-sub",
+            arguments='{"cmd": "ls"}',
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "function_call_output",
+            timestamp="2026-05-11T17:00:03.500Z",
+            call_id="call-sub",
+            output="files",
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _event(
+            "collab_agent_spawn_end",
+            timestamp="2026-05-11T17:00:04.000Z",
+            call_id="spawn-1",
+            new_thread_id="child-thread",
+            new_agent_nickname="researcher",
+            new_agent_role="researcher",
+            status="ok",
+        ),
+    )
+    await _post(agent, sid, _event("agent_message", timestamp="2026-05-11T17:00:05.000Z", message="done"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    agents = _by_kind(session_spans, "agent")
+    # One root + one subagent of kind=agent.
+    assert len(agents) == 2
+    root = next(s for s in agents if s["parent_id"] == "undefined")
+    subagent = next(s for s in agents if s["span_id"] != root["span_id"])
+    assert subagent["name"] == "researcher"
+    assert subagent["duration"] > 0
+    assert subagent["meta"]["metadata"]["subagent"]["child_session_id"] == "child-thread"
+    assert subagent["meta"]["metadata"]["subagent"]["status"] == "ok"
+    # Tool span emitted between begin and end must parent to the subagent.
+    tools = _by_kind(session_spans, "tool")
+    assert len(tools) == 1
+    assert tools[0]["parent_id"] == subagent["span_id"]
+
+
+async def test_codex_compaction_event_msg_annotates_active_span(agent):
+    sid = "codex-compact-event"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="long history"))
+    await _post(agent, sid, _event("context_compacted", timestamp="2026-05-11T17:00:03.000Z"))
+    await _post(agent, sid, _event("agent_message", timestamp="2026-05-11T17:00:04.000Z", message="ok"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    compactions: list = []
+    for span in session_spans:
+        entries = span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("compactions", [])
+        compactions.extend(entries)
+    assert len(compactions) == 1
+    assert compactions[0]["trigger"] == "context_compacted"
+
+
+async def test_codex_compaction_top_level_record_annotates_active_span(agent):
+    sid = "codex-compact-top"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="long history"))
+    await _post(
+        agent,
+        sid,
+        {"timestamp": "2026-05-11T17:00:03.000Z", "type": "compacted", "payload": {}},
+    )
+    await _post(agent, sid, _event("agent_message", timestamp="2026-05-11T17:00:04.000Z", message="ok"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    compactions: list = []
+    for span in session_spans:
+        entries = span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("compactions", [])
+        compactions.extend(entries)
+    assert len(compactions) == 1
+    assert compactions[0]["trigger"] == "compacted"
+
+
 async def test_codex_hook_requires_session_id(agent):
     resp = await agent.post("/codex/hooks", json={"type": "event_msg", "payload": {"type": "user_message"}})
     assert resp.status == 400

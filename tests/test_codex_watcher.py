@@ -2,6 +2,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+from lapdog.codex_cursor import CursorState
+from lapdog.codex_cursor import load_cursor
+from lapdog.codex_cursor import save_cursor_atomic
 from lapdog.codex_watcher import FileState
 from lapdog.codex_watcher import _drain_file
 from lapdog.codex_watcher import _initial_offset_for_file
@@ -155,6 +158,97 @@ def test_old_existing_files_are_tailed_from_end():
         )
         == 1234
     )
+
+
+def test_load_cursor_missing_returns_empty(tmp_path):
+    state = load_cursor(tmp_path / "absent.json")
+    assert state.files == {}
+    assert state.saved_at == ""
+
+
+def test_load_cursor_corrupt_returns_empty(tmp_path):
+    cursor_path = tmp_path / "cursor.json"
+    cursor_path.write_text("not json {")
+    state = load_cursor(cursor_path)
+    assert state.files == {}
+
+
+def test_save_cursor_atomic_roundtrip(tmp_path):
+    cursor_path = tmp_path / "sub" / "cursor.json"
+    state = CursorState(files={"/path/a": 100, "/path/b": 200})
+    save_cursor_atomic(cursor_path, state)
+    loaded = load_cursor(cursor_path)
+    assert loaded.files == {"/path/a": 100, "/path/b": 200}
+    assert loaded.saved_at != ""
+
+
+def test_save_cursor_atomic_leaves_no_temp_file(tmp_path):
+    cursor_path = tmp_path / "cursor.json"
+    save_cursor_atomic(cursor_path, CursorState(files={"x": 1}))
+    leftovers = list(tmp_path.glob("*.tmp"))
+    assert leftovers == []
+
+
+def test_drain_file_resets_offset_on_truncation(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-trunc", "cwd": str(tmp_path)}})
+    # Pretend a previous run advanced the offset well past the current size.
+    state = FileState(offset=10_000)
+    state.session_id = "sess-trunc"
+    state.matches_cwd = True
+
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
+
+    # The drain noticed size < offset, reset to 0, and replayed the record.
+    assert state.offset == session_file.stat().st_size
+    assert [post["record"]["type"] for post in posts] == ["session_meta"]
+    assert posts[0]["session_id"] == "sess-trunc"
+
+
+def test_watch_codex_sessions_resumes_from_cursor(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-c", "cwd": str(tmp_path)}})
+    primed_offset = session_file.stat().st_size
+    _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "after-restart"}})
+
+    cursor_path = tmp_path / "codex-cursor.json"
+    # Pre-load a cursor as if the watcher had previously processed the first
+    # record and then crashed before the user_message arrived.
+    save_cursor_atomic(cursor_path, CursorState(files={str(session_file): primed_offset}))
+
+    # Spoof the session id without re-posting session_meta by stamping the
+    # FileState; the watcher uses it to forward subsequent records.
+    original_drain = _drain_file
+
+    def _drain_with_session(path, state, *args, **kwargs):
+        if not state.session_id:
+            state.session_id = "sess-c"
+            state.matches_cwd = True
+        return original_drain(path, state, *args, **kwargs)
+
+    monkeypatch.setattr("lapdog.codex_watcher._drain_file", _drain_with_session)
+
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=999999,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        ready_file=None,
+        cursor_path=cursor_path,
+    )
+
+    # Only the user_message after the cursor should have been posted; the
+    # session_meta that the cursor already covered must not reappear.
+    assert [post["record"]["type"] for post in posts] == ["event_msg"]
+    # And the cursor file should have advanced to the file's full size.
+    loaded = load_cursor(cursor_path)
+    assert loaded.files.get(str(session_file)) == session_file.stat().st_size
 
 
 def test_watch_codex_sessions_writes_ready_file(monkeypatch, tmp_path):

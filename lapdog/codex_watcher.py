@@ -13,6 +13,11 @@ from typing import Optional
 
 import requests
 
+from lapdog.codex_cursor import CursorState
+from lapdog.codex_cursor import load_cursor
+from lapdog.codex_cursor import save_cursor_atomic
+from lapdog.paths import CODEX_CURSOR_FILE
+
 
 class FileState:
     def __init__(self, offset: int = 0) -> None:
@@ -91,6 +96,20 @@ def _drain_file(
     cwd: str,
     proxy_session_key: Optional[str] = None,
 ) -> Optional[str]:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    if size < state.offset:
+        # File was truncated or replaced; reset and replay from the beginning.
+        print(
+            f"lapdog codex watcher: truncation detected for {path} "
+            f"(size={size} < offset={state.offset}); replaying from 0",
+            file=sys.stderr,
+            flush=True,
+        )
+        state.offset = 0
+        state.buffer.clear()
     try:
         with path.open("rb") as f:
             f.seek(state.offset)
@@ -187,6 +206,34 @@ def _initial_offset_for_file(stat_mtime: float, stat_size: int, started_at: floa
     return stat_size
 
 
+CURSOR_SAVE_INTERVAL_SECONDS = 1.0
+
+
+def _sync_cursor(cursor: CursorState, states: Dict[Path, FileState]) -> None:
+    cursor.files = {str(path): state.offset for path, state in states.items()}
+
+
+def _maybe_save_cursor(
+    cursor_path: Optional[Path],
+    cursor: CursorState,
+    states: Dict[Path, FileState],
+    last_save: float,
+    now: float,
+    force: bool = False,
+) -> float:
+    if cursor_path is None:
+        return last_save
+    if not force and (now - last_save) < CURSOR_SAVE_INTERVAL_SECONDS:
+        return last_save
+    _sync_cursor(cursor, states)
+    try:
+        save_cursor_atomic(cursor_path, cursor)
+    except OSError as exc:
+        print(f"lapdog codex watcher: cursor save failed: {exc}", file=sys.stderr, flush=True)
+        return last_save
+    return now
+
+
 def watch_codex_sessions(
     lapdog_url: str,
     cwd: str,
@@ -197,11 +244,14 @@ def watch_codex_sessions(
     replay_recent_seconds: float = RECENT_SESSION_REPLAY_SECONDS,
     ready_file: Optional[Path] = None,
     proxy_session_key: Optional[str] = None,
+    cursor_path: Optional[Path] = None,
 ) -> None:
     states: Dict[Path, FileState] = {}
     started_at = time.time()
     initial_paths = set(_iter_jsonl_files(session_dir)) if proxy_session_key else set()
     parent_dead_at: Optional[float] = None
+    cursor: CursorState = load_cursor(cursor_path) if cursor_path is not None else CursorState()
+    last_cursor_save = 0.0
     if ready_file is not None:
         try:
             ready_file.parent.mkdir(parents=True, exist_ok=True)
@@ -221,13 +271,19 @@ def watch_codex_sessions(
                     stat = path.stat()
                 except OSError:
                     continue
-                # The watcher is a separate Python process, so Codex can create
-                # and write the session file before this loop starts. Replay
-                # recent files to avoid missing the session_meta/turn_context
-                # records that make the session visible in Lapdog.
-                if proxy_session_key and path in initial_paths:
+                cursor_offset = cursor.files.get(str(path))
+                if cursor_offset is not None and cursor_offset <= stat.st_size:
+                    # Resume from the persisted offset (crash-safe).
+                    initial_offset = cursor_offset
+                elif proxy_session_key and path in initial_paths:
+                    # The watcher is a separate Python process, so Codex can
+                    # create and write the session file before this loop
+                    # starts. With proxy correlation, files present at start
+                    # belong to earlier sessions and should be tailed from EOF.
                     initial_offset = stat.st_size
                 else:
+                    # First time seeing this file: replay recent rollouts to
+                    # avoid missing the session_meta/turn_context records.
                     initial_offset = _initial_offset_for_file(
                         stat_mtime=stat.st_mtime,
                         stat_size=stat.st_size,
@@ -235,7 +291,7 @@ def watch_codex_sessions(
                         replay_recent_seconds=replay_recent_seconds,
                     )
                 states[path] = FileState(offset=initial_offset)
-                if initial_offset and not proxy_session_key:
+                if initial_offset and not proxy_session_key and cursor_offset is None:
                     _prime_file_state(path, states[path], cwd, initial_offset)
             _drain_file(
                 path,
@@ -244,6 +300,8 @@ def watch_codex_sessions(
                 cwd,
                 proxy_session_key=proxy_session_key,
             )
+
+        last_cursor_save = _maybe_save_cursor(cursor_path, cursor, states, last_cursor_save, time.time())
 
         if not _process_exists(parent_pid):
             if parent_dead_at is None:
@@ -263,6 +321,7 @@ def watch_codex_sessions(
             cwd,
             proxy_session_key=proxy_session_key,
         )
+    _maybe_save_cursor(cursor_path, cursor, states, last_cursor_save, time.time(), force=True)
 
 
 def main() -> None:
@@ -276,8 +335,10 @@ def main() -> None:
     parser.add_argument("--replay-recent-seconds", default=RECENT_SESSION_REPLAY_SECONDS, type=float)
     parser.add_argument("--ready-file")
     parser.add_argument("--proxy-session-key")
+    parser.add_argument("--cursor-path", default=CODEX_CURSOR_FILE)
     args = parser.parse_args()
 
+    cursor_path = Path(args.cursor_path).expanduser() if args.cursor_path else None
     watch_codex_sessions(
         lapdog_url=args.lapdog_url,
         cwd=args.cwd,
@@ -288,6 +349,7 @@ def main() -> None:
         replay_recent_seconds=args.replay_recent_seconds,
         ready_file=Path(args.ready_file).expanduser() if args.ready_file else None,
         proxy_session_key=args.proxy_session_key,
+        cursor_path=cursor_path,
     )
 
 
