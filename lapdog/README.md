@@ -148,8 +148,6 @@ lapdog start                  # run the local agent
 claude                        # plugin-installed hooks POST to localhost:8126
 ```
 
-Open <http://localhost:8126/leash/> while a session is running.
-
 The plugin lives entirely under `~/.claude/plugins/...` — it does **not**
 modify `~/.claude/settings.json`. `claude plugin uninstall lapdog@lapdog`
 fully removes it.

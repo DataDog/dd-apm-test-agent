@@ -7,8 +7,9 @@ running [lapdog](https://github.com/DataDog/dd-apm-test-agent) /
 `http://localhost:8126/claude/hooks`.
 
 Pair this plugin with `lapdog start` (or `lapdog claude`) on the same machine.
-While both are running, open <http://localhost:8126/leash/> to inspect traces,
-sessions, costs, and permission friction in real time.
+While both are running, every Claude Code event is recorded by the local
+agent for inspection (e.g. via the test agent's `/test/session/traces` and
+related endpoints, or the optional Web UI started with `--web-ui-port`).
 
 ## Install
 
