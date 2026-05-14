@@ -1,6 +1,0 @@
----
-features:
-  - |
-    lapdog codex: Add an OpenAI-compatible Codex proxy that captures real LLM
-    request/response data for LLM Observability spans while keeping Codex JSONL
-    ingestion for session, turn, step, and tool structure.
