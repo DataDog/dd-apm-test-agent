@@ -1,0 +1,16 @@
+{
+  "name": "lapdog",
+  "metadata": {
+    "description": "Claude Code plugins for lapdog (local LLM observability via the dd-apm-test-agent)"
+  },
+  "owner": {
+    "name": "Datadog",
+    "url": "https://github.com/DataDog/dd-apm-test-agent"
+  },
+  "plugins": [
+    {
+      "name": "lapdog",
+      "source": "./plugins/lapdog"
+    }
+  ]
+}
