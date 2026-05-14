@@ -144,15 +144,14 @@ claude plugin marketplace add DataDog/dd-apm-test-agent
 claude plugin install lapdog@lapdog
 
 # Then in any session:
-lapdog start                  # run the local agent
-claude                        # plugin-installed hooks POST to localhost:8126
+lapdog claude                 # starts the agent, instruments LLM calls, launches Claude
 ```
 
 The plugin lives entirely under `~/.claude/plugins/...` — it does **not**
 modify `~/.claude/settings.json`. `claude plugin uninstall lapdog@lapdog`
 fully removes it.
 
-If you cannot or do not want to install the plugin, `lapdog claude --hooks`
+If you cannot or do not want to install the plugin, `lapdog --hooks claude`
 writes the equivalent hook entries directly into `~/.claude/settings.json`.
 This is opt-in: by default `lapdog claude` no longer touches your Claude Code
 settings.
@@ -200,7 +199,7 @@ Knowing this up front makes the uninstall list below easy to verify.
 | --- | --- | --- |
 | `~/.lapdog/lapdog.pid` | `lapdog start` / `lapdog claude` / `lapdog pi` | PID + port of the background agent |
 | `~/.lapdog/lapdog.log` | same | stdout/stderr of the background agent |
-| `~/.claude/settings.json` | only `lapdog claude --hooks` (opt-in) | adds a `curl` hook to `localhost:8126/claude/hooks` for each Claude Code event. The Claude Code plugin path leaves this file alone. |
+| `~/.claude/settings.json` | only `lapdog --hooks claude` (opt-in) | adds a `curl` hook to `localhost:8126/claude/hooks` for each Claude Code event. The Claude Code plugin path leaves this file alone. |
 | `~/.pi/agent/extensions/lapdog.ts` | `lapdog pi` | Pi extension that reports tool calls to the local agent |
 
 No other state is created. There is no daemon installed at the OS level
@@ -232,9 +231,9 @@ claude plugin uninstall lapdog@lapdog
 claude plugin marketplace remove lapdog
 ```
 
-### 3. Remove the Claude Code hooks (only if you used `lapdog claude --hooks`)
+### 3. Remove the Claude Code hooks (only if you used `lapdog --hooks claude`)
 
-`lapdog claude --hooks` adds hook entries to `~/.claude/settings.json` so
+`lapdog --hooks claude` adds hook entries to `~/.claude/settings.json` so
 Claude Code posts events to `localhost:8126/claude/hooks`. They look like:
 
 ```json
