@@ -10,6 +10,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Set
 
 import requests
 
@@ -397,6 +398,49 @@ def _maybe_save_cursor(
     return now
 
 
+def _discover_new_files(
+    session_dir: Path,
+    states: Dict[Path, FileState],
+    cwd: str,
+    cursor: CursorState,
+    initial_paths: Set[Path],
+    proxy_session_key: Optional[str],
+    started_at: float,
+    replay_recent_seconds: float,
+) -> None:
+    """Glob the session dir and seed FileState for any new rollouts."""
+    for path in _iter_jsonl_files(session_dir):
+        if path in states:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        cursor_offset = cursor.files.get(str(path))
+        if cursor_offset is not None and cursor_offset <= stat.st_size:
+            # Resume from the persisted offset (crash-safe).
+            initial_offset = cursor_offset
+        elif proxy_session_key and path in initial_paths:
+            # With proxy correlation, files present before this watcher
+            # starts belong to earlier Codex sessions. Keep advancing
+            # their offsets without posting later appends.
+            initial_offset = stat.st_size
+        else:
+            # First time seeing this file: replay recent rollouts to avoid
+            # missing the session_meta/turn_context records.
+            initial_offset = _initial_offset_for_file(
+                stat_mtime=stat.st_mtime,
+                stat_size=stat.st_size,
+                started_at=started_at,
+                replay_recent_seconds=replay_recent_seconds,
+            )
+        states[path] = FileState(offset=initial_offset)
+        if proxy_session_key and path in initial_paths:
+            states[path].ignored = True
+        if initial_offset and not states[path].ignored:
+            _prime_file_state(path, states[path], cwd, initial_offset)
+
+
 def watch_codex_sessions(
     lapdog_url: str,
     cwd: str,
@@ -408,13 +452,15 @@ def watch_codex_sessions(
     ready_file: Optional[Path] = None,
     proxy_session_key: Optional[str] = None,
     cursor_path: Optional[Path] = None,
+    discovery_interval: float = 1.0,
 ) -> None:
     states: Dict[Path, FileState] = {}
     started_at = time.time()
-    initial_paths = set(_iter_jsonl_files(session_dir)) if proxy_session_key else set()
+    initial_paths: Set[Path] = set(_iter_jsonl_files(session_dir)) if proxy_session_key else set()
     parent_dead_at: Optional[float] = None
     cursor: CursorState = load_cursor(cursor_path) if cursor_path is not None else CursorState()
     last_cursor_save = 0.0
+    last_discovery = 0.0
     if ready_file is not None:
         try:
             ready_file.parent.mkdir(parents=True, exist_ok=True)
@@ -428,44 +474,33 @@ def watch_codex_sessions(
     )
 
     while True:
-        for path in _iter_jsonl_files(session_dir):
-            if path not in states:
+        now = time.time()
+        # Re-glob only periodically — file system enumeration is expensive
+        # compared to the per-file readline drain.
+        if now - last_discovery >= discovery_interval:
+            _discover_new_files(
+                session_dir=session_dir,
+                states=states,
+                cwd=cwd,
+                cursor=cursor,
+                initial_paths=initial_paths,
+                proxy_session_key=proxy_session_key,
+                started_at=started_at,
+                replay_recent_seconds=replay_recent_seconds,
+            )
+            last_discovery = now
+
+        for path, state in list(states.items()):
+            if state.ignored:
                 try:
                     stat = path.stat()
                 except OSError:
                     continue
-                cursor_offset = cursor.files.get(str(path))
-                if cursor_offset is not None and cursor_offset <= stat.st_size:
-                    # Resume from the persisted offset (crash-safe).
-                    initial_offset = cursor_offset
-                elif proxy_session_key and path in initial_paths:
-                    # With proxy correlation, files present before this watcher
-                    # starts belong to earlier Codex sessions. Keep advancing
-                    # their offsets without posting later appends.
-                    initial_offset = stat.st_size
-                else:
-                    # First time seeing this file: replay recent rollouts to
-                    # avoid missing the session_meta/turn_context records.
-                    initial_offset = _initial_offset_for_file(
-                        stat_mtime=stat.st_mtime,
-                        stat_size=stat.st_size,
-                        started_at=started_at,
-                        replay_recent_seconds=replay_recent_seconds,
-                    )
-                states[path] = FileState(offset=initial_offset)
-                if proxy_session_key and path in initial_paths:
-                    states[path].ignored = True
-                if initial_offset and not states[path].ignored:
-                    _prime_file_state(path, states[path], cwd, initial_offset)
-            if states[path].ignored:
-                try:
-                    stat = path.stat()
-                except OSError:
-                    continue
-                if stat.st_size < states[path].offset:
+                if stat.st_size < state.offset:
                     states[path] = FileState(offset=0)
+                    states[path].ignored = True
                 else:
-                    states[path].offset = stat.st_size
+                    state.offset = stat.st_size
                     continue
             _drain_file(
                 path,
@@ -487,6 +522,18 @@ def watch_codex_sessions(
 
         time.sleep(poll_interval)
 
+    # Final discovery + drain so any file written after the last discovery
+    # tick (e.g. just before the parent died) is still captured.
+    _discover_new_files(
+        session_dir=session_dir,
+        states=states,
+        cwd=cwd,
+        cursor=cursor,
+        initial_paths=initial_paths,
+        proxy_session_key=proxy_session_key,
+        started_at=started_at,
+        replay_recent_seconds=replay_recent_seconds,
+    )
     for path, state in list(states.items()):
         _drain_file(
             path,
@@ -507,6 +554,12 @@ def main() -> None:
     parser.add_argument("--poll-interval", default=0.25, type=float)
     parser.add_argument("--flush-seconds", default=2.0, type=float)
     parser.add_argument("--replay-recent-seconds", default=RECENT_SESSION_REPLAY_SECONDS, type=float)
+    parser.add_argument(
+        "--discovery-interval",
+        default=1.0,
+        type=float,
+        help="How often (seconds) to re-glob the session dir for new rollouts (default: 1.0).",
+    )
     parser.add_argument("--ready-file")
     parser.add_argument("--proxy-session-key")
     parser.add_argument("--cursor-path", default=CODEX_CURSOR_FILE)
@@ -524,6 +577,7 @@ def main() -> None:
         ready_file=Path(args.ready_file).expanduser() if args.ready_file else None,
         proxy_session_key=args.proxy_session_key,
         cursor_path=cursor_path,
+        discovery_interval=args.discovery_interval,
     )
 
 

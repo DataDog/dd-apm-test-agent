@@ -554,6 +554,44 @@ def test_watch_codex_sessions_resumes_from_cursor(monkeypatch, tmp_path):
     assert loaded.files.get(str(session_file)) == session_file.stat().st_size
 
 
+def test_watch_codex_sessions_respects_discovery_interval(monkeypatch, tmp_path):
+    """When --discovery-interval is set, new files are picked up within ~2 cycles."""
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+
+    poll_count = {"n": 0}
+    session_file = tmp_path / "rollout.jsonl"
+
+    def fake_process_exists(pid):
+        poll_count["n"] += 1
+        if poll_count["n"] == 1:
+            # File doesn't exist yet on first poll.
+            return True
+        if poll_count["n"] == 2:
+            # Write the file just before second poll; with discovery_interval
+            # of 0 it should be picked up immediately.
+            _append(session_file, {"type": "session_meta", "payload": {"id": "sess-disc", "cwd": str(tmp_path)}})
+            return True
+        # After a few more polls, signal parent died so watcher exits.
+        return False
+
+    monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
+
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=12345,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        ready_file=None,
+        cursor_path=None,
+        discovery_interval=0.0,  # rediscover every loop iteration
+    )
+
+    assert [post["session_id"] for post in posts] == ["sess-disc"]
+
+
 def test_watch_codex_sessions_writes_ready_file(monkeypatch, tmp_path):
     ready_file = tmp_path / "watcher.ready"
     monkeypatch.setattr("lapdog.codex_watcher._iter_jsonl_files", lambda session_dir: [])
