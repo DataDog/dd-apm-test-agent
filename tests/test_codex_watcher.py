@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ from lapdog.codex_watcher import FileState
 from lapdog.codex_watcher import _default_session_dir
 from lapdog.codex_watcher import _drain_file
 from lapdog.codex_watcher import _initial_offset_for_file
+from lapdog.codex_watcher import _is_under
 from lapdog.codex_watcher import _prime_file_state
 from lapdog.codex_watcher import watch_codex_sessions
 
@@ -32,6 +34,59 @@ def test_default_session_dir_prefers_lapdog_override(monkeypatch, tmp_path):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "custom-codex-home"))
 
     assert _default_session_dir() == session_dir
+
+
+def test_is_under_accepts_descendant_cwd(tmp_path):
+    root = tmp_path
+    sub = tmp_path / "sub" / "deeper"
+    sub.mkdir(parents=True)
+    assert _is_under(str(sub), str(root)) is True
+    assert _is_under(str(root), str(root)) is True
+
+
+def test_is_under_rejects_prefix_without_separator(tmp_path):
+    root = tmp_path / "a"
+    sibling = tmp_path / "abc"
+    root.mkdir()
+    sibling.mkdir()
+    # /tmp/a vs /tmp/abc: textually a prefix, but not a child directory.
+    assert _is_under(str(sibling), str(root)) is False
+
+
+def test_is_under_resolves_symlinks(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    try:
+        os.symlink(real, link)
+    except (OSError, NotImplementedError):
+        # Platforms without symlink permissions skip the symlink branch.
+        return
+    nested = real / "child"
+    nested.mkdir()
+    # Watcher launched at the realpath should still match records that say
+    # their cwd is via the symlink.
+    assert _is_under(str(link / "child"), str(real)) is True
+    assert _is_under(str(nested), str(link)) is True
+
+
+def test_is_under_returns_false_for_empty_inputs():
+    assert _is_under("", "/tmp") is False
+    assert _is_under("/tmp", "") is False
+
+
+def test_drain_file_matches_descendant_cwd(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-sub", "cwd": str(sub)}})
+
+    _drain_file(session_file, FileState(), "http://localhost:8126", str(tmp_path))
+
+    # Launcher cwd is the parent; the record cwd is a descendant — must match.
+    assert [post["session_id"] for post in posts] == ["sess-sub"]
 
 
 def test_drain_file_buffers_until_matching_cwd(monkeypatch, tmp_path):
@@ -118,13 +173,16 @@ def test_drain_file_drops_non_matching_cwd(monkeypatch, tmp_path):
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
+    # Sibling directory (same parent, different name) — must not match the
+    # launcher cwd under the prefix-based filter.
+    sibling = tmp_path.parent / (tmp_path.name + "-other")
     _append(
         session_file,
         {
             "type": "session_meta",
             "payload": {
                 "id": "sess-2",
-                "cwd": str(tmp_path / "other"),
+                "cwd": str(sibling),
             },
         },
     )

@@ -49,6 +49,25 @@ def _process_exists(pid: int) -> bool:
         return False
 
 
+def _is_under(cwd: str, root: str) -> bool:
+    """Return True if `cwd` is `root` itself or any descendant directory.
+
+    Uses ``os.path.realpath`` so symlinked roots (e.g. ``/tmp`` →
+    ``/private/tmp`` on macOS) compare equal. Mirrors trajectory's
+    ``isUnderProjectRoot`` (``trajectory/codex/watcher/watcher.go``).
+    """
+    if not cwd or not root:
+        return False
+    try:
+        cwd_r = os.path.realpath(cwd)
+        root_r = os.path.realpath(root)
+    except OSError:
+        return False
+    if cwd_r == root_r:
+        return True
+    return cwd_r.startswith(root_r + os.sep)
+
+
 def _post_record(
     lapdog_url: str,
     session_id: str,
@@ -161,7 +180,7 @@ def _drain_file(
 
         record_cwd = _record_cwd(record)
         if record_cwd and state.matches_cwd is None:
-            state.matches_cwd = os.path.abspath(record_cwd) == os.path.abspath(cwd)
+            state.matches_cwd = _is_under(record_cwd, cwd)
 
         if state.matches_cwd is None:
             state.buffer.append(record)
@@ -211,7 +230,7 @@ def _prime_file_state(path: Path, state: FileState, cwd: str, up_to: int) -> Non
                     state.session_id = session_id
                 record_cwd = _record_cwd(record)
                 if record_cwd and state.matches_cwd is None:
-                    state.matches_cwd = os.path.abspath(record_cwd) == os.path.abspath(cwd)
+                    state.matches_cwd = _is_under(record_cwd, cwd)
     except OSError:
         return
 
