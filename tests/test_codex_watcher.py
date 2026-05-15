@@ -686,6 +686,51 @@ def test_watch_codex_sessions_exits_when_parent_start_time_stale(monkeypatch, tm
     assert any(start == 999999.0 for start in seen_expected_start)
 
 
+def test_watch_codex_sessions_continues_after_per_file_error(monkeypatch, capsys, tmp_path):
+    """A drain failure on one file must not stop other files from being processed."""
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+
+    bad_file = tmp_path / "rollout-bad.jsonl"
+    good_file = tmp_path / "rollout-good.jsonl"
+    _append(bad_file, {"type": "session_meta", "payload": {"id": "sess-bad", "cwd": str(tmp_path)}})
+    _append(good_file, {"type": "session_meta", "payload": {"id": "sess-good", "cwd": str(tmp_path)}})
+
+    real_drain = __import__("lapdog.codex_watcher", fromlist=["_drain_file"])._drain_file
+
+    def fake_drain(path, *args, **kwargs):
+        if path == bad_file:
+            raise UnicodeDecodeError("utf-8", b"\x80", 0, 1, "synthetic")
+        return real_drain(path, *args, **kwargs)
+
+    monkeypatch.setattr("lapdog.codex_watcher._drain_file", fake_drain)
+
+    poll_count = {"n": 0}
+
+    def fake_process_exists(pid, expected_start=None):
+        poll_count["n"] += 1
+        return poll_count["n"] < 2
+
+    monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
+
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=12345,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        ready_file=None,
+        cursor_path=None,
+    )
+
+    # The good file's record was delivered even though the bad file raised.
+    assert any(post["session_id"] == "sess-good" for post in posts)
+    # The error landed on stderr.
+    captured = capsys.readouterr()
+    assert "per-file error" in captured.err
+
+
 def test_process_exists_falls_back_when_psutil_missing(monkeypatch):
     """When psutil is unavailable, _process_exists uses os.kill(pid, 0)."""
     import builtins

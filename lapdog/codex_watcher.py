@@ -538,24 +538,37 @@ def watch_codex_sessions(
             last_discovery = now
 
         for path, state in list(states.items()):
-            if state.ignored:
-                try:
-                    stat = path.stat()
-                except OSError:
-                    continue
-                if stat.st_size < state.offset:
-                    states[path] = FileState(offset=0)
-                    states[path].ignored = True
-                else:
-                    state.offset = stat.st_size
-                    continue
-            _drain_file(
-                path,
-                states[path],
-                lapdog_url,
-                cwd,
-                proxy_session_key=proxy_session_key,
-            )
+            try:
+                if state.ignored:
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    if stat.st_size < state.offset:
+                        states[path] = FileState(offset=0)
+                        states[path].ignored = True
+                    else:
+                        state.offset = stat.st_size
+                        continue
+                _drain_file(
+                    path,
+                    states[path],
+                    lapdog_url,
+                    cwd,
+                    proxy_session_key=proxy_session_key,
+                )
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception as exc:
+                # Per-file failures (corrupt JSONL, decode errors, etc.) must
+                # not kill the watcher — other rollouts may still need to be
+                # captured. Log and move on.
+                print(
+                    f"lapdog codex watcher: per-file error for {path}: {exc!r}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
 
         last_cursor_save = _maybe_save_cursor(cursor_path, cursor, states, last_cursor_save, time.time())
 
@@ -582,13 +595,23 @@ def watch_codex_sessions(
         replay_recent_seconds=replay_recent_seconds,
     )
     for path, state in list(states.items()):
-        _drain_file(
-            path,
-            state,
-            lapdog_url,
-            cwd,
-            proxy_session_key=proxy_session_key,
-        )
+        try:
+            _drain_file(
+                path,
+                state,
+                lapdog_url,
+                cwd,
+                proxy_session_key=proxy_session_key,
+            )
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:
+            print(
+                f"lapdog codex watcher: final drain error for {path}: {exc!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+            continue
     _maybe_save_cursor(cursor_path, cursor, states, last_cursor_save, time.time(), force=True)
 
 
