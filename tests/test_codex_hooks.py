@@ -1083,3 +1083,83 @@ async def test_codex_hook_requires_session_id(agent):
     assert resp.status == 400
     body = await resp.json()
     assert "session_id" in body["error"]
+
+
+async def test_codex_subagent_call_id_reused_across_turns_yields_distinct_spans(agent):
+    """Codex sometimes reuses spawn call_ids across turns; each spawn must get
+    its own agent span. Regression test guarding the pending_subagents map
+    against silent overwrites."""
+    sid = "codex-subagent-reuse"
+    await _post(agent, sid, _session_meta(sid))
+    # Turn 1
+    await _post(agent, sid, _turn_context("turn-1"))
+    await _post(agent, sid, _event("user_message", message="first"))
+    await _post(
+        agent, sid,
+        _event("collab_agent_spawn_begin", timestamp="2026-05-11T17:00:02.500Z",
+               call_id="spawn-1", sender_thread_id="parent-thread", prompt="first sub"),
+    )
+    await _post(
+        agent, sid,
+        _event("collab_agent_spawn_end", timestamp="2026-05-11T17:00:03.000Z",
+               call_id="spawn-1", new_thread_id="child-1", new_agent_nickname="agent-a", status="ok"),
+    )
+    await _post(agent, sid, _event("task_complete", timestamp="2026-05-11T17:00:03.500Z",
+                                    last_agent_message="done"))
+    # Turn 2 — same spawn call_id
+    await _post(agent, sid, _turn_context("turn-2"))
+    await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:04.000Z", message="second"))
+    await _post(
+        agent, sid,
+        _event("collab_agent_spawn_begin", timestamp="2026-05-11T17:00:04.500Z",
+               call_id="spawn-1", sender_thread_id="parent-thread", prompt="second sub"),
+    )
+    await _post(
+        agent, sid,
+        _event("collab_agent_spawn_end", timestamp="2026-05-11T17:00:05.000Z",
+               call_id="spawn-1", new_thread_id="child-2", new_agent_nickname="agent-b", status="ok"),
+    )
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    agents = _by_kind(session_spans, "agent")
+    subagents = [s for s in agents if s["parent_id"] != "undefined"]
+    assert len(subagents) == 2, f"Expected two distinct subagent spans, got {len(subagents)}"
+    nicknames = sorted(s["meta"]["metadata"]["subagent"]["agent_nickname"] for s in subagents)
+    assert nicknames == ["agent-a", "agent-b"]
+
+
+async def test_codex_subagent_call_id_reused_within_turn_yields_distinct_spans(agent):
+    """Two sequential spawns within a single turn that reuse the same call_id —
+    each must still produce its own span."""
+    sid = "codex-subagent-reuse-within"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context("turn-1"))
+    await _post(agent, sid, _event("user_message", message="delegate twice"))
+    await _post(
+        agent, sid,
+        _event("collab_agent_spawn_begin", timestamp="2026-05-11T17:00:02.500Z",
+               call_id="spawn-1", sender_thread_id="parent-thread", prompt="first sub"),
+    )
+    await _post(
+        agent, sid,
+        _event("collab_agent_spawn_end", timestamp="2026-05-11T17:00:03.000Z",
+               call_id="spawn-1", new_thread_id="child-1", new_agent_nickname="agent-a", status="ok"),
+    )
+    await _post(
+        agent, sid,
+        _event("collab_agent_spawn_begin", timestamp="2026-05-11T17:00:03.500Z",
+               call_id="spawn-1", sender_thread_id="parent-thread", prompt="second sub"),
+    )
+    await _post(
+        agent, sid,
+        _event("collab_agent_spawn_end", timestamp="2026-05-11T17:00:04.000Z",
+               call_id="spawn-1", new_thread_id="child-2", new_agent_nickname="agent-b", status="ok"),
+    )
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    subagents = [s for s in _by_kind(session_spans, "agent") if s["parent_id"] != "undefined"]
+    assert len(subagents) == 2
+    nicknames = sorted(s["meta"]["metadata"]["subagent"]["agent_nickname"] for s in subagents)
+    assert nicknames == ["agent-a", "agent-b"]
