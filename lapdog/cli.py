@@ -1,16 +1,14 @@
 """CLI for lapdog subcommands"""
 
 import argparse
-import json
 import os
+import pkgutil
 from pathlib import Path
 import shutil
 import signal
 import subprocess
 import sys
 import time
-from typing import Any
-from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -397,65 +395,31 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
 # Gemini extension management
 # ---------------------------------------------------------------------------
 
-_GEMINI_EVENTS = [
-    ("SessionStart", ""),
-    ("BeforeAgent", ""),
-    ("AfterModel", ""),
-    ("BeforeTool", "*"),
-    ("AfterTool", "*"),
-    ("AfterAgent", ""),
-    ("SessionEnd", ""),
-    ("PreCompress", ""),
-    ("Notification", ""),
-]
 _GEMINI_EXTENSION_DIR = os.path.expanduser("~/.lapdog/gemini-extension")
+_GEMINI_EXTENSION_TEMPLATE_FILES = {
+    "gemini_extension/gemini-extension.json": "gemini-extension.json",
+    "gemini_extension/hooks/hooks.json.template": "hooks/hooks.json",
+    "gemini_extension/plugin/lapdog-gemini/GEMINI.md": "plugin/lapdog-gemini/GEMINI.md",
+}
+_GEMINI_URL_PLACEHOLDER = "{{LAPDOG_URL}}"
 
 
-def _gemini_hook_command(port: int, event: str) -> str:
-    return (
-        "curl -sS -X POST -H 'Content-Type: application/json' "
-        f"-d @- http://localhost:{port}/gemini/hooks/{event} >/dev/null 2>&1 || true"
-    )
+def _gemini_extension_resource_text(resource_path: str) -> str:
+    data = pkgutil.get_data("lapdog", resource_path)
+    if data is None:
+        print(f"[lapdog] Gemini extension resource not found: {resource_path}", file=sys.stderr)
+        sys.exit(1)
+    return data.decode("utf-8")
 
 
 def _write_gemini_extension(extension_dir: str, port: int) -> None:
-    os.makedirs(os.path.join(extension_dir, "hooks"), exist_ok=True)
-    os.makedirs(os.path.join(extension_dir, "plugin", "lapdog-gemini"), exist_ok=True)
-
-    extension = {
-        "name": "lapdog",
-        "version": "1.0.0",
-        "contextFileName": "plugin/lapdog-gemini/GEMINI.md",
-        "settings": [],
-    }
-    with open(os.path.join(extension_dir, "gemini-extension.json"), "w") as f:
-        json.dump(extension, f, indent=2)
-        f.write("\n")
-
-    hooks: Dict[str, Any] = {"hooks": {}}
-    for event, matcher in _GEMINI_EVENTS:
-        hooks["hooks"][event] = [
-            {
-                "matcher": matcher,
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": _gemini_hook_command(port, event),
-                        "timeout": 15000 if event == "SessionEnd" else 5000,
-                    }
-                ],
-            }
-        ]
-    with open(os.path.join(extension_dir, "hooks", "hooks.json"), "w") as f:
-        json.dump(hooks, f, indent=2)
-        f.write("\n")
-
-    with open(os.path.join(extension_dir, "plugin", "lapdog-gemini", "GEMINI.md"), "w") as f:
-        f.write(
-            "# Lapdog\n\n"
-            "Lapdog is capturing this Gemini CLI session for local Datadog LLM Observability.\n"
-            "Use `lapdog status` to check whether the local capture agent is running.\n"
-        )
+    lapdog_url = f"http://localhost:{port}"
+    for resource_path, output_path in _GEMINI_EXTENSION_TEMPLATE_FILES.items():
+        content = _gemini_extension_resource_text(resource_path).replace(_GEMINI_URL_PLACEHOLDER, lapdog_url)
+        destination = os.path.join(extension_dir, output_path)
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        with open(destination, "w") as f:
+            f.write(content)
 
 
 def _install_gemini_extension(port: int) -> None:
