@@ -108,11 +108,11 @@ def _render_lapdog_art(face: str, shadow: str, reset: str) -> List[str]:
         current: Optional[str] = None  # None | "face" | "shadow"
         buf: List[str] = []
 
-        def flush() -> None:
-            if not buf:
+        def flush(segment_list: List[str], kind: Optional[str], value: List[str]) -> None:
+            if not value:
                 return
-            color = face if current == "face" else shadow if current == "shadow" else ""
-            segments.append(f"{color}{''.join(buf)}{reset}" if color else "".join(buf))
+            color = face if kind == "face" else shadow if kind == "shadow" else ""
+            segment_list.append(f"{color}{''.join(value)}{reset}" if color else "".join(value))
 
         for x in range(out_w):
             is_face = filled(y, x)
@@ -120,19 +120,20 @@ def _render_lapdog_art(face: str, shadow: str, reset: str) -> List[str]:
             kind = "face" if is_face else "shadow" if is_shadow else None
             ch = "█" if (is_face or is_shadow) else " "
             if kind != current:
-                flush()
+                flush(segments, current, buf)
                 buf = []
                 current = kind
             buf.append(ch)
-        flush()
+        flush(segments, current, buf)
         lines.append("".join(segments))
     return lines
 
 
-def build_running_banner(data_type: str) -> str:
+def build_running_banner(data_type: str, warning_lines: Optional[List[str]] = None) -> str:
     """
     Arguments:
         data_type: The type of data (coding session, application)
+        warning_lines: Optional extra lines to show instead of the default stop hint.
     """
     face = "\033[38;5;177m"  # light purple
     shadow = "\033[38;5;54m"  # deep purple
@@ -148,8 +149,11 @@ def build_running_banner(data_type: str) -> str:
         f"{dim}Lapdog has started and is listening for data.{reset}",
         f"{dim}Open {reset}{face}https://lapdog.datadoghq.com{reset}{dim} to view insights,{reset}",
         f"{dim}costs, optimizations and more related to this {data_type}.{reset}",
-        f"{dim}Run {bold}lapdog stop{reset} {dim}to stop Lapdog from running.{reset}",
     ]
+    if warning_lines:
+        right_lines.extend(f"{dim}{line}{reset}" for line in warning_lines)
+    else:
+        right_lines.append(f"{dim}Run {bold}lapdog stop{reset} {dim}to stop Lapdog from running.{reset}")
     # Vertically center the text block against the art.
     pad_top = max((len(art_lines) - len(right_lines)) // 2, 0)
     padded_right = [""] * pad_top + right_lines

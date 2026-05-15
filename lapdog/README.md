@@ -36,8 +36,8 @@ want to know what `lapdog start` actually does).
 - Port **8126** free on `localhost`. If the port is taken, set `PORT=<other>`
   before running `lapdog start` and open the dashboard at
   `http://localhost:<port>/leash/`.
-- For `lapdog claude` / `lapdog pi`: the `claude` / `pi` binary already on
-  `PATH`.
+- For `lapdog claude` / `lapdog pi` / `lapdog codex`: the `claude` / `pi` /
+  `codex` binary already on `PATH`.
 
 ---
 
@@ -109,10 +109,10 @@ docker run --rm \
     ddapm-test-agent --enable-claude-code-hooks --lapdog-mode
 ```
 
-If you want the `lapdog claude` workflow (Claude Code hooks + intercept) the
-CLI must run on the same machine as Claude Code, since it writes
-`~/.claude/settings.json` and execs the local `claude` binary. Use the Docker
-image for the *agent*, and `pip install ddapm-test-agent` for the CLI.
+If you want the `lapdog claude` or `lapdog codex` workflow, the CLI must run
+on the same machine as the coding agent, since it execs the local binary and
+routes model traffic through the local Lapdog agent. Use the Docker image for
+the *agent*, and `pip install ddapm-test-agent` for the CLI.
 
 ### From source
 
@@ -167,6 +167,9 @@ lapdog start
 # Launch Claude Code with hooks + intercept wired up.
 lapdog claude
 
+# Or launch Codex with JSONL capture + proxy tracing wired up.
+lapdog codex
+
 # Or launch Pi with the lapdog extension installed.
 lapdog pi
 
@@ -180,6 +183,18 @@ lapdog stop
 
 Open <http://localhost:8126/leash/> while a session is running to see traces,
 sessions, costs, and permission friction in real time.
+
+Important: `lapdog claude` and `lapdog codex` are proxy-backed workflows.
+They put the local Lapdog agent in the live model-request path. Keep Lapdog
+running until the coding agent exits. If Lapdog is stopped or killed
+mid-session, the launched agent can stop making model progress; `lapdog codex`
+continues pointing Codex at the local OpenAI proxy, and `lapdog claude` can
+interrupt in-flight proxied Anthropic calls. Restart the coding agent after
+restarting Lapdog.
+
+Hook-only integrations are different: their non-blocking `curl` hooks fail
+open when Lapdog is down, so the coding agent keeps running but capture data
+is lost.
 
 Useful flags:
 

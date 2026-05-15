@@ -36,6 +36,10 @@ LAPDOG_USAGE = (
     "  lapdog python app.py\n"
 )
 
+_PROXY_SESSION_WARNING_LINES = [
+    "Keep Lapdog running; stopping it can break proxied model calls.",
+]
+
 
 def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
     """Infer port the same way lapdog does: -p/--port in args, else PORT env, else 8126."""
@@ -322,7 +326,7 @@ def cmd_claude(sub_cmd_args: List[str], forward_data: bool, enable_hooks: bool) 
     """Ensure lapdog is running in background, then launch Claude with intercept."""
     _maybe_write_claude_hooks(enable_hooks)
     _ensure_lapdog_running(forward_data, detached=True)
-    print(build_running_banner(data_type="coding session"))
+    print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
 
     _run_claude(sub_cmd_args)
 
@@ -504,7 +508,7 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
     proxy_session_key = uuid.uuid4().hex
     _start_codex_watcher(port, proxy_session_key=proxy_session_key, cwd=_resolve_codex_cwd(sub_cmd_args))
 
-    print(build_running_banner(data_type="coding session"))
+    print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
     _run_codex(args=sub_cmd_args, port=port, proxy_session_key=proxy_session_key)
 
 
