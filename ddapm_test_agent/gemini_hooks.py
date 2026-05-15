@@ -2,7 +2,9 @@
 
 import logging
 import os
+from collections import defaultdict
 from typing import Any
+from typing import DefaultDict
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -69,7 +71,9 @@ class GeminiHooksAPI:
         self._raw_events: List[Dict[str, Any]] = []
         self._active_steps: Dict[str, ActiveGeminiStep] = {}
         self._step_indexes: Dict[str, int] = {}
-        self._last_tool_use_ids: Dict[str, str] = {}
+        self._synthetic_tool_use_ids_by_name: DefaultDict[str, DefaultDict[str, List[str]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
 
     # ------------------------------------------------------------------
     # Shared-state helpers
@@ -185,7 +189,7 @@ class GeminiHooksAPI:
 
         contents = llm_request.get("contents", [])
         if not isinstance(contents, list):
-            return messages
+            contents = []
 
         for content in contents:
             if not isinstance(content, dict):
@@ -198,6 +202,24 @@ class GeminiHooksAPI:
             if tool_calls:
                 entry["tool_calls"] = tool_calls
             messages.append(entry)
+
+        legacy_messages = llm_request.get("messages", [])
+        if isinstance(legacy_messages, list):
+            for message in legacy_messages:
+                if not isinstance(message, dict):
+                    continue
+                role = _gemini_role(message.get("role"))
+                content = message.get("content", "")
+                if isinstance(content, list):
+                    text, tool_calls, tool_id = _gemini_parts_to_text_and_tools(content)
+                else:
+                    text, tool_calls, tool_id = _to_json_str(content), [], ""
+                entry = {"role": role, "content": text}
+                if tool_id and role == "tool":
+                    entry["tool_id"] = tool_id
+                if tool_calls:
+                    entry["tool_calls"] = tool_calls
+                messages.append(entry)
         return messages
 
     def _llm_output(self, body: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], List[str], str]:
@@ -240,7 +262,7 @@ class GeminiHooksAPI:
     def _clear_turn_state(self, session_id: str) -> None:
         self._active_steps.pop(session_id, None)
         self._step_indexes[session_id] = 0
-        self._last_tool_use_ids.pop(session_id, None)
+        self._synthetic_tool_use_ids_by_name.pop(session_id, None)
 
     def _start_root(self, session: SessionState, prompt: str) -> None:
         if session.root_span_emitted:
@@ -494,7 +516,7 @@ class GeminiHooksAPI:
         tool_use_id = _extract_tool_use_id(body)
         if not tool_use_id:
             tool_use_id = _synthetic_tool_use_id(session_id, tool_name, len(session.pending_tools))
-            self._last_tool_use_ids[session_id] = tool_use_id
+            self._synthetic_tool_use_ids_by_name[session_id][tool_name].append(tool_use_id)
 
         tool_input = body.get("tool_input")
         if tool_input is None:
@@ -517,7 +539,9 @@ class GeminiHooksAPI:
 
         active = self._ensure_step(session)
         tool_name = str(body.get("tool_name", "unknown_tool") or "unknown_tool")
-        tool_use_id = _extract_tool_use_id(body) or self._last_tool_use_ids.pop(session_id, "")
+        tool_use_id = _extract_tool_use_id(body)
+        if not tool_use_id:
+            tool_use_id = self._pop_synthetic_tool_use_id(session_id, tool_name)
         if not tool_use_id:
             tool_use_id = _synthetic_tool_use_id(session_id, tool_name, len(session.pending_tools))
 
@@ -583,6 +607,26 @@ class GeminiHooksAPI:
             self._hooks_api._set_permission_wait_critical_evaluation(span, wait_ms)
 
         self._append_span(span)
+
+    def _pop_synthetic_tool_use_id(self, session_id: str, tool_name: str) -> str:
+        by_name = self._synthetic_tool_use_ids_by_name.get(session_id)
+        if not by_name:
+            return ""
+
+        pending_for_name = by_name.get(tool_name)
+        if pending_for_name:
+            tool_use_id = pending_for_name.pop(0)
+            if not pending_for_name:
+                by_name.pop(tool_name, None)
+            return tool_use_id
+
+        for name, pending_ids in list(by_name.items()):
+            if pending_ids:
+                tool_use_id = pending_ids.pop(0)
+                if not pending_ids:
+                    by_name.pop(name, None)
+                return tool_use_id
+        return ""
 
     def _handle_after_agent(self, session_id: str, body: Dict[str, Any]) -> None:
         session = self._hooks_api._sessions.get(session_id)
@@ -756,6 +800,10 @@ def _gemini_parts_to_text_and_tools(parts: Any) -> Tuple[str, List[Dict[str, Any
     tool_id = ""
 
     for part in parts:
+        if isinstance(part, str):
+            if part:
+                text_parts.append(part)
+            continue
         if not isinstance(part, dict):
             continue
         text = part.get("text")

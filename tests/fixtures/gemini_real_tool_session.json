@@ -1,0 +1,430 @@
+{
+  "metadata": {
+    "captured_with": "gemini-cli 0.38.2",
+    "captured_at": "2026-05-15T19:59:00-04:00",
+    "capture_command": "gemini --approval-mode yolo --allowed-tools run_shell_command,read_file -p <prompt>",
+    "sanitized_fields": ["session_id", "timestamp", "transcript_path"],
+    "notes": "Captured from a real headless Gemini CLI run. Long repeated context text was shortened, but event names, field names, tool names, and payload shapes match the captured events."
+  },
+  "events": [
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "SessionStart",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "source": "startup"
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "BeforeAgent",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "prompt": "You must call the run_shell_command tool with command 'pwd'. Then call the read_file tool on README.md. Do not answer until both tool results return. After both tools answer exactly: real-fixture-done"
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "PreCompress",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "trigger": "auto"
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "AfterModel",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "llm_request": {
+        "model": "gemini-3-flash-preview",
+        "messages": [
+          {
+            "role": "user",
+            "content": "<session_context>Workspace /private/tmp/lapdog-gemini-real-fixture contains README.md.</session_context>"
+          },
+          {
+            "role": "user",
+            "content": "You must call the run_shell_command tool with command 'pwd'. Then call the read_file tool on README.md. Do not answer until both tool results return. After both tools answer exactly: real-fixture-done"
+          }
+        ],
+        "config": {
+          "temperature": 1,
+          "topP": 0.95,
+          "topK": 64
+        }
+      },
+      "llm_response": {
+        "text": "I will now execute `pwd` and read the `README.md` file",
+        "candidates": [
+          {
+            "content": {
+              "role": "model",
+              "parts": ["I will now execute `pwd` and read the `README.md` file"]
+            }
+          }
+        ],
+        "usageMetadata": {}
+      }
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "AfterModel",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "llm_request": {
+        "model": "gemini-3-flash-preview",
+        "messages": [
+          {
+            "role": "user",
+            "content": "<session_context>Workspace /private/tmp/lapdog-gemini-real-fixture contains README.md.</session_context>"
+          },
+          {
+            "role": "user",
+            "content": "You must call the run_shell_command tool with command 'pwd'. Then call the read_file tool on README.md. Do not answer until both tool results return. After both tools answer exactly: real-fixture-done"
+          }
+        ],
+        "config": {
+          "temperature": 1,
+          "topP": 0.95,
+          "topK": 64
+        }
+      },
+      "llm_response": {
+        "text": ".\n",
+        "candidates": [
+          {
+            "content": {
+              "role": "model",
+              "parts": [".\n"]
+            }
+          }
+        ],
+        "usageMetadata": {}
+      }
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "AfterModel",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "llm_request": {
+        "model": "gemini-3-flash-preview",
+        "messages": [
+          {
+            "role": "user",
+            "content": "<session_context>Workspace /private/tmp/lapdog-gemini-real-fixture contains README.md.</session_context>"
+          },
+          {
+            "role": "user",
+            "content": "You must call the run_shell_command tool with command 'pwd'. Then call the read_file tool on README.md. Do not answer until both tool results return. After both tools answer exactly: real-fixture-done"
+          }
+        ],
+        "config": {
+          "temperature": 1,
+          "topP": 0.95,
+          "topK": 64
+        }
+      },
+      "llm_response": {
+        "text": "",
+        "candidates": [
+          {
+            "content": {
+              "role": "model",
+              "parts": []
+            }
+          }
+        ],
+        "usageMetadata": {}
+      }
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "AfterModel",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "llm_request": {
+        "model": "gemini-3-flash-preview",
+        "messages": [
+          {
+            "role": "user",
+            "content": "<session_context>Workspace /private/tmp/lapdog-gemini-real-fixture contains README.md.</session_context>"
+          },
+          {
+            "role": "user",
+            "content": "You must call the run_shell_command tool with command 'pwd'. Then call the read_file tool on README.md. Do not answer until both tool results return. After both tools answer exactly: real-fixture-done"
+          }
+        ],
+        "config": {
+          "temperature": 1,
+          "topP": 0.95,
+          "topK": 64
+        }
+      },
+      "llm_response": {
+        "text": "",
+        "candidates": [
+          {
+            "content": {
+              "role": "model",
+              "parts": []
+            }
+          }
+        ],
+        "usageMetadata": {}
+      }
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "AfterModel",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "llm_request": {
+        "model": "gemini-3-flash-preview",
+        "messages": [
+          {
+            "role": "user",
+            "content": "<session_context>Workspace /private/tmp/lapdog-gemini-real-fixture contains README.md.</session_context>"
+          },
+          {
+            "role": "user",
+            "content": "You must call the run_shell_command tool with command 'pwd'. Then call the read_file tool on README.md. Do not answer until both tool results return. After both tools answer exactly: real-fixture-done"
+          }
+        ],
+        "config": {
+          "temperature": 1,
+          "topP": 0.95,
+          "topK": 64
+        }
+      },
+      "llm_response": {
+        "text": "",
+        "candidates": [
+          {
+            "content": {
+              "role": "model",
+              "parts": [""]
+            },
+            "finishReason": "STOP"
+          }
+        ],
+        "usageMetadata": {
+          "promptTokenCount": 17167,
+          "candidatesTokenCount": 67,
+          "totalTokenCount": 17234
+        }
+      }
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "BeforeTool",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "tool_name": "read_file",
+      "tool_input": {
+        "file_path": "README.md"
+      }
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "BeforeTool",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "tool_name": "run_shell_command",
+      "tool_input": {
+        "command": "pwd",
+        "description": "Getting the current working directory."
+      }
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "AfterTool",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "tool_name": "read_file",
+      "tool_input": {
+        "file_path": "README.md"
+      },
+      "tool_response": {
+        "llmContent": "# Fixture Repo\nLapdog Gemini real tool fixture.\n",
+        "returnDisplay": ""
+      }
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "AfterTool",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "tool_name": "run_shell_command",
+      "tool_input": {
+        "command": "pwd",
+        "description": "Getting the current working directory."
+      },
+      "tool_response": {
+        "llmContent": "Output: /private/tmp/lapdog-gemini-real-fixture\nProcess Group PGID: 93841",
+        "returnDisplay": [
+          [
+            {
+              "text": "/private/tmp/lapdog-gemini-real-fixture                                         ",
+              "bold": false,
+              "italic": false,
+              "underline": false,
+              "dim": false,
+              "inverse": false,
+              "isUninitialized": true,
+              "fg": "",
+              "bg": ""
+            }
+          ],
+          [
+            {
+              "text": " ",
+              "bold": false,
+              "italic": false,
+              "underline": false,
+              "dim": false,
+              "inverse": true,
+              "isUninitialized": true,
+              "fg": "",
+              "bg": ""
+            },
+            {
+              "text": "                                                                               ",
+              "bold": false,
+              "italic": false,
+              "underline": false,
+              "dim": false,
+              "inverse": false,
+              "isUninitialized": true,
+              "fg": "",
+              "bg": ""
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "PreCompress",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "trigger": "auto"
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "AfterModel",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "llm_request": {
+        "model": "gemini-3-flash-preview",
+        "messages": [
+          {
+            "role": "user",
+            "content": "<session_context>Workspace /private/tmp/lapdog-gemini-real-fixture contains README.md.</session_context>"
+          },
+          {
+            "role": "user",
+            "content": "You must call the run_shell_command tool with command 'pwd'. Then call the read_file tool on README.md. Do not answer until both tool results return. After both tools answer exactly: real-fixture-done"
+          },
+          {
+            "role": "model",
+            "content": "I will now execute `pwd` and read the `README.md` file.\n"
+          }
+        ],
+        "config": {
+          "temperature": 1,
+          "topP": 0.95,
+          "topK": 64
+        }
+      },
+      "llm_response": {
+        "text": "real-fixture-done",
+        "candidates": [
+          {
+            "content": {
+              "role": "model",
+              "parts": ["real-fixture-done"]
+            }
+          }
+        ],
+        "usageMetadata": {}
+      }
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "AfterModel",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "llm_request": {
+        "model": "gemini-3-flash-preview",
+        "messages": [
+          {
+            "role": "user",
+            "content": "<session_context>Workspace /private/tmp/lapdog-gemini-real-fixture contains README.md.</session_context>"
+          },
+          {
+            "role": "user",
+            "content": "You must call the run_shell_command tool with command 'pwd'. Then call the read_file tool on README.md. Do not answer until both tool results return. After both tools answer exactly: real-fixture-done"
+          },
+          {
+            "role": "model",
+            "content": "I will now execute `pwd` and read the `README.md` file.\n"
+          }
+        ],
+        "config": {
+          "temperature": 1,
+          "topP": 0.95,
+          "topK": 64
+        }
+      },
+      "llm_response": {
+        "text": "",
+        "candidates": [
+          {
+            "content": {
+              "role": "model",
+              "parts": [""]
+            },
+            "finishReason": "STOP"
+          }
+        ],
+        "usageMetadata": {
+          "promptTokenCount": 17275,
+          "candidatesTokenCount": 5,
+          "totalTokenCount": 17280
+        }
+      }
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "AfterAgent",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "prompt": "You must call the run_shell_command tool with command 'pwd'. Then call the read_file tool on README.md. Do not answer until both tool results return. After both tools answer exactly: real-fixture-done",
+      "prompt_response": "I will now execute `pwd` and read the `README.md` file.\n .\n   \nreal-fixture-done ",
+      "stop_hook_active": false
+    },
+    {
+      "session_id": "gemini-real-tool-session",
+      "transcript_path": "/tmp/gemini/chats/session.json",
+      "cwd": "/private/tmp/lapdog-gemini-real-fixture",
+      "hook_event_name": "SessionEnd",
+      "timestamp": "2026-05-15T19:59:00.000Z",
+      "reason": "exit"
+    }
+  ]
+}

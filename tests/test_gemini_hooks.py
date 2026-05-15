@@ -1,6 +1,10 @@
 """Tests for Gemini CLI hook ingestion."""
 
 import json
+from pathlib import Path
+
+
+_FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 async def _post(agent, event_type, payload):
@@ -17,6 +21,30 @@ def _spans(body):
 
 def _by_kind(spans, kind):
     return [s for s in spans if s.get("meta", {}).get("span", {}).get("kind") == kind]
+
+
+def _load_fixture(name):
+    return json.loads((_FIXTURES_DIR / name).read_text())
+
+
+def _read_tool_semantics(events, before_name, after_name, tool_names):
+    before = next(
+        event
+        for event in events
+        if event["hook_event_name"] == before_name and event.get("tool_name") in tool_names
+    )
+    after = next(
+        event
+        for event in events
+        if event["hook_event_name"] == after_name and event.get("tool_name") in tool_names
+    )
+    return {
+        "phase_before": "pre_tool_use",
+        "phase_after": "post_tool_use",
+        "tool_family": "read_file",
+        "path": before["tool_input"]["file_path"],
+        "has_output": bool(after.get("tool_response")),
+    }
 
 
 def _session_start(session_id):
@@ -157,6 +185,81 @@ async def test_gemini_full_turn_with_tool(agent):
     assert tool["status"] == "ok"
     assert tool["meta"]["metadata"]["tool_id"] == "tool-1"
     assert tool["meta"]["metadata"]["_dd"]["estimated_permission_wait_ms"] >= 0
+
+
+def test_gemini_real_tool_fixture_matches_current_cli_shape():
+    fixture = _load_fixture("gemini_real_tool_session.json")
+    events = fixture["events"]
+
+    assert [event["hook_event_name"] for event in events] == [
+        "SessionStart",
+        "BeforeAgent",
+        "PreCompress",
+        "AfterModel",
+        "AfterModel",
+        "AfterModel",
+        "AfterModel",
+        "AfterModel",
+        "BeforeTool",
+        "BeforeTool",
+        "AfterTool",
+        "AfterTool",
+        "PreCompress",
+        "AfterModel",
+        "AfterModel",
+        "AfterAgent",
+        "SessionEnd",
+    ]
+
+    tool_events = [event for event in events if event["hook_event_name"] in ("BeforeTool", "AfterTool")]
+    assert [event["tool_name"] for event in tool_events] == [
+        "read_file",
+        "run_shell_command",
+        "read_file",
+        "run_shell_command",
+    ]
+    assert all("tool_use_id" not in event and "mcp_context" not in event for event in tool_events)
+
+    after_model = next(event for event in events if event["hook_event_name"] == "AfterModel")
+    assert "messages" in after_model["llm_request"]
+    assert isinstance(after_model["llm_response"]["candidates"][0]["content"]["parts"][0], str)
+
+
+async def test_gemini_real_tool_fixture_pairs_tools_and_matches_claude_read_semantics(agent):
+    gemini_fixture = _load_fixture("gemini_real_tool_session.json")
+    claude_fixture = _load_fixture("claude_minimal_tool_session.json")
+    gemini_events = gemini_fixture["events"]
+
+    for event in gemini_events:
+        await _post(agent, event["hook_event_name"], event)
+
+    resp = await agent.get("/gemini/hooks/spans")
+    assert resp.status == 200
+    spans = [s for s in _spans(await resp.json()) if s.get("session_id") == "gemini-real-tool-session"]
+
+    llms = _by_kind(spans, "llm")
+    tools = _by_kind(spans, "tool")
+    tools_by_name = {tool["name"]: tool for tool in tools}
+
+    assert {"read_file", "run_shell_command"} <= set(tools_by_name)
+    read_tool = tools_by_name["read_file"]
+    shell_tool = tools_by_name["run_shell_command"]
+
+    assert "README.md" in read_tool["meta"]["input"]["value"]
+    assert "Lapdog Gemini real tool fixture" in read_tool["meta"]["output"]["value"]
+    assert "pwd" in shell_tool["meta"]["input"]["value"]
+    assert "/private/tmp/lapdog-gemini-real-fixture" in shell_tool["meta"]["output"]["value"]
+
+    assert any(llm["meta"]["input"]["messages"] for llm in llms)
+    assert any(
+        message.get("content") == "real-fixture-done"
+        for llm in llms
+        for message in llm["meta"]["output"]["messages"]
+    )
+
+    assert _read_tool_semantics(gemini_events, "BeforeTool", "AfterTool", {"read_file"}) == _read_tool_semantics(
+        claude_fixture["events"], "PreToolUse", "PostToolUse", {"Read"}
+    )
 
 
 async def test_gemini_multiple_after_model_calls_create_steps(agent):
