@@ -96,7 +96,8 @@ def test_drain_file_matches_descendant_cwd(monkeypatch, tmp_path):
 
 def test_post_uses_session_with_split_timeout(monkeypatch, tmp_path):
     """``_post_record`` routes through the module-level Session with a
-    (connect, read) timeout tuple instead of a single scalar."""
+    (connect, read) timeout tuple instead of a single scalar.
+    """
     calls = []
 
     def fake_post(url, json, timeout):
@@ -222,7 +223,8 @@ def test_drain_file_drops_non_matching_cwd(monkeypatch, tmp_path):
 
 def test_drain_file_does_not_advance_durable_offset_past_buffered_records(monkeypatch, tmp_path):
     """When cwd is undetermined, buffered records stay un-acknowledged so a
-    mid-drain crash safely resumes from the same offset."""
+    mid-drain crash safely resumes from the same offset.
+    """
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
@@ -248,7 +250,8 @@ def test_drain_file_does_not_advance_durable_offset_past_buffered_records(monkey
 
 def test_drain_file_flushes_buffer_after_late_session_meta(monkeypatch, tmp_path):
     """Three pre-meta records get flushed once session_meta arrives, and the
-    durable cursor advances all the way to the file's end."""
+    durable cursor advances all the way to the file's end.
+    """
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
@@ -272,7 +275,7 @@ def test_drain_file_flushes_buffer_after_late_session_meta(monkeypatch, tmp_path
 
 
 def test_drain_file_splits_only_on_newline(monkeypatch, tmp_path):
-    """Records whose payloads contain \\r, NEL, etc. must round-trip intact."""
+    r"""Records whose payloads contain \r, NEL, etc. must round-trip intact."""
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
@@ -412,10 +415,12 @@ def test_save_cursor_atomic_merges_existing_entries(tmp_path):
 
 def test_sync_cursor_merges_rather_than_replaces():
     """Entries for files not in the live states dict must survive a sync."""
-    cursor = CursorState(files={"/path/a": 100, "/path/b": 200})
-    states = {Path("/path/a"): FileState(offset=150)}
+    path_a = Path("/path/a")
+    path_b = Path("/path/b")
+    cursor = CursorState(files={str(path_a): 100, str(path_b): 200})
+    states = {path_a: FileState(offset=150)}
     _sync_cursor(cursor, states)
-    assert cursor.files == {"/path/a": 150, "/path/b": 200}
+    assert cursor.files == {str(path_a): 150, str(path_b): 200}
 
 
 def test_prune_cursor_drops_missing_files(tmp_path):
@@ -500,7 +505,8 @@ def test_drain_file_processes_large_but_within_cap_line(monkeypatch, tmp_path):
 
 def test_drain_file_caps_buffer_when_cwd_never_resolves(monkeypatch, capsys, tmp_path):
     """Beyond MAX_BUFFER_RECORDS records without cwd, the session is treated as
-    non-matching and the buffer is discarded."""
+    non-matching and the buffer is discarded.
+    """
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
@@ -560,7 +566,8 @@ def test_drain_file_resets_session_state_on_truncation(monkeypatch, tmp_path):
 
 def test_ignored_file_remains_ignored_after_truncation(monkeypatch, tmp_path):
     """An ignored proxy-mode file that gets truncated must stay ignored after
-    the reset; otherwise its first post-truncate record would be replayed."""
+    the reset; otherwise its first post-truncate record would be replayed.
+    """
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout-existing.jsonl"
@@ -691,7 +698,8 @@ def test_proxy_watch_codex_sessions_resumes_initial_file_when_cursor_exists(monk
 
 def test_watch_codex_sessions_exits_when_parent_start_time_stale(monkeypatch, tmp_path):
     """A stale --parent-start-time causes the watcher to treat the parent as
-    dead even though the PID still exists."""
+    dead even though the PID still exists.
+    """
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs.get("json")))
 
@@ -798,7 +806,8 @@ def test_process_exists_falls_back_when_psutil_missing(monkeypatch):
 
 def test_process_exists_with_mismatched_start_time(monkeypatch):
     """With a stale --parent-start-time, the parent is treated as dead even
-    though the PID exists."""
+    though the PID exists.
+    """
     # Build a fake psutil module so this works without installing the real one.
     import sys
     import types

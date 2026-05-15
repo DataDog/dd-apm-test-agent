@@ -1215,7 +1215,8 @@ async def test_codex_hook_requires_session_id(agent):
 async def test_codex_subagent_call_id_reused_across_turns_yields_distinct_spans(agent):
     """Codex sometimes reuses spawn call_ids across turns; each spawn must get
     its own agent span. Regression test guarding the pending_subagents map
-    against silent overwrites."""
+    against silent overwrites.
+    """
     sid = "codex-subagent-reuse"
     await _post(agent, sid, _session_meta(sid))
     # Turn 1
@@ -1258,7 +1259,8 @@ async def test_codex_subagent_call_id_reused_across_turns_yields_distinct_spans(
 
 async def test_codex_subagent_call_id_reused_within_turn_yields_distinct_spans(agent):
     """Two sequential spawns within a single turn that reuse the same call_id —
-    each must still produce its own span."""
+    each must still produce its own span.
+    """
     sid = "codex-subagent-reuse-within"
     await _post(agent, sid, _session_meta(sid))
     await _post(agent, sid, _turn_context("turn-1"))
