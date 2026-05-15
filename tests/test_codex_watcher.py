@@ -6,6 +6,7 @@ from typing import Any
 from lapdog.codex_cursor import CursorState
 from lapdog.codex_cursor import load_cursor
 from lapdog.codex_cursor import save_cursor_atomic
+from lapdog.codex_watcher import MAX_LINE_BYTES
 from lapdog.codex_watcher import FileState
 from lapdog.codex_watcher import _default_session_dir
 from lapdog.codex_watcher import _drain_file
@@ -379,6 +380,52 @@ def test_save_cursor_atomic_leaves_no_temp_file(tmp_path):
     save_cursor_atomic(cursor_path, CursorState(files={"x": 1}))
     leftovers = list(tmp_path.glob("*.tmp"))
     assert leftovers == []
+
+
+def test_drain_file_drops_oversized_line(monkeypatch, capsys, tmp_path):
+    """Lines larger than MAX_LINE_BYTES are dropped and the cursor advances."""
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    # First a normal session_meta so cwd resolves.
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-big", "cwd": str(tmp_path)}})
+    # Then an oversized JSONL line (slightly above MAX_LINE_BYTES).
+    huge_payload = "x" * (MAX_LINE_BYTES + 100)
+    with session_file.open("a") as f:
+        f.write(json.dumps({"type": "event_msg", "payload": {"data": huge_payload}}) + "\n")
+    # Then a normal record after the over-cap line.
+    _append(session_file, {"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "ok"}})
+
+    state = FileState()
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
+
+    types_posted = [post["record"]["type"] for post in posts]
+    # session_meta delivered, oversized line skipped, last event_msg delivered.
+    assert types_posted == ["session_meta", "event_msg"]
+    assert posts[1]["record"]["payload"]["type"] == "task_complete"
+    captured = capsys.readouterr()
+    assert "dropping oversized line" in captured.err
+    # Cursor must now be at end-of-file so a re-drain finds nothing new.
+    assert state.offset == session_file.stat().st_size
+
+
+def test_drain_file_processes_large_but_within_cap_line(monkeypatch, tmp_path):
+    """A line just under the 10MB cap is processed normally."""
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-5mb", "cwd": str(tmp_path)}})
+    # 5MB payload — well under the cap.
+    large_payload = "y" * (5 * 1024 * 1024)
+    with session_file.open("a") as f:
+        f.write(json.dumps({"type": "event_msg", "payload": {"data": large_payload}}) + "\n")
+
+    state = FileState()
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
+
+    types_posted = [post["record"]["type"] for post in posts]
+    assert types_posted == ["session_meta", "event_msg"]
+    assert len(posts[1]["record"]["payload"]["data"]) == len(large_payload)
 
 
 def test_drain_file_resets_offset_on_truncation(monkeypatch, tmp_path):

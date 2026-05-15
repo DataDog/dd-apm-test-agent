@@ -44,6 +44,10 @@ class FileState:
 
 RECENT_SESSION_REPLAY_SECONDS = 300.0
 
+# Hard cap on per-line bytes. A single JSONL record larger than this is
+# dropped with a stderr warning instead of being buffered in memory.
+MAX_LINE_BYTES = 10 * 1024 * 1024  # 10MB
+
 
 def _default_session_dir() -> Path:
     explicit_session_dir = os.environ.get("LAPDOG_CODEX_SESSION_DIR")
@@ -162,98 +166,139 @@ def _drain_file(
     # been delivered yet.
     if state.scan_offset < state.offset:
         state.scan_offset = state.offset
-    try:
-        with path.open("rb") as f:
-            f.seek(state.scan_offset)
-            data = f.read()
-    except OSError:
-        return None
-
-    if not data:
-        return None
-    if data.endswith(b"\n"):
-        complete_data = data
-    else:
-        complete_end = data.rfind(b"\n") + 1
-        if complete_end <= 0:
-            return None
-        complete_data = data[:complete_end]
 
     posted_session_id: Optional[str] = None
-    cursor = state.scan_offset
-    # Split on b"\n" only — splitlines() also breaks on \r, NEL, etc., which
-    # corrupts records whose JSON values contain those bytes.
-    chunks = complete_data.split(b"\n")
-    # split() yields one trailing "" because complete_data ends with \n.
-    for chunk in chunks[:-1]:
-        line_bytes = chunk + b"\n"
-        line_end = cursor + len(line_bytes)
-        cursor = line_end
-        state.scan_offset = line_end
-        line = chunk.strip()
-        if not line:
-            # Blank line — no record to deliver. If nothing is buffered, the
-            # durable cursor can safely advance past the blank.
-            if not state.buffer:
-                state.offset = line_end
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            # Malformed line is unrecoverable; only advance the durable cursor
-            # if nothing is buffered (otherwise we'd lose buffered records on
-            # a subsequent crash).
-            if not state.buffer:
-                state.offset = line_end
-            continue
+    try:
+        f = path.open("rb")
+    except OSError:
+        return None
+    try:
+        f.seek(state.scan_offset)
+        cursor = state.scan_offset
+        # readline() with a size hint caps a single line at MAX_LINE_BYTES + 1
+        # bytes; if the result is exactly MAX_LINE_BYTES + 1 and doesn't end
+        # in \n, the line is over-cap and we discard it.
+        while True:
+            line_bytes = f.readline(MAX_LINE_BYTES + 1)
+            if not line_bytes:
+                break
+            if not line_bytes.endswith(b"\n"):
+                # Either an oversized line we read up to the cap with no
+                # newline in sight, or an incomplete trailing line waiting
+                # for more bytes to be flushed. Distinguish by length.
+                if len(line_bytes) > MAX_LINE_BYTES:
+                    # Skip past the rest of this oversized line and drop it.
+                    cap_position = f.tell()
+                    rest_skipped = 0
+                    found_newline = False
+                    while True:
+                        chunk = f.read(64 * 1024)
+                        if not chunk:
+                            break
+                        nl = chunk.find(b"\n")
+                        if nl >= 0:
+                            rest_skipped += nl + 1
+                            # Rewind so the next readline starts right after \n.
+                            f.seek(cap_position + rest_skipped)
+                            found_newline = True
+                            break
+                        rest_skipped += len(chunk)
+                    dropped_total = len(line_bytes) + rest_skipped
+                    print(
+                        f"lapdog codex watcher: dropping oversized line "
+                        f"({dropped_total} bytes) in {path}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    cursor += dropped_total
+                    state.scan_offset = cursor
+                    # Only advance the durable cursor if nothing is buffered;
+                    # otherwise wait for the buffer to flush first.
+                    if not state.buffer:
+                        state.offset = cursor
+                    if not found_newline:
+                        # Oversized line extends to EOF — give up this pass and
+                        # try again next poll (newline may arrive).
+                        break
+                    continue
+                # Partial trailing line — leave it for the next poll.
+                break
+            line_end = cursor + len(line_bytes)
+            cursor = line_end
+            state.scan_offset = line_end
+            line = line_bytes.strip()
+            if not line:
+                # Blank line — no record to deliver. If nothing is buffered,
+                # the durable cursor can safely advance past the blank.
+                if not state.buffer:
+                    state.offset = line_end
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                # Malformed line is unrecoverable; only advance the durable
+                # cursor if nothing is buffered (otherwise we'd lose buffered
+                # records on a subsequent crash).
+                if not state.buffer:
+                    state.offset = line_end
+                continue
 
-        session_id = _record_session_id(record)
-        if session_id:
-            state.session_id = session_id
+            session_id = _record_session_id(record)
+            if session_id:
+                state.session_id = session_id
 
-        record_cwd = _record_cwd(record)
-        if record_cwd and state.matches_cwd is None:
-            state.matches_cwd = _is_under(record_cwd, cwd)
+            record_cwd = _record_cwd(record)
+            if record_cwd and state.matches_cwd is None:
+                state.matches_cwd = _is_under(record_cwd, cwd)
 
-        if state.matches_cwd is None:
-            # cwd disposition unknown — hold the record in memory. Do NOT
-            # advance state.offset; if the watcher dies before disposition
-            # resolves, those bytes must be re-read on restart.
-            state.buffer.append(record)
-            state.buffer_ends.append(line_end)
-            continue
+            if state.matches_cwd is None:
+                # cwd disposition unknown — hold the record in memory. Do NOT
+                # advance state.offset; if the watcher dies before disposition
+                # resolves, those bytes must be re-read on restart.
+                state.buffer.append(record)
+                state.buffer_ends.append(line_end)
+                continue
 
-        if state.matches_cwd is False:
-            # Session is in a non-matching cwd; drop buffered records and
-            # advance the durable cursor past everything we scanned.
-            state.buffer.clear()
-            state.buffer_ends.clear()
-            state.offset = line_end
-            continue
-
-        if state.session_id:
-            if state.buffer:
-                for buffered, buffered_end in zip(state.buffer, state.buffer_ends):
-                    if not _post_record(
-                        lapdog_url, state.session_id, buffered, path, proxy_session_key=proxy_session_key
-                    ):
-                        # Rewind the scan cursor so the unsent records are
-                        # re-read (and the still-buffered ones are re-tried)
-                        # on the next pass.
-                        state.scan_offset = state.offset
-                        state.buffer.clear()
-                        state.buffer_ends.clear()
-                        return posted_session_id
-                    state.offset = buffered_end
+            if state.matches_cwd is False:
+                # Session is in a non-matching cwd; drop buffered records and
+                # advance the durable cursor past everything we scanned.
                 state.buffer.clear()
                 state.buffer_ends.clear()
-            if not _post_record(lapdog_url, state.session_id, record, path, proxy_session_key=proxy_session_key):
-                # Roll scan back to the durable cursor so the failed record
-                # is re-read on the next pass.
-                state.scan_offset = state.offset
-                return posted_session_id
-            posted_session_id = state.session_id
-            state.offset = line_end
+                state.offset = line_end
+                continue
+
+            if state.session_id:
+                if state.buffer:
+                    aborted = False
+                    for buffered, buffered_end in zip(state.buffer, state.buffer_ends):
+                        if not _post_record(
+                            lapdog_url, state.session_id, buffered, path, proxy_session_key=proxy_session_key
+                        ):
+                            # Rewind scan so the unsent records are re-read on
+                            # the next pass.
+                            state.scan_offset = state.offset
+                            state.buffer.clear()
+                            state.buffer_ends.clear()
+                            aborted = True
+                            break
+                        state.offset = buffered_end
+                    if aborted:
+                        return posted_session_id
+                    state.buffer.clear()
+                    state.buffer_ends.clear()
+                if not _post_record(
+                    lapdog_url, state.session_id, record, path, proxy_session_key=proxy_session_key
+                ):
+                    # Roll scan back to the durable cursor so the failed record
+                    # is re-read on the next pass.
+                    state.scan_offset = state.offset
+                    return posted_session_id
+                posted_session_id = state.session_id
+                state.offset = line_end
+    except OSError:
+        return posted_session_id
+    finally:
+        f.close()
 
     return posted_session_id
 
