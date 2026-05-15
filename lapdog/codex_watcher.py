@@ -74,11 +74,28 @@ def _default_session_dir() -> Path:
     return Path.home() / ".codex" / "sessions"
 
 
-def _process_exists(pid: int) -> bool:
+def _process_exists(pid: int, expected_start: Optional[float] = None) -> bool:
+    """Return True if `pid` is alive and (optionally) matches `expected_start`.
+
+    Without psutil installed, falls back to ``os.kill(pid, 0)``; this catches
+    no-such-process but does NOT detect PID reuse. When psutil is available
+    and `expected_start` is supplied, also compares ``proc.create_time()`` so
+    a recycled PID is treated as dead.
+    """
     try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
+        import psutil  # type: ignore[import-not-found]
+    except ImportError:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+    try:
+        proc = psutil.Process(pid)
+        if expected_start is not None and abs(proc.create_time() - expected_start) > 0.1:
+            return False
+        return bool(proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
         return False
 
 
@@ -462,6 +479,7 @@ def watch_codex_sessions(
     proxy_session_key: Optional[str] = None,
     cursor_path: Optional[Path] = None,
     discovery_interval: float = 1.0,
+    parent_start_time: Optional[float] = None,
 ) -> None:
     states: Dict[Path, FileState] = {}
     started_at = time.time()
@@ -521,7 +539,7 @@ def watch_codex_sessions(
 
         last_cursor_save = _maybe_save_cursor(cursor_path, cursor, states, last_cursor_save, time.time())
 
-        if not _process_exists(parent_pid):
+        if not _process_exists(parent_pid, expected_start=parent_start_time):
             if parent_dead_at is None:
                 parent_dead_at = time.time()
             elif time.time() - parent_dead_at >= flush_seconds:
@@ -569,6 +587,16 @@ def main() -> None:
         type=float,
         help="How often (seconds) to re-glob the session dir for new rollouts (default: 1.0).",
     )
+    parser.add_argument(
+        "--parent-start-time",
+        default=None,
+        type=float,
+        help=(
+            "Expected create_time() of the parent process (requires psutil). "
+            "When set, treats the parent as dead if its start time differs, "
+            "which guards against PID reuse after the parent exits."
+        ),
+    )
     parser.add_argument("--ready-file")
     parser.add_argument("--proxy-session-key")
     parser.add_argument("--cursor-path", default=CODEX_CURSOR_FILE)
@@ -587,6 +615,7 @@ def main() -> None:
         proxy_session_key=args.proxy_session_key,
         cursor_path=cursor_path,
         discovery_interval=args.discovery_interval,
+        parent_start_time=args.parent_start_time,
     )
 
 

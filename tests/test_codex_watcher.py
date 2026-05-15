@@ -519,7 +519,7 @@ def test_proxy_watcher_ignores_existing_files_after_start(monkeypatch, tmp_path)
 
     watched_once = False
 
-    def fake_process_exists(pid):
+    def fake_process_exists(pid, expected_start=None):
         nonlocal watched_once
         if watched_once:
             return False
@@ -576,6 +576,114 @@ def test_watch_codex_sessions_resumes_from_cursor(monkeypatch, tmp_path):
     assert loaded.files.get(str(session_file)) == session_file.stat().st_size
 
 
+def test_watch_codex_sessions_exits_when_parent_start_time_stale(monkeypatch, tmp_path):
+    """A stale --parent-start-time causes the watcher to treat the parent as
+    dead even though the PID still exists."""
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs.get("json")))
+
+    seen_expected_start = []
+
+    def fake_process_exists(pid, expected_start=None):
+        seen_expected_start.append(expected_start)
+        # Stale start time: always treat parent as dead.
+        if expected_start is not None:
+            return False
+        return True
+
+    monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
+
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=12345,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        ready_file=None,
+        cursor_path=None,
+        parent_start_time=999999.0,  # impossible-to-match start time
+    )
+
+    # The fake was invoked at least once with our supplied expected_start —
+    # confirming the kwarg was threaded through.
+    assert any(start == 999999.0 for start in seen_expected_start)
+
+
+def test_process_exists_falls_back_when_psutil_missing(monkeypatch):
+    """When psutil is unavailable, _process_exists uses os.kill(pid, 0)."""
+    import builtins
+    import importlib
+
+    # Force ImportError for psutil even if it happens to be installed.
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "psutil":
+            raise ImportError("forced for test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    from lapdog import codex_watcher
+    importlib.reload(codex_watcher)
+    try:
+        # Our own PID must be alive.
+        assert codex_watcher._process_exists(os.getpid()) is True
+        # A clearly bogus PID is not.
+        assert codex_watcher._process_exists(999999) is False
+    finally:
+        # Restore the real psutil binding for other tests by reloading without
+        # the fake import hook in effect.
+        monkeypatch.undo()
+        importlib.reload(codex_watcher)
+
+
+def test_process_exists_with_mismatched_start_time(monkeypatch):
+    """With a stale --parent-start-time, the parent is treated as dead even
+    though the PID exists."""
+    # Build a fake psutil module so this works without installing the real one.
+    import sys
+    import types
+
+    class _NoSuchProcess(Exception):
+        pass
+
+    class _AccessDenied(Exception):
+        pass
+
+    class FakeProcess:
+        def __init__(self, pid, create_time_value, status_value="running", running=True):
+            self.pid = pid
+            self._create_time = create_time_value
+            self._status = status_value
+            self._running = running
+
+        def create_time(self):
+            return self._create_time
+
+        def status(self):
+            return self._status
+
+        def is_running(self):
+            return self._running
+
+    fake_psutil = types.ModuleType("psutil")
+    fake_psutil.Process = lambda pid: FakeProcess(pid, create_time_value=1000.0)
+    fake_psutil.NoSuchProcess = _NoSuchProcess
+    fake_psutil.AccessDenied = _AccessDenied
+    fake_psutil.STATUS_ZOMBIE = "zombie"
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    from lapdog import codex_watcher
+
+    # Real start time matches → alive.
+    assert codex_watcher._process_exists(12345, expected_start=1000.0) is True
+    # Stale start time → treated as dead (PID was reused).
+    assert codex_watcher._process_exists(12345, expected_start=500.0) is False
+    # No expected_start → alive (matches existing fallback semantics).
+    assert codex_watcher._process_exists(12345) is True
+
+
 def test_watch_codex_sessions_respects_discovery_interval(monkeypatch, tmp_path):
     """When --discovery-interval is set, new files are picked up within ~2 cycles."""
     posts = []
@@ -584,7 +692,7 @@ def test_watch_codex_sessions_respects_discovery_interval(monkeypatch, tmp_path)
     poll_count = {"n": 0}
     session_file = tmp_path / "rollout.jsonl"
 
-    def fake_process_exists(pid):
+    def fake_process_exists(pid, expected_start=None):
         poll_count["n"] += 1
         if poll_count["n"] == 1:
             # File doesn't exist yet on first poll.
