@@ -77,14 +77,16 @@ def _default_session_dir() -> Path:
 def _process_exists(pid: int, expected_start: Optional[float] = None) -> bool:
     """Return True if `pid` is alive and (optionally) matches `expected_start`.
 
-    Without psutil installed, falls back to ``os.kill(pid, 0)``; this catches
-    no-such-process but does NOT detect PID reuse. When psutil is available
-    and `expected_start` is supplied, also compares ``proc.create_time()`` so
-    a recycled PID is treated as dead.
+    Without psutil installed, falls back to a platform-specific existence
+    probe; this catches no-such-process but does NOT detect PID reuse. When
+    psutil is available and `expected_start` is supplied, also compares
+    ``proc.create_time()`` so a recycled PID is treated as dead.
     """
     try:
         import psutil
     except ImportError:
+        if os.name == "nt":
+            return _windows_process_exists(pid)
         try:
             os.kill(pid, 0)
             return True
@@ -97,6 +99,28 @@ def _process_exists(pid: int, expected_start: Optional[float] = None) -> bool:
         return bool(proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
     except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
         return False
+
+
+def _windows_process_exists(pid: int) -> bool:
+    """Return True if a Windows process can be opened or is access-denied."""
+    import ctypes
+
+    windll_name = "WinDLL"
+    get_last_error_name = "get_last_error"
+    try:
+        windll_factory = getattr(ctypes, windll_name)
+        get_last_error = getattr(ctypes, get_last_error_name)
+    except AttributeError:
+        return False
+
+    kernel32 = windll_factory("kernel32", use_last_error=True)
+    process_query_limited_information = 0x1000
+    error_access_denied = 5
+    handle = kernel32.OpenProcess(process_query_limited_information, False, int(pid))
+    if handle:
+        kernel32.CloseHandle(handle)
+        return True
+    return int(get_last_error()) == error_access_denied
 
 
 def _is_under(cwd: str, root: str) -> bool:

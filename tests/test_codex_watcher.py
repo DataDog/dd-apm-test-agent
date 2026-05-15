@@ -777,9 +777,9 @@ def test_watch_codex_sessions_continues_after_per_file_error(monkeypatch, capsys
 
 
 def test_process_exists_falls_back_when_psutil_missing(monkeypatch):
-    """When psutil is unavailable, _process_exists uses os.kill(pid, 0)."""
+    """When psutil is unavailable, _process_exists uses a safe fallback."""
     import builtins
-    import importlib
+    from lapdog import codex_watcher
 
     # Force ImportError for psutil even if it happens to be installed.
     real_import = builtins.__import__
@@ -790,18 +790,36 @@ def test_process_exists_falls_back_when_psutil_missing(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
+    # Our own PID must be alive.
+    assert codex_watcher._process_exists(os.getpid()) is True
+    # A clearly bogus PID is not.
+    assert codex_watcher._process_exists(999999) is False
+
+
+def test_process_exists_uses_windows_probe_when_psutil_missing(monkeypatch):
+    import builtins
     from lapdog import codex_watcher
-    importlib.reload(codex_watcher)
-    try:
-        # Our own PID must be alive.
-        assert codex_watcher._process_exists(os.getpid()) is True
-        # A clearly bogus PID is not.
-        assert codex_watcher._process_exists(999999) is False
-    finally:
-        # Restore the real psutil binding for other tests by reloading without
-        # the fake import hook in effect.
-        monkeypatch.undo()
-        importlib.reload(codex_watcher)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "psutil":
+            raise ImportError("forced for test")
+        return real_import(name, *args, **kwargs)
+
+    seen = []
+
+    def fake_windows_process_exists(pid):
+        seen.append(pid)
+        return pid == 123
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(codex_watcher.os, "name", "nt")
+    monkeypatch.setattr(codex_watcher, "_windows_process_exists", fake_windows_process_exists)
+
+    assert codex_watcher._process_exists(123) is True
+    assert codex_watcher._process_exists(456) is False
+    assert seen == [123, 456]
 
 
 def test_process_exists_with_mismatched_start_time(monkeypatch):
