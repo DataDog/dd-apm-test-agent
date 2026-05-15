@@ -511,6 +511,44 @@ def test_drain_file_resets_session_state_on_truncation(monkeypatch, tmp_path):
     assert state.matches_cwd is True
 
 
+def test_ignored_file_remains_ignored_after_truncation(monkeypatch, tmp_path):
+    """An ignored proxy-mode file that gets truncated must stay ignored after
+    the reset; otherwise its first post-truncate record would be replayed."""
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout-existing.jsonl"
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-ignored", "cwd": str(tmp_path)}})
+
+    poll_count = {"n": 0}
+
+    def fake_process_exists(pid, expected_start=None):
+        poll_count["n"] += 1
+        if poll_count["n"] == 1:
+            # Truncate and re-append after the watcher has registered the file.
+            session_file.write_text("")
+            _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "after-trunc"}})
+            return True
+        return False
+
+    monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
+
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=12345,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        ready_file=None,
+        proxy_session_key="proxy-key",
+        cursor_path=None,
+    )
+
+    # File was ignored from the start (existed before watcher came up); even
+    # after truncation it must stay ignored so its records are NOT posted.
+    assert posts == []
+
+
 def test_proxy_watcher_ignores_existing_files_after_start(monkeypatch, tmp_path):
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
