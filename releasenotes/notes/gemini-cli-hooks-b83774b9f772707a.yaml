@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Add Gemini CLI hook support for lapdog. Gemini command hooks can now be
+    received by the test agent and assembled into LLM Observability traces.
