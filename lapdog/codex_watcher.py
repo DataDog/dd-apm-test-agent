@@ -48,6 +48,11 @@ RECENT_SESSION_REPLAY_SECONDS = 300.0
 # dropped with a stderr warning instead of being buffered in memory.
 MAX_LINE_BYTES = 10 * 1024 * 1024  # 10MB
 
+# Hard cap on records held in FileState.buffer while waiting for cwd
+# disposition. Beyond this we treat the session as non-matching and discard
+# the buffer — clearer signal than silently dropping records.
+MAX_BUFFER_RECORDS = 1000
+
 
 def _default_session_dir() -> Path:
     explicit_session_dir = os.environ.get("LAPDOG_CODEX_SESSION_DIR")
@@ -252,6 +257,21 @@ def _drain_file(
                 state.matches_cwd = _is_under(record_cwd, cwd)
 
             if state.matches_cwd is None:
+                if len(state.buffer) >= MAX_BUFFER_RECORDS:
+                    # Buffer overflow — the session never identified its cwd
+                    # within MAX_BUFFER_RECORDS records, so treat it as
+                    # non-matching to avoid unbounded memory growth.
+                    print(
+                        f"lapdog codex watcher: buffer overflow ({MAX_BUFFER_RECORDS}+ records "
+                        f"without cwd) for {path}; treating session as non-matching",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    state.matches_cwd = False
+                    state.buffer.clear()
+                    state.buffer_ends.clear()
+                    state.offset = line_end
+                    continue
                 # cwd disposition unknown — hold the record in memory. Do NOT
                 # advance state.offset; if the watcher dies before disposition
                 # resolves, those bytes must be re-read on restart.

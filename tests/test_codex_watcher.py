@@ -6,6 +6,7 @@ from typing import Any
 from lapdog.codex_cursor import CursorState
 from lapdog.codex_cursor import load_cursor
 from lapdog.codex_cursor import save_cursor_atomic
+from lapdog.codex_watcher import MAX_BUFFER_RECORDS
 from lapdog.codex_watcher import MAX_LINE_BYTES
 from lapdog.codex_watcher import FileState
 from lapdog.codex_watcher import _default_session_dir
@@ -426,6 +427,30 @@ def test_drain_file_processes_large_but_within_cap_line(monkeypatch, tmp_path):
     types_posted = [post["record"]["type"] for post in posts]
     assert types_posted == ["session_meta", "event_msg"]
     assert len(posts[1]["record"]["payload"]["data"]) == len(large_payload)
+
+
+def test_drain_file_caps_buffer_when_cwd_never_resolves(monkeypatch, capsys, tmp_path):
+    """Beyond MAX_BUFFER_RECORDS records without cwd, the session is treated as
+    non-matching and the buffer is discarded."""
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    overflow_count = MAX_BUFFER_RECORDS + 500
+    with session_file.open("a") as f:
+        for i in range(overflow_count):
+            f.write(json.dumps({"type": "event_msg", "payload": {"type": "tick", "i": i}}) + "\n")
+
+    state = FileState()
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
+
+    captured = capsys.readouterr()
+    # Nothing should have been posted — cwd never resolved.
+    assert posts == []
+    # Buffer should be cleared and matches_cwd set to False.
+    assert state.buffer == []
+    assert state.matches_cwd is False
+    # Overflow warning fired.
+    assert "buffer overflow" in captured.err
 
 
 def test_drain_file_resets_offset_on_truncation(monkeypatch, tmp_path):
