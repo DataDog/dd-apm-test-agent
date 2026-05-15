@@ -79,7 +79,7 @@ def test_is_under_returns_false_for_empty_inputs():
 
 def test_drain_file_matches_descendant_cwd(monkeypatch, tmp_path):
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
     sub = tmp_path / "sub"
     sub.mkdir()
@@ -91,13 +91,35 @@ def test_drain_file_matches_descendant_cwd(monkeypatch, tmp_path):
     assert [post["session_id"] for post in posts] == ["sess-sub"]
 
 
+def test_post_uses_session_with_split_timeout(monkeypatch, tmp_path):
+    """``_post_record`` routes through the module-level Session with a
+    (connect, read) timeout tuple instead of a single scalar."""
+    calls = []
+
+    def fake_post(url, json, timeout):
+        calls.append({"url": url, "json": json, "timeout": timeout})
+
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", fake_post)
+    session_file = tmp_path / "rollout.jsonl"
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-timeout", "cwd": str(tmp_path)}})
+
+    _drain_file(session_file, FileState(), "http://localhost:8126", str(tmp_path))
+
+    assert len(calls) == 1
+    # Timeout must be a (connect, read) tuple — not a scalar.
+    assert isinstance(calls[0]["timeout"], tuple)
+    assert len(calls[0]["timeout"]) == 2
+    connect_timeout, read_timeout = calls[0]["timeout"]
+    assert connect_timeout < read_timeout
+
+
 def test_drain_file_buffers_until_matching_cwd(monkeypatch, tmp_path):
     posts = []
 
     def fake_post(url, json, timeout):
         posts.append(json)
 
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", fake_post)
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", fake_post)
     session_file = tmp_path / "rollout.jsonl"
     _append(session_file, {"type": "event_msg", "payload": {"type": "task_started"}})
     _append(
@@ -119,7 +141,7 @@ def test_drain_file_buffers_until_matching_cwd(monkeypatch, tmp_path):
 
 def test_drain_file_includes_proxy_session_key(monkeypatch, tmp_path):
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
     _append(session_file, {"type": "session_meta", "payload": {"id": "sess-keyed", "cwd": str(tmp_path)}})
 
@@ -141,7 +163,7 @@ def test_drain_file_keeps_offset_when_post_fails(monkeypatch, tmp_path):
         posts.append(json)
         return FakeResponse(status_codes.pop(0))
 
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", fake_post)
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", fake_post)
     session_file = tmp_path / "rollout.jsonl"
     _append(session_file, {"type": "session_meta", "payload": {"id": "sess-retry", "cwd": str(tmp_path)}})
 
@@ -158,7 +180,7 @@ def test_drain_file_keeps_offset_when_post_fails(monkeypatch, tmp_path):
 
 def test_drain_file_posts_multiple_sessions_with_same_proxy_key(monkeypatch, tmp_path):
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_a = tmp_path / "rollout-a.jsonl"
     session_b = tmp_path / "rollout-b.jsonl"
     _append(session_a, {"type": "session_meta", "payload": {"id": "sess-a", "cwd": str(tmp_path)}})
@@ -173,7 +195,7 @@ def test_drain_file_posts_multiple_sessions_with_same_proxy_key(monkeypatch, tmp
 
 def test_drain_file_drops_non_matching_cwd(monkeypatch, tmp_path):
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
     # Sibling directory (same parent, different name) — must not match the
     # launcher cwd under the prefix-based filter.
@@ -199,7 +221,7 @@ def test_drain_file_does_not_advance_durable_offset_past_buffered_records(monkey
     """When cwd is undetermined, buffered records stay un-acknowledged so a
     mid-drain crash safely resumes from the same offset."""
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
     # Three records without cwd, no session_meta — disposition stays None
     # and all three sit in the buffer.
@@ -225,7 +247,7 @@ def test_drain_file_flushes_buffer_after_late_session_meta(monkeypatch, tmp_path
     """Three pre-meta records get flushed once session_meta arrives, and the
     durable cursor advances all the way to the file's end."""
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
     _append(session_file, {"type": "event_msg", "payload": {"type": "task_started"}})
     _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "hi"}})
@@ -249,7 +271,7 @@ def test_drain_file_flushes_buffer_after_late_session_meta(monkeypatch, tmp_path
 def test_drain_file_splits_only_on_newline(monkeypatch, tmp_path):
     """Records whose payloads contain \\r, NEL, etc. must round-trip intact."""
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
     # session_meta first to establish the cwd match.
     _append(session_file, {"type": "session_meta", "payload": {"id": "sess-crlf", "cwd": str(tmp_path)}})
@@ -268,7 +290,7 @@ def test_drain_file_splits_only_on_newline(monkeypatch, tmp_path):
 
 def test_drain_file_preserves_partial_jsonl_record(monkeypatch, tmp_path):
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
     partial = '{"type":"session_meta","payload":{"id":"sess-partial","cwd":'
     session_file.write_text(partial)
@@ -386,7 +408,7 @@ def test_save_cursor_atomic_leaves_no_temp_file(tmp_path):
 def test_drain_file_drops_oversized_line(monkeypatch, capsys, tmp_path):
     """Lines larger than MAX_LINE_BYTES are dropped and the cursor advances."""
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
     # First a normal session_meta so cwd resolves.
     _append(session_file, {"type": "session_meta", "payload": {"id": "sess-big", "cwd": str(tmp_path)}})
@@ -413,7 +435,7 @@ def test_drain_file_drops_oversized_line(monkeypatch, capsys, tmp_path):
 def test_drain_file_processes_large_but_within_cap_line(monkeypatch, tmp_path):
     """A line just under the 10MB cap is processed normally."""
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
     _append(session_file, {"type": "session_meta", "payload": {"id": "sess-5mb", "cwd": str(tmp_path)}})
     # 5MB payload — well under the cap.
@@ -433,7 +455,7 @@ def test_drain_file_caps_buffer_when_cwd_never_resolves(monkeypatch, capsys, tmp
     """Beyond MAX_BUFFER_RECORDS records without cwd, the session is treated as
     non-matching and the buffer is discarded."""
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
     overflow_count = MAX_BUFFER_RECORDS + 500
     with session_file.open("a") as f:
@@ -455,7 +477,7 @@ def test_drain_file_caps_buffer_when_cwd_never_resolves(monkeypatch, capsys, tmp
 
 def test_drain_file_resets_offset_on_truncation(monkeypatch, tmp_path):
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
     _append(session_file, {"type": "session_meta", "payload": {"id": "sess-trunc", "cwd": str(tmp_path)}})
     # Pretend a previous run advanced the offset well past the current size.
@@ -475,7 +497,7 @@ def test_drain_file_resets_offset_on_truncation(monkeypatch, tmp_path):
 
 def test_drain_file_resets_session_state_on_truncation(monkeypatch, tmp_path):
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
     _append(session_file, {"type": "session_meta", "payload": {"id": "sess-new", "cwd": str(tmp_path)}})
     state = FileState(offset=10_000)
@@ -491,7 +513,7 @@ def test_drain_file_resets_session_state_on_truncation(monkeypatch, tmp_path):
 
 def test_proxy_watcher_ignores_existing_files_after_start(monkeypatch, tmp_path):
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout-existing.jsonl"
     _append(session_file, {"type": "session_meta", "payload": {"id": "sess-old", "cwd": str(tmp_path)}})
 
@@ -524,7 +546,7 @@ def test_proxy_watcher_ignores_existing_files_after_start(monkeypatch, tmp_path)
 
 def test_watch_codex_sessions_resumes_from_cursor(monkeypatch, tmp_path):
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
     _append(session_file, {"type": "session_meta", "payload": {"id": "sess-c", "cwd": str(tmp_path)}})
     primed_offset = session_file.stat().st_size
@@ -557,7 +579,7 @@ def test_watch_codex_sessions_resumes_from_cursor(monkeypatch, tmp_path):
 def test_watch_codex_sessions_respects_discovery_interval(monkeypatch, tmp_path):
     """When --discovery-interval is set, new files are picked up within ~2 cycles."""
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
 
     poll_count = {"n": 0}
     session_file = tmp_path / "rollout.jsonl"

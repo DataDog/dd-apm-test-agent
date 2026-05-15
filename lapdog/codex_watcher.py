@@ -19,6 +19,15 @@ from lapdog.codex_cursor import load_cursor
 from lapdog.codex_cursor import save_cursor_atomic
 from lapdog.paths import CODEX_CURSOR_FILE
 
+# Module-level connection-pooled session — avoids reopening a TCP/SSL
+# connection on every record post. Tests patch ``_session.post`` directly to
+# intercept; production code calls ``_session.post(...)``.
+_session = requests.Session()
+# Timeout tuple: (connect_timeout, read_timeout). The hook handler runs in the
+# same process and should respond within a few hundred ms, so 0.5s connect is
+# plenty; reads can take longer when assembled spans are large.
+_POST_TIMEOUT = (0.5, 2.0)
+
 
 class FileState:
     def __init__(self, offset: int = 0) -> None:
@@ -103,10 +112,10 @@ def _post_record(
     if proxy_session_key:
         body["proxy_session_key"] = proxy_session_key
     try:
-        response = requests.post(
+        response = _session.post(
             f"{lapdog_url.rstrip('/')}/codex/hooks",
             json=body,
-            timeout=2,
+            timeout=_POST_TIMEOUT,
         )
         if response is not None and response.status_code >= 400:
             print(
