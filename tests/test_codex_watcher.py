@@ -193,6 +193,57 @@ def test_drain_file_drops_non_matching_cwd(monkeypatch, tmp_path):
     assert posts == []
 
 
+def test_drain_file_does_not_advance_durable_offset_past_buffered_records(monkeypatch, tmp_path):
+    """When cwd is undetermined, buffered records stay un-acknowledged so a
+    mid-drain crash safely resumes from the same offset."""
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    # Three records without cwd, no session_meta — disposition stays None
+    # and all three sit in the buffer.
+    _append(session_file, {"type": "event_msg", "payload": {"type": "task_started"}})
+    _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "hi"}})
+    _append(session_file, {"type": "event_msg", "payload": {"type": "agent_message", "message": "ok"}})
+
+    state = FileState()
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
+
+    # Nothing posted because matches_cwd never resolved.
+    assert posts == []
+    # The durable cursor must NOT have advanced past the buffered records —
+    # on restart we need to re-read them.
+    assert state.offset == 0
+    # But the scan offset has moved forward so the next pass picks up new bytes.
+    assert state.scan_offset == session_file.stat().st_size
+    # The records are still in memory.
+    assert len(state.buffer) == 3
+
+
+def test_drain_file_flushes_buffer_after_late_session_meta(monkeypatch, tmp_path):
+    """Three pre-meta records get flushed once session_meta arrives, and the
+    durable cursor advances all the way to the file's end."""
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    _append(session_file, {"type": "event_msg", "payload": {"type": "task_started"}})
+    _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "hi"}})
+    _append(session_file, {"type": "event_msg", "payload": {"type": "agent_message", "message": "thinking"}})
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-late", "cwd": str(tmp_path)}})
+    _append(session_file, {"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "done"}})
+
+    state = FileState()
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
+
+    # All five records delivered in order.
+    assert [post["record"]["type"] for post in posts] == [
+        "event_msg", "event_msg", "event_msg", "session_meta", "event_msg",
+    ]
+    assert all(post["session_id"] == "sess-late" for post in posts)
+    # Durable cursor caught up to end-of-file once buffer was flushed.
+    assert state.offset == session_file.stat().st_size
+    assert state.buffer == []
+
+
 def test_drain_file_splits_only_on_newline(monkeypatch, tmp_path):
     """Records whose payloads contain \\r, NEL, etc. must round-trip intact."""
     posts = []

@@ -21,10 +21,24 @@ from lapdog.paths import CODEX_CURSOR_FILE
 
 class FileState:
     def __init__(self, offset: int = 0) -> None:
+        # ``offset`` is the durable cursor — only advanced after a record is
+        # delivered (or definitively discarded by cwd filter). On crash recovery
+        # the watcher resumes from this offset.
         self.offset = offset
+        # ``scan_offset`` tracks how far ``_drain_file`` has read on the current
+        # pass. It can move ahead of ``offset`` while records sit in ``buffer``
+        # waiting for cwd resolution; the durable cursor catches up only after
+        # those records are flushed (or dropped).
+        self.scan_offset = offset
         self.session_id = ""
         self.matches_cwd: Optional[bool] = None
+        # Holds parsed records whose cwd disposition is still unknown. The
+        # bytes for these records live between ``offset`` and ``scan_offset``.
         self.buffer: List[Dict[str, Any]] = []
+        # Byte offsets immediately after each buffered record, in order. Used
+        # to slide ``offset`` forward by exactly the right amount when the
+        # buffer is flushed (or dropped on cwd mismatch).
+        self.buffer_ends: List[int] = []
         self.ignored = False
 
 
@@ -138,12 +152,19 @@ def _drain_file(
             flush=True,
         )
         state.offset = 0
+        state.scan_offset = 0
         state.session_id = ""
         state.matches_cwd = None
         state.buffer.clear()
+        state.buffer_ends.clear()
+    # Always resume scanning from where we left off in the previous pass —
+    # which may be ahead of state.offset because buffered records have not
+    # been delivered yet.
+    if state.scan_offset < state.offset:
+        state.scan_offset = state.offset
     try:
         with path.open("rb") as f:
-            f.seek(state.offset)
+            f.seek(state.scan_offset)
             data = f.read()
     except OSError:
         return None
@@ -159,7 +180,7 @@ def _drain_file(
         complete_data = data[:complete_end]
 
     posted_session_id: Optional[str] = None
-    cursor = state.offset
+    cursor = state.scan_offset
     # Split on b"\n" only — splitlines() also breaks on \r, NEL, etc., which
     # corrupts records whose JSON values contain those bytes.
     chunks = complete_data.split(b"\n")
@@ -168,14 +189,22 @@ def _drain_file(
         line_bytes = chunk + b"\n"
         line_end = cursor + len(line_bytes)
         cursor = line_end
+        state.scan_offset = line_end
         line = chunk.strip()
         if not line:
-            state.offset = line_end
+            # Blank line — no record to deliver. If nothing is buffered, the
+            # durable cursor can safely advance past the blank.
+            if not state.buffer:
+                state.offset = line_end
             continue
         try:
             record = json.loads(line)
         except json.JSONDecodeError:
-            state.offset = line_end
+            # Malformed line is unrecoverable; only advance the durable cursor
+            # if nothing is buffered (otherwise we'd lose buffered records on
+            # a subsequent crash).
+            if not state.buffer:
+                state.offset = line_end
             continue
 
         session_id = _record_session_id(record)
@@ -187,24 +216,41 @@ def _drain_file(
             state.matches_cwd = _is_under(record_cwd, cwd)
 
         if state.matches_cwd is None:
+            # cwd disposition unknown — hold the record in memory. Do NOT
+            # advance state.offset; if the watcher dies before disposition
+            # resolves, those bytes must be re-read on restart.
             state.buffer.append(record)
-            state.offset = line_end
+            state.buffer_ends.append(line_end)
             continue
 
         if state.matches_cwd is False:
+            # Session is in a non-matching cwd; drop buffered records and
+            # advance the durable cursor past everything we scanned.
             state.buffer.clear()
+            state.buffer_ends.clear()
             state.offset = line_end
             continue
 
         if state.session_id:
             if state.buffer:
-                for buffered in state.buffer:
+                for buffered, buffered_end in zip(state.buffer, state.buffer_ends):
                     if not _post_record(
                         lapdog_url, state.session_id, buffered, path, proxy_session_key=proxy_session_key
                     ):
+                        # Rewind the scan cursor so the unsent records are
+                        # re-read (and the still-buffered ones are re-tried)
+                        # on the next pass.
+                        state.scan_offset = state.offset
+                        state.buffer.clear()
+                        state.buffer_ends.clear()
                         return posted_session_id
+                    state.offset = buffered_end
                 state.buffer.clear()
+                state.buffer_ends.clear()
             if not _post_record(lapdog_url, state.session_id, record, path, proxy_session_key=proxy_session_key):
+                # Roll scan back to the durable cursor so the failed record
+                # is re-read on the next pass.
+                state.scan_offset = state.offset
                 return posted_session_id
             posted_session_id = state.session_id
             state.offset = line_end
