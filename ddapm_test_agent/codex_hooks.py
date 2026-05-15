@@ -24,7 +24,6 @@ from .claude_hooks import _to_json_str
 from .codex_cost_tracker import compute_openai_cost_metrics
 from .llmobs_event_platform import with_cors
 
-
 log = logging.getLogger(__name__)
 
 CompletedTrace = Tuple[str, str]
@@ -109,6 +108,18 @@ def _llm_has_text_output(span: Optional[Dict[str, Any]], message: str) -> bool:
 
 def _normalized_text(value: Any) -> str:
     return " ".join(str(value).split())
+
+
+def _canonical_json_value(value: Any) -> str:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return _normalized_text(value)
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return _normalized_text(value)
 
 
 class CodexTurn:
@@ -349,7 +360,9 @@ class CodexHooksAPI:
 
         candidates = active_sessions
         if proxy_session_key:
-            keyed_candidates = [session for session in active_sessions if proxy_session_key in session.proxy_session_keys]
+            keyed_candidates = [
+                session for session in active_sessions if proxy_session_key in session.proxy_session_keys
+            ]
             candidates = keyed_candidates or [session for session in active_sessions if not session.proxy_session_keys]
 
         for session in candidates:
@@ -382,6 +395,91 @@ class CodexHooksAPI:
         step = turn.step_span_ref or turn.last_step_span_ref
         if step is not None:
             step["meta"]["output"]["value"] = message
+
+    def _add_step_tool_use_id(self, turn: CodexTurn, step_span_id: str, tool_use_id: str) -> None:
+        if not tool_use_id:
+            return
+        step = turn.step_span_refs.get(step_span_id)
+        if not step:
+            return
+        metadata = step["meta"].setdefault("metadata", {})
+        tool_use_ids = metadata.setdefault("tool_use_ids", [])
+        if tool_use_id not in tool_use_ids:
+            tool_use_ids.append(tool_use_id)
+
+    def _llm_tool_call_matches(
+        self,
+        message: Dict[str, Any],
+        tool_use_id: str,
+        tool_name: str,
+        tool_input: Any,
+    ) -> bool:
+        tool_calls = message.get("tool_calls", [])
+        if not isinstance(tool_calls, list):
+            tool_calls = []
+        expected_arguments = _canonical_json_value(tool_input)
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            if tool_call.get("id") == tool_use_id:
+                return True
+            if tool_name and tool_call.get("name") and tool_call.get("name") != tool_name:
+                continue
+            if _canonical_json_value(tool_call.get("arguments", "")) == expected_arguments:
+                return True
+        content = message.get("content", "")
+        return bool(content) and _canonical_json_value(content) == expected_arguments
+
+    def _find_llm_step_for_tool_call(
+        self,
+        turn: CodexTurn,
+        tool_use_id: str,
+        tool_name: str,
+        tool_input: Any,
+    ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+        for span in reversed(self._hooks_api._assembled_spans):
+            if span.get("trace_id") != turn.trace_id:
+                continue
+            if span.get("meta", {}).get("span", {}).get("kind") != "llm":
+                continue
+            parent_id = span.get("parent_id")
+            if parent_id not in turn.step_span_refs:
+                continue
+            output_messages = span.get("meta", {}).get("output", {}).get("messages", [])
+            if not isinstance(output_messages, list):
+                continue
+            for message in output_messages:
+                if isinstance(message, dict) and self._llm_tool_call_matches(
+                    message, tool_use_id, tool_name, tool_input
+                ):
+                    return str(parent_id), span
+        return None, None
+
+    def _step_has_children(self, turn: CodexTurn, step_span_id: str) -> bool:
+        for span in self._hooks_api._assembled_spans:
+            if span.get("trace_id") == turn.trace_id and span.get("parent_id") == step_span_id:
+                return True
+        return False
+
+    def _discard_current_step_if_empty(self, turn: CodexTurn) -> None:
+        step = turn.step_span_ref
+        if step is None or turn.current_step_has_llm:
+            return
+        step_span_id = step["span_id"]
+        if self._step_has_children(turn, step_span_id):
+            return
+        if step["meta"].get("output", {}).get("value"):
+            return
+        self._hooks_api._assembled_spans = [
+            span for span in self._hooks_api._assembled_spans if span.get("span_id") != step_span_id
+        ]
+        turn.step_span_refs.pop(step_span_id, None)
+        if step.get("name") == f"inference-{turn.step_count - 1}" and turn.step_count > 0:
+            turn.step_count -= 1
+        turn.step_span_ref = None
+        turn.step_span_id = ""
+        turn.current_step_start_ns = None
+        turn.current_step_last_ns = None
 
     def _set_llm_output(self, turn: CodexTurn, message: str) -> None:
         if not message:
@@ -642,7 +740,9 @@ class CodexHooksAPI:
                     if other_session is session:
                         continue
                     other_turn = other_session.active_turn
-                    if (other_turn is not None and other_turn.turn_id == task_id) or task_id in other_session.completed_turns:
+                    if (
+                        other_turn is not None and other_turn.turn_id == task_id
+                    ) or task_id in other_session.completed_turns:
                         self._ignored_session_ids.add(session.raw_session_id)
                         return []
                 record = {**record, "payload": {**event, "turn_id": task_id}}
@@ -931,6 +1031,8 @@ class CodexHooksAPI:
         turn.current_step_has_llm = True
         turn.last_ns = max(turn.last_ns, end_ns)
         self._update_step_end(turn, turn.step_span_id, end_ns)
+        for tool_call_id in tool_call_ids:
+            self._add_step_tool_use_id(turn, turn.step_span_id, tool_call_id)
         self._reparent_tool_calls_to_step(session, turn, tool_call_ids)
         turn.llm_start_ns = None
         turn.active_llm_input_messages = None
@@ -958,9 +1060,7 @@ class CodexHooksAPI:
                 tool_call_ids.append(unique_id)
         return tool_call_ids
 
-    def _reparent_tool_calls_to_step(
-        self, session: CodexSession, turn: CodexTurn, tool_call_ids: List[str]
-    ) -> None:
+    def _reparent_tool_calls_to_step(self, session: CodexSession, turn: CodexTurn, tool_call_ids: List[str]) -> None:
         if not tool_call_ids or not turn.step_span_id:
             return
         tool_call_id_set = set(tool_call_ids)
@@ -1165,7 +1265,28 @@ class CodexHooksAPI:
         session.tools_used.add(tool_name)
         self._update_agent_manifest(session)
         start_ns = _timestamp_to_ns(record.get("timestamp", ""))
-        self._ensure_step(session, turn, start_ns)
+        arguments = payload.get("arguments", "")
+        tool_input: Any = arguments
+        if isinstance(arguments, str):
+            try:
+                tool_input = json.loads(arguments)
+            except (ValueError, TypeError):
+                tool_input = arguments
+
+        matched_step_id, matched_llm_span = self._find_llm_step_for_tool_call(turn, unique_id, tool_name, tool_input)
+        if matched_step_id and matched_step_id != turn.step_span_id:
+            self._discard_current_step_if_empty(turn)
+        if matched_step_id and matched_step_id in turn.step_span_refs:
+            turn.step_span_id = matched_step_id
+            turn.step_span_ref = turn.step_span_refs[matched_step_id]
+            turn.current_step_start_ns = int(turn.step_span_ref.get("start_ns", start_ns))
+            turn.current_step_last_ns = max(turn.current_step_last_ns or start_ns, start_ns)
+            turn.current_step_has_llm = True
+            if matched_llm_span is not None:
+                turn.last_llm_span_ref = matched_llm_span
+        else:
+            self._ensure_step(session, turn, start_ns)
+
         appending_to_existing_llm = (
             turn.current_step_has_llm
             and turn.last_llm_span_ref is not None
@@ -1175,13 +1296,6 @@ class CodexHooksAPI:
             self._mark_llm_start(session, turn, start_ns)
         self._update_step_end(turn, turn.step_span_id, start_ns)
 
-        arguments = payload.get("arguments", "")
-        tool_input: Any = arguments
-        if isinstance(arguments, str):
-            try:
-                tool_input = json.loads(arguments)
-            except (ValueError, TypeError):
-                tool_input = arguments
         tool_call_message = {
             "role": "assistant",
             "content": _to_json_str(tool_input),
@@ -1195,6 +1309,7 @@ class CodexHooksAPI:
             _append_or_update_tool_call_message(turn.llm_output_messages, tool_call_message)
         if turn.step_span_ref is not None and not turn.step_span_ref["meta"]["output"]["value"]:
             turn.step_span_ref["meta"]["output"]["value"] = _to_json_str(tool_input)
+        self._add_step_tool_use_id(turn, turn.step_span_id, unique_id)
         self._emit_pending_llm_span(session, turn)
 
         session.pending_tools[unique_id] = PendingToolSpan(

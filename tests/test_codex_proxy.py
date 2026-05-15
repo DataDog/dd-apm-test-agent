@@ -513,6 +513,62 @@ async def test_codex_proxy_late_jsonl_tool_call_stays_in_llm_step(agent, aiohttp
     ]
 
 
+async def test_codex_proxy_reasoning_after_llm_does_not_split_tool_step(agent, aiohttp_server):
+    sid = "codex-proxy-reasoning-tool-step"
+    await _post_codex(agent, sid, _session_meta(sid))
+    await _post_codex(agent, sid, _turn_context())
+    await _post_codex(agent, sid, _event("user_message", message="run pwd"))
+
+    async def handle(request):
+        return web.json_response(_responses_tool_call_body())
+
+    upstream_app = web.Application()
+    upstream_app.router.add_post("/v1/responses", handle)
+    upstream = await aiohttp_server(upstream_app)
+
+    resp = await agent.post(
+        "/codex/proxy/v1/responses",
+        headers={"X-DDAPM-Upstream": str(upstream.make_url("")).rstrip("/")},
+        json=_responses_request(),
+    )
+    assert resp.status == 200
+
+    await _post_codex(agent, sid, _response_item("reasoning", timestamp="2026-05-13T17:00:03.500Z"))
+    await _post_codex(
+        agent,
+        sid,
+        _response_item(
+            "function_call",
+            timestamp="2026-05-13T17:00:04.000Z",
+            name="exec_command",
+            call_id="call-1",
+            arguments='{"cmd": "pwd"}',
+        ),
+    )
+    await _post_codex(
+        agent,
+        sid,
+        _response_item(
+            "function_call_output",
+            timestamp="2026-05-13T17:00:05.000Z",
+            call_id="call-1",
+            output="/repo",
+        ),
+    )
+
+    spans = await _spans(agent, sid)
+    steps = _by_kind(spans, "step")
+    llms = _by_kind(spans, "llm")
+    tools = _by_kind(spans, "tool")
+
+    assert len(steps) == 1
+    assert len(llms) == 1
+    assert len(tools) == 1
+    assert llms[0]["parent_id"] == steps[0]["span_id"]
+    assert tools[0]["parent_id"] == steps[0]["span_id"]
+    assert steps[0]["meta"]["metadata"]["tool_use_ids"] == ["call-1"]
+
+
 async def test_codex_proxy_orphan_is_reparented_when_turn_arrives(agent, aiohttp_server):
     sid = "codex-proxy-orphan"
 
