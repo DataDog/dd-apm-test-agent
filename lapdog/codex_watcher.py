@@ -160,11 +160,15 @@ def _drain_file(
 
     posted_session_id: Optional[str] = None
     cursor = state.offset
-    for raw_line in complete_data.splitlines(keepends=True):
-        line_end = cursor + len(raw_line)
+    # Split on b"\n" only — splitlines() also breaks on \r, NEL, etc., which
+    # corrupts records whose JSON values contain those bytes.
+    chunks = complete_data.split(b"\n")
+    # split() yields one trailing "" because complete_data ends with \n.
+    for chunk in chunks[:-1]:
+        line_bytes = chunk + b"\n"
+        line_end = cursor + len(line_bytes)
         cursor = line_end
-        line = raw_line
-        line = line.strip()
+        line = chunk.strip()
         if not line:
             state.offset = line_end
             continue

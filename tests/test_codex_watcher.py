@@ -193,6 +193,26 @@ def test_drain_file_drops_non_matching_cwd(monkeypatch, tmp_path):
     assert posts == []
 
 
+def test_drain_file_splits_only_on_newline(monkeypatch, tmp_path):
+    """Records whose payloads contain \\r, NEL, etc. must round-trip intact."""
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    # session_meta first to establish the cwd match.
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-crlf", "cwd": str(tmp_path)}})
+    # Payload contains \r\n, \v, and NEL bytes — splitlines() would have split
+    # on them; the watcher must not.
+    record = {"type": "event_msg", "payload": {"type": "user_message", "message": "line1\r\nline2\x0bline3\x85line4"}}
+    _append(session_file, record)
+
+    _drain_file(session_file, FileState(), "http://localhost:8126", str(tmp_path))
+
+    assert [post["record"]["type"] for post in posts] == ["session_meta", "event_msg"]
+    # The event_msg payload must be intact — embedded \r and other separators
+    # must not have been treated as line boundaries.
+    assert posts[1]["record"]["payload"]["message"] == "line1\r\nline2\x0bline3\x85line4"
+
+
 def test_drain_file_preserves_partial_jsonl_record(monkeypatch, tmp_path):
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
