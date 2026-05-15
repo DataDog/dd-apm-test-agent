@@ -149,6 +149,7 @@ class CodexTurn:
         self.closed = False
         self.proxy_llm_calls_started = 0
         self.proxy_llm_spans_completed = 0
+        self.proxy_llm_calls_failed = 0
         self.proxy_llm_usage_events_seen = 0
 
 
@@ -368,7 +369,7 @@ class CodexHooksAPI:
         for session in candidates:
             if self._proxy_span_matches_session(span, session):
                 if proxy_session_key:
-                    self._proxy_session_ids[proxy_session_key] = session.session_id
+                    self._proxy_session_ids[proxy_session_key] = session.raw_session_id
                 return session
         return None
 
@@ -506,6 +507,20 @@ class CodexHooksAPI:
             self._hooks_api._assembled_spans.insert(insert_at, span)
         turn.last_llm_span_ref = span
 
+    def _apply_turn_context(self, session: CodexSession, record: Dict[str, Any]) -> None:
+        payload = record.get("payload", {})
+        session.cwd = payload.get("cwd", session.cwd)
+        session.model = payload.get("model", session.model)
+        session.effort = payload.get("effort", session.effort)
+        turn = session.active_turn
+        if turn is None or turn.closed or not turn.root_span_ref:
+            return
+        turn.root_span_ref["meta"]["model_name"] = session.model
+        metadata = turn.root_span_ref["meta"]["metadata"]
+        metadata["cwd"] = session.cwd
+        metadata["reasoning_effort"] = session.effort
+        self._update_agent_manifest(session)
+
     def _update_active_turn_context(self, session: CodexSession, record: Dict[str, Any]) -> bool:
         payload = record.get("payload", {})
         turn_id = payload.get("turn_id") or payload.get("id")
@@ -513,16 +528,16 @@ class CodexHooksAPI:
         if not turn_id or turn is None or turn.closed or turn.turn_id != turn_id:
             return False
 
-        session.cwd = payload.get("cwd", session.cwd)
-        session.model = payload.get("model", session.model)
-        session.effort = payload.get("effort", session.effort)
-        if turn.root_span_ref:
-            turn.root_span_ref["meta"]["model_name"] = session.model
-            metadata = turn.root_span_ref["meta"]["metadata"]
-            metadata["cwd"] = session.cwd
-            metadata["reasoning_effort"] = session.effort
-            self._update_agent_manifest(session)
+        self._apply_turn_context(session, record)
         return True
+
+    def _handle_turn_context(self, session: CodexSession, record: Dict[str, Any]) -> List[CompletedTrace]:
+        payload = record.get("payload", {})
+        turn_id = payload.get("turn_id") or payload.get("id")
+        if not turn_id:
+            self._apply_turn_context(session, record)
+            return []
+        return self._start_turn(session, record)
 
     def _start_turn(self, session: CodexSession, record: Dict[str, Any]) -> List[CompletedTrace]:
         if self._update_active_turn_context(session, record):
@@ -700,6 +715,7 @@ class CodexHooksAPI:
         self._close_current_step(turn, end_ns=turn.current_step_last_ns or end_ns)
         turn.closed = True
         session.completed_turns.append(turn.turn_id)
+        session.task_id = ""
         return [(session.session_id, turn.trace_id)]
 
     def _active_turn(self, session: CodexSession, record: Dict[str, Any]) -> CodexTurn:
@@ -735,6 +751,13 @@ class CodexHooksAPI:
         if event_type == "task_started":
             task_id = str(event.get("id", "") or event.get("turn_id", ""))
             if task_id:
+                active_turn = session.active_turn
+                if active_turn is not None and not active_turn.closed and not session.task_id:
+                    active_turn.turn_id = task_id
+                    session.task_id = task_id
+                    if active_turn.root_span_ref:
+                        active_turn.root_span_ref["meta"]["metadata"]["turn_id"] = task_id
+                    return []
                 session.task_id = task_id
                 for other_session in self._sessions.values():
                     if other_session is session:
@@ -767,6 +790,24 @@ class CodexHooksAPI:
             self._update_last_ns(session, record)
             self._handle_compaction(session, record, trigger="context_compacted")
             return []
+
+        if event_type in ("exec_approval_request", "apply_patch_approval_request"):
+            self._update_last_ns(session, record)
+            tool_name = "apply_patch" if event_type == "apply_patch_approval_request" else "exec_command"
+            self._handle_approval_request(session, record, event, tool_name=tool_name)
+            return []
+
+        if event_type == "patch_apply_end":
+            self._update_last_ns(session, record)
+            self._handle_patch_apply_end(session, record, event)
+            return []
+
+        if event_type == "shutdown_complete":
+            turn = session.active_turn
+            if turn is None or turn.closed:
+                return []
+            ns = self._update_last_ns(session, record)
+            return self._finalize_turn(session, status="ok", end_ns=ns)
 
         if event_type == "user_message":
             message = event.get("message", "")
@@ -825,6 +866,12 @@ class CodexHooksAPI:
             self._handle_function_call(session, record)
         elif item_type == "function_call_output":
             self._handle_function_call_output(session, record)
+        elif item_type == "web_search_call":
+            self._handle_web_search_call(session, record)
+        elif item_type == "custom_tool_call":
+            self._handle_custom_tool_call(session, record)
+        elif item_type == "custom_tool_call_output":
+            self._handle_custom_tool_call_output(session, record)
         elif item_type == "reasoning":
             turn = self._active_turn(session, record)
             ns = _timestamp_to_ns(record.get("timestamp", ""))
@@ -927,7 +974,8 @@ class CodexHooksAPI:
         usage = info.get("last_token_usage") or info.get("total_token_usage") or {}
         if not usage:
             return
-        if turn.proxy_llm_calls_started > turn.proxy_llm_usage_events_seen:
+        proxy_calls_expected = max(turn.proxy_llm_calls_started - turn.proxy_llm_calls_failed, 0)
+        if proxy_calls_expected > turn.proxy_llm_usage_events_seen:
             turn.proxy_llm_usage_events_seen += 1
             self._update_last_ns(session, record)
             return
@@ -974,7 +1022,15 @@ class CodexHooksAPI:
             self._close_current_step(turn)
         turn.proxy_llm_calls_started += 1
         turn.last_ns = max(turn.last_ns, start_ns)
-        return session.session_id
+        return session.raw_session_id
+
+    def finish_proxy_llm_call(self, maybe_session_id: Optional[str], succeeded: bool) -> None:
+        if succeeded:
+            return
+        session = self._active_proxy_session(maybe_session_id)
+        if session is None or session.active_turn is None or session.active_turn.closed:
+            return
+        session.active_turn.proxy_llm_calls_failed += 1
 
     def register_proxy_llm_span(
         self,
@@ -1085,18 +1141,18 @@ class CodexHooksAPI:
             if maybe_session_id:
                 mapped_session_id = self._proxy_session_ids.get(maybe_session_id)
                 if mapped_session_id:
-                    if mapped_session_id != session.session_id:
+                    if mapped_session_id != session.raw_session_id:
                         remaining.append((maybe_session_id, span))
                         continue
                 elif maybe_session_id in session.proxy_session_keys and self._proxy_span_matches_session(span, session):
-                    self._proxy_session_ids[maybe_session_id] = session.session_id
+                    self._proxy_session_ids[maybe_session_id] = session.raw_session_id
                 elif session.proxy_session_keys or any(
                     maybe_session_id in existing.proxy_session_keys for existing in self._sessions.values()
                 ):
                     remaining.append((maybe_session_id, span))
                     continue
                 elif self._proxy_span_matches_session(span, session):
-                    self._proxy_session_ids[maybe_session_id] = session.session_id
+                    self._proxy_session_ids[maybe_session_id] = session.raw_session_id
                 else:
                     remaining.append((maybe_session_id, span))
                     continue
@@ -1255,23 +1311,22 @@ class CodexHooksAPI:
             return call_id
         return f"{call_id}_{count}"
 
-    def _handle_function_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
+    def _handle_tool_call(
+        self,
+        session: CodexSession,
+        record: Dict[str, Any],
+        call_id: str,
+        tool_name: str,
+        tool_input: Any,
+    ) -> str:
         turn = self._active_turn(session, record)
-        payload = record.get("payload", {})
-        call_id = payload.get("call_id", "") or _format_span_id()
+        call_id = call_id or _format_span_id()
         unique_id = self._deduplicate_tool_use_id(session, call_id)
         session.tool_use_id_map[call_id] = unique_id
-        tool_name = payload.get("name", "unknown_tool") or "unknown_tool"
+        tool_name = tool_name or "unknown_tool"
         session.tools_used.add(tool_name)
         self._update_agent_manifest(session)
         start_ns = _timestamp_to_ns(record.get("timestamp", ""))
-        arguments = payload.get("arguments", "")
-        tool_input: Any = arguments
-        if isinstance(arguments, str):
-            try:
-                tool_input = json.loads(arguments)
-            except (ValueError, TypeError):
-                tool_input = arguments
 
         matched_step_id, matched_llm_span = self._find_llm_step_for_tool_call(turn, unique_id, tool_name, tool_input)
         if matched_step_id and matched_step_id != turn.step_span_id:
@@ -1320,6 +1375,24 @@ class CodexHooksAPI:
             start_ns=start_ns,
         )
         session.pending_tool_ids_by_span_id[session.pending_tools[unique_id].span_id] = unique_id
+        return unique_id
+
+    def _handle_function_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
+        payload = record.get("payload", {})
+        arguments = payload.get("arguments", "")
+        tool_input: Any = arguments
+        if isinstance(arguments, str):
+            try:
+                tool_input = json.loads(arguments)
+            except (ValueError, TypeError):
+                tool_input = arguments
+        self._handle_tool_call(
+            session=session,
+            record=record,
+            call_id=payload.get("call_id", ""),
+            tool_name=payload.get("name", "unknown_tool") or "unknown_tool",
+            tool_input=tool_input,
+        )
 
     def _emit_tool_span(
         self,
@@ -1379,6 +1452,104 @@ class CodexHooksAPI:
             is_error=False,
         )
 
+    def _handle_custom_tool_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
+        payload = record.get("payload", {})
+        tool_input: Any = payload.get("input", "")
+        self._handle_tool_call(
+            session=session,
+            record=record,
+            call_id=payload.get("call_id", ""),
+            tool_name=payload.get("name", "custom_tool") or "custom_tool",
+            tool_input=tool_input,
+        )
+
+    def _handle_custom_tool_call_output(self, session: CodexSession, record: Dict[str, Any]) -> None:
+        self._handle_function_call_output(session, record)
+
+    def _handle_web_search_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
+        payload = record.get("payload", {})
+        tool_input = payload.get("query", "")
+        unique_id = self._handle_tool_call(
+            session=session,
+            record=record,
+            call_id=payload.get("call_id", ""),
+            tool_name="web_search",
+            tool_input=tool_input,
+        )
+        pending = session.pending_tools.pop(unique_id, None)
+        if pending is None:
+            return
+        session.tool_use_id_map.pop(payload.get("call_id", ""), None)
+        self._emit_tool_span(
+            session=session,
+            pending=pending,
+            end_ns=_timestamp_to_ns(record.get("timestamp", "")),
+            output_value="",
+            is_error=payload.get("status") not in ("", "completed", "ok", "success"),
+        )
+
+    def _handle_approval_request(
+        self,
+        session: CodexSession,
+        record: Dict[str, Any],
+        event: Dict[str, Any],
+        tool_name: str,
+    ) -> None:
+        turn = self._active_turn(session, record)
+        session.tools_used.add(tool_name)
+        self._update_agent_manifest(session)
+        span_ref = turn.root_span_ref
+        if span_ref is None:
+            return
+        metadata = span_ref.setdefault("meta", {}).setdefault("metadata", {})
+        dd = metadata.setdefault("_dd", {})
+        approvals = dd.setdefault("codex_approvals", [])
+        tool_input: Any = event.get("reason", "")
+        if tool_name == "exec_command":
+            command = event.get("command", "")
+            tool_input = " ".join(str(part) for part in command) if isinstance(command, list) else command
+        approvals.append(
+            {
+                "call_id": str(event.get("call_id", "")),
+                "tool": tool_name,
+                "input": tool_input if isinstance(tool_input, str) else _to_json_str(tool_input),
+                "timestamp_ns": _timestamp_to_ns(record.get("timestamp", "")),
+                "status": "pending",
+            }
+        )
+
+    def _handle_patch_apply_end(self, session: CodexSession, record: Dict[str, Any], event: Dict[str, Any]) -> None:
+        changes = event.get("changes", {})
+        if isinstance(changes, dict):
+            tool_input = ", ".join(sorted(str(path) for path in changes.keys()))
+        else:
+            tool_input = ""
+        call_id = str(event.get("call_id", "")) or _format_span_id()
+        unique_id = self._handle_tool_call(
+            session=session,
+            record=record,
+            call_id=call_id,
+            tool_name="apply_patch",
+            tool_input=tool_input,
+        )
+        pending = session.pending_tools.pop(unique_id, None)
+        if pending is None:
+            return
+        session.tool_use_id_map.pop(call_id, None)
+        stdout = event.get("stdout", "")
+        stderr = event.get("stderr", "")
+        output_value = stdout if isinstance(stdout, str) else _to_json_str(stdout)
+        if stderr:
+            stderr_value = stderr if isinstance(stderr, str) else _to_json_str(stderr)
+            output_value = f"{output_value}\n{stderr_value}" if output_value else stderr_value
+        self._emit_tool_span(
+            session=session,
+            pending=pending,
+            end_ns=_timestamp_to_ns(record.get("timestamp", "")),
+            output_value=output_value,
+            is_error=event.get("success") is False or str(event.get("status", "")).lower() in ("failed", "error"),
+        )
+
     def _dispatch(
         self, session_id: str, record: Dict[str, Any], proxy_session_key: Optional[str] = None
     ) -> List[CompletedTrace]:
@@ -1404,7 +1575,7 @@ class CodexHooksAPI:
         if record_type == "session_meta":
             self._handle_session_meta(session, record)
         elif record_type == "turn_context":
-            return self._start_turn(session, record)
+            return self._handle_turn_context(session, record)
         elif record_type == "event_msg":
             return self._handle_event_msg(session, record)
         elif record_type == "response_item":

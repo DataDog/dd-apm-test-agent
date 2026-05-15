@@ -4,6 +4,7 @@ import json
 from aiohttp import web
 import pytest
 
+from ddapm_test_agent import codex_proxy as codex_proxy_module
 from ddapm_test_agent.codex_proxy import _is_client_disconnect_error
 
 
@@ -20,6 +21,76 @@ def allow_codex_upstream_override(monkeypatch):
 def test_codex_proxy_identifies_closing_transport_as_client_disconnect():
     assert _is_client_disconnect_error(RuntimeError("Cannot write to closing transport"))
     assert not _is_client_disconnect_error(RuntimeError("upstream failed"))
+
+
+async def test_codex_proxy_stream_disconnect_stops_upstream_and_skips_span(monkeypatch):
+    class FakeConfig:
+        ml_app = "codex"
+        service = "codex"
+        env = "local"
+        hostname = "host"
+        user_handle = ""
+
+    class FakeHooks:
+        _config = FakeConfig()
+
+        def __init__(self):
+            self.registered = []
+
+        def begin_proxy_llm_call(self, maybe_session_id, start_ns):
+            return maybe_session_id
+
+        def register_proxy_llm_span(self, maybe_session_id, span, start_ns, end_ns):
+            self.registered.append((maybe_session_id, span, start_ns, end_ns))
+
+        def finish_proxy_llm_call(self, maybe_session_id, succeeded):
+            self.finished = (maybe_session_id, succeeded)
+
+    class FakeContent:
+        def __init__(self):
+            self.iterations = 0
+
+        async def iter_any(self):
+            for chunk in [b"data: one\n\n", b"data: two\n\n"]:
+                self.iterations += 1
+                yield chunk
+
+    class FakeUpstreamResponse:
+        status = 200
+        headers = {}
+
+        def __init__(self):
+            self.content = FakeContent()
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeStreamResponse:
+        def __init__(self, status):
+            self.status = status
+            self.headers = {}
+
+        async def prepare(self, request):
+            return None
+
+        async def write(self, chunk):
+            raise RuntimeError("Cannot write to closing transport")
+
+        async def write_eof(self):
+            raise AssertionError("write_eof should not be called after disconnect")
+
+    hooks = FakeHooks()
+    proxy = codex_proxy_module.CodexProxyAPI(hooks)
+    upstream_resp = FakeUpstreamResponse()
+    monkeypatch.setattr(codex_proxy_module.web, "StreamResponse", FakeStreamResponse)
+
+    await proxy._handle_streaming(object(), upstream_resp, _responses_request(stream=True), "proxy-key", 1)
+
+    assert upstream_resp.closed is True
+    assert upstream_resp.content.iterations == 1
+    assert hooks.registered == []
+    assert hooks.finished == ("proxy-key", False)
 
 
 async def _post_codex(agent, session_id, record, proxy_session_key=None):
@@ -630,6 +701,54 @@ async def test_codex_proxy_session_key_routes_to_matching_active_session(agent, 
     assert llms_a[0]["meta"]["input"]["messages"] == [{"role": "user", "content": "prompt a"}]
 
 
+async def test_codex_proxy_failed_response_does_not_suppress_jsonl_token_fallback(agent, aiohttp_server):
+    sid = "codex-proxy-failed-fallback"
+    await _post_codex(agent, sid, _session_meta(sid), proxy_session_key="proxy-failed")
+    await _post_codex(agent, sid, _turn_context("turn-failed"), proxy_session_key="proxy-failed")
+    await _post_codex(agent, sid, _event("user_message", message="prompt failed"), proxy_session_key="proxy-failed")
+
+    async def handle(request):
+        return web.json_response({"error": "upstream failed"}, status=500)
+
+    upstream_app = web.Application()
+    upstream_app.router.add_post("/v1/responses", handle)
+    upstream = await aiohttp_server(upstream_app)
+
+    resp = await agent.post(
+        "/codex/proxy/proxy-failed/v1/responses",
+        headers={"X-DDAPM-Upstream": str(upstream.make_url("")).rstrip("/")},
+        json=_responses_request(text="prompt failed"),
+    )
+    assert resp.status == 500
+
+    await _post_codex(
+        agent,
+        sid,
+        _event(
+            "token_count",
+            timestamp="2026-05-11T17:00:03.000Z",
+            info={"last_token_usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}},
+        ),
+        proxy_session_key="proxy-failed",
+    )
+    await _post_codex(
+        agent,
+        sid,
+        _response_item(
+            "message",
+            timestamp="2026-05-11T17:00:04.000Z",
+            role="assistant",
+            content=[{"type": "output_text", "text": "fallback answer"}],
+        ),
+        proxy_session_key="proxy-failed",
+    )
+
+    llms = _by_kind(await _spans(agent, sid), "llm")
+    assert len(llms) == 1
+    assert llms[0]["metrics"]["input_tokens"] == 10
+    assert llms[0]["meta"]["output"]["messages"] == [{"role": "assistant", "content": "fallback answer"}]
+
+
 async def test_codex_proxy_session_key_disambiguates_same_prompt_sessions(agent, aiohttp_server):
     sid_a = "codex-proxy-same-prompt-a"
     sid_b = "codex-proxy-same-prompt-b"
@@ -718,3 +837,78 @@ async def test_codex_proxy_keyed_orphan_ignores_same_key_non_matching_session(ag
     llms_b = _by_kind(await _spans(agent, sid_b), "llm")
     assert len(llms_b) == 1
     assert llms_b[0]["parent_id"] != "undefined"
+
+
+async def test_codex_proxy_shared_key_child_session_attaches_to_child_turn(agent, aiohttp_server):
+    parent_sid = "codex-proxy-parent"
+    child_sid = "codex-proxy-child"
+    proxy_key = "proxy-shared-child"
+
+    await _post_codex(agent, parent_sid, _session_meta(parent_sid), proxy_session_key=proxy_key)
+    await _post_codex(agent, parent_sid, _turn_context("parent-turn"), proxy_session_key=proxy_key)
+    await _post_codex(agent, parent_sid, _event("user_message", message="delegate"), proxy_session_key=proxy_key)
+    await _post_codex(
+        agent,
+        parent_sid,
+        _event(
+            "collab_agent_spawn_begin",
+            timestamp="2026-05-11T17:00:02.500Z",
+            call_id="spawn-child",
+            sender_thread_id=parent_sid,
+            prompt="child work",
+        ),
+        proxy_session_key=proxy_key,
+    )
+    await _post_codex(agent, child_sid, _session_meta(child_sid), proxy_session_key=proxy_key)
+    await _post_codex(agent, child_sid, _turn_context("child-turn"), proxy_session_key=proxy_key)
+    await _post_codex(
+        agent,
+        parent_sid,
+        _event(
+            "collab_agent_spawn_end",
+            timestamp="2026-05-11T17:00:03.000Z",
+            call_id="spawn-child",
+            new_thread_id=child_sid,
+            new_agent_nickname="worker",
+            status="ok",
+        ),
+        proxy_session_key=proxy_key,
+    )
+    await _post_codex(
+        agent,
+        child_sid,
+        _event("user_message", timestamp="2026-05-11T17:00:04.000Z", message="child prompt"),
+        proxy_session_key=proxy_key,
+    )
+
+    async def handle(request):
+        return web.json_response(_responses_body(text="child answer"))
+
+    upstream_app = web.Application()
+    upstream_app.router.add_post("/v1/responses", handle)
+    upstream = await aiohttp_server(upstream_app)
+
+    resp = await agent.post(
+        f"/codex/proxy/{proxy_key}/v1/responses",
+        headers={"X-DDAPM-Upstream": str(upstream.make_url("")).rstrip("/")},
+        json=_responses_request(text="child prompt"),
+    )
+    assert resp.status == 200
+
+    spans = await _spans(agent)
+    child_root = next(span for span in spans if span.get("meta", {}).get("metadata", {}).get("turn_id") == "child-turn")
+    child_steps = [
+        span
+        for span in _by_kind(spans, "step")
+        if span["trace_id"] == child_root["trace_id"] and span["parent_id"] == child_root["span_id"]
+    ]
+    child_llms = [
+        span
+        for span in _by_kind(spans, "llm")
+        if span["trace_id"] == child_root["trace_id"] and span["parent_id"] == child_steps[0]["span_id"]
+    ]
+
+    assert child_root["session_id"] == parent_sid
+    assert len(child_steps) == 1
+    assert len(child_llms) == 1
+    assert child_llms[0]["meta"]["input"]["messages"] == [{"role": "user", "content": "child prompt"}]

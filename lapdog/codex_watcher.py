@@ -152,6 +152,29 @@ def _post_record(
     return True
 
 
+def _shutdown_record() -> Dict[str, Any]:
+    return {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+        "type": "event_msg",
+        "payload": {"type": "shutdown_complete"},
+    }
+
+
+def _post_shutdown_complete(
+    lapdog_url: str,
+    session_id: str,
+    source_path: Path,
+    proxy_session_key: Optional[str] = None,
+) -> bool:
+    return _post_record(
+        lapdog_url,
+        session_id,
+        _shutdown_record(),
+        source_path,
+        proxy_session_key=proxy_session_key,
+    )
+
+
 def _record_cwd(record: Dict[str, Any]) -> str:
     payload = record.get("payload", {})
     if not isinstance(payload, dict):
@@ -434,10 +457,8 @@ def _maybe_save_cursor(
     if not force and (now - last_save) < CURSOR_SAVE_INTERVAL_SECONDS:
         return last_save
     _sync_cursor(cursor, states)
-    if force:
-        _prune_cursor(cursor)
     try:
-        save_cursor_atomic(cursor_path, cursor)
+        save_cursor_atomic(cursor_path, cursor, prune_missing=force)
     except OSError as exc:
         print(f"lapdog codex watcher: cursor save failed: {exc}", file=sys.stderr, flush=True)
         return last_save
@@ -463,10 +484,18 @@ def _discover_new_files(
         except OSError:
             continue
         cursor_offset = cursor.files.get(str(path))
-        if cursor_offset is not None and cursor_offset <= stat.st_size:
+        has_valid_cursor = cursor_offset is not None and cursor_offset <= stat.st_size
+        has_truncated_cursor = cursor_offset is not None and cursor_offset > stat.st_size
+        ignore_initial_path = bool(proxy_session_key and path in initial_paths and cursor_offset is None)
+        if has_valid_cursor:
             # Resume from the persisted offset (crash-safe).
-            initial_offset = cursor_offset
-        elif proxy_session_key and path in initial_paths:
+            initial_offset = cursor_offset or 0
+        elif has_truncated_cursor:
+            # The rollout was truncated/replaced after the last cursor save.
+            # Re-read it rather than treating it as an unrelated pre-existing
+            # proxy-mode file.
+            initial_offset = 0
+        elif ignore_initial_path:
             # With proxy correlation, files present before this watcher
             # starts belong to earlier Codex sessions. Keep advancing
             # their offsets without posting later appends.
@@ -481,7 +510,7 @@ def _discover_new_files(
                 replay_recent_seconds=replay_recent_seconds,
             )
         states[path] = FileState(offset=initial_offset)
-        if proxy_session_key and path in initial_paths:
+        if ignore_initial_path:
             states[path].ignored = True
         if initial_offset and not states[path].ignored:
             _prime_file_state(path, states[path], cwd, initial_offset)
@@ -594,15 +623,19 @@ def watch_codex_sessions(
         started_at=started_at,
         replay_recent_seconds=replay_recent_seconds,
     )
+    shutdown_sessions: Dict[str, Path] = {}
     for path, state in list(states.items()):
         try:
-            _drain_file(
+            posted_session_id = _drain_file(
                 path,
                 state,
                 lapdog_url,
                 cwd,
                 proxy_session_key=proxy_session_key,
             )
+            session_id = posted_session_id or state.session_id
+            if session_id and not state.ignored and state.matches_cwd is not False:
+                shutdown_sessions[session_id] = path
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as exc:
@@ -612,6 +645,8 @@ def watch_codex_sessions(
                 flush=True,
             )
             continue
+    for session_id, path in shutdown_sessions.items():
+        _post_shutdown_complete(lapdog_url, session_id, path, proxy_session_key=proxy_session_key)
     _maybe_save_cursor(cursor_path, cursor, states, last_cursor_save, time.time(), force=True)
 
 

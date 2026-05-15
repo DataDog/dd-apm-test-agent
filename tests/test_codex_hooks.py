@@ -68,6 +68,18 @@ def _turn_context(turn_id="turn-1"):
     }
 
 
+def _turn_context_without_turn_id(timestamp="2026-05-11T17:00:01.000Z"):
+    return {
+        "timestamp": timestamp,
+        "type": "turn_context",
+        "payload": {
+            "cwd": "/repo",
+            "model": "gpt-5.5",
+            "effort": "medium",
+        },
+    }
+
+
 def _event(event_type, timestamp="2026-05-11T17:00:02.000Z", **kwargs):
     return {
         "timestamp": timestamp,
@@ -161,6 +173,94 @@ async def test_codex_turn_llm_and_tool_spans(agent):
     assert llms[0]["metrics"]["estimated_input_cost"] == 410_000
     assert llms[0]["metrics"]["estimated_output_cost"] == 900_000
     assert llms[0]["metrics"]["estimated_total_cost"] == 1_310_000
+
+
+async def test_codex_real_turn_context_without_id_does_not_split_turn(agent):
+    sid = "codex-real-turn-order"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:01.000Z", message="list files"))
+    await _post(agent, sid, _turn_context_without_turn_id(timestamp="2026-05-11T17:00:01.100Z"))
+    await _post(agent, sid, _event("task_started", timestamp="2026-05-11T17:00:01.200Z", turn_id="turn-real"))
+    await _post(agent, sid, _event("agent_message", timestamp="2026-05-11T17:00:04.000Z", message="README.md"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    assert resp.status == 200
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    roots = [s for s in session_spans if s["parent_id"] == "undefined"]
+
+    assert len(roots) == 1
+    assert roots[0]["meta"]["metadata"]["turn_id"] == "turn-real"
+    assert roots[0]["meta"]["input"]["value"] == "list files"
+    assert roots[0]["meta"]["output"]["value"] == "README.md"
+    assert roots[0]["meta"]["model_name"] == "gpt-5.5"
+
+
+async def test_codex_handles_real_tool_and_permission_event_types(agent):
+    sid = "codex-real-tool-types"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="patch and search"))
+    await _post(agent, sid, _response_item("web_search_call", call_id="web_search_1", status="completed"))
+    await _post(
+        agent,
+        sid,
+        _event(
+            "apply_patch_approval_request",
+            timestamp="2026-05-11T17:00:02.500Z",
+            call_id="patch-approval-1",
+            reason="write access",
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "custom_tool_call",
+            timestamp="2026-05-11T17:00:03.000Z",
+            call_id="custom-1",
+            name="apply_patch",
+            input="*** Begin Patch ***",
+            status="completed",
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "custom_tool_call_output",
+            timestamp="2026-05-11T17:00:04.000Z",
+            call_id="custom-1",
+            output="Success",
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _event(
+            "patch_apply_end",
+            timestamp="2026-05-11T17:00:05.000Z",
+            call_id="patch-approval-1",
+            stdout="Success. Updated files.",
+            stderr="",
+            success=True,
+            changes={"/repo/main.py": {"type": "modify", "content": "print('ok')"}},
+            status="completed",
+        ),
+    )
+
+    resp = await agent.get("/claude/hooks/spans")
+    assert resp.status == 200
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    root = next(s for s in session_spans if s["parent_id"] == "undefined")
+    tools = _by_kind(session_spans, "tool")
+
+    assert [tool["name"] for tool in tools] == ["web_search", "apply_patch", "apply_patch"]
+    assert tools[0]["meta"]["metadata"]["tool_id"] == "web_search_1"
+    assert tools[1]["meta"]["output"]["value"] == "Success"
+    assert tools[2]["meta"]["input"]["value"] == "/repo/main.py"
+    approvals = root["meta"]["metadata"]["_dd"]["codex_approvals"]
+    assert approvals[0]["tool"] == "apply_patch"
+    assert approvals[0]["call_id"] == "patch-approval-1"
 
 
 async def test_codex_populates_step_and_late_llm_output(agent):
@@ -646,6 +746,33 @@ async def test_codex_user_message_forwards_previous_trace_without_turn_context(a
     assert len(forwarded_roots) == 1
     assert forwarded_roots[0]["meta"]["input"]["value"] == "first"
     assert forwarded_roots[0]["meta"]["output"]["value"] == "done first"
+
+
+async def test_codex_shutdown_complete_forwards_active_trace(agent, monkeypatch):
+    forwarded_payloads = []
+
+    def fake_resolve_backend_target(self, *args, **kwargs):
+        return "http://backend.example", {}
+
+    async def fake_post_to_backend(self, url, headers, data, description):
+        forwarded_payloads.append(msgpack.unpackb(gzip.decompress(data), raw=False))
+
+    monkeypatch.setattr(ClaudeHooksAPI, "_resolve_backend_target", fake_resolve_backend_target)
+    monkeypatch.setattr(ClaudeHooksAPI, "_post_to_backend", fake_post_to_backend)
+
+    sid = "codex-forward-shutdown"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context("turn-shutdown"))
+    await _post(agent, sid, _event("user_message", message="finish on shutdown"))
+    await _post(agent, sid, _event("agent_message", timestamp="2026-05-11T17:00:03.000Z", message="partial done"))
+    await _post(agent, sid, _event("shutdown_complete", timestamp="2026-05-11T17:00:04.000Z"))
+
+    assert len(forwarded_payloads) == 1
+    forwarded_roots = [span for span in forwarded_payloads[0]["spans"] if span["parent_id"] == "undefined"]
+    assert len(forwarded_roots) == 1
+    assert forwarded_roots[0]["meta"]["metadata"]["turn_id"] == "turn-shutdown"
+    assert forwarded_roots[0]["meta"]["input"]["value"] == "finish on shutdown"
+    assert forwarded_roots[0]["meta"]["output"]["value"] == "partial done"
 
 
 async def test_codex_ignores_duplicate_session_for_existing_task_id(agent):

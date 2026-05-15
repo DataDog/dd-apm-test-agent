@@ -336,6 +336,7 @@ class CodexProxyAPI:
                     )
                 return await self._handle_non_streaming(upstream_resp, request_body, maybe_session_id, start_ns)
         except Exception as exc:
+            self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
             if _is_client_disconnect_error(exc):
                 log.debug("Codex proxy client disconnected while forwarding to %s: %s", target_url, exc)
                 return web.Response(status=499)
@@ -359,16 +360,19 @@ class CodexProxyAPI:
         buffered_chunks: List[bytes] = []
         downstream_closed = False
         async for chunk in upstream_resp.content.iter_any():
-            buffered_chunks.append(chunk)
-            if downstream_closed:
-                continue
             try:
                 await response.write(chunk)
             except Exception as exc:
                 if not _is_client_disconnect_error(exc):
                     raise
                 downstream_closed = True
+                upstream_resp.close()
                 log.debug("Codex proxy client disconnected while streaming response: %s", exc)
+                break
+            buffered_chunks.append(chunk)
+        if downstream_closed:
+            self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
+            return response
         if not downstream_closed:
             try:
                 await response.write_eof()
@@ -385,8 +389,13 @@ class CodexProxyAPI:
                 span = self._create_llm_span(request_body, response_data, start_ns, end_ns - start_ns)
                 if span is not None:
                     self._hooks_api.register_proxy_llm_span(maybe_session_id, span, start_ns, end_ns)
+                else:
+                    self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
             except Exception as exc:
+                self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
                 log.error("Failed to create Codex LLM span from SSE: %s", exc, exc_info=True)
+        else:
+            self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
 
         return response
 
@@ -405,8 +414,13 @@ class CodexProxyAPI:
                 span = self._create_llm_span(request_body, response_data, start_ns, end_ns - start_ns)
                 if span is not None:
                     self._hooks_api.register_proxy_llm_span(maybe_session_id, span, start_ns, end_ns)
+                else:
+                    self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
             except Exception as exc:
+                self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
                 log.error("Failed to create Codex LLM span: %s", exc, exc_info=True)
+        else:
+            self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
 
         response = web.Response(body=body, status=upstream_resp.status)
         for key, value in upstream_resp.headers.items():

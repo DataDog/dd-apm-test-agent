@@ -401,6 +401,15 @@ def test_save_cursor_atomic_roundtrip(tmp_path):
     assert loaded.saved_at != ""
 
 
+def test_save_cursor_atomic_merges_existing_entries(tmp_path):
+    cursor_path = tmp_path / "cursor.json"
+    save_cursor_atomic(cursor_path, CursorState(files={"/path/a": 100}))
+    save_cursor_atomic(cursor_path, CursorState(files={"/path/b": 200}))
+
+    loaded = load_cursor(cursor_path)
+    assert loaded.files == {"/path/a": 100, "/path/b": 200}
+
+
 def test_sync_cursor_merges_rather_than_replaces():
     """Entries for files not in the live states dict must survive a sync."""
     cursor = CursorState(files={"/path/a": 100, "/path/b": 200})
@@ -646,10 +655,38 @@ def test_watch_codex_sessions_resumes_from_cursor(monkeypatch, tmp_path):
 
     # Only the user_message after the cursor should have been posted; the
     # session_meta that the cursor already covered must not reappear.
-    assert [post["record"]["type"] for post in posts] == ["event_msg"]
+    posted_types = [post["record"]["payload"]["type"] for post in posts if post["record"]["type"] == "event_msg"]
+    assert posted_types == ["user_message", "shutdown_complete"]
     # And the cursor file should have advanced to the file's full size.
     loaded = load_cursor(cursor_path)
     assert loaded.files.get(str(session_file)) == session_file.stat().st_size
+
+
+def test_proxy_watch_codex_sessions_resumes_initial_file_when_cursor_exists(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-proxy-c", "cwd": str(tmp_path)}})
+    primed_offset = session_file.stat().st_size
+    _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "after-proxy-restart"}})
+
+    cursor_path = tmp_path / "codex-cursor.json"
+    save_cursor_atomic(cursor_path, CursorState(files={str(session_file): primed_offset}))
+
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=999999,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        ready_file=None,
+        proxy_session_key="proxy-key",
+        cursor_path=cursor_path,
+    )
+
+    posted_types = [post["record"]["payload"]["type"] for post in posts if post["record"]["type"] == "event_msg"]
+    assert posted_types == ["user_message", "shutdown_complete"]
 
 
 def test_watch_codex_sessions_exits_when_parent_start_time_stale(monkeypatch, tmp_path):
@@ -840,7 +877,8 @@ def test_watch_codex_sessions_respects_discovery_interval(monkeypatch, tmp_path)
         discovery_interval=0.0,  # rediscover every loop iteration
     )
 
-    assert [post["session_id"] for post in posts] == ["sess-disc"]
+    assert [post["session_id"] for post in posts] == ["sess-disc", "sess-disc"]
+    assert posts[-1]["record"]["payload"]["type"] == "shutdown_complete"
 
 
 def test_watch_codex_sessions_writes_ready_file(monkeypatch, tmp_path):
