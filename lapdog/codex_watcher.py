@@ -259,20 +259,27 @@ def _drain_file(
 
 
 def _prime_file_state(path: Path, state: FileState, cwd: str, up_to: int) -> None:
-    """Read old records only to learn session id and cwd; do not post them."""
+    """Read old records only to learn session id and cwd; do not post them.
+
+    Reads in binary mode so byte offsets stay byte-accurate (text-mode
+    ``tell()`` returns an opaque cookie on platforms where line endings or
+    multi-byte decoding change the byte/character mapping). Each line is
+    decoded with ``errors='replace'`` so multi-byte cwd values do not abort
+    priming.
+    """
     try:
-        with path.open("r") as f:
-            while True:
-                if f.tell() >= up_to:
+        with path.open("rb") as f:
+            read = 0
+            while read < up_to:
+                line_bytes = f.readline()
+                if not line_bytes:
                     break
-                line = f.readline()
-                if not line:
-                    break
-                line = line.strip()
+                read += len(line_bytes)
+                line = line_bytes.strip()
                 if not line:
                     continue
                 try:
-                    record = json.loads(line)
+                    record = json.loads(line.decode("utf-8", errors="replace"))
                 except json.JSONDecodeError:
                     continue
                 session_id = _record_session_id(record)

@@ -287,6 +287,25 @@ def test_drain_file_preserves_partial_jsonl_record(monkeypatch, tmp_path):
     assert state.offset == session_file.stat().st_size
 
 
+def test_prime_file_state_handles_utf8_multibyte_cwd(tmp_path):
+    """A cwd field with non-ASCII characters must not abort priming."""
+    session_file = tmp_path / "rollout.jsonl"
+    multibyte_cwd = str(tmp_path / "résumé")
+    (tmp_path / "résumé").mkdir()
+    _append(
+        session_file,
+        {
+            "type": "session_meta",
+            "payload": {"id": "sess-utf8", "cwd": multibyte_cwd},
+        },
+    )
+    state = FileState(offset=session_file.stat().st_size)
+    _prime_file_state(session_file, state, multibyte_cwd, session_file.stat().st_size)
+
+    assert state.session_id == "sess-utf8"
+    assert state.matches_cwd is True
+
+
 def test_prime_file_state_learns_old_session_metadata(tmp_path):
     session_file = tmp_path / "rollout.jsonl"
     _append(
