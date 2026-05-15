@@ -1,8 +1,20 @@
+import asyncio
 import json
 
 from aiohttp import web
+import pytest
 
 from ddapm_test_agent.codex_proxy import _is_client_disconnect_error
+
+
+@pytest.fixture
+def dd_api_key():
+    return ""
+
+
+@pytest.fixture(autouse=True)
+def allow_codex_upstream_override(monkeypatch):
+    monkeypatch.setenv("DD_CODEX_ALLOW_UPSTREAM_OVERRIDE", "1")
 
 
 def test_codex_proxy_identifies_closing_transport_as_client_disconnect():
@@ -54,6 +66,17 @@ def _event(event_type, timestamp="2026-05-11T17:00:02.000Z", **kwargs):
         "type": "event_msg",
         "payload": {
             "type": event_type,
+            **kwargs,
+        },
+    }
+
+
+def _response_item(item_type, timestamp="2026-05-11T17:00:03.000Z", **kwargs):
+    return {
+        "timestamp": timestamp,
+        "type": "response_item",
+        "payload": {
+            "type": item_type,
             **kwargs,
         },
     }
@@ -167,6 +190,25 @@ async def test_codex_proxy_non_streaming_forwards_and_creates_orphan_span(agent,
     assert llm["metrics"]["reasoning_output_tokens"] == 5
 
 
+async def test_codex_proxy_rejects_upstream_override_when_disabled(agent, aiohttp_server, monkeypatch):
+    monkeypatch.delenv("DD_CODEX_ALLOW_UPSTREAM_OVERRIDE", raising=False)
+
+    async def handle(request):
+        return web.json_response(_responses_body())
+
+    upstream_app = web.Application()
+    upstream_app.router.add_post("/v1/responses", handle)
+    upstream = await aiohttp_server(upstream_app)
+
+    resp = await agent.post(
+        "/codex/proxy/v1/responses",
+        headers={"X-DDAPM-Upstream": str(upstream.make_url("")).rstrip("/")},
+        json=_responses_request(),
+    )
+
+    assert resp.status == 403
+
+
 async def test_codex_proxy_streaming_reconstructs_response(agent, aiohttp_server):
     async def handle(request):
         response = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
@@ -266,6 +308,147 @@ async def test_codex_proxy_span_parents_to_jsonl_turn_and_dedupes_token_count(ag
     assert llms[0]["parent_id"] == steps[0]["span_id"]
     assert steps[0]["parent_id"] == roots[0]["span_id"]
     assert "source:codex-proxy" in llms[0]["tags"]
+
+
+async def test_codex_proxy_overlapping_llm_spans_split_into_steps(agent, aiohttp_server):
+    sid = "codex-proxy-overlap"
+    await _post_codex(agent, sid, _session_meta(sid))
+    await _post_codex(agent, sid, _turn_context())
+    await _post_codex(agent, sid, _event("user_message", message="run two calls"))
+
+    requests_started = 0
+    first_started = asyncio.Event()
+    second_started = asyncio.Event()
+    release_first = asyncio.Event()
+    release_second = asyncio.Event()
+
+    async def handle(request):
+        nonlocal requests_started
+        requests_started += 1
+        if requests_started == 1:
+            first_started.set()
+            await release_first.wait()
+            return web.json_response(_responses_body(text="first"))
+        second_started.set()
+        await release_second.wait()
+        return web.json_response(_responses_body(text="second"))
+
+    upstream_app = web.Application()
+    upstream_app.router.add_post("/v1/responses", handle)
+    upstream = await aiohttp_server(upstream_app)
+
+    first = asyncio.create_task(
+        agent.post(
+            "/codex/proxy/v1/responses",
+            headers={"X-DDAPM-Upstream": str(upstream.make_url("")).rstrip("/")},
+            json=_responses_request(text="first prompt"),
+        )
+    )
+    await first_started.wait()
+    second = asyncio.create_task(
+        agent.post(
+            "/codex/proxy/v1/responses",
+            headers={"X-DDAPM-Upstream": str(upstream.make_url("")).rstrip("/")},
+            json=_responses_request(text="second prompt"),
+        )
+    )
+    await second_started.wait()
+
+    release_first.set()
+    assert (await first).status == 200
+    release_second.set()
+    assert (await second).status == 200
+
+    spans = await _spans(agent, sid)
+    steps = sorted(_by_kind(spans, "step"), key=lambda span: span["name"])
+    llms = sorted(_by_kind(spans, "llm"), key=lambda span: span["start_ns"])
+
+    assert [step["name"] for step in steps] == ["inference-0", "inference-1"]
+    assert len(llms) == 2
+    assert llms[0]["parent_id"] == steps[0]["span_id"]
+    assert llms[1]["parent_id"] == steps[1]["span_id"]
+
+
+async def test_codex_proxy_inflight_jsonl_usage_does_not_split_tool_call_step(agent, aiohttp_server):
+    sid = "codex-proxy-inflight-tool"
+    await _post_codex(agent, sid, _session_meta(sid))
+    await _post_codex(agent, sid, _turn_context())
+    await _post_codex(agent, sid, _event("user_message", message="run pwd"))
+
+    request_started = asyncio.Event()
+    release_response = asyncio.Event()
+
+    async def handle(request):
+        request_started.set()
+        await release_response.wait()
+        return web.json_response(_responses_tool_call_body())
+
+    upstream_app = web.Application()
+    upstream_app.router.add_post("/v1/responses", handle)
+    upstream = await aiohttp_server(upstream_app)
+
+    proxied = asyncio.create_task(
+        agent.post(
+            "/codex/proxy/v1/responses",
+            headers={"X-DDAPM-Upstream": str(upstream.make_url("")).rstrip("/")},
+            json=_responses_request(),
+        )
+    )
+    await request_started.wait()
+
+    await _post_codex(
+        agent,
+        sid,
+        _response_item(
+            "function_call",
+            timestamp="2026-05-13T17:00:04.000Z",
+            name="exec_command",
+            call_id="call-1",
+            arguments='{"cmd": "pwd"}',
+        ),
+    )
+    await _post_codex(
+        agent,
+        sid,
+        _event(
+            "token_count",
+            timestamp="2026-05-13T17:00:04.010Z",
+            info={
+                "last_token_usage": {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 20,
+                    "output_tokens": 30,
+                    "reasoning_output_tokens": 5,
+                    "total_tokens": 130,
+                }
+            },
+        ),
+    )
+
+    release_response.set()
+    assert (await proxied).status == 200
+    await _post_codex(
+        agent,
+        sid,
+        _response_item(
+            "function_call_output",
+            timestamp="2026-05-13T17:00:05.000Z",
+            call_id="call-1",
+            output="/repo",
+        ),
+    )
+
+    spans = await _spans(agent, sid)
+    steps = _by_kind(spans, "step")
+    llms = _by_kind(spans, "llm")
+    tools = _by_kind(spans, "tool")
+
+    assert len(steps) == 1
+    assert len(llms) == 1
+    assert len(tools) == 1
+    assert llms[0]["parent_id"] == steps[0]["span_id"]
+    assert tools[0]["parent_id"] == steps[0]["span_id"]
+    assert llms[0]["duration"] > 0
 
 
 async def test_codex_proxy_late_jsonl_tool_call_stays_in_llm_step(agent, aiohttp_server):
@@ -391,6 +574,34 @@ async def test_codex_proxy_session_key_routes_to_matching_active_session(agent, 
     assert llms_a[0]["meta"]["input"]["messages"] == [{"role": "user", "content": "prompt a"}]
 
 
+async def test_codex_proxy_session_key_disambiguates_same_prompt_sessions(agent, aiohttp_server):
+    sid_a = "codex-proxy-same-prompt-a"
+    sid_b = "codex-proxy-same-prompt-b"
+    await _post_codex(agent, sid_a, _session_meta(sid_a), proxy_session_key="proxy-a")
+    await _post_codex(agent, sid_a, _turn_context("turn-a"), proxy_session_key="proxy-a")
+    await _post_codex(agent, sid_a, _event("user_message", message="same prompt"), proxy_session_key="proxy-a")
+    await _post_codex(agent, sid_b, _session_meta(sid_b), proxy_session_key="proxy-b")
+    await _post_codex(agent, sid_b, _turn_context("turn-b"), proxy_session_key="proxy-b")
+    await _post_codex(agent, sid_b, _event("user_message", message="same prompt"), proxy_session_key="proxy-b")
+
+    async def handle(request):
+        return web.json_response(_responses_body(text="answer a"))
+
+    upstream_app = web.Application()
+    upstream_app.router.add_post("/v1/responses", handle)
+    upstream = await aiohttp_server(upstream_app)
+
+    resp = await agent.post(
+        "/codex/proxy/proxy-a/v1/responses",
+        headers={"X-DDAPM-Upstream": str(upstream.make_url("")).rstrip("/")},
+        json=_responses_request(text="same prompt"),
+    )
+    assert resp.status == 200
+
+    assert len(_by_kind(await _spans(agent, sid_a), "llm")) == 1
+    assert _by_kind(await _spans(agent, sid_b), "llm") == []
+
+
 async def test_codex_proxy_keyed_orphan_waits_for_matching_session(agent, aiohttp_server):
     async def handle(request):
         return web.json_response(_responses_body(text="keyed orphan"))
@@ -409,6 +620,7 @@ async def test_codex_proxy_keyed_orphan_waits_for_matching_session(agent, aiohtt
     sid_b = "codex-proxy-unrelated"
     await _post_codex(agent, sid_b, _session_meta(sid_b), proxy_session_key="proxy-b")
     await _post_codex(agent, sid_b, _turn_context("turn-b"), proxy_session_key="proxy-b")
+    await _post_codex(agent, sid_b, _event("user_message", message="prompt a"), proxy_session_key="proxy-b")
     assert _by_kind(await _spans(agent, sid_b), "llm") == []
 
     sid_a = "codex-proxy-matching"

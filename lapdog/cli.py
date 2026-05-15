@@ -393,8 +393,34 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
     _run_pi(args=sub_cmd_args, port=port)
 
 
-def _start_codex_watcher(port: int, proxy_session_key: Optional[str] = None) -> None:
+def _resolve_codex_cwd(args: List[str]) -> str:
+    cwd = os.getcwd()
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg == "--":
+            break
+        next_idx = idx + 1
+        cd_value: Optional[str] = None
+        if arg in ("-C", "--cd"):
+            if next_idx < len(args):
+                cd_value = args[next_idx]
+                next_idx += 1
+        elif arg.startswith("--cd="):
+            cd_value = arg.split("=", 1)[1]
+        elif arg.startswith("-C") and arg != "-C":
+            cd_value = arg[2:].lstrip("=")
+        if cd_value:
+            cwd = str(Path(cd_value).expanduser())
+            if not os.path.isabs(cwd):
+                cwd = os.path.join(os.getcwd(), cwd)
+        idx = next_idx
+    return os.path.abspath(cwd)
+
+
+def _start_codex_watcher(port: int, proxy_session_key: Optional[str] = None, cwd: Optional[str] = None) -> None:
     """Start the bundled Codex JSONL watcher for this working directory."""
+    watcher_cwd = os.path.abspath(cwd or os.getcwd())
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     ready_path = os.path.join(os.path.dirname(log_path), f"codex-watcher-{os.getpid()}.ready")
@@ -409,7 +435,7 @@ def _start_codex_watcher(port: int, proxy_session_key: Optional[str] = None) -> 
         "--lapdog-url",
         f"http://localhost:{port}",
         "--cwd",
-        os.getcwd(),
+        watcher_cwd,
         "--parent-pid",
         str(os.getpid()),
         "--ready-file",
@@ -476,7 +502,7 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
         print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
         sys.exit(1)
     proxy_session_key = uuid.uuid4().hex
-    _start_codex_watcher(port, proxy_session_key=proxy_session_key)
+    _start_codex_watcher(port, proxy_session_key=proxy_session_key, cwd=_resolve_codex_cwd(sub_cmd_args))
 
     print(build_running_banner(data_type="coding session"))
     _run_codex(args=sub_cmd_args, port=port, proxy_session_key=proxy_session_key)

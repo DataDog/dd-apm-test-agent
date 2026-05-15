@@ -6,6 +6,7 @@ from lapdog.codex_cursor import CursorState
 from lapdog.codex_cursor import load_cursor
 from lapdog.codex_cursor import save_cursor_atomic
 from lapdog.codex_watcher import FileState
+from lapdog.codex_watcher import _default_session_dir
 from lapdog.codex_watcher import _drain_file
 from lapdog.codex_watcher import _initial_offset_for_file
 from lapdog.codex_watcher import _prime_file_state
@@ -15,6 +16,22 @@ from lapdog.codex_watcher import watch_codex_sessions
 def _append(path: Path, record: Any) -> None:
     with path.open("a") as f:
         f.write(json.dumps(record) + "\n")
+
+
+def test_default_session_dir_uses_codex_home(monkeypatch, tmp_path):
+    codex_home = tmp_path / "custom-codex-home"
+    monkeypatch.delenv("LAPDOG_CODEX_SESSION_DIR", raising=False)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    assert _default_session_dir() == codex_home / "sessions"
+
+
+def test_default_session_dir_prefers_lapdog_override(monkeypatch, tmp_path):
+    session_dir = tmp_path / "custom-sessions"
+    monkeypatch.setenv("LAPDOG_CODEX_SESSION_DIR", str(session_dir))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "custom-codex-home"))
+
+    assert _default_session_dir() == session_dir
 
 
 def test_drain_file_buffers_until_matching_cwd(monkeypatch, tmp_path):
@@ -53,6 +70,33 @@ def test_drain_file_includes_proxy_session_key(monkeypatch, tmp_path):
 
     assert posts[0]["session_id"] == "sess-keyed"
     assert posts[0]["proxy_session_key"] == "proxy-key"
+
+
+def test_drain_file_keeps_offset_when_post_fails(monkeypatch, tmp_path):
+    posts = []
+    status_codes = [500, 200]
+
+    class FakeResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+    def fake_post(url, json, timeout):
+        posts.append(json)
+        return FakeResponse(status_codes.pop(0))
+
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", fake_post)
+    session_file = tmp_path / "rollout.jsonl"
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-retry", "cwd": str(tmp_path)}})
+
+    state = FileState()
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
+
+    assert state.offset == 0
+
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
+
+    assert [post["session_id"] for post in posts] == ["sess-retry", "sess-retry"]
+    assert state.offset == session_file.stat().st_size
 
 
 def test_drain_file_posts_multiple_sessions_with_same_proxy_key(monkeypatch, tmp_path):
@@ -203,8 +247,59 @@ def test_drain_file_resets_offset_on_truncation(monkeypatch, tmp_path):
 
     # The drain noticed size < offset, reset to 0, and replayed the record.
     assert state.offset == session_file.stat().st_size
+    assert state.session_id == "sess-trunc"
+    assert state.matches_cwd is True
     assert [post["record"]["type"] for post in posts] == ["session_meta"]
     assert posts[0]["session_id"] == "sess-trunc"
+
+
+def test_drain_file_resets_session_state_on_truncation(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-new", "cwd": str(tmp_path)}})
+    state = FileState(offset=10_000)
+    state.session_id = "sess-old"
+    state.matches_cwd = False
+
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
+
+    assert posts[0]["session_id"] == "sess-new"
+    assert state.session_id == "sess-new"
+    assert state.matches_cwd is True
+
+
+def test_proxy_watcher_ignores_existing_files_after_start(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher.requests.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout-existing.jsonl"
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-old", "cwd": str(tmp_path)}})
+
+    watched_once = False
+
+    def fake_process_exists(pid):
+        nonlocal watched_once
+        if watched_once:
+            return False
+        watched_once = True
+        _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "late"}})
+        return True
+
+    monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
+
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=12345,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        ready_file=None,
+        proxy_session_key="proxy-key",
+        cursor_path=None,
+    )
+
+    assert posts == []
 
 
 def test_watch_codex_sessions_resumes_from_cursor(monkeypatch, tmp_path):
@@ -219,18 +314,6 @@ def test_watch_codex_sessions_resumes_from_cursor(monkeypatch, tmp_path):
     # Pre-load a cursor as if the watcher had previously processed the first
     # record and then crashed before the user_message arrived.
     save_cursor_atomic(cursor_path, CursorState(files={str(session_file): primed_offset}))
-
-    # Spoof the session id without re-posting session_meta by stamping the
-    # FileState; the watcher uses it to forward subsequent records.
-    original_drain = _drain_file
-
-    def _drain_with_session(path, state, *args, **kwargs):
-        if not state.session_id:
-            state.session_id = "sess-c"
-            state.matches_cwd = True
-        return original_drain(path, state, *args, **kwargs)
-
-    monkeypatch.setattr("lapdog.codex_watcher._drain_file", _drain_with_session)
 
     watch_codex_sessions(
         lapdog_url="http://localhost:8126",

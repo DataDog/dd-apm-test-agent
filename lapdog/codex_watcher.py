@@ -25,13 +25,20 @@ class FileState:
         self.session_id = ""
         self.matches_cwd: Optional[bool] = None
         self.buffer: List[Dict[str, Any]] = []
+        self.ignored = False
 
 
 RECENT_SESSION_REPLAY_SECONDS = 300.0
 
 
 def _default_session_dir() -> Path:
-    return Path(os.environ.get("LAPDOG_CODEX_SESSION_DIR", Path.home() / ".codex" / "sessions")).expanduser()
+    explicit_session_dir = os.environ.get("LAPDOG_CODEX_SESSION_DIR")
+    if explicit_session_dir:
+        return Path(explicit_session_dir).expanduser()
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home:
+        return Path(codex_home).expanduser() / "sessions"
+    return Path.home() / ".codex" / "sessions"
 
 
 def _process_exists(pid: int) -> bool:
@@ -48,7 +55,7 @@ def _post_record(
     record: Dict[str, Any],
     source_path: Path,
     proxy_session_key: Optional[str] = None,
-) -> None:
+) -> bool:
     body = {"session_id": session_id, "record": record, "source_path": str(source_path)}
     if proxy_session_key:
         body["proxy_session_key"] = proxy_session_key
@@ -65,12 +72,15 @@ def _post_record(
                 file=sys.stderr,
                 flush=True,
             )
+            return False
     except Exception as exc:
         print(
             f"lapdog codex watcher: hook post failed session_id={session_id} source_path={source_path}: {exc}",
             file=sys.stderr,
             flush=True,
         )
+        return False
+    return True
 
 
 def _record_cwd(record: Dict[str, Any]) -> str:
@@ -109,35 +119,40 @@ def _drain_file(
             flush=True,
         )
         state.offset = 0
+        state.session_id = ""
+        state.matches_cwd = None
         state.buffer.clear()
     try:
         with path.open("rb") as f:
             f.seek(state.offset)
             data = f.read()
-            end_offset = f.tell()
     except OSError:
         return None
 
     if not data:
         return None
     if data.endswith(b"\n"):
-        lines = data.splitlines()
-        state.offset = end_offset
+        complete_data = data
     else:
         complete_end = data.rfind(b"\n") + 1
         if complete_end <= 0:
             return None
-        lines = data[:complete_end].splitlines()
-        state.offset += complete_end
+        complete_data = data[:complete_end]
 
     posted_session_id: Optional[str] = None
-    for line in lines:
+    cursor = state.offset
+    for raw_line in complete_data.splitlines(keepends=True):
+        line_end = cursor + len(raw_line)
+        cursor = line_end
+        line = raw_line
         line = line.strip()
         if not line:
+            state.offset = line_end
             continue
         try:
             record = json.loads(line)
         except json.JSONDecodeError:
+            state.offset = line_end
             continue
 
         session_id = _record_session_id(record)
@@ -150,19 +165,26 @@ def _drain_file(
 
         if state.matches_cwd is None:
             state.buffer.append(record)
+            state.offset = line_end
             continue
 
         if state.matches_cwd is False:
             state.buffer.clear()
+            state.offset = line_end
             continue
 
         if state.session_id:
             if state.buffer:
                 for buffered in state.buffer:
-                    _post_record(lapdog_url, state.session_id, buffered, path, proxy_session_key=proxy_session_key)
+                    if not _post_record(
+                        lapdog_url, state.session_id, buffered, path, proxy_session_key=proxy_session_key
+                    ):
+                        return posted_session_id
                 state.buffer.clear()
-            _post_record(lapdog_url, state.session_id, record, path, proxy_session_key=proxy_session_key)
+            if not _post_record(lapdog_url, state.session_id, record, path, proxy_session_key=proxy_session_key):
+                return posted_session_id
             posted_session_id = state.session_id
+            state.offset = line_end
 
     return posted_session_id
 
@@ -276,10 +298,9 @@ def watch_codex_sessions(
                     # Resume from the persisted offset (crash-safe).
                     initial_offset = cursor_offset
                 elif proxy_session_key and path in initial_paths:
-                    # The watcher is a separate Python process, so Codex can
-                    # create and write the session file before this loop
-                    # starts. With proxy correlation, files present at start
-                    # belong to earlier sessions and should be tailed from EOF.
+                    # With proxy correlation, files present before this watcher
+                    # starts belong to earlier Codex sessions. Keep advancing
+                    # their offsets without posting later appends.
                     initial_offset = stat.st_size
                 else:
                     # First time seeing this file: replay recent rollouts to
@@ -291,8 +312,20 @@ def watch_codex_sessions(
                         replay_recent_seconds=replay_recent_seconds,
                     )
                 states[path] = FileState(offset=initial_offset)
-                if initial_offset and not proxy_session_key and cursor_offset is None:
+                if proxy_session_key and path in initial_paths:
+                    states[path].ignored = True
+                if initial_offset and not states[path].ignored:
                     _prime_file_state(path, states[path], cwd, initial_offset)
+            if states[path].ignored:
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                if stat.st_size < states[path].offset:
+                    states[path] = FileState(offset=0)
+                else:
+                    states[path].offset = stat.st_size
+                    continue
             _drain_file(
                 path,
                 states[path],

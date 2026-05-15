@@ -17,8 +17,45 @@ def test_cmd_codex_starts_watcher_and_execs_codex():
                         cli.cmd_codex(["--model", "gpt-5.5"], forward_data=True)
 
     ensure.assert_called_once_with(True, detached=True)
-    start_watcher.assert_called_once_with(8126, proxy_session_key="proxy-key")
+    start_watcher.assert_called_once_with(8126, proxy_session_key="proxy-key", cwd=cli.os.getcwd())
     run_codex.assert_called_once_with(args=["--model", "gpt-5.5"], port=8126, proxy_session_key="proxy-key")
+
+
+def test_cmd_codex_starts_watcher_with_forwarded_cd(monkeypatch, tmp_path):
+    wrapper_cwd = tmp_path / "wrapper"
+    target_cwd = tmp_path / "target"
+    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+
+    with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
+        with mock.patch("lapdog.cli._start_codex_watcher") as start_watcher:
+            with mock.patch("lapdog.cli._run_codex"):
+                with mock.patch("lapdog.cli.uuid.uuid4", return_value=mock.Mock(hex="proxy-key")):
+                    with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
+                        cli.cmd_codex(["--cd", str(target_cwd), "--model", "gpt-5.5"], forward_data=True)
+
+    start_watcher.assert_called_once_with(8126, proxy_session_key="proxy-key", cwd=str(target_cwd))
+
+
+def test_resolve_codex_cwd_handles_relative_cd(monkeypatch, tmp_path):
+    wrapper_cwd = tmp_path / "wrapper"
+    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+
+    assert cli._resolve_codex_cwd(["-C", "repo"]) == str(wrapper_cwd / "repo")
+
+
+def test_resolve_codex_cwd_handles_equals_form(monkeypatch, tmp_path):
+    wrapper_cwd = tmp_path / "wrapper"
+    target_cwd = tmp_path / "target"
+    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+
+    assert cli._resolve_codex_cwd([f"--cd={target_cwd}"]) == str(target_cwd)
+
+
+def test_resolve_codex_cwd_ignores_args_after_double_dash(monkeypatch, tmp_path):
+    wrapper_cwd = tmp_path / "wrapper"
+    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+
+    assert cli._resolve_codex_cwd(["--", "--cd", str(tmp_path / "ignored")]) == str(wrapper_cwd)
 
 
 def test_start_codex_watcher_waits_for_ready_file(tmp_path, monkeypatch):
@@ -38,11 +75,12 @@ def test_start_codex_watcher_waits_for_ready_file(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
     monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
 
-    cli._start_codex_watcher(8126, proxy_session_key="proxy-key")
+    cli._start_codex_watcher(8126, proxy_session_key="proxy-key", cwd=str(tmp_path))
 
     assert ready_paths
     assert "--proxy-session-key" in popen_args[0]
     assert popen_args[0][popen_args[0].index("--proxy-session-key") + 1] == "proxy-key"
+    assert popen_args[0][popen_args[0].index("--cwd") + 1] == str(tmp_path)
 
 
 def test_run_codex_injects_lapdog_provider(monkeypatch):

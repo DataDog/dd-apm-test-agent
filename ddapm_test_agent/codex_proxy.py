@@ -7,6 +7,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from urllib.parse import urlparse
 
 import aiohttp
 from aiohttp import web
@@ -22,6 +23,7 @@ from .llmobs_event_platform import with_cors
 log = logging.getLogger(__name__)
 
 OPENAI_API_BASE = os.environ.get("DD_CODEX_OPENAI_API_BASE", "https://api.openai.com")
+ALLOW_UPSTREAM_OVERRIDE_ENV = "DD_CODEX_ALLOW_UPSTREAM_OVERRIDE"
 SKIP_REQUEST_HEADERS = {"host", "transfer-encoding", "content-length", "x-ddapm-upstream"}
 SKIP_RESPONSE_HEADERS = {"content-length", "transfer-encoding", "content-encoding", "connection"}
 
@@ -30,6 +32,24 @@ def _is_client_disconnect_error(exc: BaseException) -> bool:
     if isinstance(exc, (aiohttp.ClientConnectionResetError, ConnectionResetError, BrokenPipeError)):
         return True
     return isinstance(exc, RuntimeError) and "closing transport" in str(exc)
+
+
+def _allow_upstream_override() -> bool:
+    return os.environ.get(ALLOW_UPSTREAM_OVERRIDE_ENV, "").lower() in ("1", "true", "yes")
+
+
+def _upstream_origin_from_request(request: Request) -> str:
+    upstream_override = request.headers.get("X-DDAPM-Upstream")
+    if not upstream_override:
+        return OPENAI_API_BASE.rstrip("/")
+    if not _allow_upstream_override():
+        raise web.HTTPForbidden(text="X-DDAPM-Upstream override is disabled")
+
+    upstream_origin = upstream_override.rstrip("/")
+    parsed = urlparse(upstream_origin)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.path not in ("", "/"):
+        raise web.HTTPBadRequest(text="invalid X-DDAPM-Upstream origin")
+    return upstream_origin
 
 
 def _parse_sse_events(raw: bytes) -> List[Dict[str, Any]]:
@@ -285,7 +305,7 @@ class CodexProxyAPI:
     async def handle_proxy(self, request: Request) -> web.StreamResponse:
         path = request.match_info.get("path", "")
         proxy_session_key = request.match_info.get("proxy_session_key", "") or None
-        upstream_origin = request.headers.get("X-DDAPM-Upstream", OPENAI_API_BASE).rstrip("/")
+        upstream_origin = _upstream_origin_from_request(request)
         target_url = f"{upstream_origin}/v1/{path}"
         if request.query_string:
             target_url += f"?{request.query_string}"

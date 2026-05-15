@@ -526,6 +526,74 @@ async def test_codex_new_turn_finalizes_previous_turn(agent):
     assert second["meta"]["input"]["value"] == "second"
 
 
+async def test_codex_task_started_creates_turn_before_user_message(agent):
+    sid = "codex-task-started-turn"
+    turn_id = "task-turn-a"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _event("task_started", timestamp="2026-05-11T17:00:01.000Z", turn_id=turn_id))
+    await _post(agent, sid, _turn_context(turn_id))
+    await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:02.000Z", message="first"))
+    await _post(agent, sid, _event("agent_message", timestamp="2026-05-11T17:00:03.000Z", message="done first"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    roots = [s for s in session_spans if s["parent_id"] == "undefined"]
+
+    assert len(roots) == 1
+    assert roots[0]["meta"]["metadata"]["turn_id"] == turn_id
+    assert roots[0]["meta"]["input"]["value"] == "first"
+    assert roots[0]["meta"]["output"]["value"] == "done first"
+
+
+async def test_codex_task_started_keeps_parent_turn_when_child_replays_same_turn(agent):
+    parent_sid = "codex-parent-review-turn"
+    child_sid = "codex-child-review-turn"
+    turn_id = "shared-review-turn"
+
+    await _post(agent, parent_sid, _session_meta(parent_sid))
+    await _post(agent, parent_sid, _event("task_started", timestamp="2026-05-11T17:00:01.000Z", turn_id=turn_id))
+    await _post(agent, parent_sid, _event("user_message", timestamp="2026-05-11T17:00:02.000Z", message="review"))
+
+    await _post(agent, child_sid, _session_meta(child_sid))
+    await _post(agent, child_sid, _event("task_started", timestamp="2026-05-11T17:00:03.000Z", turn_id=turn_id))
+    await _post(agent, child_sid, _turn_context(turn_id))
+    await _post(agent, child_sid, _event("user_message", timestamp="2026-05-11T17:00:04.000Z", message="replay"))
+    await _post(agent, child_sid, _event("agent_message", timestamp="2026-05-11T17:00:05.000Z", message="child"))
+
+    await _post(agent, parent_sid, _event("agent_message", timestamp="2026-05-11T17:00:06.000Z", message="done"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = _spans(await resp.json())
+    parent_roots = [s for s in spans if s.get("session_id") == parent_sid and s["parent_id"] == "undefined"]
+
+    assert len(parent_roots) == 1
+    assert parent_roots[0]["meta"]["metadata"]["turn_id"] == turn_id
+    assert parent_roots[0]["meta"]["input"]["value"] == "review"
+    assert parent_roots[0]["meta"]["output"]["value"] == "done"
+    assert [s for s in spans if s.get("session_id") == child_sid] == []
+
+
+async def test_codex_user_message_starts_new_trace_without_turn_context(agent):
+    sid = "codex-multi-message-session"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context("turn-a"))
+    await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:02.000Z", message="first"))
+    await _post(agent, sid, _event("agent_message", timestamp="2026-05-11T17:00:03.000Z", message="done first"))
+    await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:04.000Z", message="second"))
+    await _post(agent, sid, _event("agent_message", timestamp="2026-05-11T17:00:05.000Z", message="done second"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    roots = [s for s in session_spans if s["parent_id"] == "undefined"]
+
+    assert len(roots) == 2
+    first = next(s for s in roots if s["meta"]["input"]["value"] == "first")
+    second = next(s for s in roots if s["meta"]["input"]["value"] == "second")
+    assert first["trace_id"] != second["trace_id"]
+    assert first["meta"]["output"]["value"] == "done first"
+    assert second["meta"]["output"]["value"] == "done second"
+
+
 async def test_codex_new_turn_forwards_completed_trace_before_repointing_session(agent, monkeypatch):
     forwarded_payloads = []
     descriptions = []
@@ -552,6 +620,69 @@ async def test_codex_new_turn_forwards_completed_trace_before_repointing_session
     forwarded_turn_ids = {span["meta"]["metadata"].get("turn_id") for span in forwarded_spans}
     assert forwarded_turn_ids == {"turn-a"}
     assert "Codex spans" in descriptions[0]
+
+
+async def test_codex_user_message_forwards_previous_trace_without_turn_context(agent, monkeypatch):
+    forwarded_payloads = []
+
+    def fake_resolve_backend_target(self, *args, **kwargs):
+        return "http://backend.example", {}
+
+    async def fake_post_to_backend(self, url, headers, data, description):
+        forwarded_payloads.append(msgpack.unpackb(gzip.decompress(data), raw=False))
+
+    monkeypatch.setattr(ClaudeHooksAPI, "_resolve_backend_target", fake_resolve_backend_target)
+    monkeypatch.setattr(ClaudeHooksAPI, "_post_to_backend", fake_post_to_backend)
+
+    sid = "codex-forward-multi-message"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context("turn-a"))
+    await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:02.000Z", message="first"))
+    await _post(agent, sid, _event("agent_message", timestamp="2026-05-11T17:00:03.000Z", message="done first"))
+    await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:04.000Z", message="second"))
+
+    assert len(forwarded_payloads) == 1
+    forwarded_roots = [span for span in forwarded_payloads[0]["spans"] if span["parent_id"] == "undefined"]
+    assert len(forwarded_roots) == 1
+    assert forwarded_roots[0]["meta"]["input"]["value"] == "first"
+    assert forwarded_roots[0]["meta"]["output"]["value"] == "done first"
+
+
+async def test_codex_ignores_duplicate_session_for_existing_task_id(agent):
+    parent_sid = "codex-parent-task"
+    duplicate_sid = "codex-duplicate-task"
+    turn_id = "turn-shared"
+
+    await _post(agent, parent_sid, _session_meta(parent_sid))
+    await _post(agent, parent_sid, _turn_context(turn_id))
+    await _post(agent, parent_sid, _event("user_message", message="real work"))
+
+    await _post(agent, duplicate_sid, _session_meta(duplicate_sid))
+    await _post(
+        agent,
+        duplicate_sid,
+        _event("task_started", timestamp="2026-05-11T17:00:03.000Z", id=turn_id),
+    )
+    await _post(
+        agent,
+        duplicate_sid,
+        _event("user_message", timestamp="2026-05-11T17:00:04.000Z", message="stale replay"),
+    )
+    await _post(
+        agent,
+        duplicate_sid,
+        _event("agent_message", timestamp="2026-05-11T17:00:05.000Z", message="stale output"),
+    )
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = _spans(await resp.json())
+
+    assert [span for span in spans if span.get("session_id") == duplicate_sid] == []
+    parent_roots = [
+        span for span in spans if span.get("session_id") == parent_sid and span["parent_id"] == "undefined"
+    ]
+    assert len(parent_roots) == 1
+    assert parent_roots[0]["meta"]["input"]["value"] == "real work"
 
 
 async def test_codex_accepts_raw_jsonl_records_like_curl(agent):
@@ -829,6 +960,82 @@ async def test_codex_subagent_spawn_emits_agent_span(agent):
     tools = _by_kind(session_spans, "tool")
     assert len(tools) == 1
     assert tools[0]["parent_id"] == subagent["span_id"]
+
+
+async def test_codex_unterminated_subagent_finalizes_as_error(agent):
+    sid = "codex-subagent-unterminated"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="delegate"))
+    await _post(
+        agent,
+        sid,
+        _event(
+            "collab_agent_spawn_begin",
+            timestamp="2026-05-11T17:00:02.500Z",
+            call_id="spawn-1",
+            sender_thread_id="parent-thread",
+            prompt="do the thing",
+        ),
+    )
+
+    await _post(agent, sid, _turn_context("next-turn"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    subagent = next(s for s in _by_kind(session_spans, "agent") if s["parent_id"] != "undefined")
+    assert subagent["status"] == "error"
+    assert subagent["meta"]["metadata"]["subagent"]["status"] == "unterminated"
+
+
+async def test_codex_child_thread_spans_are_grouped_with_parent_session(agent):
+    sid = "codex-parent-session"
+    child_sid = "codex-child-session"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="delegate"))
+    await _post(
+        agent,
+        sid,
+        _event(
+            "collab_agent_spawn_begin",
+            timestamp="2026-05-11T17:00:02.500Z",
+            call_id="spawn-1",
+            sender_thread_id=sid,
+            prompt="do the thing",
+        ),
+    )
+
+    await _post(agent, child_sid, _session_meta(child_sid))
+    await _post(agent, child_sid, _turn_context("child-turn"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == child_sid]
+    assert len(session_spans) == 1
+
+    await _post(
+        agent,
+        sid,
+        _event(
+            "collab_agent_spawn_end",
+            timestamp="2026-05-11T17:00:04.000Z",
+            call_id="spawn-1",
+            new_thread_id=child_sid,
+            new_agent_nickname="researcher",
+            status="ok",
+        ),
+    )
+
+    await _post(agent, child_sid, _event("user_message", timestamp="2026-05-11T17:00:05.000Z", message="child work"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = _spans(await resp.json())
+    child_turn = next(s for s in spans if s.get("meta", {}).get("metadata", {}).get("turn_id") == "child-turn")
+
+    assert child_turn["session_id"] == sid
+    assert f"session_id:{sid}" in child_turn["tags"]
+    assert f"session_id:{child_sid}" not in child_turn["tags"]
+    assert [s for s in spans if s.get("session_id") == child_sid] == []
 
 
 async def test_codex_compaction_event_msg_annotates_active_span(agent):
