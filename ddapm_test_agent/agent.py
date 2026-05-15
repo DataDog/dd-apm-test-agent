@@ -60,6 +60,7 @@ from .checks import start_trace
 from .claude_hooks import ClaudeHooksAPI
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_proxy import ClaudeProxyAPI
+from .gemini_hooks import GeminiHooksAPI
 from .pi_hooks import PiHooksAPI
 from .integration import Integration
 from .llmobs_event_platform import LLMObsEventPlatformAPI
@@ -2035,6 +2036,9 @@ def make_app(
 
     pi_hooks_api = PiHooksAPI(hooks_api=claude_hooks_api)
     app.add_routes(pi_hooks_api.get_routes())
+
+    gemini_hooks_api = GeminiHooksAPI(hooks_api=claude_hooks_api)
+    app.add_routes(gemini_hooks_api.get_routes())
 
     async def _cleanup_claude_proxy(app: web.Application) -> None:
         await claude_proxy_api.close()

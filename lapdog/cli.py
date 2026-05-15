@@ -1,6 +1,7 @@
 """CLI for lapdog subcommands"""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
@@ -8,6 +9,8 @@ import signal
 import subprocess
 import sys
 import time
+from typing import Any
+from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -20,7 +23,7 @@ from lapdog.hooks import write_claude_code_hooks
 from lapdog.paths import LOG_FILE, PID_FILE
 from lapdog import tracer_inject
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "gemini"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -29,6 +32,7 @@ LAPDOG_USAGE = (
     "  status  Show lapdog status (from /info)\n"
     "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi      Start lapdog in background if needed, install extension, then launch pi\n"
+    "  gemini  Start lapdog in background if needed, install extension, then launch Gemini\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
     "  lapdog python app.py\n"
@@ -52,11 +56,11 @@ def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
 
 
 def _pid_file_path() -> str:
-    return os.environ.get("LAPDOG_PID_FILE", PID_FILE)
+    return str(os.environ.get("LAPDOG_PID_FILE", PID_FILE))
 
 
 def _log_file_path() -> str:
-    return os.environ.get("LAPDOG_LOG_FILE", LOG_FILE)
+    return str(os.environ.get("LAPDOG_LOG_FILE", LOG_FILE))
 
 
 def _url_for_port(port: int) -> str:
@@ -389,6 +393,115 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
     _run_pi(args=sub_cmd_args, port=port)
 
 
+# ---------------------------------------------------------------------------
+# Gemini extension management
+# ---------------------------------------------------------------------------
+
+_GEMINI_EVENTS = [
+    ("SessionStart", ""),
+    ("BeforeAgent", ""),
+    ("AfterModel", ""),
+    ("BeforeTool", "*"),
+    ("AfterTool", "*"),
+    ("AfterAgent", ""),
+    ("SessionEnd", ""),
+    ("PreCompress", ""),
+    ("Notification", ""),
+]
+_GEMINI_EXTENSION_DIR = os.path.expanduser("~/.lapdog/gemini-extension")
+
+
+def _gemini_hook_command(port: int, event: str) -> str:
+    return (
+        "curl -sS -X POST -H 'Content-Type: application/json' "
+        f"-d @- http://localhost:{port}/gemini/hooks/{event} >/dev/null 2>&1 || true"
+    )
+
+
+def _write_gemini_extension(extension_dir: str, port: int) -> None:
+    os.makedirs(os.path.join(extension_dir, "hooks"), exist_ok=True)
+    os.makedirs(os.path.join(extension_dir, "plugin", "lapdog-gemini"), exist_ok=True)
+
+    extension = {
+        "name": "lapdog",
+        "version": "1.0.0",
+        "contextFileName": "plugin/lapdog-gemini/GEMINI.md",
+        "settings": [],
+    }
+    with open(os.path.join(extension_dir, "gemini-extension.json"), "w") as f:
+        json.dump(extension, f, indent=2)
+        f.write("\n")
+
+    hooks: Dict[str, Any] = {"hooks": {}}
+    for event, matcher in _GEMINI_EVENTS:
+        hooks["hooks"][event] = [
+            {
+                "matcher": matcher,
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": _gemini_hook_command(port, event),
+                        "timeout": 15000 if event == "SessionEnd" else 5000,
+                    }
+                ],
+            }
+        ]
+    with open(os.path.join(extension_dir, "hooks", "hooks.json"), "w") as f:
+        json.dump(hooks, f, indent=2)
+        f.write("\n")
+
+    with open(os.path.join(extension_dir, "plugin", "lapdog-gemini", "GEMINI.md"), "w") as f:
+        f.write(
+            "# Lapdog\n\n"
+            "Lapdog is capturing this Gemini CLI session for local Datadog LLM Observability.\n"
+            "Use `lapdog status` to check whether the local capture agent is running.\n"
+        )
+
+
+def _install_gemini_extension(port: int) -> None:
+    gemini_bin = shutil.which("gemini")
+    if not gemini_bin:
+        print("[lapdog] 'gemini' not found in PATH", file=sys.stderr)
+        sys.exit(1)
+
+    _write_gemini_extension(_GEMINI_EXTENSION_DIR, port)
+    proc = subprocess.run(
+        [gemini_bin, "extensions", "install", _GEMINI_EXTENSION_DIR, "--consent", "--skip-settings"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        if proc.stdout:
+            print(proc.stdout, file=sys.stderr)
+        if proc.stderr:
+            print(proc.stderr, file=sys.stderr)
+        print(f"[lapdog] Failed to install Gemini extension from {_GEMINI_EXTENSION_DIR}", file=sys.stderr)
+        sys.exit(proc.returncode)
+
+
+def _run_gemini(args: Optional[List[str]] = None, port: Optional[int] = 8126) -> None:
+    """Exec the gemini binary, forwarding arguments. Never returns."""
+    if args is None:
+        args = []
+    gemini_bin = shutil.which("gemini")
+    if not gemini_bin:
+        print("[lapdog] 'gemini' not found in PATH", file=sys.stderr)
+        sys.exit(1)
+    env = {**os.environ, "LAPDOG_URL": f"http://localhost:{port}"}
+    os.execve(gemini_bin, [gemini_bin] + args, env)
+
+
+def cmd_gemini(sub_cmd_args: List[str], forward_data: bool) -> None:
+    """Ensure lapdog is running, install the Gemini extension, then launch Gemini."""
+    port = _ensure_lapdog_running(forward_data, detached=True)
+    _install_gemini_extension(port or 8126)
+
+    print(build_running_banner(data_type="coding session"))
+    _run_gemini(args=sub_cmd_args, port=port)
+
+
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
     lapdog_args: List[str] = []
 
@@ -466,3 +579,5 @@ def main() -> None:
         )
     elif sub_cmd == "pi":
         cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+    elif sub_cmd == "gemini":
+        cmd_gemini(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
