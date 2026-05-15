@@ -1105,7 +1105,7 @@ async def test_codex_subagent_call_id_reused_across_turns_yields_distinct_spans(
                call_id="spawn-1", new_thread_id="child-1", new_agent_nickname="agent-a", status="ok"),
     )
     await _post(agent, sid, _event("task_complete", timestamp="2026-05-11T17:00:03.500Z",
-                                    last_agent_message="done"))
+                                   last_agent_message="done"))
     # Turn 2 — same spawn call_id
     await _post(agent, sid, _turn_context("turn-2"))
     await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:04.000Z", message="second"))

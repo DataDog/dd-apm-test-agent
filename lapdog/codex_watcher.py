@@ -83,7 +83,7 @@ def _process_exists(pid: int, expected_start: Optional[float] = None) -> bool:
     a recycled PID is treated as dead.
     """
     try:
-        import psutil  # type: ignore[import-not-found]
+        import psutil
     except ImportError:
         try:
             os.kill(pid, 0)
