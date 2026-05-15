@@ -400,7 +400,25 @@ CURSOR_SAVE_INTERVAL_SECONDS = 1.0
 
 
 def _sync_cursor(cursor: CursorState, states: Dict[Path, FileState]) -> None:
-    cursor.files = {str(path): state.offset for path, state in states.items()}
+    """Merge live FileState offsets into ``cursor.files``.
+
+    Uses merge semantics rather than replacement: entries in ``cursor.files``
+    that don't appear in ``states`` (e.g. files glob-skipped on this pass, or
+    rolled out of the watcher's view) are preserved. Stale phantoms are
+    cleaned up by ``_prune_cursor`` at shutdown.
+    """
+    for path, state in states.items():
+        cursor.files[str(path)] = state.offset
+
+
+def _prune_cursor(cursor: CursorState) -> None:
+    """Drop entries whose backing file no longer exists.
+
+    Called only at force-save (shutdown) so a one-pass glob hiccup during
+    normal operation cannot wipe out crash-recovery state for files that
+    happen not to appear in this iteration's discovery results.
+    """
+    cursor.files = {path: offset for path, offset in cursor.files.items() if Path(path).exists()}
 
 
 def _maybe_save_cursor(
@@ -416,6 +434,8 @@ def _maybe_save_cursor(
     if not force and (now - last_save) < CURSOR_SAVE_INTERVAL_SECONDS:
         return last_save
     _sync_cursor(cursor, states)
+    if force:
+        _prune_cursor(cursor)
     try:
         save_cursor_atomic(cursor_path, cursor)
     except OSError as exc:

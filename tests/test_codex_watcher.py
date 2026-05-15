@@ -8,6 +8,9 @@ from lapdog.codex_cursor import load_cursor
 from lapdog.codex_cursor import save_cursor_atomic
 from lapdog.codex_watcher import MAX_BUFFER_RECORDS
 from lapdog.codex_watcher import MAX_LINE_BYTES
+from lapdog.codex_watcher import _maybe_save_cursor
+from lapdog.codex_watcher import _prune_cursor
+from lapdog.codex_watcher import _sync_cursor
 from lapdog.codex_watcher import FileState
 from lapdog.codex_watcher import _default_session_dir
 from lapdog.codex_watcher import _drain_file
@@ -396,6 +399,41 @@ def test_save_cursor_atomic_roundtrip(tmp_path):
     loaded = load_cursor(cursor_path)
     assert loaded.files == {"/path/a": 100, "/path/b": 200}
     assert loaded.saved_at != ""
+
+
+def test_sync_cursor_merges_rather_than_replaces():
+    """Entries for files not in the live states dict must survive a sync."""
+    cursor = CursorState(files={"/path/a": 100, "/path/b": 200})
+    states = {Path("/path/a"): FileState(offset=150)}
+    _sync_cursor(cursor, states)
+    assert cursor.files == {"/path/a": 150, "/path/b": 200}
+
+
+def test_prune_cursor_drops_missing_files(tmp_path):
+    real = tmp_path / "real.jsonl"
+    real.write_text("{}\n")
+    cursor = CursorState(files={str(real): 5, "/does/not/exist.jsonl": 12345})
+    _prune_cursor(cursor)
+    assert str(real) in cursor.files
+    assert "/does/not/exist.jsonl" not in cursor.files
+
+
+def test_maybe_save_cursor_does_not_prune_on_throttled_save(tmp_path):
+    """A normal periodic save preserves phantom entries; only force=True prunes."""
+    cursor_path = tmp_path / "cursor.json"
+    cursor = CursorState(files={"/phantom.jsonl": 99})
+    # Force-save first so the next call is throttled into a save anyway.
+    _maybe_save_cursor(cursor_path, cursor, {}, last_save=0.0, now=10.0, force=True)
+    # After force-save, phantom should have been pruned.
+    loaded = load_cursor(cursor_path)
+    assert "/phantom.jsonl" not in loaded.files
+
+    # Now re-seed a phantom and do a non-force save.
+    cursor.files["/phantom2.jsonl"] = 77
+    _maybe_save_cursor(cursor_path, cursor, {}, last_save=0.0, now=10.0 + 10.0, force=False)
+    loaded = load_cursor(cursor_path)
+    # Non-force save preserved the phantom because we didn't prune.
+    assert loaded.files.get("/phantom2.jsonl") == 77
 
 
 def test_save_cursor_atomic_leaves_no_temp_file(tmp_path):
