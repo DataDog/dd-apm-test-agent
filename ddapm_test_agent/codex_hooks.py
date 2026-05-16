@@ -29,6 +29,24 @@ log = logging.getLogger(__name__)
 CompletedTrace = Tuple[str, str]
 OrphanProxySpan = Tuple[Optional[str], Dict[str, Any]]
 
+MAX_LLM_MESSAGE_CHARS = int(os.environ.get("DD_CODEX_MAX_LLM_MESSAGE_CHARS", "8192"))
+MAX_TOOL_VALUE_CHARS = int(os.environ.get("DD_CODEX_MAX_TOOL_VALUE_CHARS", "8192"))
+
+_OK_TOOL_STATUSES = {"", "ok", "success", "succeeded", "completed", "complete"}
+_IN_FLIGHT_TOOL_STATUSES = {"pending", "queued", "running", "in_progress", "started"}
+_ERROR_TOOL_STATUSES = {
+    "cancelled",
+    "canceled",
+    "denied",
+    "error",
+    "errored",
+    "failed",
+    "failure",
+    "rejected",
+    "timed_out",
+    "timeout",
+}
+
 
 def _timestamp_to_ns(timestamp: str) -> int:
     if not timestamp:
@@ -57,7 +75,115 @@ def _content_text(content: Any) -> str:
 
 
 def _copy_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [dict(message) for message in messages]
+    copied, _ = _copy_messages_with_limits(messages)
+    return copied
+
+
+def _truncate_text(value: str, max_chars: int) -> Tuple[str, bool]:
+    if max_chars <= 0:
+        return "", bool(value)
+    if len(value) <= max_chars:
+        return value, False
+    omitted = len(value) - max_chars
+    return f"{value[:max_chars]}\n\n[truncated {omitted} chars]", True
+
+
+def _truncate_display_value(value: Any, max_chars: int) -> Tuple[Any, bool]:
+    if isinstance(value, str):
+        return _truncate_text(value, max_chars)
+    if value is None:
+        return value, False
+    rendered = _to_json_str(value)
+    truncated, was_truncated = _truncate_text(rendered, max_chars)
+    return (truncated, True) if was_truncated else (value, False)
+
+
+def _copy_reasoning_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [dict(item) for item in items]
+
+
+def _copy_messages_with_limits(messages: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], bool]:
+    copied_messages: List[Dict[str, Any]] = []
+    was_truncated = False
+    for message in messages:
+        copied = dict(message)
+        if "content" in copied:
+            copied["content"], truncated = _truncate_display_value(copied.get("content"), MAX_LLM_MESSAGE_CHARS)
+            was_truncated = was_truncated or truncated
+        tool_calls = copied.get("tool_calls")
+        if isinstance(tool_calls, list):
+            copied_tool_calls = []
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    copied_tool_calls.append(tool_call)
+                    continue
+                copied_tool_call = dict(tool_call)
+                if "arguments" in copied_tool_call:
+                    copied_tool_call["arguments"], truncated = _truncate_display_value(
+                        copied_tool_call.get("arguments"), MAX_LLM_MESSAGE_CHARS
+                    )
+                    was_truncated = was_truncated or truncated
+                reasoning = copied_tool_call.get("reasoning")
+                if isinstance(reasoning, list):
+                    copied_tool_call["reasoning"] = _copy_reasoning_items(
+                        [item for item in reasoning if isinstance(item, dict)]
+                    )
+                copied_tool_calls.append(copied_tool_call)
+            copied["tool_calls"] = copied_tool_calls
+        copied_messages.append(copied)
+    return copied_messages, was_truncated
+
+
+def _normalize_status(status: Any) -> str:
+    return str(status or "").strip().lower()
+
+
+def _tool_status_is_error(status: Any) -> bool:
+    normalized = _normalize_status(status)
+    if normalized in _ERROR_TOOL_STATUSES:
+        return True
+    if normalized in _OK_TOOL_STATUSES or normalized in _IN_FLIGHT_TOOL_STATUSES:
+        return False
+    return normalized.startswith("failed") or normalized.startswith("error")
+
+
+def _reasoning_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        parts = []
+        for key in ("text", "summary_text", "content", "output_text"):
+            text = value.get(key)
+            if isinstance(text, str) and text:
+                parts.append(text)
+        return "\n".join(parts)
+    if isinstance(value, list):
+        parts = [_reasoning_text(item) for item in value]
+        return "\n".join(part for part in parts if part)
+    return ""
+
+
+def _extract_reasoning_metadata(payload: Dict[str, Any]) -> Dict[str, Any]:
+    reasoning: Dict[str, Any] = {}
+    reasoning_id = payload.get("id")
+    if reasoning_id:
+        reasoning["id"] = str(reasoning_id)
+    status = _normalize_status(payload.get("status", ""))
+    if status:
+        reasoning["status"] = status
+    text = (
+        _reasoning_text(payload.get("summary"))
+        or _reasoning_text(payload.get("content"))
+        or _reasoning_text(payload.get("text"))
+    )
+    if text:
+        text, truncated = _truncate_text(text, MAX_LLM_MESSAGE_CHARS)
+        reasoning["text"] = text
+        if truncated:
+            reasoning["truncated"] = True
+    if payload.get("encrypted_content"):
+        reasoning["encrypted"] = True
+    return reasoning
 
 
 def _append_unique_message(messages: List[Dict[str, Any]], message: Dict[str, Any]) -> None:
@@ -83,6 +209,10 @@ def _append_or_update_tool_call_message(messages: List[Dict[str, Any]], message:
                     existing_tool_call["arguments"] = incoming_tool_call.get("arguments")
                 if not existing_tool_call.get("name") and incoming_tool_call.get("name"):
                     existing_tool_call["name"] = incoming_tool_call.get("name")
+                if incoming_tool_call.get("status"):
+                    existing_tool_call["status"] = incoming_tool_call.get("status")
+                if incoming_tool_call.get("reasoning") and not existing_tool_call.get("reasoning"):
+                    existing_tool_call["reasoning"] = incoming_tool_call.get("reasoning")
                 if not existing.get("content") and message.get("content"):
                     existing["content"] = message["content"]
                 return
@@ -143,6 +273,7 @@ class CodexTurn:
         self.pending_llm_input_messages: List[Dict[str, Any]] = []
         self.pending_llm_usage: Optional[Dict[str, Any]] = None
         self.pending_llm_end_ns: Optional[int] = None
+        self.reasoning_items: List[Dict[str, Any]] = []
         self.last_step_span_ref: Optional[Dict[str, Any]] = None
         self.last_llm_span_ref: Optional[Dict[str, Any]] = None
         self.last_ns = start_ns
@@ -168,6 +299,8 @@ class CodexSession:
         self.tools_used: Set[str] = set()
         self.pending_tools: Dict[str, PendingToolSpan] = {}
         self.pending_tool_ids_by_span_id: Dict[str, str] = {}
+        self.pending_tool_statuses: Dict[str, str] = {}
+        self.pending_tool_reasoning: Dict[str, List[Dict[str, Any]]] = {}
         self.active_turn: Optional[CodexTurn] = None
         self.completed_turns: List[str] = []
         self.seen_records: Set[str] = set()
@@ -408,6 +541,45 @@ class CodexHooksAPI:
         if tool_use_id not in tool_use_ids:
             tool_use_ids.append(tool_use_id)
 
+    def _update_tool_call_status(self, turn: Optional[CodexTurn], tool_use_id: str, status: str) -> None:
+        if turn is None or not tool_use_id or not status:
+            return
+        message_groups = [turn.llm_output_messages]
+        if turn.last_llm_span_ref is not None:
+            output_messages = turn.last_llm_span_ref.get("meta", {}).get("output", {}).get("messages", [])
+            if isinstance(output_messages, list):
+                message_groups.append(output_messages)
+        for messages in message_groups:
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                tool_calls = message.get("tool_calls", [])
+                if not isinstance(tool_calls, list):
+                    continue
+                for tool_call in tool_calls:
+                    if isinstance(tool_call, dict) and tool_call.get("id") == tool_use_id:
+                        tool_call["status"] = status
+
+    def _update_approval_status(self, session: CodexSession, call_id: str, status: str, end_ns: int) -> None:
+        if not call_id or not status:
+            return
+        turn = session.active_turn
+        if turn is None or turn.root_span_ref is None:
+            return
+        approvals = (
+            turn.root_span_ref.get("meta", {})
+            .get("metadata", {})
+            .get("_dd", {})
+            .get("codex_approvals", [])
+        )
+        if not isinstance(approvals, list):
+            return
+        for approval in approvals:
+            if not isinstance(approval, dict) or approval.get("call_id") != call_id:
+                continue
+            approval["status"] = status
+            approval["resolved_timestamp_ns"] = end_ns
+
     def _llm_tool_call_matches(
         self,
         message: Dict[str, Any],
@@ -571,6 +743,8 @@ class CodexHooksAPI:
         session.tools_used = set()
         session.pending_tools = {}
         session.pending_tool_ids_by_span_id = {}
+        session.pending_tool_statuses = {}
+        session.pending_tool_reasoning = {}
         session.tool_use_id_map = {}
         session.agent_span_stack = []
         session.pending_subagents = {}
@@ -674,6 +848,7 @@ class CodexHooksAPI:
         turn.llm_output_messages = []
         turn.pending_llm_usage = None
         turn.pending_llm_end_ns = None
+        turn.reasoning_items = []
 
     def _begin_llm_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
         turn = self._active_turn(session, record)
@@ -701,6 +876,8 @@ class CodexHooksAPI:
             self._emit_tool_span(session, pending, end_ns, output_value="", is_error=True)
         session.pending_tools.clear()
         session.pending_tool_ids_by_span_id.clear()
+        session.pending_tool_statuses.clear()
+        session.pending_tool_reasoning.clear()
         session.tool_use_id_map.clear()
         # Any subagent that never received a spawn_end is finalized here so its
         # span has a non-zero duration rather than hanging open.
@@ -876,6 +1053,9 @@ class CodexHooksAPI:
             turn = self._active_turn(session, record)
             ns = _timestamp_to_ns(record.get("timestamp", ""))
             self._begin_llm_in_step(session, turn, ns)
+            reasoning = _extract_reasoning_metadata(payload)
+            if reasoning:
+                turn.reasoning_items.append(reasoning)
         elif item_type == "message" and payload.get("role") == "assistant":
             turn = self._active_turn(session, record)
             ns = _timestamp_to_ns(record.get("timestamp", ""))
@@ -908,6 +1088,8 @@ class CodexHooksAPI:
         end_ns = turn.pending_llm_end_ns
         llm_input_messages = turn.active_llm_input_messages or self._llm_input_messages(session, turn)
         llm_output_messages = _copy_messages(turn.llm_output_messages)
+        limited_input_messages, input_truncated = _copy_messages_with_limits(llm_input_messages)
+        limited_output_messages, output_truncated = _copy_messages_with_limits(llm_output_messages)
         cached_input_tokens = usage.get("cached_input_tokens", 0)
         input_tokens = usage.get("input_tokens", 0)
         output_tokens = usage.get("output_tokens", 0)
@@ -928,6 +1110,15 @@ class CodexHooksAPI:
                 output_tokens=output_tokens,
             ),
         }
+        metadata: Dict[str, Any] = {"turn_id": turn.turn_id, "reasoning_effort": session.effort}
+        if turn.reasoning_items:
+            metadata["reasoning"] = _copy_reasoning_items(turn.reasoning_items)
+        if input_truncated or output_truncated:
+            metadata["_dd"] = {
+                "truncated_input_messages": input_truncated,
+                "truncated_output_messages": output_truncated,
+                "max_message_chars": MAX_LLM_MESSAGE_CHARS,
+            }
         span: Dict[str, Any] = {
             "span_id": _format_span_id(),
             "trace_id": turn.trace_id,
@@ -945,15 +1136,15 @@ class CodexHooksAPI:
                 "span": {"kind": "llm"},
                 "model_name": session.model,
                 "model_provider": session.model_provider,
-                "input": {"messages": _copy_messages(llm_input_messages)},
-                "output": {"messages": _copy_messages(llm_output_messages)},
-                "metadata": {"turn_id": turn.turn_id, "reasoning_effort": session.effort},
+                "input": {"messages": limited_input_messages},
+                "output": {"messages": limited_output_messages},
+                "metadata": metadata,
             },
             "metrics": metrics,
         }
         self._append_llm_span(turn, span)
-        turn.llm_input_messages = _copy_messages(llm_input_messages)
-        turn.llm_input_messages.extend(_copy_messages(llm_output_messages))
+        turn.llm_input_messages = _copy_messages(limited_input_messages)
+        turn.llm_input_messages.extend(_copy_messages(limited_output_messages))
         turn.llm_input_messages.extend(_copy_messages(turn.pending_llm_input_messages))
         turn.pending_llm_input_messages = []
         turn.current_step_has_llm = True
@@ -1318,11 +1509,13 @@ class CodexHooksAPI:
         call_id: str,
         tool_name: str,
         tool_input: Any,
+        status: Any = "",
     ) -> str:
         turn = self._active_turn(session, record)
         call_id = call_id or _format_span_id()
         unique_id = self._deduplicate_tool_use_id(session, call_id)
         session.tool_use_id_map[call_id] = unique_id
+        normalized_status = _normalize_status(status)
         tool_name = tool_name or "unknown_tool"
         session.tools_used.add(tool_name)
         self._update_agent_manifest(session)
@@ -1351,10 +1544,18 @@ class CodexHooksAPI:
             self._mark_llm_start(session, turn, start_ns)
         self._update_step_end(turn, turn.step_span_id, start_ns)
 
+        tool_call: Dict[str, Any] = {"id": unique_id, "name": tool_name, "arguments": tool_input}
+        if normalized_status:
+            tool_call["status"] = normalized_status
+            session.pending_tool_statuses[unique_id] = normalized_status
+        if turn.reasoning_items:
+            reasoning = _copy_reasoning_items(turn.reasoning_items)
+            tool_call["reasoning"] = reasoning
+            session.pending_tool_reasoning[unique_id] = reasoning
         tool_call_message = {
             "role": "assistant",
             "content": _to_json_str(tool_input),
-            "tool_calls": [{"id": unique_id, "name": tool_name, "arguments": tool_input}],
+            "tool_calls": [tool_call],
         }
         llm_span = turn.last_llm_span_ref
         if appending_to_existing_llm and llm_span is not None:
@@ -1392,6 +1593,7 @@ class CodexHooksAPI:
             call_id=payload.get("call_id", ""),
             tool_name=payload.get("name", "unknown_tool") or "unknown_tool",
             tool_input=tool_input,
+            status=payload.get("status", ""),
         )
 
     def _emit_tool_span(
@@ -1403,6 +1605,36 @@ class CodexHooksAPI:
         is_error: bool,
     ) -> None:
         tool_id = session.pending_tool_ids_by_span_id.pop(pending.span_id, pending.span_id)
+        tool_status = session.pending_tool_statuses.pop(tool_id, "")
+        if not tool_status:
+            tool_status = "error" if is_error else "completed"
+        is_error = is_error or _tool_status_is_error(tool_status)
+        input_value, input_truncated = _truncate_text(_to_json_str(pending.tool_input), MAX_TOOL_VALUE_CHARS)
+        output_value, output_truncated = _truncate_text(output_value, MAX_TOOL_VALUE_CHARS)
+        metadata: Dict[str, Any] = {
+            "tool_id": tool_id,
+            "status": tool_status,
+            "input_format": "json" if not isinstance(pending.tool_input, str) else "text",
+            "output_format": "verbatim",
+            "output_mime_type": "text/plain",
+            "_dd": {
+                "display": {
+                    "input": "code" if not isinstance(pending.tool_input, str) else "text",
+                    "output": "code",
+                }
+            },
+        }
+        reasoning = session.pending_tool_reasoning.pop(tool_id, [])
+        if reasoning:
+            metadata["reasoning"] = _copy_reasoning_items(reasoning)
+        if input_truncated or output_truncated:
+            metadata["_dd"].update(
+                {
+                    "truncated_input": input_truncated,
+                    "truncated_output": output_truncated,
+                    "max_value_chars": MAX_TOOL_VALUE_CHARS,
+                }
+            )
         span = {
             "span_id": pending.span_id,
             "trace_id": session.active_turn.trace_id if session.active_turn else _format_trace_id(),
@@ -1418,13 +1650,15 @@ class CodexHooksAPI:
             "tags": self._base_tags(session) + [f"tool_name:{pending.tool_name}"],
             "meta": {
                 "span": {"kind": "tool"},
-                "input": {"value": _to_json_str(pending.tool_input)},
+                "input": {"value": input_value},
                 "output": {"value": output_value},
-                "metadata": {"tool_id": tool_id},
+                "metadata": metadata,
             },
             "metrics": {},
             "span_links": [],
         }
+        if is_error:
+            span["meta"]["error"] = {"message": output_value or tool_status}
         self._append_span(span)
         turn = session.active_turn
         if turn is not None:
@@ -1439,7 +1673,21 @@ class CodexHooksAPI:
             return
         output = payload.get("output", "")
         output_value = output if isinstance(output, str) else _to_json_str(output)
-        tool_message = {"role": "tool", "tool_call_id": unique_id, "content": output_value}
+        raw_status = payload.get("status", "")
+        final_status = _normalize_status(raw_status) or "completed"
+        session.pending_tool_statuses[unique_id] = final_status
+        end_ns = _timestamp_to_ns(record.get("timestamp", ""))
+        include_status_in_messages = bool(_normalize_status(raw_status)) or _tool_status_is_error(final_status)
+        if include_status_in_messages:
+            self._update_tool_call_status(session.active_turn, unique_id, final_status)
+        self._update_approval_status(session, str(call_id), final_status, end_ns)
+        tool_message = {
+            "role": "tool",
+            "tool_call_id": unique_id,
+            "content": output_value,
+        }
+        if include_status_in_messages:
+            tool_message["status"] = final_status
         if session.active_turn is not None and session.active_turn.active_llm_input_messages is not None:
             session.active_turn.pending_llm_input_messages.append(tool_message)
         elif session.active_turn is not None:
@@ -1447,9 +1695,9 @@ class CodexHooksAPI:
         self._emit_tool_span(
             session=session,
             pending=pending,
-            end_ns=_timestamp_to_ns(record.get("timestamp", "")),
+            end_ns=end_ns,
             output_value=output_value,
-            is_error=False,
+            is_error=_tool_status_is_error(final_status),
         )
 
     def _handle_custom_tool_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
@@ -1461,6 +1709,7 @@ class CodexHooksAPI:
             call_id=payload.get("call_id", ""),
             tool_name=payload.get("name", "custom_tool") or "custom_tool",
             tool_input=tool_input,
+            status=payload.get("status", ""),
         )
 
     def _handle_custom_tool_call_output(self, session: CodexSession, record: Dict[str, Any]) -> None:
@@ -1469,23 +1718,27 @@ class CodexHooksAPI:
     def _handle_web_search_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
         payload = record.get("payload", {})
         tool_input = payload.get("query", "")
+        status = _normalize_status(payload.get("status", "")) or "completed"
         unique_id = self._handle_tool_call(
             session=session,
             record=record,
             call_id=payload.get("call_id", ""),
             tool_name="web_search",
             tool_input=tool_input,
+            status=status,
         )
         pending = session.pending_tools.pop(unique_id, None)
         if pending is None:
             return
         session.tool_use_id_map.pop(payload.get("call_id", ""), None)
+        session.pending_tool_statuses[unique_id] = status
+        self._update_tool_call_status(session.active_turn, unique_id, status)
         self._emit_tool_span(
             session=session,
             pending=pending,
             end_ns=_timestamp_to_ns(record.get("timestamp", "")),
             output_value="",
-            is_error=payload.get("status") not in ("", "completed", "ok", "success"),
+            is_error=_tool_status_is_error(status),
         )
 
     def _handle_approval_request(
@@ -1525,17 +1778,25 @@ class CodexHooksAPI:
         else:
             tool_input = ""
         call_id = str(event.get("call_id", "")) or _format_span_id()
+        status = _normalize_status(event.get("status", ""))
+        if not status:
+            status = "failed" if event.get("success") is False else "completed"
         unique_id = self._handle_tool_call(
             session=session,
             record=record,
             call_id=call_id,
             tool_name="apply_patch",
             tool_input=tool_input,
+            status=status,
         )
         pending = session.pending_tools.pop(unique_id, None)
         if pending is None:
             return
         session.tool_use_id_map.pop(call_id, None)
+        session.pending_tool_statuses[unique_id] = status
+        end_ns = _timestamp_to_ns(record.get("timestamp", ""))
+        self._update_tool_call_status(session.active_turn, unique_id, status)
+        self._update_approval_status(session, call_id, status, end_ns)
         stdout = event.get("stdout", "")
         stderr = event.get("stderr", "")
         output_value = stdout if isinstance(stdout, str) else _to_json_str(stdout)
@@ -1545,9 +1806,9 @@ class CodexHooksAPI:
         self._emit_tool_span(
             session=session,
             pending=pending,
-            end_ns=_timestamp_to_ns(record.get("timestamp", "")),
+            end_ns=end_ns,
             output_value=output_value,
-            is_error=event.get("success") is False or str(event.get("status", "")).lower() in ("failed", "error"),
+            is_error=event.get("success") is False or _tool_status_is_error(status),
         )
 
     def _dispatch(

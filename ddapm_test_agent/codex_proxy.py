@@ -18,6 +18,10 @@ from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .codex_cost_tracker import compute_openai_cost_metrics
 from .codex_hooks import CodexHooksAPI
+from .codex_hooks import _copy_messages
+from .codex_hooks import _copy_reasoning_items
+from .codex_hooks import _extract_reasoning_metadata
+from .codex_hooks import _normalize_status
 from .llmobs_event_platform import with_cors
 
 log = logging.getLogger(__name__)
@@ -174,6 +178,7 @@ def _format_output_messages(response: Dict[str, Any]) -> List[Dict[str, Any]]:
         return []
 
     messages: List[Dict[str, Any]] = []
+    reasoning_items: List[Dict[str, Any]] = []
     for item in output:
         if not isinstance(item, dict):
             continue
@@ -185,23 +190,31 @@ def _format_output_messages(response: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "content": _content_to_text(item.get("content", "")),
                 }
             )
+        elif item_type == "reasoning":
+            reasoning = _extract_reasoning_metadata(item)
+            if reasoning:
+                reasoning_items.append(reasoning)
         elif item_type == "function_call":
             arguments = item.get("arguments", "")
             try:
                 parsed_arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
             except (TypeError, ValueError):
                 parsed_arguments = arguments
+            tool_call = {
+                "id": item.get("call_id", item.get("id", "")),
+                "name": item.get("name", ""),
+                "arguments": parsed_arguments,
+            }
+            status = _normalize_status(item.get("status", ""))
+            if status:
+                tool_call["status"] = status
+            if reasoning_items:
+                tool_call["reasoning"] = _copy_reasoning_items(reasoning_items)
             messages.append(
                 {
                     "role": "assistant",
                     "content": "",
-                    "tool_calls": [
-                        {
-                            "id": item.get("call_id", item.get("id", "")),
-                            "name": item.get("name", ""),
-                            "arguments": parsed_arguments,
-                        }
-                    ],
+                    "tool_calls": [tool_call],
                 }
             )
     return messages
@@ -263,7 +276,8 @@ class CodexProxyAPI:
         duration_ns: int,
     ) -> Optional[Dict[str, Any]]:
         model = response_data.get("model") or request_body.get("model") or "unknown"
-        output_messages = _format_output_messages(response_data)
+        input_messages = _copy_messages(_format_input_messages(request_body))
+        output_messages = _copy_messages(_format_output_messages(response_data))
         if not _has_output_messages(output_messages):
             return None
         usage = response_data.get("usage", {}) or {}
@@ -291,7 +305,7 @@ class CodexProxyAPI:
                 "span": {"kind": "llm"},
                 "model_name": model,
                 "model_provider": "openai",
-                "input": {"messages": _format_input_messages(request_body)},
+                "input": {"messages": input_messages},
                 "output": {"messages": output_messages},
                 "metadata": {
                     "stream": request_body.get("stream", False),

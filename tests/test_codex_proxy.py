@@ -221,6 +221,56 @@ def _by_kind(spans, kind):
     return [span for span in spans if span.get("meta", {}).get("span", {}).get("kind") == kind]
 
 
+def test_codex_proxy_caps_messages_and_links_reasoning_to_tool_calls():
+    class FakeConfig:
+        ml_app = "codex"
+        service = "codex"
+        env = "local"
+        hostname = "host"
+
+    class FakeHooks:
+        _config = FakeConfig()
+
+    proxy = codex_proxy_module.CodexProxyAPI(FakeHooks())
+    large_value = "x" * 9000
+    response_body = _responses_body()
+    response_body["output"] = [
+        {
+            "type": "reasoning",
+            "id": "rs_1",
+            "status": "completed",
+            "summary": [{"type": "summary_text", "text": "Need to inspect files"}],
+        },
+        {
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "exec_command",
+            "arguments": json.dumps({"cmd": large_value}),
+            "status": "in_progress",
+        },
+    ]
+    request_body = {
+        "model": "gpt-5.5",
+        "input": [
+            {
+                "type": "function_call_output",
+                "call_id": "call-0",
+                "output": large_value,
+            }
+        ],
+    }
+
+    span = proxy._create_llm_span(request_body, response_body, start_ns=1, duration_ns=2)
+
+    assert span is not None
+    input_message = span["meta"]["input"]["messages"][0]
+    tool_call = span["meta"]["output"]["messages"][0]["tool_calls"][0]
+    assert "[truncated " in input_message["content"]
+    assert "[truncated " in tool_call["arguments"]
+    assert tool_call["status"] == "in_progress"
+    assert tool_call["reasoning"][0]["text"] == "Need to inspect files"
+
+
 async def test_codex_proxy_non_streaming_forwards_and_creates_orphan_span(agent, aiohttp_server):
     seen = {}
 

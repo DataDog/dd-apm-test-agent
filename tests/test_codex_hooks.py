@@ -175,6 +175,116 @@ async def test_codex_turn_llm_and_tool_spans(agent):
     assert llms[0]["metrics"]["estimated_total_cost"] == 1_310_000
 
 
+async def test_codex_tool_status_reasoning_and_large_output_are_tracked_safely(agent):
+    sid = "codex-status-reasoning"
+    large_output = "x" * 9000
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:02.000Z", message="run it"))
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "reasoning",
+            timestamp="2026-05-11T17:00:03.000Z",
+            id="rs_1",
+            status="completed",
+            summary=[{"type": "summary_text", "text": "Need shell output"}],
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "function_call",
+            timestamp="2026-05-11T17:00:04.000Z",
+            name="exec_command",
+            call_id="call-1",
+            arguments='{"cmd": "make test"}',
+            status="in_progress",
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _event(
+            "token_count",
+            timestamp="2026-05-11T17:00:05.000Z",
+            info={
+                "last_token_usage": {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 10,
+                    "total_tokens": 110,
+                }
+            },
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "function_call_output",
+            timestamp="2026-05-11T17:00:06.000Z",
+            call_id="call-1",
+            output=large_output,
+            status="failed",
+        ),
+    )
+    await _post(agent, sid, _event("token_count", timestamp="2026-05-11T17:00:07.000Z", info=None))
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "message",
+            timestamp="2026-05-11T17:00:08.000Z",
+            role="assistant",
+            content=[{"type": "output_text", "text": "failed"}],
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _event(
+            "token_count",
+            timestamp="2026-05-11T17:00:09.000Z",
+            info={
+                "last_token_usage": {
+                    "input_tokens": 120,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 5,
+                    "total_tokens": 125,
+                }
+            },
+        ),
+    )
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    llms = sorted(_by_kind(session_spans, "llm"), key=lambda s: s["start_ns"])
+    tool = _by_kind(session_spans, "tool")[0]
+
+    tool_call = llms[0]["meta"]["output"]["messages"][0]["tool_calls"][0]
+    assert tool_call["status"] == "failed"
+    assert tool_call["reasoning"][0]["id"] == "rs_1"
+    assert tool_call["reasoning"][0]["text"] == "Need shell output"
+    assert llms[0]["meta"]["metadata"]["reasoning"][0]["text"] == "Need shell output"
+
+    assert tool["status"] == "error"
+    assert tool["meta"]["metadata"]["status"] == "failed"
+    assert tool["meta"]["metadata"]["reasoning"][0]["text"] == "Need shell output"
+    assert tool["meta"]["metadata"]["output_format"] == "verbatim"
+    assert tool["meta"]["metadata"]["_dd"]["display"]["output"] == "code"
+    assert "[truncated " in tool["meta"]["output"]["value"]
+    assert len(tool["meta"]["output"]["value"]) < len(large_output)
+
+    tool_input_message = llms[1]["meta"]["input"]["messages"][-1]
+    assert tool_input_message["role"] == "tool"
+    assert tool_input_message["status"] == "failed"
+    assert "[truncated " in tool_input_message["content"]
+    assert len(tool_input_message["content"]) < len(large_output)
+
+
 async def test_codex_real_turn_context_without_id_does_not_split_turn(agent):
     sid = "codex-real-turn-order"
     await _post(agent, sid, _session_meta(sid))
