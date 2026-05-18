@@ -229,6 +229,42 @@ async def test_gemini_active_turn_keeps_root_duration_zero_for_live_badge(agent,
     assert data["result"]["events"][0]["event"]["custom"]["duration"] == 4_000_000_000
 
 
+async def test_gemini_same_tick_finalization_exits_live_badge(agent, monkeypatch):
+    now = {"ns": 1_000_000_000}
+    monkeypatch.setattr("ddapm_test_agent.claude_hooks.monotonic_wall_ns", lambda: now["ns"])
+    monkeypatch.setattr("ddapm_test_agent.gemini_hooks.monotonic_wall_ns", lambda: now["ns"])
+
+    sid = "gemini-same-tick-finalized"
+    await _post(agent, "SessionStart", _session_start(sid))
+    await _post(agent, "BeforeAgent", _before_agent(sid, "finish immediately"))
+    await _post(agent, "AfterModel", _after_model(sid, output_text="done"))
+
+    resp = await agent.get("/gemini/hooks/spans")
+    assert resp.status == 200
+    spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    root = [s for s in spans if s["parent_id"] == "undefined"][0]
+    assert root["duration"] == 0
+    trace_id = root["trace_id"]
+
+    await _post(agent, "AfterAgent", _after_agent(sid, "done"))
+
+    resp = await agent.get("/gemini/hooks/spans")
+    assert resp.status == 200
+    spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    root = [s for s in spans if s["parent_id"] == "undefined"][0]
+    step = _by_kind(spans, "step")[0]
+    assert root["duration"] == 1
+    assert step["duration"] == 1
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": f"@trace_id:{trace_id} @parent_id:undefined"}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["result"]["events"][0]["event"]["custom"]["duration"] == 1
+
+
 def test_gemini_real_tool_fixture_matches_current_cli_shape():
     fixture = _load_fixture("gemini_real_tool_session.json")
     events = fixture["events"]

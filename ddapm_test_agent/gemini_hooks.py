@@ -13,6 +13,7 @@ from typing import Tuple
 from aiohttp import web
 from aiohttp.web import Request
 
+from ._clock import finalized_duration_ns
 from ._clock import monotonic_wall_ns
 from .claude_cost_tracker import compute_cost_metrics
 from .claude_hooks import ClaudeHooksAPI
@@ -373,7 +374,7 @@ class GeminiHooksAPI:
             end_ns = monotonic_wall_ns()
 
         ref = active.span_ref
-        ref["duration"] = end_ns - active.start_ns
+        ref["duration"] = finalized_duration_ns(active.start_ns, end_ns)
         ref["meta"]["output"]["value"] = active.output_text
         metadata = ref["meta"].setdefault("metadata", {})
         metadata["message_index"] = active.message_index
@@ -403,7 +404,7 @@ class GeminiHooksAPI:
         if len(output_value) > _MAX_RESPONSE_LEN:
             output_value = output_value[:_MAX_RESPONSE_LEN]
 
-        root_span["duration"] = now_ns - session.start_ns
+        root_span["duration"] = finalized_duration_ns(session.start_ns, now_ns)
         root_span["status"] = status
         root_span["meta"]["input"]["value"] = "\n\n".join(session.user_prompts)
         root_span["meta"]["output"]["value"] = output_value
@@ -581,7 +582,7 @@ class GeminiHooksAPI:
             "name": actual_tool_name,
             "status": "error" if is_error else "ok",
             "start_ns": start_ns,
-            "duration": now_ns - start_ns,
+            "duration": finalized_duration_ns(start_ns, now_ns),
             "ml_app": _ML_APP,
             "service": _ML_APP,
             "env": "local",
