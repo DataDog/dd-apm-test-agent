@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -20,7 +21,7 @@ from lapdog.hooks import write_claude_code_hooks
 from lapdog.paths import LOG_FILE, PID_FILE
 from lapdog import tracer_inject
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -29,10 +30,13 @@ LAPDOG_USAGE = (
     "  status  Show lapdog status (from /info)\n"
     "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi      Start lapdog in background if needed, install extension, then launch pi\n"
+    "  codex   Start lapdog in background if needed, then launch Codex with tracing\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
     "  lapdog python app.py\n"
 )
+
+_PROXY_SESSION_WARNING_LINES = ["Keep Lapdog running; stopping it can break proxied model calls."]
 
 
 def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
@@ -318,7 +322,7 @@ def cmd_claude(sub_cmd_args: List[str], forward_data: bool, enable_hooks: bool) 
     """Ensure lapdog is running in background, then launch Claude with intercept."""
     _maybe_write_claude_hooks(enable_hooks)
     _ensure_lapdog_running(forward_data, detached=True)
-    print(build_running_banner(data_type="coding session"))
+    print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
 
     _run_claude(sub_cmd_args)
 
@@ -387,6 +391,121 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
 
     print(build_running_banner(data_type="coding session"))
     _run_pi(args=sub_cmd_args, port=port)
+
+
+def _resolve_codex_cwd(args: List[str]) -> str:
+    cwd = os.getcwd()
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg == "--":
+            break
+        next_idx = idx + 1
+        cd_value: Optional[str] = None
+        if arg in ("-C", "--cd"):
+            if next_idx < len(args):
+                cd_value = args[next_idx]
+                next_idx += 1
+        elif arg.startswith("--cd="):
+            cd_value = arg.split("=", 1)[1]
+        elif arg.startswith("-C") and arg != "-C":
+            cd_value = arg[2:].lstrip("=")
+        if cd_value:
+            cwd = str(Path(cd_value).expanduser())
+            if not os.path.isabs(cwd):
+                cwd = os.path.join(os.getcwd(), cwd)
+        idx = next_idx
+    return os.path.abspath(cwd)
+
+
+def _start_codex_watcher(port: int, proxy_session_key: Optional[str] = None, cwd: Optional[str] = None) -> None:
+    """Start the bundled Codex JSONL watcher for this working directory."""
+    watcher_cwd = os.path.abspath(cwd or os.getcwd())
+    log_path = _log_file_path()
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    ready_path = os.path.join(os.path.dirname(log_path), f"codex-watcher-{os.getpid()}.ready")
+    try:
+        os.unlink(ready_path)
+    except OSError:
+        pass
+    args = [
+        sys.executable,
+        "-m",
+        "lapdog.codex_watcher",
+        "--lapdog-url",
+        f"http://localhost:{port}",
+        "--cwd",
+        watcher_cwd,
+        "--parent-pid",
+        str(os.getpid()),
+        "--ready-file",
+        ready_path,
+    ]
+    if proxy_session_key:
+        args += ["--proxy-session-key", proxy_session_key]
+    with open(log_path, "a") as log_file:
+        process = subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        if os.path.exists(ready_path):
+            return
+        if process.poll() is not None:
+            break
+        time.sleep(0.05)
+    print("[lapdog] Codex watcher did not confirm startup; continuing without startup confirmation.", file=sys.stderr)
+
+
+def _run_codex(
+    args: Optional[List[str]] = None, port: Optional[int] = None, proxy_session_key: Optional[str] = None
+) -> None:
+    """Exec the codex binary, forwarding arguments. Never returns."""
+    if args is None:
+        args = []
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        print("[lapdog] 'codex' not found in PATH", file=sys.stderr)
+        sys.exit(1)
+    env = os.environ.copy()
+    proxy_args: List[str] = []
+    if port is not None:
+        proxy_path = f"/codex/proxy/{proxy_session_key}/v1" if proxy_session_key else "/codex/proxy/v1"
+        base_url = f"http://localhost:{port}{proxy_path}"
+        env["OPENAI_BASE_URL"] = base_url
+        if env.get("OPENAI_API_KEY"):
+            proxy_args = [
+                "-c",
+                'model_provider="openai-lapdog"',
+                "-c",
+                (
+                    'model_providers.openai-lapdog={name="OpenAI via Lapdog",'
+                    f' base_url="{base_url}", env_key="OPENAI_API_KEY", wire_api="responses"' + "}"
+                ),
+            ]
+        else:
+            print(
+                "[lapdog] Codex proxy capture requires OPENAI_API_KEY; continuing with JSONL-only tracing.",
+                file=sys.stderr,
+            )
+    os.execve(codex_bin, [codex_bin] + proxy_args + args, env)
+
+
+def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
+    """Ensure lapdog is running, start the Codex JSONL watcher, then launch Codex."""
+    port = _ensure_lapdog_running(forward_data, detached=True)
+    if port is None:
+        print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+        sys.exit(1)
+    proxy_session_key = uuid.uuid4().hex
+    _start_codex_watcher(port, proxy_session_key=proxy_session_key, cwd=_resolve_codex_cwd(sub_cmd_args))
+
+    print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
+    _run_codex(args=sub_cmd_args, port=port, proxy_session_key=proxy_session_key)
 
 
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
@@ -466,3 +585,9 @@ def main() -> None:
         )
     elif sub_cmd == "pi":
         cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+    elif sub_cmd == "codex":
+        cmd_codex(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+
+
+if __name__ == "__main__":
+    main()

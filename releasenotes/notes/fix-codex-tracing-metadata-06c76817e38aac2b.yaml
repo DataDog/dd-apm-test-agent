@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    Add `lapdog codex` command for tracing Codex coding agent sessions through
+    the dd-apm-test-agent. The command watches Codex session logs, forwards
+    hook events to the local test agent, and records current model/provider
+    details on agent, LLM, and tool spans.
