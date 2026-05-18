@@ -185,13 +185,11 @@ def test_ensure_lapdog_plugin_installed_continues_on_failure(monkeypatch, capsys
 
 
 def test_cmd_claude_auto_installs_plugin_by_default():
-    with mock.patch("lapdog.cli._maybe_write_claude_hooks") as write_hooks:
-        with mock.patch("lapdog.cli._ensure_lapdog_plugin_installed") as install:
-            with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
-                with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
-                    with mock.patch("lapdog.cli._run_claude") as run_claude:
-                        cli.cmd_claude(["--model", "opus"], forward_data=False, enable_hooks=False, install_plugin=True)
-    write_hooks.assert_called_once_with(False)
+    with mock.patch("lapdog.cli._ensure_lapdog_plugin_installed") as install:
+        with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
+            with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
+                with mock.patch("lapdog.cli._run_claude") as run_claude:
+                    cli.cmd_claude(["--model", "opus"], forward_data=False, install_plugin=True)
     install.assert_called_once_with()
     run_claude.assert_called_once_with(["--model", "opus"])
 
@@ -201,19 +199,7 @@ def test_cmd_claude_skips_plugin_install_when_opted_out():
         with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
             with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
                 with mock.patch("lapdog.cli._run_claude"):
-                    cli.cmd_claude([], forward_data=False, enable_hooks=False, install_plugin=False)
-    install.assert_not_called()
-
-
-def test_cmd_claude_skips_plugin_install_when_hooks_enabled():
-    """--hooks is the legacy path; do not also auto-install the plugin."""
-    with mock.patch("lapdog.cli._maybe_write_claude_hooks") as write_hooks:
-        with mock.patch("lapdog.cli._ensure_lapdog_plugin_installed") as install:
-            with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
-                with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
-                    with mock.patch("lapdog.cli._run_claude"):
-                        cli.cmd_claude([], forward_data=False, enable_hooks=True, install_plugin=True)
-    write_hooks.assert_called_once_with(True)
+                    cli.cmd_claude([], forward_data=False, install_plugin=False)
     install.assert_not_called()
 
 

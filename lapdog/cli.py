@@ -17,7 +17,6 @@ import uuid
 import requests
 
 from lapdog import tracer_inject
-from lapdog.hooks import write_claude_code_hooks
 from lapdog.lapdog_ascii_art import build_running_banner
 from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
@@ -82,7 +81,7 @@ def _ensure_lapdog_plugin_installed() -> None:
             )
             print(
                 "[lapdog] Continuing without plugin; Claude events will not be captured. "
-                "Re-run with --hooks for the legacy path, or install the plugin manually:\n"
+                "Install manually:\n"
                 f"          claude plugin marketplace add {LAPDOG_MARKETPLACE_SOURCE}\n"
                 f"          claude plugin install {LAPDOG_PLUGIN_NAME}",
                 file=sys.stderr,
@@ -190,13 +189,6 @@ def _remove_pid_file() -> None:
             os.remove(path)
         except OSError:
             pass
-
-
-def _maybe_write_claude_hooks(enable: bool) -> None:
-    if not enable:
-        return
-    claude_settings_path = Path.home() / ".claude" / "settings.json"
-    write_claude_code_hooks(claude_settings_path)
 
 
 def _start_lapdog(
@@ -375,13 +367,10 @@ def cmd_exec(app_cmd: List[str], forward_data: bool) -> None:
 def cmd_claude(
     sub_cmd_args: List[str],
     forward_data: bool,
-    enable_hooks: bool,
     install_plugin: bool,
 ) -> None:
     """Ensure lapdog is running in background, then launch Claude with intercept."""
-    _maybe_write_claude_hooks(enable_hooks)
-    if install_plugin and not enable_hooks:
-        # --hooks is the explicit legacy path; don't also auto-install the plugin.
+    if install_plugin:
         _ensure_lapdog_plugin_installed()
     _ensure_lapdog_running(forward_data, detached=True)
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
@@ -599,17 +588,6 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--hooks",
-        action="store_true",
-        default=False,
-        help=(
-            "Write Claude Code hooks to ~/.claude/settings.json so Claude Code posts "
-            "events to the local lapdog agent. Prefer the auto-installed 'lapdog' "
-            "Claude Code plugin (default for 'lapdog claude') instead of this flag."
-        ),
-    )
-
-    parser.add_argument(
         "--no-plugin-install",
         dest="install_plugin",
         action="store_false",
@@ -655,7 +633,6 @@ def main() -> None:
         cmd_claude(
             sub_cmd_args=sub_cmd_args,
             forward_data=lapdog_parsed_args.forward,
-            enable_hooks=lapdog_parsed_args.hooks,
             install_plugin=lapdog_parsed_args.install_plugin,
         )
     elif sub_cmd == "pi":
