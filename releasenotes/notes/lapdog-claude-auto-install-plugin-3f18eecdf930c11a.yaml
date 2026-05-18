@@ -1,0 +1,21 @@
+---
+features:
+  - |
+    `lapdog claude` now auto-installs the `lapdog` Claude Code plugin from the
+    in-repo marketplace if it is not already installed (runs
+    `claude plugin marketplace add DataDog/dd-apm-test-agent` and
+    `claude plugin install lapdog@lapdog`). Detection is via
+    `~/.claude/plugins/installed_plugins.json`, so already-installed users pay
+    no overhead. Skip the auto-install with `--no-plugin-install`. Install
+    failures print the manual commands and continue launching Claude
+    uninstrumented rather than blocking the session.
+upgrade:
+  - |
+    The `--hooks` flag is removed. `lapdog claude` now ships only one
+    integration path: the auto-installed Claude Code plugin. The
+    `lapdog/hooks.py` helper that mutated `~/.claude/settings.json` is
+    deleted. Users who previously ran `lapdog --hooks claude` should
+    delete the stale hook entries that POST to `localhost:8126/claude/hooks`
+    from their `~/.claude/settings.json` — otherwise, once the plugin
+    auto-installs, both the plugin's hooks and the settings.json hooks
+    will fire on every event and produce duplicate instrumentation.

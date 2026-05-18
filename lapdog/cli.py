@@ -1,6 +1,7 @@
 """CLI for lapdog subcommands"""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
@@ -8,18 +9,18 @@ import signal
 import subprocess
 import sys
 import time
-import uuid
 from typing import List
 from typing import Optional
 from typing import Tuple
-
-from lapdog.lapdog_ascii_art import build_running_banner
+import uuid
 
 import requests
 
-from lapdog.hooks import write_claude_code_hooks
-from lapdog.paths import LOG_FILE, PID_FILE
 from lapdog import tracer_inject
+from lapdog.lapdog_ascii_art import build_running_banner
+from lapdog.paths import LOG_FILE
+from lapdog.paths import PID_FILE
+
 
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex"]
 LAPDOG_USAGE = (
@@ -37,6 +38,57 @@ LAPDOG_USAGE = (
 )
 
 _PROXY_SESSION_WARNING_LINES = ["Keep Lapdog running; stopping it can break proxied model calls."]
+
+LAPDOG_PLUGIN_NAME = "lapdog@lapdog"
+LAPDOG_MARKETPLACE_SOURCE = "DataDog/dd-apm-test-agent"
+
+
+def _lapdog_plugin_installed() -> bool:
+    """Return True if the lapdog Claude Code plugin is installed for this user."""
+    installed_path = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    if not installed_path.exists():
+        return False
+    try:
+        with installed_path.open() as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(LAPDOG_PLUGIN_NAME in (data.get("plugins") or {}))
+
+
+def _ensure_lapdog_plugin_installed() -> None:
+    """Install the lapdog Claude Code plugin if missing. Best-effort: failures warn and continue."""
+    if _lapdog_plugin_installed():
+        return
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        # _run_claude will print a clearer error in a moment.
+        return
+
+    print("[lapdog] Installing Claude Code plugin 'lapdog'...", file=sys.stderr)
+    commands = [
+        [claude_bin, "plugin", "marketplace", "add", LAPDOG_MARKETPLACE_SOURCE],
+        [claude_bin, "plugin", "install", LAPDOG_PLUGIN_NAME],
+    ]
+    for cmd in commands:
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            detail = (e.stderr or e.stdout or "").strip()
+            print(
+                f"[lapdog] '{' '.join(cmd[1:])}' failed (rc={e.returncode}): {detail}",
+                file=sys.stderr,
+            )
+            print(
+                "[lapdog] Continuing without plugin; LLM calls will still be captured "
+                "but Claude Code hook events (tool calls, prompts, sessions, permissions) "
+                "will not. Install manually:\n"
+                f"          claude plugin marketplace add {LAPDOG_MARKETPLACE_SOURCE}\n"
+                f"          claude plugin install {LAPDOG_PLUGIN_NAME}",
+                file=sys.stderr,
+            )
+            return
+    print("[lapdog] Plugin installed.", file=sys.stderr)
 
 
 def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
@@ -140,14 +192,9 @@ def _remove_pid_file() -> None:
             pass
 
 
-def _maybe_write_claude_hooks(enable: bool) -> None:
-    if not enable:
-        return
-    claude_settings_path = Path.home() / ".claude" / "settings.json"
-    write_claude_code_hooks(claude_settings_path)
-
-
-def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False) -> Tuple[int, int, str]:
+def _start_lapdog(
+    port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False
+) -> Tuple[int, int, str]:
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -318,9 +365,14 @@ def cmd_exec(app_cmd: List[str], forward_data: bool) -> None:
     os.execvpe(resolved, app_cmd, env)
 
 
-def cmd_claude(sub_cmd_args: List[str], forward_data: bool, enable_hooks: bool) -> None:
+def cmd_claude(
+    sub_cmd_args: List[str],
+    forward_data: bool,
+    install_plugin: bool,
+) -> None:
     """Ensure lapdog is running in background, then launch Claude with intercept."""
-    _maybe_write_claude_hooks(enable_hooks)
+    if install_plugin:
+        _ensure_lapdog_plugin_installed()
     _ensure_lapdog_running(forward_data, detached=True)
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
 
@@ -512,7 +564,7 @@ def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
     lapdog_args: List[str] = []
 
     for arg_idx, arg in enumerate(cmd_args):
-        if not arg.startswith('--'):
+        if not arg.startswith("--"):
             return lapdog_args, cmd_args[arg_idx:]
 
         lapdog_args.append(arg)
@@ -537,14 +589,15 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--hooks",
-        action="store_true",
-        default=False,
+        "--no-plugin-install",
+        dest="install_plugin",
+        action="store_false",
+        default=True,
         help=(
-            "Write Claude Code hooks to ~/.claude/settings.json so Claude Code posts "
-            "events to the local lapdog agent. Prefer installing the 'lapdog' Claude "
-            "Code plugin (claude plugin marketplace add DataDog/dd-apm-test-agent && "
-            "claude plugin install lapdog@lapdog) instead of this flag."
+            "Skip auto-installing the 'lapdog' Claude Code plugin when running "
+            f"'lapdog claude'. By default, lapdog runs 'claude plugin marketplace "
+            f"add {LAPDOG_MARKETPLACE_SOURCE}' and 'claude plugin install "
+            f"{LAPDOG_PLUGIN_NAME}' if the plugin is not already installed."
         ),
     )
 
@@ -581,7 +634,7 @@ def main() -> None:
         cmd_claude(
             sub_cmd_args=sub_cmd_args,
             forward_data=lapdog_parsed_args.forward,
-            enable_hooks=lapdog_parsed_args.hooks,
+            install_plugin=lapdog_parsed_args.install_plugin,
         )
     elif sub_cmd == "pi":
         cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)

@@ -138,23 +138,36 @@ Code plugin, vended from a marketplace inside this same repository. The plugin
 registers a non-blocking `curl` hook for every Claude Code event so the local
 lapdog agent can record traces, prompts, tool calls, and permission requests.
 
+`lapdog claude` auto-installs the plugin on first run — no separate setup
+step is needed:
+
 ```bash
-# One-time: add this repo as a marketplace and install the plugin.
+lapdog claude
+# [lapdog] Installing Claude Code plugin 'lapdog'...
+# [lapdog] Plugin installed.
+# ...launches Claude...
+```
+
+On subsequent runs lapdog detects the plugin via
+`~/.claude/plugins/installed_plugins.json` and skips the install step. To do
+the install yourself (or to script it in CI), the commands are:
+
+```bash
 claude plugin marketplace add DataDog/dd-apm-test-agent
 claude plugin install lapdog@lapdog
-
-# Then in any session:
-lapdog claude                 # starts the agent, instruments LLM calls, launches Claude
 ```
 
 The plugin lives entirely under `~/.claude/plugins/...` — it does **not**
 modify `~/.claude/settings.json`. `claude plugin uninstall lapdog@lapdog`
 fully removes it.
 
-If you cannot or do not want to install the plugin, `lapdog --hooks claude`
-writes the equivalent hook entries directly into `~/.claude/settings.json`.
-This is opt-in: by default `lapdog claude` no longer touches your Claude Code
-settings.
+To skip the auto-install (e.g. on a locked-down machine), run
+`lapdog --no-plugin-install claude`. LLM model calls are still captured
+(via the BUN intercept), but Claude Code hook events — tool calls, prompts,
+session lifecycle, permission requests — are not, so the sessions view in
+the dashboard will be incomplete. The same fallback applies if the
+auto-install fails (no network, etc.): lapdog prints the manual commands
+and continues launching Claude rather than blocking the session.
 
 ---
 
@@ -164,7 +177,7 @@ settings.
 # Start the local agent in the background.
 lapdog start
 
-# Launch Claude Code with hooks + intercept wired up.
+# Auto-install the Claude Code plugin (if needed), then launch Claude with intercept.
 lapdog claude
 
 # Or launch Codex with JSONL capture + proxy tracing wired up.
@@ -199,9 +212,8 @@ is lost.
 Useful flags:
 
 - `--forward` — also forward LLMObs events to Datadog (requires `DD_API_KEY`).
-- `--hooks` — opt-in: write Claude Code hook entries into
-  `~/.claude/settings.json` so Claude Code posts events to the local agent.
-  Prefer installing the [Claude Code plugin](#claude-code-plugin) instead.
+- `--no-plugin-install` — skip the `lapdog claude` auto-install of the Claude
+  Code plugin.
 - `-p <port>` / `--port <port>` — bind to a different port (default `8126`).
 
 ---
@@ -214,7 +226,7 @@ Knowing this up front makes the uninstall list below easy to verify.
 | --- | --- | --- |
 | `~/.lapdog/lapdog.pid` | `lapdog start` / `lapdog claude` / `lapdog pi` | PID + port of the background agent |
 | `~/.lapdog/lapdog.log` | same | stdout/stderr of the background agent |
-| `~/.claude/settings.json` | only `lapdog --hooks claude` (opt-in) | adds a `curl` hook to `localhost:8126/claude/hooks` for each Claude Code event. The Claude Code plugin path leaves this file alone. |
+| `~/.claude/plugins/...` | `lapdog claude` (first run) | the auto-installed `lapdog@lapdog` Claude Code plugin lives entirely under here |
 | `~/.pi/agent/extensions/lapdog.ts` | `lapdog pi` | Pi extension that reports tool calls to the local agent |
 
 No other state is created. There is no daemon installed at the OS level
@@ -246,53 +258,19 @@ claude plugin uninstall lapdog@lapdog
 claude plugin marketplace remove lapdog
 ```
 
-### 3. Remove the Claude Code hooks (only if you used `lapdog --hooks claude`)
-
-`lapdog --hooks claude` adds hook entries to `~/.claude/settings.json` so
-Claude Code posts events to `localhost:8126/claude/hooks`. They look like:
-
-```json
-{
-  "type": "command",
-  "command": "curl -s --max-time 2 -X POST -H 'Content-Type: application/json' -d @- http://localhost:8126/claude/hooks >/dev/null 2>&1 || true",
-  "async": true
-}
-```
-
-You can either delete just the entries that POST to
-`localhost:8126/claude/hooks` (leaving any other hooks you've configured
-alone), or `jq` them out:
-
-```bash
-jq '
-  .hooks |= with_entries(
-    .value |= map(
-      .hooks |= map(select(
-        (.command // "") | contains("localhost:8126/claude/hooks") | not
-      ))
-    )
-  )
-' ~/.claude/settings.json > ~/.claude/settings.json.tmp \
-  && mv ~/.claude/settings.json.tmp ~/.claude/settings.json
-```
-
-The hooks are harmless when the agent is not running (the `curl` returns
-non-zero and the `|| true` swallows it), so removing them is optional unless
-you want a fully clean Claude Code config.
-
-### 4. Remove the Pi extension (only if you used `lapdog pi`)
+### 3. Remove the Pi extension (only if you used `lapdog pi`)
 
 ```bash
 rm -f ~/.pi/agent/extensions/lapdog.ts
 ```
 
-### 5. Remove lapdog's working directory
+### 4. Remove lapdog's working directory
 
 ```bash
 rm -rf ~/.lapdog
 ```
 
-### 6. Uninstall the package
+### 5. Uninstall the package
 
 Match the install method you used:
 
