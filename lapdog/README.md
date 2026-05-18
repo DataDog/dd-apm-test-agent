@@ -138,23 +138,38 @@ Code plugin, vended from a marketplace inside this same repository. The plugin
 registers a non-blocking `curl` hook for every Claude Code event so the local
 lapdog agent can record traces, prompts, tool calls, and permission requests.
 
+`lapdog claude` auto-installs the plugin on first run — no separate setup
+step is needed:
+
 ```bash
-# One-time: add this repo as a marketplace and install the plugin.
+lapdog claude
+# [lapdog] Installing Claude Code plugin 'lapdog'...
+# [lapdog] Plugin installed.
+# ...launches Claude...
+```
+
+On subsequent runs lapdog detects the plugin via
+`~/.claude/plugins/installed_plugins.json` and skips the install step. To do
+the install yourself (or to script it in CI), the commands are:
+
+```bash
 claude plugin marketplace add DataDog/dd-apm-test-agent
 claude plugin install lapdog@lapdog
-
-# Then in any session:
-lapdog claude                 # starts the agent, instruments LLM calls, launches Claude
 ```
 
 The plugin lives entirely under `~/.claude/plugins/...` — it does **not**
 modify `~/.claude/settings.json`. `claude plugin uninstall lapdog@lapdog`
 fully removes it.
 
+To skip the auto-install (e.g. on a locked-down machine), run
+`lapdog --no-plugin-install claude` — Claude will launch but events will not
+be captured. If the auto-install fails (no network, etc.) lapdog prints the
+manual commands and launches Claude uninstrumented rather than blocking the
+session.
+
 If you cannot or do not want to install the plugin, `lapdog --hooks claude`
 writes the equivalent hook entries directly into `~/.claude/settings.json`.
-This is opt-in: by default `lapdog claude` no longer touches your Claude Code
-settings.
+The `--hooks` flag also suppresses the plugin auto-install.
 
 ---
 
@@ -201,7 +216,9 @@ Useful flags:
 - `--forward` — also forward LLMObs events to Datadog (requires `DD_API_KEY`).
 - `--hooks` — opt-in: write Claude Code hook entries into
   `~/.claude/settings.json` so Claude Code posts events to the local agent.
-  Prefer installing the [Claude Code plugin](#claude-code-plugin) instead.
+  Prefer the auto-installed [Claude Code plugin](#claude-code-plugin) instead.
+- `--no-plugin-install` — skip the `lapdog claude` auto-install of the Claude
+  Code plugin.
 - `-p <port>` / `--port <port>` — bind to a different port (default `8126`).
 
 ---
