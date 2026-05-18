@@ -26,6 +26,7 @@ from aiohttp import web
 from aiohttp.web import Request
 import msgpack
 
+from ._clock import finalized_duration_ns
 from ._clock import monotonic_wall_ns
 from .claude_cost_tracker import COST_METRIC_KEYS
 from .claude_link_tracker import ClaudeLinkTracker
@@ -526,7 +527,7 @@ class ClaudeHooksAPI:
         error_message: str = "",
     ) -> None:
         """Populate the step span's duration, output, metadata, and status."""
-        duration = max(0, end_ns - active.start_ns)
+        duration = finalized_duration_ns(active.start_ns, end_ns)
         span = active.span_ref
         span["duration"] = duration
         span["status"] = status
@@ -615,7 +616,7 @@ class ClaudeHooksAPI:
         current duration so the trace is complete.
         """
         now_ns = monotonic_wall_ns()
-        duration = now_ns - session.start_ns
+        duration = finalized_duration_ns(session.start_ns, now_ns)
 
         # Discard any pending permission wait — the turn was interrupted so we don't
         # want it bleeding into the next turn's accumulated total.
@@ -636,7 +637,7 @@ class ClaudeHooksAPI:
             agent_info = session.agent_span_stack.pop()
             span_ref = agent_info.get("_span_ref")
             if span_ref:
-                span_ref["duration"] = now_ns - agent_info["start_ns"]
+                span_ref["duration"] = finalized_duration_ns(agent_info["start_ns"], now_ns)
                 span_ref["status"] = "error"
                 span_ref["meta"]["error"] = {"message": "interrupted"}
 
@@ -879,7 +880,7 @@ class ClaudeHooksAPI:
             return
 
         # Normal tool span
-        duration = now_ns - start_ns
+        duration = finalized_duration_ns(start_ns, now_ns)
 
         span_links = []
         if self._link_tracker:
@@ -1046,7 +1047,7 @@ class ClaudeHooksAPI:
         agent_info = session.agent_span_stack.pop()
         # Remove from active_agents map
         session.active_agents.pop(str(agent_info["span_id"]), None)
-        duration = now_ns - agent_info["start_ns"]
+        duration = finalized_duration_ns(agent_info["start_ns"], now_ns)
 
         task_tool_use_id = agent_info.get("task_tool_use_id", "")
         task_tool_input = agent_info.get("task_tool_input")
@@ -1258,7 +1259,7 @@ class ClaudeHooksAPI:
             return
 
         now_ns = monotonic_wall_ns()
-        duration = now_ns - session.start_ns
+        duration = finalized_duration_ns(session.start_ns, now_ns)
 
         # Finalize any still-open step on the root agent before aggregating the turn.
         self._finalize_all_steps_for_agent(session, session.root_span_id, now_ns)
@@ -1432,7 +1433,7 @@ class ClaudeHooksAPI:
             tool_input_dict = {}
 
         intent = _extract_intent(actual_tool_name, tool_input_dict)
-        duration = now_ns - start_ns
+        duration = finalized_duration_ns(start_ns, now_ns)
 
         # Consume any pending permission wait
         estimated_permission_wait_ms: Optional[int] = None

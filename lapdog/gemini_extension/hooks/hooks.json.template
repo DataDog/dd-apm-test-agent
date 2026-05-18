@@ -1,0 +1,112 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -sS -X POST -H 'Content-Type: application/json' -d @- {{LAPDOG_URL}}/gemini/hooks/SessionStart >/dev/null 2>&1 || true",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "BeforeAgent": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -sS -X POST -H 'Content-Type: application/json' -d @- {{LAPDOG_URL}}/gemini/hooks/BeforeAgent >/dev/null 2>&1 || true",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "AfterModel": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -sS -X POST -H 'Content-Type: application/json' -d @- {{LAPDOG_URL}}/gemini/hooks/AfterModel >/dev/null 2>&1 || true",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "BeforeTool": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -sS -X POST -H 'Content-Type: application/json' -d @- {{LAPDOG_URL}}/gemini/hooks/BeforeTool >/dev/null 2>&1 || true",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -sS -X POST -H 'Content-Type: application/json' -d @- {{LAPDOG_URL}}/gemini/hooks/AfterTool >/dev/null 2>&1 || true",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "AfterAgent": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -sS -X POST -H 'Content-Type: application/json' -d @- {{LAPDOG_URL}}/gemini/hooks/AfterAgent >/dev/null 2>&1 || true",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -sS -X POST -H 'Content-Type: application/json' -d @- {{LAPDOG_URL}}/gemini/hooks/SessionEnd >/dev/null 2>&1 || true",
+            "timeout": 15000
+          }
+        ]
+      }
+    ],
+    "PreCompress": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -sS -X POST -H 'Content-Type: application/json' -d @- {{LAPDOG_URL}}/gemini/hooks/PreCompress >/dev/null 2>&1 || true",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -sS -X POST -H 'Content-Type: application/json' -d @- {{LAPDOG_URL}}/gemini/hooks/Notification >/dev/null 2>&1 || true",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}

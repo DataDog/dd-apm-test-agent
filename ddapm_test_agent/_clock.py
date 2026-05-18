@@ -29,3 +29,8 @@ def monotonic_wall_ns() -> int:
             t = _last_ns + 1
         _last_ns = t
         return t
+
+
+def finalized_duration_ns(start_ns: int, end_ns: int) -> int:
+    """Return a positive duration for spans that have left the live/running state."""
+    return max(1, end_ns - start_ns)

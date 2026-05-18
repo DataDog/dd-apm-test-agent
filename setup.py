@@ -26,7 +26,15 @@ setup(
     packages=find_packages(exclude=["tests*", "releasenotes", "scripts"]),
     package_data={
         "ddapm_test_agent": ["py.typed", "templates/*", "static/*",],
-        "lapdog": ["py.typed", "claude_intercept.mjs", "pi_lapdog_extension.ts", "bootstrap/*"],
+        "lapdog": [
+            "py.typed",
+            "claude_intercept.mjs",
+            "pi_lapdog_extension.ts",
+            "bootstrap/*",
+            "gemini_extension/*",
+            "gemini_extension/hooks/*",
+            "gemini_extension/plugin/lapdog-gemini/*",
+        ],
     },
     python_requires=">=3.8",
     install_requires=[

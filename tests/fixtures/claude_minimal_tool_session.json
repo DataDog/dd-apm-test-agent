@@ -1,0 +1,45 @@
+{
+  "metadata": {
+    "source": "trajectory/trajectory/serve/testdata/harness-profiles/claude-code/minimal-tool-session/raw-events.jsonl",
+    "notes": "Claude Code hook fixture used as the semantic baseline for a minimal read-tool session."
+  },
+  "events": [
+    {
+      "hook_event_name": "SessionStart",
+      "session_id": "claude-code-fixture-minimal-tool-session",
+      "source": "startup",
+      "cwd": "/workspace/fixture-repo",
+      "model": "claude-sonnet-4-5",
+      "version": "2.0.0-fixture"
+    },
+    {
+      "hook_event_name": "UserPromptSubmit",
+      "session_id": "claude-code-fixture-minimal-tool-session",
+      "prompt": "Inspect README.md and summarize the test fixture.",
+      "model": "claude-sonnet-4-5"
+    },
+    {
+      "hook_event_name": "PreToolUse",
+      "session_id": "claude-code-fixture-minimal-tool-session",
+      "tool_use_id": "toolu_fixture_read_1",
+      "tool_name": "Read",
+      "tool_input": {
+        "file_path": "README.md"
+      }
+    },
+    {
+      "hook_event_name": "PostToolUse",
+      "session_id": "claude-code-fixture-minimal-tool-session",
+      "tool_use_id": "toolu_fixture_read_1",
+      "tool_name": "Read",
+      "tool_response": {
+        "content": "# Fixture Repo\nHarness profile example.\n"
+      }
+    },
+    {
+      "hook_event_name": "SessionEnd",
+      "session_id": "claude-code-fixture-minimal-tool-session",
+      "exit_reason": "normal"
+    }
+  ]
+}

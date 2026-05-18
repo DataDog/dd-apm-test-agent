@@ -110,6 +110,13 @@ The test agent can receive [Claude Code hook](https://docs.claude.com/en/docs/cl
 See [`.claude/setup-hooks.md`](.claude/setup-hooks.md) for full setup instructions (also usable as a Claude Code prompt to automate the setup).
 
 
+### Gemini CLI Hooks
+
+The test agent can receive Gemini CLI command-hook events and assemble them into LLM Observability traces.
+
+Run `lapdog gemini` to start the local agent, install/update the bundled Gemini extension, and launch `gemini`. The extension posts Gemini hook payloads to `/gemini/hooks/{EventType}` and uses fail-open `curl ... || true` commands so Gemini is not blocked if the local agent is unavailable.
+
+
 ### Snapshot testing
 
 The test agent provides a form of [characterization testing](https://en.wikipedia.org/wiki/Characterization_test) which

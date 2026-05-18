@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import pkgutil
 from pathlib import Path
 import shutil
 import signal
@@ -20,7 +21,7 @@ from lapdog.hooks import write_claude_code_hooks
 from lapdog.paths import LOG_FILE, PID_FILE
 from lapdog import tracer_inject
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "gemini"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -29,6 +30,7 @@ LAPDOG_USAGE = (
     "  status  Show lapdog status (from /info)\n"
     "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi      Start lapdog in background if needed, install extension, then launch pi\n"
+    "  gemini  Start lapdog in background if needed, install extension, then launch Gemini\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
     "  lapdog python app.py\n"
@@ -52,11 +54,11 @@ def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
 
 
 def _pid_file_path() -> str:
-    return os.environ.get("LAPDOG_PID_FILE", PID_FILE)
+    return str(os.environ.get("LAPDOG_PID_FILE", PID_FILE))
 
 
 def _log_file_path() -> str:
-    return os.environ.get("LAPDOG_LOG_FILE", LOG_FILE)
+    return str(os.environ.get("LAPDOG_LOG_FILE", LOG_FILE))
 
 
 def _url_for_port(port: int) -> str:
@@ -389,6 +391,81 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
     _run_pi(args=sub_cmd_args, port=port)
 
 
+# ---------------------------------------------------------------------------
+# Gemini extension management
+# ---------------------------------------------------------------------------
+
+_GEMINI_EXTENSION_DIR = os.path.expanduser("~/.lapdog/gemini-extension")
+_GEMINI_EXTENSION_TEMPLATE_FILES = {
+    "gemini_extension/gemini-extension.json": "gemini-extension.json",
+    "gemini_extension/hooks/hooks.json.template": "hooks/hooks.json",
+    "gemini_extension/plugin/lapdog-gemini/GEMINI.md": "plugin/lapdog-gemini/GEMINI.md",
+}
+_GEMINI_URL_PLACEHOLDER = "{{LAPDOG_URL}}"
+
+
+def _gemini_extension_resource_text(resource_path: str) -> str:
+    data = pkgutil.get_data("lapdog", resource_path)
+    if data is None:
+        print(f"[lapdog] Gemini extension resource not found: {resource_path}", file=sys.stderr)
+        sys.exit(1)
+    return data.decode("utf-8")
+
+
+def _write_gemini_extension(extension_dir: str, port: int) -> None:
+    lapdog_url = f"http://localhost:{port}"
+    for resource_path, output_path in _GEMINI_EXTENSION_TEMPLATE_FILES.items():
+        content = _gemini_extension_resource_text(resource_path).replace(_GEMINI_URL_PLACEHOLDER, lapdog_url)
+        destination = os.path.join(extension_dir, output_path)
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        with open(destination, "w") as f:
+            f.write(content)
+
+
+def _install_gemini_extension(port: int) -> None:
+    gemini_bin = shutil.which("gemini")
+    if not gemini_bin:
+        print("[lapdog] 'gemini' not found in PATH", file=sys.stderr)
+        sys.exit(1)
+
+    _write_gemini_extension(_GEMINI_EXTENSION_DIR, port)
+    proc = subprocess.run(
+        [gemini_bin, "extensions", "install", _GEMINI_EXTENSION_DIR, "--consent", "--skip-settings"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        if proc.stdout:
+            print(proc.stdout, file=sys.stderr)
+        if proc.stderr:
+            print(proc.stderr, file=sys.stderr)
+        print(f"[lapdog] Failed to install Gemini extension from {_GEMINI_EXTENSION_DIR}", file=sys.stderr)
+        sys.exit(proc.returncode)
+
+
+def _run_gemini(args: Optional[List[str]] = None, port: Optional[int] = 8126) -> None:
+    """Exec the gemini binary, forwarding arguments. Never returns."""
+    if args is None:
+        args = []
+    gemini_bin = shutil.which("gemini")
+    if not gemini_bin:
+        print("[lapdog] 'gemini' not found in PATH", file=sys.stderr)
+        sys.exit(1)
+    env = {**os.environ, "LAPDOG_URL": f"http://localhost:{port}"}
+    os.execve(gemini_bin, [gemini_bin] + args, env)
+
+
+def cmd_gemini(sub_cmd_args: List[str], forward_data: bool) -> None:
+    """Ensure lapdog is running, install the Gemini extension, then launch Gemini."""
+    port = _ensure_lapdog_running(forward_data, detached=True)
+    _install_gemini_extension(port or 8126)
+
+    print(build_running_banner(data_type="coding session"))
+    _run_gemini(args=sub_cmd_args, port=port)
+
+
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
     lapdog_args: List[str] = []
 
@@ -466,3 +543,5 @@ def main() -> None:
         )
     elif sub_cmd == "pi":
         cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+    elif sub_cmd == "gemini":
+        cmd_gemini(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
