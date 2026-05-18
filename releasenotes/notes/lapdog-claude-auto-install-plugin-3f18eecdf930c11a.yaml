@@ -14,8 +14,8 @@ upgrade:
     The `--hooks` flag is removed. `lapdog claude` now ships only one
     integration path: the auto-installed Claude Code plugin. The
     `lapdog/hooks.py` helper that mutated `~/.claude/settings.json` is
-    deleted. Users who previously ran `lapdog --hooks claude` can either let
-    the plugin install on next run, or delete the stale hook entries that
-    POST to `localhost:8126/claude/hooks` from their `~/.claude/settings.json`
-    (the entries are harmless when left in place — the `curl` returns
-    non-zero and the trailing `|| true` swallows it).
+    deleted. Users who previously ran `lapdog --hooks claude` should
+    delete the stale hook entries that POST to `localhost:8126/claude/hooks`
+    from their `~/.claude/settings.json` — otherwise, once the plugin
+    auto-installs, both the plugin's hooks and the settings.json hooks
+    will fire on every event and produce duplicate instrumentation.
