@@ -162,10 +162,12 @@ modify `~/.claude/settings.json`. `claude plugin uninstall lapdog@lapdog`
 fully removes it.
 
 To skip the auto-install (e.g. on a locked-down machine), run
-`lapdog --no-plugin-install claude` — Claude will launch but events will not
-be captured. If the auto-install fails (no network, etc.) lapdog prints the
-manual commands and launches Claude uninstrumented rather than blocking the
-session.
+`lapdog --no-plugin-install claude`. LLM model calls are still captured
+(via the BUN intercept), but Claude Code hook events — tool calls, prompts,
+session lifecycle, permission requests — are not, so the sessions view in
+the dashboard will be incomplete. The same fallback applies if the
+auto-install fails (no network, etc.): lapdog prints the manual commands
+and continues launching Claude rather than blocking the session.
 
 ---
 
