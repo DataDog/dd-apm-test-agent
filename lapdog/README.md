@@ -175,7 +175,7 @@ session.
 # Start the local agent in the background.
 lapdog start
 
-# Launch Claude Code with hooks + intercept wired up.
+# Auto-install the Claude Code plugin (if needed), then launch Claude with intercept.
 lapdog claude
 
 # Or launch Codex with JSONL capture + proxy tracing wired up.
