@@ -948,9 +948,44 @@ class PiHooksAPI:
         """Handle GET /pi/hooks/raw — return all raw received events for debugging."""
         return web.json_response({"events": self._raw_events})
 
+    async def handle_backfill_session(self, request: Request) -> web.Response:
+        """Ingest a historical pi/omp transcript as a batch of spans.
+
+        Body: ``{"session_id": str, "cwd": str, "entries": [pi-jsonl entries]}``.
+
+        The live pi pipeline assembles spans from a stream of lifecycle events
+        (session_start, message_start, tool_execution_*, etc.) plus model
+        usage that the extension reports separately. For backfill we have all
+        of that in the on-disk transcript already, so we convert the entries
+        directly into the same span shape and append them to
+        ``_assembled_spans``.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        session_id = body.get("session_id") or ""
+        cwd = body.get("cwd") or ""
+        entries = body.get("entries") or []
+        if not session_id or not isinstance(entries, list):
+            return web.json_response({"error": "session_id and entries required"}, status=400)
+
+        from ddapm_test_agent import pi_backfill
+
+        try:
+            spans = pi_backfill.session_to_spans(session_id, cwd, entries)
+        except Exception as exc:
+            log.warning("pi backfill_session failed for %s: %r", session_id, exc)
+            return web.json_response({"status": "error", "error": repr(exc)}, status=400)
+        self._hooks_api._assembled_spans.extend(spans)
+        traces = len({s.get("trace_id") for s in spans})
+        return web.json_response({"status": "ok", "spans_created": len(spans), "traces_created": traces})
+
     def get_routes(self) -> List[web.RouteDef]:
         """Return the routes for this API."""
         return [
             web.post("/pi/hooks", with_cors(self.handle_hook)),
+            web.post("/pi/hooks/backfill_session", with_cors(self.handle_backfill_session)),
             web.route("*", "/pi/hooks/raw", with_cors(self.handle_raw_events)),
         ]

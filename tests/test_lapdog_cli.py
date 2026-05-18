@@ -138,3 +138,52 @@ def test_run_codex_falls_back_without_openai_api_key(monkeypatch):
 
     assert exec_call["env"]["OPENAI_BASE_URL"] == "http://localhost:8126/codex/proxy/v1"
     assert exec_call["argv"] == ["/usr/local/bin/codex", "exec", "hello"]
+
+
+def test_backfill_flag_parses():
+    parsed = cli._parse_lapdog_args(["--backfill"])
+    assert parsed.backfill is True
+    assert parsed.forward is False
+
+
+def test_cmd_claude_backfill_does_not_exec_claude():
+    with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126) as ensure:
+        with mock.patch("lapdog.cli._run_claude") as run_claude:
+            with mock.patch("lapdog.cli._maybe_write_claude_hooks") as write_hooks:
+                with mock.patch("lapdog.backfill_claude.backfill") as run_backfill:
+                    cli.cmd_claude([], forward_data=True, enable_hooks=True, backfill=True)
+
+    ensure.assert_called_once_with(forward_data=False, detached=True)
+    run_backfill.assert_called_once_with("http://localhost:8126")
+    run_claude.assert_not_called()
+    # During backfill we do not touch ~/.claude/settings.json.
+    write_hooks.assert_not_called()
+
+
+def test_cmd_pi_backfill_does_not_exec_pi():
+    with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126) as ensure:
+        with mock.patch("lapdog.cli._install_pi_extension") as install_ext:
+            with mock.patch("lapdog.cli._run_pi") as run_pi:
+                with mock.patch("lapdog.backfill_pi.backfill") as run_backfill:
+                    cli.cmd_pi([], forward_data=True, backfill=True)
+
+    ensure.assert_called_once_with(forward_data=False, detached=True)
+    run_backfill.assert_called_once_with("http://localhost:8126")
+    install_ext.assert_not_called()
+    run_pi.assert_not_called()
+
+
+def test_cmd_codex_backfill_does_not_exec_codex(monkeypatch):
+    monkeypatch.setattr(cli.os, "getcwd", lambda: "/some/cwd")
+    with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126) as ensure:
+        with mock.patch("lapdog.cli._start_codex_watcher") as start_watcher:
+            with mock.patch("lapdog.cli._run_codex") as run_codex:
+                with mock.patch("lapdog.backfill_codex.backfill") as run_backfill:
+                    cli.cmd_codex(["--cd", "/some/cwd"], forward_data=True, backfill=True)
+
+    # forward_data is forced to False during backfill so historical sessions
+    # don't accidentally stream to Datadog.
+    ensure.assert_called_once_with(forward_data=False, detached=True)
+    run_backfill.assert_called_once_with("http://localhost:8126", cwd="/some/cwd")
+    start_watcher.assert_not_called()
+    run_codex.assert_not_called()

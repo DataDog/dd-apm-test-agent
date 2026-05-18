@@ -318,8 +318,26 @@ def cmd_exec(app_cmd: List[str], forward_data: bool) -> None:
     os.execvpe(resolved, app_cmd, env)
 
 
-def cmd_claude(sub_cmd_args: List[str], forward_data: bool, enable_hooks: bool) -> None:
-    """Ensure lapdog is running in background, then launch Claude with intercept."""
+def cmd_claude(
+    sub_cmd_args: List[str], forward_data: bool, enable_hooks: bool, backfill: bool = False
+) -> None:
+    """Ensure lapdog is running in background, then launch Claude with intercept.
+
+    When ``backfill`` is True: ensure lapdog is running, replay historical
+    Claude Code transcripts from ``~/.claude/projects`` through
+    ``/claude/hooks``, and exit without launching Claude. ``forward_data``
+    is forced off and ``enable_hooks`` is ignored during backfill.
+    """
+    if backfill:
+        port = _ensure_lapdog_running(forward_data=False, detached=True)
+        if port is None:
+            print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+            sys.exit(1)
+        from lapdog import backfill_claude
+
+        backfill_claude.backfill(f"http://localhost:{port}")
+        return
+
     _maybe_write_claude_hooks(enable_hooks)
     _ensure_lapdog_running(forward_data, detached=True)
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
@@ -384,8 +402,24 @@ def _run_pi(args: Optional[List[str]] = None, port: Optional[int] = 8126) -> Non
     os.execve(pi_bin, [pi_bin] + args, env)
 
 
-def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
-    """Ensure lapdog is running, install the pi extension, then launch pi."""
+def cmd_pi(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) -> None:
+    """Ensure lapdog is running, install the pi extension, then launch pi.
+
+    When ``backfill`` is True: ensure lapdog is running, replay historical
+    Pi/OMP sessions through ``/pi/hooks``, and exit without launching pi.
+    The extension is not installed during backfill (no live capture to wire
+    up); ``forward_data`` is forced off.
+    """
+    if backfill:
+        port = _ensure_lapdog_running(forward_data=False, detached=True)
+        if port is None:
+            print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+            sys.exit(1)
+        from lapdog import backfill_pi
+
+        backfill_pi.backfill(f"http://localhost:{port}")
+        return
+
     port = _ensure_lapdog_running(forward_data, detached=True)
     _install_pi_extension()
 
@@ -495,8 +529,25 @@ def _run_codex(
     os.execve(codex_bin, [codex_bin] + proxy_args + args, env)
 
 
-def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
-    """Ensure lapdog is running, start the Codex JSONL watcher, then launch Codex."""
+def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) -> None:
+    """Ensure lapdog is running, start the Codex JSONL watcher, then launch Codex.
+
+    When ``backfill`` is True: ensure lapdog is running, replay historical
+    rollouts from ``~/.codex/sessions`` through ``/codex/hooks``, and exit
+    without launching Codex. ``forward_data`` is ignored (forced off) so a
+    backfill never accidentally streams thousands of historical spans to
+    Datadog.
+    """
+    if backfill:
+        port = _ensure_lapdog_running(forward_data=False, detached=True)
+        if port is None:
+            print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+            sys.exit(1)
+        from lapdog import backfill_codex
+
+        backfill_codex.backfill(f"http://localhost:{port}", cwd=_resolve_codex_cwd(sub_cmd_args))
+        return
+
     port = _ensure_lapdog_running(forward_data, detached=True)
     if port is None:
         print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
@@ -508,12 +559,29 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
     _run_codex(args=sub_cmd_args, port=port, proxy_session_key=proxy_session_key)
 
 
+# Recognized lapdog flags. When found *after* the subcommand they are still
+# extracted as lapdog args rather than being forwarded to the underlying
+# binary — so ``lapdog claude --backfill`` and ``lapdog --backfill claude``
+# both work.
+_LAPDOG_FLAGS = ("--forward", "--hooks", "--backfill")
+
+
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
     lapdog_args: List[str] = []
 
     for arg_idx, arg in enumerate(cmd_args):
         if not arg.startswith('--'):
-            return lapdog_args, cmd_args[arg_idx:]
+            # Found the subcommand. Anything after it that matches a known
+            # lapdog flag is also consumed as a lapdog arg, so the flag can
+            # appear in either position.
+            remaining = list(cmd_args[arg_idx:])
+            sub_cmd_and_args: List[str] = [remaining[0]]
+            for sub_arg in remaining[1:]:
+                if sub_arg in _LAPDOG_FLAGS:
+                    lapdog_args.append(sub_arg)
+                else:
+                    sub_cmd_and_args.append(sub_arg)
+            return lapdog_args, sub_cmd_and_args
 
         lapdog_args.append(arg)
 
@@ -545,6 +613,18 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
             "events to the local lapdog agent. Prefer installing the 'lapdog' Claude "
             "Code plugin (claude plugin marketplace add DataDog/dd-apm-test-agent && "
             "claude plugin install lapdog@lapdog) instead of this flag."
+        ),
+    )
+
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        default=False,
+        help=(
+            "Ingest historical sessions from disk by replaying them through the local "
+            "agent's /<source>/hooks endpoint, then exit without launching the underlying "
+            "CLI. Sources: ~/.codex/sessions (codex), ~/.claude/projects (claude), "
+            "~/.pi/agent/sessions + ~/.omp/agent/sessions (pi)."
         ),
     )
 
@@ -582,11 +662,20 @@ def main() -> None:
             sub_cmd_args=sub_cmd_args,
             forward_data=lapdog_parsed_args.forward,
             enable_hooks=lapdog_parsed_args.hooks,
+            backfill=lapdog_parsed_args.backfill,
         )
     elif sub_cmd == "pi":
-        cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+        cmd_pi(
+            sub_cmd_args=sub_cmd_args,
+            forward_data=lapdog_parsed_args.forward,
+            backfill=lapdog_parsed_args.backfill,
+        )
     elif sub_cmd == "codex":
-        cmd_codex(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+        cmd_codex(
+            sub_cmd_args=sub_cmd_args,
+            forward_data=lapdog_parsed_args.forward,
+            backfill=lapdog_parsed_args.backfill,
+        )
 
 
 if __name__ == "__main__":
