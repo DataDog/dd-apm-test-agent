@@ -80,8 +80,9 @@ def _ensure_lapdog_plugin_installed() -> None:
                 file=sys.stderr,
             )
             print(
-                "[lapdog] Continuing without plugin; Claude events will not be captured. "
-                "Install manually:\n"
+                "[lapdog] Continuing without plugin; LLM calls will still be captured "
+                "but Claude Code hook events (tool calls, prompts, sessions, permissions) "
+                "will not. Install manually:\n"
                 f"          claude plugin marketplace add {LAPDOG_MARKETPLACE_SOURCE}\n"
                 f"          claude plugin install {LAPDOG_PLUGIN_NAME}",
                 file=sys.stderr,
