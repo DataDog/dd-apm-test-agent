@@ -285,6 +285,98 @@ async def test_codex_tool_status_reasoning_and_large_output_are_tracked_safely(a
     assert len(tool_input_message["content"]) < len(large_output)
 
 
+async def test_codex_active_turn_keeps_root_duration_zero_for_live_badge(agent):
+    sid = "codex-live-root-duration"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:02.000Z", message="run it"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    root = [s for s in session_spans if s["parent_id"] == "undefined"][0]
+    assert root["duration"] == 0
+    trace_id = root["trace_id"]
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": f"@trace_id:{trace_id} @parent_id:undefined"}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["result"]["events"][0]["event"]["custom"]["duration"] == 0
+
+    resp = await agent.get(f"/api/ui/llm-obs/v1/trace/{trace_id}")
+    assert resp.status == 200
+    data = await resp.json()
+    attrs = data["data"]["attributes"]
+    assert attrs["spans"][attrs["root_id"]]["duration"] == 0
+
+    await _post(
+        agent,
+        sid,
+        _event("task_complete", timestamp="2026-05-11T17:00:05.000Z", last_agent_message="done"),
+    )
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    root = [s for s in session_spans if s["parent_id"] == "undefined"][0]
+    assert root["duration"] == 4_000_000_000
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": f"@trace_id:{trace_id} @parent_id:undefined"}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["result"]["events"][0]["event"]["custom"]["duration"] == 4_000_000_000
+
+
+async def test_codex_pending_tool_is_marked_failed_when_turn_ends(agent):
+    sid = "codex-pending-tool-status"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:02.000Z", message="run it"))
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "function_call",
+            timestamp="2026-05-11T17:00:03.000Z",
+            name="exec_command",
+            call_id="call-1",
+            arguments='{"cmd": "sleep 100"}',
+            status="in_progress",
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _event(
+            "token_count",
+            timestamp="2026-05-11T17:00:04.000Z",
+            info={
+                "last_token_usage": {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 10,
+                    "total_tokens": 110,
+                }
+            },
+        ),
+    )
+    await _post(agent, sid, _event("turn_aborted", timestamp="2026-05-11T17:00:05.000Z"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    llm = _by_kind(session_spans, "llm")[0]
+    tool = _by_kind(session_spans, "tool")[0]
+
+    tool_call = llm["meta"]["output"]["messages"][0]["tool_calls"][0]
+    assert tool_call["status"] == "failed"
+    assert tool["status"] == "error"
+    assert tool["meta"]["metadata"]["status"] == "failed"
+
+
 async def test_codex_real_turn_context_without_id_does_not_split_turn(agent):
     sid = "codex-real-turn-order"
     await _post(agent, sid, _session_meta(sid))
@@ -574,24 +666,39 @@ async def test_codex_creates_step_and_llm_span_per_model_call(agent):
     assert steps[0]["meta"]["input"]["value"] == "use a tool"
     assert json.loads(steps[1]["meta"]["input"]["value"]) == [
         {"role": "user", "content": "use a tool"},
-        {"role": "tool", "tool_call_id": "call-1", "content": "/repo"},
+        {"role": "tool", "tool_call_id": "call-1", "content": "/repo", "status": "completed"},
     ]
     assert steps[0]["meta"]["output"]["value"] == '{"cmd": "pwd"}'
     assert llms[0]["meta"]["output"]["messages"] == [
         {
             "role": "assistant",
             "content": '{"cmd": "pwd"}',
-            "tool_calls": [{"id": "call-1", "name": "exec_command", "arguments": {"cmd": "pwd"}}],
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "name": "exec_command",
+                    "arguments": {"cmd": "pwd"},
+                    "status": "completed",
+                }
+            ],
         }
     ]
     assert llms[1]["meta"]["input"]["messages"][-2:] == [
         {
             "role": "assistant",
             "content": '{"cmd": "pwd"}',
-            "tool_calls": [{"id": "call-1", "name": "exec_command", "arguments": {"cmd": "pwd"}}],
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "name": "exec_command",
+                    "arguments": {"cmd": "pwd"},
+                    "status": "completed",
+                }
+            ],
         },
-        {"role": "tool", "tool_call_id": "call-1", "content": "/repo"},
+        {"role": "tool", "tool_call_id": "call-1", "content": "/repo", "status": "completed"},
     ]
+    assert tools[0]["meta"]["metadata"]["status"] == "completed"
 
 
 async def test_codex_orders_tool_call_llm_before_tool_when_usage_arrives_late(agent):
@@ -649,9 +756,17 @@ async def test_codex_orders_tool_call_llm_before_tool_when_usage_arrives_late(ag
         {
             "role": "assistant",
             "content": '{"cmd": "rg --files"}',
-            "tool_calls": [{"id": "call-1", "name": "exec_command", "arguments": {"cmd": "rg --files"}}],
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "name": "exec_command",
+                    "arguments": {"cmd": "rg --files"},
+                    "status": "completed",
+                }
+            ],
         }
     ]
+    assert tool["meta"]["metadata"]["status"] == "completed"
 
 
 async def test_codex_late_tool_call_stays_in_completed_llm_step(agent):
@@ -711,9 +826,17 @@ async def test_codex_late_tool_call_stays_in_completed_llm_step(agent):
         {
             "role": "assistant",
             "content": '{"cmd": "rg --files"}',
-            "tool_calls": [{"id": "call-1", "name": "exec_command", "arguments": {"cmd": "rg --files"}}],
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "name": "exec_command",
+                    "arguments": {"cmd": "rg --files"},
+                    "status": "completed",
+                }
+            ],
         }
     ]
+    assert tool["meta"]["metadata"]["status"] == "completed"
 
 
 async def test_codex_new_turn_finalizes_previous_turn(agent):
@@ -928,6 +1051,7 @@ async def test_codex_accepts_raw_jsonl_records_like_curl(agent):
     await agent.post("/codex/hooks", json=_turn_context())
     await agent.post("/codex/hooks", json=_event("user_message", message="raw curl input"))
     await agent.post("/codex/hooks", json=_event("agent_message", message="raw curl output"))
+    await agent.post("/codex/hooks", json=_event("task_complete", timestamp="2026-05-11T17:00:03.000Z"))
 
     resp = await agent.get("/claude/hooks/spans")
     assert resp.status == 200

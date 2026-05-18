@@ -147,6 +147,17 @@ def _tool_status_is_error(status: Any) -> bool:
     return normalized.startswith("failed") or normalized.startswith("error")
 
 
+def _canonical_tool_status(status: Any, is_error: bool = False) -> str:
+    normalized = _normalize_status(status)
+    if is_error and (not normalized or normalized in _IN_FLIGHT_TOOL_STATUSES):
+        return "failed"
+    if normalized in _ERROR_TOOL_STATUSES or normalized.startswith("failed") or normalized.startswith("error"):
+        return "failed"
+    if normalized in _OK_TOOL_STATUSES:
+        return "completed" if normalized else ""
+    return normalized
+
+
 def _reasoning_text(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -544,7 +555,13 @@ class CodexHooksAPI:
     def _update_tool_call_status(self, turn: Optional[CodexTurn], tool_use_id: str, status: str) -> None:
         if turn is None or not tool_use_id or not status:
             return
-        message_groups = [turn.llm_output_messages]
+        message_groups = [
+            turn.llm_input_messages,
+            turn.llm_output_messages,
+            turn.pending_llm_input_messages,
+        ]
+        if turn.active_llm_input_messages is not None:
+            message_groups.append(turn.active_llm_input_messages)
         if turn.last_llm_span_ref is not None:
             output_messages = turn.last_llm_span_ref.get("meta", {}).get("output", {}).get("messages", [])
             if isinstance(output_messages, list):
@@ -873,6 +890,9 @@ class CodexHooksAPI:
             self._update_agent_manifest(session)
         self._emit_pending_llm_span(session, turn)
         for pending in list(session.pending_tools.values()):
+            tool_id = session.pending_tool_ids_by_span_id.get(pending.span_id, pending.span_id)
+            session.pending_tool_statuses[tool_id] = "failed"
+            self._update_tool_call_status(turn, tool_id, "failed")
             self._emit_tool_span(session, pending, end_ns, output_value="", is_error=True)
         session.pending_tools.clear()
         session.pending_tool_ids_by_span_id.clear()
@@ -906,9 +926,9 @@ class CodexHooksAPI:
         turn = session.active_turn
         if turn is not None:
             turn.last_ns = max(turn.last_ns, ns)
-            duration = max(turn.last_ns - turn.start_ns, 0)
-            if turn.root_span_ref:
-                turn.root_span_ref["duration"] = duration
+            # The static LLM Observability UI treats root duration == 0 as a
+            # running trace. Keep the active root live until _finalize_turn
+            # replaces it with the completed duration.
             if turn.step_span_ref and turn.current_step_last_ns is not None:
                 if not turn.current_step_has_llm or session.pending_tools:
                     self._update_step_end(turn, turn.step_span_ref["span_id"], ns)
@@ -1515,7 +1535,7 @@ class CodexHooksAPI:
         call_id = call_id or _format_span_id()
         unique_id = self._deduplicate_tool_use_id(session, call_id)
         session.tool_use_id_map[call_id] = unique_id
-        normalized_status = _normalize_status(status)
+        normalized_status = _canonical_tool_status(status)
         tool_name = tool_name or "unknown_tool"
         session.tools_used.add(tool_name)
         self._update_agent_manifest(session)
@@ -1605,9 +1625,9 @@ class CodexHooksAPI:
         is_error: bool,
     ) -> None:
         tool_id = session.pending_tool_ids_by_span_id.pop(pending.span_id, pending.span_id)
-        tool_status = session.pending_tool_statuses.pop(tool_id, "")
+        tool_status = _canonical_tool_status(session.pending_tool_statuses.pop(tool_id, ""), is_error=is_error)
         if not tool_status:
-            tool_status = "error" if is_error else "completed"
+            tool_status = "failed" if is_error else "completed"
         is_error = is_error or _tool_status_is_error(tool_status)
         input_value, input_truncated = _truncate_text(_to_json_str(pending.tool_input), MAX_TOOL_VALUE_CHARS)
         output_value, output_truncated = _truncate_text(output_value, MAX_TOOL_VALUE_CHARS)
@@ -1635,7 +1655,7 @@ class CodexHooksAPI:
                     "max_value_chars": MAX_TOOL_VALUE_CHARS,
                 }
             )
-        span = {
+        span: Dict[str, Any] = {
             "span_id": pending.span_id,
             "trace_id": session.active_turn.trace_id if session.active_turn else _format_trace_id(),
             "parent_id": pending.parent_id,
@@ -1673,21 +1693,17 @@ class CodexHooksAPI:
             return
         output = payload.get("output", "")
         output_value = output if isinstance(output, str) else _to_json_str(output)
-        raw_status = payload.get("status", "")
-        final_status = _normalize_status(raw_status) or "completed"
+        final_status = _canonical_tool_status(payload.get("status", "")) or "completed"
         session.pending_tool_statuses[unique_id] = final_status
         end_ns = _timestamp_to_ns(record.get("timestamp", ""))
-        include_status_in_messages = bool(_normalize_status(raw_status)) or _tool_status_is_error(final_status)
-        if include_status_in_messages:
-            self._update_tool_call_status(session.active_turn, unique_id, final_status)
+        self._update_tool_call_status(session.active_turn, unique_id, final_status)
         self._update_approval_status(session, str(call_id), final_status, end_ns)
         tool_message = {
             "role": "tool",
             "tool_call_id": unique_id,
             "content": output_value,
+            "status": final_status,
         }
-        if include_status_in_messages:
-            tool_message["status"] = final_status
         if session.active_turn is not None and session.active_turn.active_llm_input_messages is not None:
             session.active_turn.pending_llm_input_messages.append(tool_message)
         elif session.active_turn is not None:
@@ -1718,7 +1734,7 @@ class CodexHooksAPI:
     def _handle_web_search_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
         payload = record.get("payload", {})
         tool_input = payload.get("query", "")
-        status = _normalize_status(payload.get("status", "")) or "completed"
+        status = _canonical_tool_status(payload.get("status", "")) or "completed"
         unique_id = self._handle_tool_call(
             session=session,
             record=record,
@@ -1778,7 +1794,7 @@ class CodexHooksAPI:
         else:
             tool_input = ""
         call_id = str(event.get("call_id", "")) or _format_span_id()
-        status = _normalize_status(event.get("status", ""))
+        status = _canonical_tool_status(event.get("status", ""))
         if not status:
             status = "failed" if event.get("success") is False else "completed"
         unique_id = self._handle_tool_call(

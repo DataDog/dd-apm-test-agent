@@ -20,8 +20,8 @@ from .codex_cost_tracker import compute_openai_cost_metrics
 from .codex_hooks import CodexHooksAPI
 from .codex_hooks import _copy_messages
 from .codex_hooks import _copy_reasoning_items
+from .codex_hooks import _canonical_tool_status
 from .codex_hooks import _extract_reasoning_metadata
-from .codex_hooks import _normalize_status
 from .llmobs_event_platform import with_cors
 
 log = logging.getLogger(__name__)
@@ -205,7 +205,7 @@ def _format_output_messages(response: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "name": item.get("name", ""),
                 "arguments": parsed_arguments,
             }
-            status = _normalize_status(item.get("status", ""))
+            status = _canonical_tool_status(item.get("status", ""))
             if status:
                 tool_call["status"] = status
             if reasoning_items:

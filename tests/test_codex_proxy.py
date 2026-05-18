@@ -629,9 +629,17 @@ async def test_codex_proxy_late_jsonl_tool_call_stays_in_llm_step(agent, aiohttp
         {
             "role": "assistant",
             "content": '{"cmd": "pwd"}',
-            "tool_calls": [{"id": "call-1", "name": "exec_command", "arguments": {"cmd": "pwd"}}],
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "name": "exec_command",
+                    "arguments": {"cmd": "pwd"},
+                    "status": "completed",
+                }
+            ],
         }
     ]
+    assert tools[0]["meta"]["metadata"]["status"] == "completed"
 
 
 async def test_codex_proxy_reasoning_after_llm_does_not_split_tool_step(agent, aiohttp_server):
