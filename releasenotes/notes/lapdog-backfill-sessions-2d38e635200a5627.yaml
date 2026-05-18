@@ -1,20 +1,6 @@
 ---
 features:
   - |
-    Added ``--backfill`` to ``lapdog claude``, ``lapdog codex``, and
-    ``lapdog pi``. When set, lapdog reads historical sessions from disk
-    (``~/.claude/projects``, ``~/.codex/sessions``,
-    ``~/.pi/agent/sessions`` and ``~/.omp/agent/sessions``) and ingests
-    them into the local agent, then exits without launching the underlying
-    CLI. Backfilled spans carry their real timestamps from the source
-    transcripts, are split into one trace per user prompt, and include
-    token usage and estimated cost. Codex routes through the existing
-    ``/codex/hooks`` endpoint. Claude and Pi use new
-    ``POST /claude/hooks/backfill_session`` and
-    ``POST /pi/hooks/backfill_session`` endpoints that build full LLMObs
-    spans server-side. Backfilled spans land in the same ``ml_app`` bucket
-    as live spans for each source (``claude-code``, ``pi-coding-agent``,
-    ``codex``). ``--forward`` is forced off during backfill so historical
-    sessions are not streamed to Datadog. If the local agent stops
-    responding mid-backfill, the client aborts with a single clear message
-    instead of spamming per-session errors.
+    Adds ``lapdog --backfill claude``, ``lapdog --backfill codex``, and
+    ``lapdog --backfill pi`` for one-shot ingestion of historical agent
+    sessions from disk.
