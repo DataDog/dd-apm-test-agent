@@ -187,6 +187,48 @@ async def test_gemini_full_turn_with_tool(agent):
     assert tool["meta"]["metadata"]["_dd"]["estimated_permission_wait_ms"] >= 0
 
 
+async def test_gemini_active_turn_keeps_root_duration_zero_for_live_badge(agent, monkeypatch):
+    now = {"ns": 1_000_000_000}
+    monkeypatch.setattr("ddapm_test_agent.claude_hooks.monotonic_wall_ns", lambda: now["ns"])
+    monkeypatch.setattr("ddapm_test_agent.gemini_hooks.monotonic_wall_ns", lambda: now["ns"])
+
+    sid = "gemini-live-root-duration"
+    await _post(agent, "SessionStart", _session_start(sid))
+    await _post(agent, "BeforeAgent", _before_agent(sid, "Keep the trace live"))
+
+    resp = await agent.get("/gemini/hooks/spans")
+    assert resp.status == 200
+    spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    root = [s for s in spans if s["parent_id"] == "undefined"][0]
+    assert root["duration"] == 0
+    trace_id = root["trace_id"]
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": f"@trace_id:{trace_id} @parent_id:undefined"}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["result"]["events"][0]["event"]["custom"]["duration"] == 0
+
+    resp = await agent.get(f"/api/ui/llm-obs/v1/trace/{trace_id}")
+    assert resp.status == 200
+    data = await resp.json()
+    attrs = data["data"]["attributes"]
+    assert attrs["spans"][attrs["root_id"]]["duration"] == 0
+
+    now["ns"] = 5_000_000_000
+    await _post(agent, "AfterAgent", _after_agent(sid, "done"))
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": f"@trace_id:{trace_id} @parent_id:undefined"}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["result"]["events"][0]["event"]["custom"]["duration"] == 4_000_000_000
+
+
 def test_gemini_real_tool_fixture_matches_current_cli_shape():
     fixture = _load_fixture("gemini_real_tool_session.json")
     events = fixture["events"]
