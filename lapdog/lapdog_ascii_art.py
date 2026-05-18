@@ -108,11 +108,11 @@ def _render_lapdog_art(face: str, shadow: str, reset: str) -> List[str]:
         current: Optional[str] = None  # None | "face" | "shadow"
         buf: List[str] = []
 
-        def flush(segment_list: List[str], kind: Optional[str], value: List[str]) -> None:
-            if not value:
+        def flush() -> None:
+            if not buf:
                 return
-            color = face if kind == "face" else shadow if kind == "shadow" else ""
-            segment_list.append(f"{color}{''.join(value)}{reset}" if color else "".join(value))
+            color = face if current == "face" else shadow if current == "shadow" else ""
+            segments.append(f"{color}{''.join(buf)}{reset}" if color else "".join(buf))
 
         for x in range(out_w):
             is_face = filled(y, x)
@@ -120,11 +120,11 @@ def _render_lapdog_art(face: str, shadow: str, reset: str) -> List[str]:
             kind = "face" if is_face else "shadow" if is_shadow else None
             ch = "█" if (is_face or is_shadow) else " "
             if kind != current:
-                flush(segments, current, buf)
+                flush()
                 buf = []
                 current = kind
             buf.append(ch)
-        flush(segments, current, buf)
+        flush()
         lines.append("".join(segments))
     return lines
 

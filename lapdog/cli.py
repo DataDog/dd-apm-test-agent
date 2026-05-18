@@ -8,18 +8,18 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from typing import List
 from typing import Optional
 from typing import Tuple
-import uuid
+
+from lapdog.lapdog_ascii_art import build_running_banner
 
 import requests
 
-from lapdog import tracer_inject
 from lapdog.hooks import write_claude_code_hooks
-from lapdog.lapdog_ascii_art import build_running_banner
-from lapdog.paths import LOG_FILE
-from lapdog.paths import PID_FILE
+from lapdog.paths import LOG_FILE, PID_FILE
+from lapdog import tracer_inject
 
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex"]
 LAPDOG_USAGE = (
@@ -36,9 +36,7 @@ LAPDOG_USAGE = (
     "  lapdog python app.py\n"
 )
 
-_PROXY_SESSION_WARNING_LINES = [
-    "Keep Lapdog running; stopping it can break proxied model calls.",
-]
+_PROXY_SESSION_WARNING_LINES = ["Keep Lapdog running; stopping it can break proxied model calls."]
 
 
 def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
@@ -149,9 +147,7 @@ def _maybe_write_claude_hooks(enable: bool) -> None:
     write_claude_code_hooks(claude_settings_path)
 
 
-def _start_lapdog(
-    port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False
-) -> Tuple[int, int, str]:
+def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False) -> Tuple[int, int, str]:
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -516,7 +512,7 @@ def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
     lapdog_args: List[str] = []
 
     for arg_idx, arg in enumerate(cmd_args):
-        if not arg.startswith("--"):
+        if not arg.startswith('--'):
             return lapdog_args, cmd_args[arg_idx:]
 
         lapdog_args.append(arg)

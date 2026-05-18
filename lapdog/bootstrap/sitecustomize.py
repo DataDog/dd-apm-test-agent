@@ -2,7 +2,6 @@
 Lapdog bootstrap: loaded via PYTHONPATH to instrument Python processes with ddtrace.
 Runs as sitecustomize before any user code. Exits cleanly if ddtrace is unavailable.
 """
-
 import os
 import sys
 
@@ -18,25 +17,19 @@ except ImportError:
         except ImportError:
             _lapdog_ver = os.environ.get("_LAPDOG_PYTHON_VERSION", "unknown")
             _target_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
-            os.write(
-                2,
-                (
-                    f"[lapdog] Python version mismatch: lapdog uses Python {_lapdog_ver} "
-                    f"but this process is Python {_target_ver}.\n"
-                    "[lapdog] Install ddtrace in your app's Python environment:\n"
-                    "[lapdog]   pip install ddtrace\n"
-                ).encode(),
-            )
+            os.write(2, (
+                f"[lapdog] Python version mismatch: lapdog uses Python {_lapdog_ver} "
+                f"but this process is Python {_target_ver}.\n"
+                "[lapdog] Install ddtrace in your app's Python environment:\n"
+                "[lapdog]   pip install ddtrace\n"
+            ).encode())
             os._exit(1)
     else:
-        os.write(
-            2,
-            (
-                "[lapdog] ddtrace is not installed.\n"
-                "[lapdog] Install it in your app's Python environment:\n"
-                "[lapdog]   pip install ddtrace\n"
-            ).encode(),
-        )
+        os.write(2, (
+            "[lapdog] ddtrace is not installed.\n"
+            "[lapdog] Install it in your app's Python environment:\n"
+            "[lapdog]   pip install ddtrace\n"
+        ).encode())
         os._exit(1)
 
 import ddtrace.auto  # noqa: F401

@@ -13,6 +13,7 @@ import os
 import platform
 import pprint
 import re
+import requests
 import socket
 import sys
 import threading
@@ -47,7 +48,6 @@ from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportM
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import add_MetricsServiceServicer_to_server
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import add_TraceServiceServicer_to_server
-import requests
 
 from . import _get_version
 from . import trace_snapshot
@@ -60,6 +60,7 @@ from .checks import start_trace
 from .claude_hooks import ClaudeHooksAPI
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_proxy import ClaudeProxyAPI
+from .pi_hooks import PiHooksAPI
 from .codex_hooks import CodexHooksAPI
 from .codex_proxy import CodexProxyAPI
 from .integration import Integration
@@ -70,7 +71,6 @@ from .logs import decode_logs_request
 from .metrics import METRICS_ENDPOINT
 from .metrics import OTLPMetricsGRPCServicer
 from .metrics import decode_metrics_request
-from .pi_hooks import PiHooksAPI
 from .remoteconfig import RemoteConfigServer
 from .trace import Span
 from .trace import Trace
@@ -290,7 +290,9 @@ def default_value_trace_results_summary():
 def _is_valid_api_key_and_site_combination(dd_api_key: str, dd_site: str) -> bool:
     """Check if the api key + site is a valid DD auth combo"""
     url = f"https://api.{dd_site}/api/v1/validate"
-    headers = {"DD-API-KEY": dd_api_key}
+    headers = {
+        "DD-API-KEY": dd_api_key
+    }
 
     response = requests.get(url=url, headers=headers)
     result = cast(Dict[str, bool], response.json())
@@ -1139,7 +1141,10 @@ class Agent:
             dd_api_key = data.get("dd_api_key", request.app["dd_api_key"])
             dd_site = data.get("dd_site", request.app["dd_site"])
 
-            is_valid = _is_valid_api_key_and_site_combination(dd_api_key=dd_api_key, dd_site=dd_site)
+            is_valid = _is_valid_api_key_and_site_combination(
+                dd_api_key=dd_api_key,
+                dd_site=dd_site
+            )
 
             if not is_valid:
                 return web.HTTPUnprocessableEntity(
@@ -2086,9 +2091,7 @@ def make_app(
     valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site) if dd_api_key and dd_site else False
     app["authenticated"] = valid_auth
     if not disable_llmobs_data_forwarding and not valid_auth:
-        log.warning(
-            "Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding."
-        )
+        log.warning("Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding.")
         disable_llmobs_data_forwarding = True
 
     app["disable_llmobs_data_forwarding"] = disable_llmobs_data_forwarding

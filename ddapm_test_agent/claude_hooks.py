@@ -1666,9 +1666,7 @@ class ClaudeHooksAPI:
         data = gzip.compress(msgpack.packb(payload))
         await self._post_to_backend(url, headers, data, f"forward {len(spans)} span updates")
 
-    async def _forward_trace_to_backend(
-        self, session_id: str, trace_id: Optional[str] = None, span_source: str = "Claude hooks"
-    ) -> None:
+    async def _forward_trace_to_backend(self, session_id: str, trace_id: Optional[str] = None, span_source: str = "Claude hooks") -> None:
         """Forward all assembled spans for a session's trace to the backend via the EVP proxy path."""
         session = self._sessions.get(session_id)
         if not session:
@@ -1687,11 +1685,7 @@ class ClaudeHooksAPI:
         # Strip locally-computed cost estimates before forwarding — let real cost tracking happen on ingestion
         forwarded_spans = []
         for s in spans:
-            span = (
-                {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}}
-                if s.get("metrics")
-                else dict(s)
-            )
+            span = {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}} if s.get("metrics") else dict(s)
             tags: List[Any] = span.get("tags") or []
             if "lapdog_forwarded:true" not in tags:
                 span["tags"] = tags + ["lapdog_forwarded:true"]
@@ -1703,9 +1697,7 @@ class ClaudeHooksAPI:
             "spans": forwarded_spans,
         }
         data = gzip.compress(msgpack.packb(payload))
-        await self._post_to_backend(
-            url, headers, data, f"forward {len(spans)} {span_source} spans for trace {trace_id}"
-        )
+        await self._post_to_backend(url, headers, data, f"forward {len(spans)} {span_source} spans for trace {trace_id}")
 
     async def _forward_eval_metrics_to_backend(self, session_id: str, trace_id: Optional[str] = None) -> None:
         """Forward evaluation metrics for all spans in a session's trace to the Datadog backend.
