@@ -318,6 +318,37 @@ async def test_list_api_filters_step_kind(agent):
     assert data["result"]["events"][0]["event"]["custom"]["meta"]["span"]["kind"] == "step"
 
 
+async def test_llmobs_marker_evaluation_applies_to_hook_generated_spans(agent):
+    sid = "pi-marker-frustration"
+    await _post(agent, _session_start(sid))
+    await _post(agent, _agent_start(sid, prompt="Why do you keep doing the wrong thing?"))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": f"@meta.span.kind:agent @session_id:{sid}"}, "limit": 50}},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["hitCount"] == 1
+    root = data["result"]["events"][0]["event"]["custom"]
+    assert root["evaluations"]["custom"]["user-frustration"] == "warn"
+    assert root["evaluation_assessments"]["custom"]["user-frustration"] == "needs_review"
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": f"@meta.span.kind:task @session_id:{sid}"}, "limit": 50}},
+    )
+    task_data = await resp.json()
+    task_names = {event["event"]["custom"]["name"] for event in task_data["result"]["events"]}
+    assert "user-frustration" in task_names
+    assert "metric.frustration-count" in task_names
+
+
 async def test_step_finalized_on_agent_end_without_turn_end(agent):
     """If turn_end is missed, agent_end still finalizes the active step."""
     sid = "pi-no-turn-end"

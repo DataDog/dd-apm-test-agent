@@ -44,7 +44,6 @@ from ddapm_test_agent.trace import Span
 from ddapm_test_agent.trace import Trace
 from ddapm_test_agent.trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
 
-
 # Fix the service name to make tests consistently pass local and in CI.
 config.service = ""
 
@@ -662,13 +661,17 @@ def do_reference_v2_http_apmtelemetry(
     yield fn
 
 
-@pytest.fixture
-def available_port() -> str:
+def _available_port() -> str:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("", 0))  # Bind to a free port provided by the host.
     port = s.getsockname()[1]  # Get the port number assigned.
     s.close()  # Release the socket.
     return str(port)
+
+
+@pytest.fixture
+def available_port() -> str:
+    return _available_port()
 
 
 @pytest.fixture
@@ -704,6 +707,8 @@ def test_agent_env(testagent_connection_type, testagent_uds_socket_path):
     env = os.environ.copy()
     if testagent_connection_type == "uds":
         env["DD_APM_RECEIVER_SOCKET"] = str(testagent_uds_socket_path)
+        env["OTLP_HTTP_PORT"] = _available_port()
+        env["OTLP_GRPC_PORT"] = _available_port()
     return env
 
 
@@ -882,7 +887,9 @@ async def grpc_client_with_failure_type(agent_app, available_port, aiohttp_serve
     if service_type not in ["logs", "metrics", "traces"]:
         raise ValueError(f"service_type must be 'logs', 'metrics', or 'traces', got: {service_type}")
 
-    endpoint = LOGS_ENDPOINT if service_type == "logs" else METRICS_ENDPOINT if service_type == "metrics" else TRACES_ENDPOINT
+    endpoint = (
+        LOGS_ENDPOINT if service_type == "logs" else METRICS_ENDPOINT if service_type == "metrics" else TRACES_ENDPOINT
+    )
 
     http_handlers = {
         "http_400": lambda _: web.HTTPBadRequest(text="invalid"),

@@ -1,4 +1,6 @@
+import copy
 import gzip
+import json
 import time
 
 import msgpack
@@ -56,6 +58,26 @@ async def _submit_llmobs_payload(agent, payload, path="/evp_proxy/v2/api/v2/llmo
         headers={"Content-Type": "application/msgpack", "Content-Encoding": "gzip"},
         data=data,
     )
+
+
+def _eval_metric(label, trace_id="trace-123", span_id="span-child", value=0.9, timestamp_ms=123):
+    return {
+        "join_on": {"span": {"trace_id": trace_id, "span_id": span_id}},
+        "label": label,
+        "metric_type": "score",
+        "score_value": value,
+        "assessment": "pass",
+        "timestamp_ms": timestamp_ms,
+    }
+
+
+def _eval_metric_payload(*metrics):
+    return {"data": {"type": "evaluation_metric", "attributes": {"metrics": list(metrics)}}}
+
+
+def _event_by_span_id(list_response, span_id):
+    events = list_response["result"]["events"]
+    return next(event["event"]["custom"] for event in events if event["event"]["custom"]["span_id"] == span_id)
 
 
 # Tests from master branch (testing empty/stub responses)
@@ -500,6 +522,151 @@ async def test_llmobs_trace(agent, llmobs_payload):
     data = await resp.json()
     assert "data" in data
     assert data["data"]["attributes"]["root_id"] is not None
+
+
+async def test_eval_metric_ingestion_attaches_to_existing_span(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric",
+        json=_eval_metric_payload(_eval_metric("quality-score")),
+    )
+    assert resp.status == 200
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    data = await resp.json()
+    custom = _event_by_span_id(data, "span-child")
+    assert custom["evaluation"]["quality-score"]["value"] == 0.9
+    assert custom["evaluations"]["custom"]["quality-score"] == 0.9
+    assert custom["evaluation_assessments"]["custom"]["quality-score"] == "pass"
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/fetch_one?type=llmobs",
+        json={"eventId": "span-child"},
+    )
+    fetched = await resp.json()
+    assert fetched["result"]["custom"]["evaluation"]["quality-score"]["value"] == 0.9
+
+    resp = await agent.get("/api/ui/llm-obs/v1/trace/trace-123")
+    trace = await resp.json()
+    child = next(span for span in trace["data"]["attributes"]["spans"].values() if span["span_id"] == "span-child")
+    assert child["evaluation"]["quality-score"]["value"] == 0.9
+
+
+async def test_eval_metric_pending_attaches_when_span_arrives(agent, llmobs_payload):
+    resp = await agent.post(
+        "/v2/eval-metric",
+        json=_eval_metric_payload(_eval_metric("pending-score", value=0.7)),
+    )
+    assert resp.status == 200
+    await _submit_llmobs_payload(agent, llmobs_payload)
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    data = await resp.json()
+    custom = _event_by_span_id(data, "span-child")
+    assert custom["evaluations"]["custom"]["pending-score"] == 0.7
+
+
+async def test_eval_metric_tag_join_and_dedupe(agent, llmobs_payload):
+    metric = {
+        "join_on": {"tag": {"key": "env", "value": "test"}},
+        "label": "tag-score",
+        "metric_type": "score",
+        "score_value": 1.0,
+        "timestamp_ms": 456,
+    }
+    await agent.post(
+        "/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric",
+        json=_eval_metric_payload(metric, metric),
+    )
+    await _submit_llmobs_payload(agent, llmobs_payload)
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    data = await resp.json()
+    root = _event_by_span_id(data, "span-root")
+    child = _event_by_span_id(data, "span-child")
+    assert root["evaluation"]["tag-score"]["value"] == 1.0
+    assert child["evaluation"]["tag-score"]["value"] == 1.0
+
+
+async def test_enrichment_endpoint_accepts_json_shapes_and_renders_spans(agent, llmobs_payload):
+    payload = copy.deepcopy(llmobs_payload)
+    for span in payload["spans"]:
+        span["session_id"] = "session-enrich"
+        span["tags"] = span.get("tags", []) + ["session_id:session-enrich"]
+    payload["spans"][0]["meta"]["metadata"] = {"turn_id": 1}
+    payload["spans"][1]["meta"]["metadata"] = {"turn_id": 2}
+    await _submit_llmobs_payload(agent, payload)
+
+    point = {
+        "event_kind": "enrichment",
+        "enrichment_type": "milestone",
+        "session_id": "session-enrich",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "milestone_type": "user-frustration",
+        "turn_id": 1,
+        "detail": {"severity": "warn"},
+    }
+    range_event = {
+        "event_kind": "enrichment",
+        "enrichment_type": "milestone",
+        "session_id": "session-enrich",
+        "timestamp": "2026-01-01T00:00:01Z",
+        "milestone_type": "test-fix-cycle",
+        "turn_start": 1,
+        "turn_end": 2,
+        "detail": {"outcome": "success"},
+    }
+    metric = {
+        "event_kind": "enrichment",
+        "enrichment_type": "metric",
+        "session_id": "session-enrich",
+        "timestamp": "2026-01-01T00:00:02Z",
+        "metric_name": "trajectory.score",
+        "value": 0.42,
+    }
+    for body in (point, [range_event]):
+        resp = await agent.post("/test/session/llmobs/enrichment", json=body)
+        assert resp.status == 200
+        assert (await resp.json())["accepted"] == (len(body) if isinstance(body, list) else 1)
+    resp = await agent.post(
+        "/test/session/llmobs/enrichment",
+        data=json.dumps(metric) + "\n",
+        headers={"Content-Type": "application/jsonl"},
+    )
+    assert resp.status == 200
+
+    resp = await agent.get("/test/session/llmobs/enrichment")
+    stored = await resp.json()
+    assert len(stored["events"]) == 3
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": "@meta.span.kind:task"}, "limit": 50}},
+    )
+    data = await resp.json()
+    task_spans = {event["event"]["custom"]["name"]: event["event"]["custom"] for event in data["result"]["events"]}
+    assert task_spans["user-frustration"]["tags"].count("trajectory.semantic_type:milestone") == 1
+    expected_range_duration = (
+        payload["spans"][1]["start_ns"] + payload["spans"][1]["duration"] - payload["spans"][0]["start_ns"]
+    )
+    assert task_spans["test-fix-cycle"]["duration"] == expected_range_duration
+    assert task_spans["metric.trajectory.score"]["tags"].count("trajectory.semantic_type:metric") == 1
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/fetch_one?type=llmobs",
+        json={"eventId": "span-root"},
+    )
+    fetched = await resp.json()
+    assert fetched["result"]["custom"]["evaluations"]["custom"]["trajectory.score"] == 0.42
 
 
 async def test_llmobs_aggregate(agent, llmobs_payload):

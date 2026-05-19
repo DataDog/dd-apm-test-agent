@@ -290,9 +290,7 @@ def default_value_trace_results_summary():
 def _is_valid_api_key_and_site_combination(dd_api_key: str, dd_site: str) -> bool:
     """Check if the api key + site is a valid DD auth combo"""
     url = f"https://api.{dd_site}/api/v1/validate"
-    headers = {
-        "DD-API-KEY": dd_api_key
-    }
+    headers = {"DD-API-KEY": dd_api_key}
 
     response = requests.get(url=url, headers=headers)
     result = cast(Dict[str, bool], response.json())
@@ -388,6 +386,7 @@ class Agent:
             "/evp_proxy/v2/api/v2/llmobs",
             "/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric",
             "/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric",
+            "/v2/eval-metric",
             "/evp_proxy/v2/api/v2/exposures",
             "/evp_proxy/v4/api/v2/errorsintake",
             "/evp_proxy/v4/api/v2/llmobs",
@@ -978,6 +977,14 @@ class Agent:
         return web.HTTPOk()
 
     async def handle_evp_proxy_v2_llmobs_eval_metric(self, request: Request) -> web.Response:
+        try:
+            payload = json.loads((await request.read()).decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return web.HTTPOk()
+
+        llmobs_api = request.app.get("llmobs_event_platform_api")
+        if llmobs_api:
+            llmobs_api.ingest_eval_metric_payload(payload)
         return web.HTTPOk()
 
     async def handle_evp_proxy_v2_api_v2_exposures(self, request: Request) -> web.Response:
@@ -1141,10 +1148,7 @@ class Agent:
             dd_api_key = data.get("dd_api_key", request.app["dd_api_key"])
             dd_site = data.get("dd_site", request.app["dd_site"])
 
-            is_valid = _is_valid_api_key_and_site_combination(
-                dd_api_key=dd_api_key,
-                dd_site=dd_site
-            )
+            is_valid = _is_valid_api_key_and_site_combination(dd_api_key=dd_api_key, dd_site=dd_site)
 
             if not is_valid:
                 return web.HTTPUnprocessableEntity(
@@ -1758,6 +1762,7 @@ class Agent:
                 "/evp_proxy/v2/api/v2/llmobs": self.handle_evp_proxy_v2_api_v2_llmobs,
                 "/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric": self.handle_evp_proxy_v2_llmobs_eval_metric,
                 "/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric": self.handle_evp_proxy_v2_llmobs_eval_metric,
+                "/v2/eval-metric": self.handle_evp_proxy_v2_llmobs_eval_metric,
                 "/evp_proxy/v2/api/v2/exposures": self.handle_evp_proxy_v2_api_v2_exposures,
                 "/evp_proxy/v4/api/v2/errorsintake": self.handle_evp_proxy_v4_api_v2_errorsintake,
                 "/evp_proxy/v4/api/v2/llmobs": self.handle_evp_proxy_v4_api_v2_llmobs,
@@ -1984,6 +1989,7 @@ def make_app(
             web.post("/evp_proxy/v2/api/v2/llmobs/update", agent.handle_evp_proxy_v2_api_v2_llmobs_update),
             web.post("/evp_proxy/v2/api/intake/llm-obs/v1/eval-metric", agent.handle_evp_proxy_v2_llmobs_eval_metric),
             web.post("/evp_proxy/v2/api/intake/llm-obs/v2/eval-metric", agent.handle_evp_proxy_v2_llmobs_eval_metric),
+            web.post("/v2/eval-metric", agent.handle_evp_proxy_v2_llmobs_eval_metric),
             web.post("/evp_proxy/v2/api/v2/exposures", agent.handle_evp_proxy_v2_api_v2_exposures),
             web.post("/evp_proxy/v4/api/v2/errorsintake", agent.handle_evp_proxy_v4_api_v2_errorsintake),
             web.post("/evp_proxy/v4/api/v2/llmobs", agent.handle_evp_proxy_v4_api_v2_llmobs),
@@ -2091,7 +2097,9 @@ def make_app(
     valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site) if dd_api_key and dd_site else False
     app["authenticated"] = valid_auth
     if not disable_llmobs_data_forwarding and not valid_auth:
-        log.warning("Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding.")
+        log.warning(
+            "Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding."
+        )
         disable_llmobs_data_forwarding = True
 
     app["disable_llmobs_data_forwarding"] = disable_llmobs_data_forwarding

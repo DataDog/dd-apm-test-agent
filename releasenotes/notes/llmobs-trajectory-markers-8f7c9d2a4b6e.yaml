@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    Add local LLMObs trajectory marker support, including eval-metric ingestion,
+    YAML-backed marker evaluation, and a `/test/session/llmobs/enrichment`
+    endpoint for rendering trajectory enrichment milestones and metrics.

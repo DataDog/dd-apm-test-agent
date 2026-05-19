@@ -2,6 +2,7 @@ import json
 import os
 import platform
 import signal
+import socket
 import subprocess
 import time
 
@@ -11,8 +12,15 @@ import pytest
 from ddapm_test_agent.trace import decode_v1
 from ddapm_test_agent.trace import trace_id
 
-
 _FAST_EXIT_ARGS = ["--port=4318", "--otlp-http-port=4318"]
+
+
+def _available_port() -> str:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return str(port)
 
 
 def test_log_level_info_includes_info_messages():
@@ -450,6 +458,8 @@ async def test_uds(tmp_path, agent, available_port, loop):
     env = os.environ.copy()
     env["DD_APM_RECEIVER_SOCKET"] = str(tmp_path / "apm.socket")
     env["PORT"] = str(available_port)
+    env["OTLP_HTTP_PORT"] = _available_port()
+    env["OTLP_GRPC_PORT"] = _available_port()
     p = subprocess.Popen(["ddapm-test-agent"], env=env)
 
     # Sleep for 1 second to give time for the testagent to start up

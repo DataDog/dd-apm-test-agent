@@ -13,7 +13,9 @@ from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Set
 from typing import TYPE_CHECKING
+from typing import Tuple
 import uuid
 
 from aiohttp import web
@@ -22,6 +24,13 @@ import msgpack
 
 from . import llmobs_query_parser
 from ._clock import monotonic_wall_ns
+from .markers import MarkerEvaluator
+from .markers import apply_eval_metrics
+from .markers import build_enrichment_outputs
+from .markers import enabled_from_env
+from .markers import eval_metric_key
+from .markers import parse_enrichment_body
+from .markers import parse_eval_metric_payload
 
 if TYPE_CHECKING:
     from .agent import Agent
@@ -1050,6 +1059,10 @@ class LLMObsEventPlatformAPI:
         self._query_results: Dict[str, Dict[str, Any]] = {}
         self.decoded_llmobs_span_events: Dict[int, List[Dict[str, Any]]] = {}
         self._claude_hooks_api: Optional["ClaudeHooksAPI"] = None
+        self._eval_metrics: List[Dict[str, Any]] = []
+        self._eval_metric_keys: Set[Tuple[str, str, str, int]] = set()
+        self._enrichment_events: List[Dict[str, Any]] = []
+        self._marker_evaluator: Optional[MarkerEvaluator] = MarkerEvaluator() if enabled_from_env() else None
 
     def set_claude_hooks_api(self, api: "ClaudeHooksAPI") -> None:
         """Wire up the Claude hooks API so its spans appear in LLMObs queries."""
@@ -1079,8 +1092,42 @@ class LLMObsEventPlatformAPI:
         if self._claude_hooks_api:
             all_spans.extend(self._claude_hooks_api._assembled_spans)
 
+        apply_eval_metrics(all_spans, self._eval_metrics)
+
+        if self._marker_evaluator:
+            marker_output = self._marker_evaluator.evaluate(all_spans)
+            apply_eval_metrics(all_spans, marker_output.eval_metrics)
+            all_spans.extend(marker_output.synthetic_spans)
+
+        if self._enrichment_events:
+            enrichment_output = build_enrichment_outputs(self._enrichment_events, all_spans)
+            apply_eval_metrics(all_spans, enrichment_output.eval_metrics)
+            all_spans.extend(enrichment_output.synthetic_spans)
+
         all_spans.sort(key=lambda s: s.get("start_ns", 0), reverse=True)
         return all_spans
+
+    def ingest_eval_metric_payload(self, payload: Any) -> int:
+        """Store valid LLMObs eval-metric payload entries for later span joins."""
+        accepted = 0
+        for metric in parse_eval_metric_payload(payload):
+            key = eval_metric_key(metric)
+            if key in self._eval_metric_keys:
+                continue
+            self._eval_metric_keys.add(key)
+            self._eval_metrics.append(metric)
+            accepted += 1
+        return accepted
+
+    async def handle_enrichment(self, request: Request) -> web.Response:
+        """Accept and list local trajectory-spec enrichment events."""
+        if request.method == "GET":
+            return web.json_response({"events": self._enrichment_events})
+
+        data = await request.read()
+        events, ignored = parse_enrichment_body(request.content_type or "", data)
+        self._enrichment_events.extend(events)
+        return web.json_response({"accepted": len(events), "ignored": ignored})
 
     def update_spans(self, update_data: bytes, content_type: str) -> int:
         """Update existing spans by span_id. Accepts same payload format as creation."""
@@ -1376,6 +1423,9 @@ class LLMObsEventPlatformAPI:
                 "status": status,
                 "tags": tags,
                 "trace_id": trace_id,
+                "evaluation": found_span.get("evaluation", {}),
+                "evaluations": found_span.get("evaluations", {}),
+                "evaluation_assessments": found_span.get("evaluation_assessments", {}),
             }
 
             response = {
@@ -1714,4 +1764,6 @@ class LLMObsEventPlatformAPI:
             web.route("*", "/api/ui/llm-obs/v1/trace/{trace_id}", with_cors(self.handle_trace)),
             # Query scalar endpoint
             web.route("*", "/api/ui/query/scalar", with_cors(self.handle_query_scalar)),
+            # Local trajectory enrichment testing endpoint
+            web.route("*", "/test/session/llmobs/enrichment", with_cors(self.handle_enrichment)),
         ]
