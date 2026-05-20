@@ -1,0 +1,10 @@
+---
+fixes:
+  - |
+    Make `lapdog start`, `lapdog stop`, and `lapdog claude` work on Windows.
+    Previously the launcher used POSIX-only primitives (`os.fork`,
+    `start_new_session=True`) so the background agent process was killed when
+    the launcher exited, and the banner printed by `lapdog claude` crashed
+    Python on the default Windows cp1252 stdout encoding. The Bun preload
+    path passed to Claude via `BUN_OPTIONS` also had its backslashes stripped
+    on Windows.
