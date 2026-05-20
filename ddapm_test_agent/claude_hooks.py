@@ -1811,7 +1811,18 @@ class ClaudeHooksAPI:
 
     async def handle_spans(self, request: Request) -> web.Response:
         """Handle GET /claude/hooks/spans — return all assembled spans."""
-        return web.json_response({"spans": self._assembled_spans})
+        now_ns = monotonic_wall_ns()
+        in_flight: Dict[str, int] = {}
+        for session in self._sessions.values():
+            if not session.root_span_emitted and getattr(session, "_root_span_ref", None) is not None:
+                in_flight[session.root_span_id] = session.start_ns
+        if not in_flight:
+            return web.json_response({"spans": self._assembled_spans})
+        spans = [
+            {**s, "duration": now_ns - in_flight[s["span_id"]]} if s.get("span_id") in in_flight else s
+            for s in self._assembled_spans
+        ]
+        return web.json_response({"spans": spans})
 
     async def handle_raw_events(self, request: Request) -> web.Response:
         """Handle GET /claude/hooks/raw — return all raw received events for debugging."""

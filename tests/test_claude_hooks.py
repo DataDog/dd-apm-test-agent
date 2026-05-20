@@ -497,6 +497,29 @@ async def test_hook_sessions_endpoint(agent):
     assert session_id in session_ids
 
 
+async def test_hook_in_flight_span_has_live_duration(agent):
+    session_id = "sess-in-flight-duration"
+
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "SessionStart"})
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "user_prompt": "What is the meaning of life?",
+        },
+    )
+
+    resp = await agent.get("/claude/hooks/spans")
+    assert resp.status == 200
+    body = await resp.json()
+    spans = body["spans"]
+
+    root_spans = [s for s in spans if s.get("session_id") == session_id and s["parent_id"] == "undefined"]
+    assert len(root_spans) == 1
+    assert root_spans[0]["duration"] > 0
+
+
 async def test_concurrent_subagents_parent_correctly(agent):
     """Two Task tools spawn sibling subagents — both should be parented to root, not each other."""
     session_id = "sess-concurrent"
