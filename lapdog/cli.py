@@ -1,6 +1,7 @@
 """CLI for lapdog subcommands"""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
@@ -11,16 +12,17 @@ import time
 from typing import List
 from typing import Optional
 from typing import Tuple
-
-from lapdog.lapdog_ascii_art import build_running_banner
+import uuid
 
 import requests
 
-from lapdog.hooks import write_claude_code_hooks
-from lapdog.paths import LOG_FILE, PID_FILE
 from lapdog import tracer_inject
+from lapdog.lapdog_ascii_art import build_running_banner
+from lapdog.paths import LOG_FILE
+from lapdog.paths import PID_FILE
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi"]
+
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -29,10 +31,64 @@ LAPDOG_USAGE = (
     "  status  Show lapdog status (from /info)\n"
     "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi      Start lapdog in background if needed, install extension, then launch pi\n"
+    "  codex   Start lapdog in background if needed, then launch Codex with tracing\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
     "  lapdog python app.py\n"
 )
+
+_PROXY_SESSION_WARNING_LINES = ["Keep Lapdog running; stopping it can break proxied model calls."]
+
+LAPDOG_PLUGIN_NAME = "lapdog@lapdog"
+LAPDOG_MARKETPLACE_SOURCE = "DataDog/dd-apm-test-agent"
+
+
+def _lapdog_plugin_installed() -> bool:
+    """Return True if the lapdog Claude Code plugin is installed for this user."""
+    installed_path = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    if not installed_path.exists():
+        return False
+    try:
+        with installed_path.open() as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(LAPDOG_PLUGIN_NAME in (data.get("plugins") or {}))
+
+
+def _ensure_lapdog_plugin_installed() -> None:
+    """Install the lapdog Claude Code plugin if missing. Best-effort: failures warn and continue."""
+    if _lapdog_plugin_installed():
+        return
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        # _run_claude will print a clearer error in a moment.
+        return
+
+    print("[lapdog] Installing Claude Code plugin 'lapdog'...", file=sys.stderr)
+    commands = [
+        [claude_bin, "plugin", "marketplace", "add", LAPDOG_MARKETPLACE_SOURCE],
+        [claude_bin, "plugin", "install", LAPDOG_PLUGIN_NAME],
+    ]
+    for cmd in commands:
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            detail = (e.stderr or e.stdout or "").strip()
+            print(
+                f"[lapdog] '{' '.join(cmd[1:])}' failed (rc={e.returncode}): {detail}",
+                file=sys.stderr,
+            )
+            print(
+                "[lapdog] Continuing without plugin; LLM calls will still be captured "
+                "but Claude Code hook events (tool calls, prompts, sessions, permissions) "
+                "will not. Install manually:\n"
+                f"          claude plugin marketplace add {LAPDOG_MARKETPLACE_SOURCE}\n"
+                f"          claude plugin install {LAPDOG_PLUGIN_NAME}",
+                file=sys.stderr,
+            )
+            return
+    print("[lapdog] Plugin installed.", file=sys.stderr)
 
 
 def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
@@ -136,14 +192,9 @@ def _remove_pid_file() -> None:
             pass
 
 
-def _maybe_write_claude_hooks(disable: bool) -> None:
-    if disable:
-        return
-    claude_settings_path = Path.home() / ".claude" / "settings.json"
-    write_claude_code_hooks(claude_settings_path)
-
-
-def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False) -> Tuple[int, int, str]:
+def _start_lapdog(
+    port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False
+) -> Tuple[int, int, str]:
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -295,7 +346,7 @@ def _start_lapdog_detached(port: int, forward_data: bool) -> None:
     # refused that would make a re-check flaky.
 
 
-def cmd_exec(app_cmd: List[str], forward_data: bool, disable_hooks: bool = False) -> None:
+def cmd_exec(app_cmd: List[str], forward_data: bool) -> None:
     """Auto-start lapdog if needed, inject tracer env vars, then exec the app command. Never returns."""
     resolved = shutil.which(app_cmd[0])
     if not resolved:
@@ -314,11 +365,16 @@ def cmd_exec(app_cmd: List[str], forward_data: bool, disable_hooks: bool = False
     os.execvpe(resolved, app_cmd, env)
 
 
-def cmd_claude(sub_cmd_args: List[str], forward_data: bool, disable_hooks: bool) -> None:
+def cmd_claude(
+    sub_cmd_args: List[str],
+    forward_data: bool,
+    install_plugin: bool,
+) -> None:
     """Ensure lapdog is running in background, then launch Claude with intercept."""
-    _maybe_write_claude_hooks(disable_hooks)
+    if install_plugin:
+        _ensure_lapdog_plugin_installed()
     _ensure_lapdog_running(forward_data, detached=True)
-    print(build_running_banner(data_type="coding session"))
+    print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
 
     _run_claude(sub_cmd_args)
 
@@ -389,11 +445,126 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
     _run_pi(args=sub_cmd_args, port=port)
 
 
+def _resolve_codex_cwd(args: List[str]) -> str:
+    cwd = os.getcwd()
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg == "--":
+            break
+        next_idx = idx + 1
+        cd_value: Optional[str] = None
+        if arg in ("-C", "--cd"):
+            if next_idx < len(args):
+                cd_value = args[next_idx]
+                next_idx += 1
+        elif arg.startswith("--cd="):
+            cd_value = arg.split("=", 1)[1]
+        elif arg.startswith("-C") and arg != "-C":
+            cd_value = arg[2:].lstrip("=")
+        if cd_value:
+            cwd = str(Path(cd_value).expanduser())
+            if not os.path.isabs(cwd):
+                cwd = os.path.join(os.getcwd(), cwd)
+        idx = next_idx
+    return os.path.abspath(cwd)
+
+
+def _start_codex_watcher(port: int, proxy_session_key: Optional[str] = None, cwd: Optional[str] = None) -> None:
+    """Start the bundled Codex JSONL watcher for this working directory."""
+    watcher_cwd = os.path.abspath(cwd or os.getcwd())
+    log_path = _log_file_path()
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    ready_path = os.path.join(os.path.dirname(log_path), f"codex-watcher-{os.getpid()}.ready")
+    try:
+        os.unlink(ready_path)
+    except OSError:
+        pass
+    args = [
+        sys.executable,
+        "-m",
+        "lapdog.codex_watcher",
+        "--lapdog-url",
+        f"http://localhost:{port}",
+        "--cwd",
+        watcher_cwd,
+        "--parent-pid",
+        str(os.getpid()),
+        "--ready-file",
+        ready_path,
+    ]
+    if proxy_session_key:
+        args += ["--proxy-session-key", proxy_session_key]
+    with open(log_path, "a") as log_file:
+        process = subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        if os.path.exists(ready_path):
+            return
+        if process.poll() is not None:
+            break
+        time.sleep(0.05)
+    print("[lapdog] Codex watcher did not confirm startup; continuing without startup confirmation.", file=sys.stderr)
+
+
+def _run_codex(
+    args: Optional[List[str]] = None, port: Optional[int] = None, proxy_session_key: Optional[str] = None
+) -> None:
+    """Exec the codex binary, forwarding arguments. Never returns."""
+    if args is None:
+        args = []
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        print("[lapdog] 'codex' not found in PATH", file=sys.stderr)
+        sys.exit(1)
+    env = os.environ.copy()
+    proxy_args: List[str] = []
+    if port is not None:
+        proxy_path = f"/codex/proxy/{proxy_session_key}/v1" if proxy_session_key else "/codex/proxy/v1"
+        base_url = f"http://localhost:{port}{proxy_path}"
+        env["OPENAI_BASE_URL"] = base_url
+        if env.get("OPENAI_API_KEY"):
+            proxy_args = [
+                "-c",
+                'model_provider="openai-lapdog"',
+                "-c",
+                (
+                    'model_providers.openai-lapdog={name="OpenAI via Lapdog",'
+                    f' base_url="{base_url}", env_key="OPENAI_API_KEY", wire_api="responses"' + "}"
+                ),
+            ]
+        else:
+            print(
+                "[lapdog] Codex proxy capture requires OPENAI_API_KEY; continuing with JSONL-only tracing.",
+                file=sys.stderr,
+            )
+    os.execve(codex_bin, [codex_bin] + proxy_args + args, env)
+
+
+def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
+    """Ensure lapdog is running, start the Codex JSONL watcher, then launch Codex."""
+    port = _ensure_lapdog_running(forward_data, detached=True)
+    if port is None:
+        print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+        sys.exit(1)
+    proxy_session_key = uuid.uuid4().hex
+    _start_codex_watcher(port, proxy_session_key=proxy_session_key, cwd=_resolve_codex_cwd(sub_cmd_args))
+
+    print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
+    _run_codex(args=sub_cmd_args, port=port, proxy_session_key=proxy_session_key)
+
+
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
     lapdog_args: List[str] = []
 
     for arg_idx, arg in enumerate(cmd_args):
-        if not arg.startswith('--'):
+        if not arg.startswith("--"):
             return lapdog_args, cmd_args[arg_idx:]
 
         lapdog_args.append(arg)
@@ -418,10 +589,16 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--disable-claude-code-hooks",
-        action="store_true",
-        default=False,
-        help="Skip writing Claude Code hooks to ~/.claude/settings.json.",
+        "--no-plugin-install",
+        dest="install_plugin",
+        action="store_false",
+        default=True,
+        help=(
+            "Skip auto-installing the 'lapdog' Claude Code plugin when running "
+            f"'lapdog claude'. By default, lapdog runs 'claude plugin marketplace "
+            f"add {LAPDOG_MARKETPLACE_SOURCE}' and 'claude plugin install "
+            f"{LAPDOG_PLUGIN_NAME}' if the plugin is not already installed."
+        ),
     )
 
     return parser.parse_args(args=lapdog_args)
@@ -457,7 +634,13 @@ def main() -> None:
         cmd_claude(
             sub_cmd_args=sub_cmd_args,
             forward_data=lapdog_parsed_args.forward,
-            disable_hooks=lapdog_parsed_args.disable_claude_code_hooks,
+            install_plugin=lapdog_parsed_args.install_plugin,
         )
     elif sub_cmd == "pi":
         cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+    elif sub_cmd == "codex":
+        cmd_codex(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+
+
+if __name__ == "__main__":
+    main()
