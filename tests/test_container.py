@@ -101,9 +101,10 @@ def test_container_uds(build_image, tmp_path_factory):
         volumes=[f"{str(uds_dir)}:/opt/datadog-agent/run"],
         env={"DD_APM_RECEIVER_SOCKET": "/opt/datadog-agent/run/apm.socket"},
     ) as c:
+        socket_path = uds_dir / "apm.socket"
         for i in range(50):
             stdout, stderr = c.logs()
-            if "could not set permissions" in stderr:
+            if "could not set permissions" in stderr or socket_path.exists():
                 break
             time.sleep(0.1)
         else:

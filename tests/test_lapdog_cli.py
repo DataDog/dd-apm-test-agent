@@ -10,6 +10,11 @@ def test_codex_command_is_registered():
     assert "codex" in cli.LAPDOG_USAGE
 
 
+def test_copilot_command_is_registered():
+    assert "copilot" in cli.LAPDOG_COMMANDS
+    assert "copilot" in cli.LAPDOG_USAGE
+
+
 def test_cmd_codex_starts_watcher_and_execs_codex():
     with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126) as ensure:
         with mock.patch("lapdog.cli._start_codex_watcher") as start_watcher:
@@ -21,6 +26,27 @@ def test_cmd_codex_starts_watcher_and_execs_codex():
     ensure.assert_called_once_with(True, detached=True)
     start_watcher.assert_called_once_with(8126, proxy_session_key="proxy-key", cwd=cli.os.getcwd())
     run_codex.assert_called_once_with(args=["--model", "gpt-5.5"], port=8126, proxy_session_key="proxy-key")
+
+
+def test_cmd_copilot_starts_lapdog_and_execs_copilot():
+    with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126) as ensure:
+        with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
+            with mock.patch("lapdog.cli._run_copilot") as run_copilot:
+                cli.cmd_copilot(["--version"], forward_data=True)
+
+    ensure.assert_called_once_with(True, detached=True)
+    run_copilot.assert_called_once_with(args=["--version"])
+
+
+def test_cmd_copilot_handles_lapdog_startup_failure(capsys):
+    with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=None):
+        try:
+            cli.cmd_copilot([], forward_data=False)
+        except SystemExit as e:
+            assert e.code == 1
+
+    err = capsys.readouterr().err
+    assert "Could not determine lapdog port" in err
 
 
 def test_cmd_codex_starts_watcher_with_forwarded_cd(monkeypatch, tmp_path):
@@ -118,6 +144,98 @@ def test_run_codex_injects_lapdog_provider(monkeypatch):
         ),
     ]
     assert exec_call["argv"][5:] == ["exec", "hello"]
+
+
+def test_merge_otel_resource_attributes_preserves_existing_attrs():
+    env = {"OTEL_RESOURCE_ATTRIBUTES": "deployment.environment=dev, team.name=ai"}
+
+    cli._merge_otel_resource_attributes(env, ["service.name=github-copilot-cli", "", "agent.runtime=cli"])
+
+    assert env["OTEL_RESOURCE_ATTRIBUTES"] == (
+        "service.name=github-copilot-cli,agent.runtime=cli,deployment.environment=dev,team.name=ai"
+    )
+
+
+def test_default_otel_exporter_endpoint_uses_otlp_http_port(monkeypatch):
+    monkeypatch.setenv("OTLP_HTTP_PORT", "14318")
+
+    assert cli._default_otel_exporter_endpoint() == "http://localhost:14318"
+
+
+def test_run_copilot_injects_otel_env(monkeypatch):
+    exec_call = {}
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/copilot")
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
+    monkeypatch.delenv("COPILOT_OTEL_SOURCE_NAME", raising=False)
+    monkeypatch.delenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", raising=False)
+    monkeypatch.delenv("OTEL_RESOURCE_ATTRIBUTES", raising=False)
+    monkeypatch.delenv("OTLP_HTTP_PORT", raising=False)
+
+    def fake_execve(binary, argv, env):
+        exec_call["binary"] = binary
+        exec_call["argv"] = argv
+        exec_call["env"] = env
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli.os, "execve", fake_execve)
+
+    try:
+        cli._run_copilot(args=["--help"])
+    except SystemExit:
+        pass
+
+    assert exec_call["binary"] == "/usr/local/bin/copilot"
+    assert exec_call["argv"] == ["/usr/local/bin/copilot", "--help"]
+    assert exec_call["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://localhost:4318"
+    assert exec_call["env"]["OTEL_SERVICE_NAME"] == "github-copilot-cli"
+    assert exec_call["env"]["COPILOT_OTEL_SOURCE_NAME"] == "github.copilot"
+    assert exec_call["env"]["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
+    assert "service.name=github-copilot-cli" in exec_call["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+    assert "agent.framework=github-copilot" in exec_call["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+    assert "agent.runtime=cli" in exec_call["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+
+
+def test_run_copilot_preserves_existing_otel_env(monkeypatch):
+    exec_call = {}
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/copilot")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://custom:4318")
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "custom-service")
+    monkeypatch.setenv("COPILOT_OTEL_SOURCE_NAME", "custom.source")
+    monkeypatch.setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "true")
+    monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=dev")
+
+    def fake_execve(binary, argv, env):
+        exec_call["env"] = env
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli.os, "execve", fake_execve)
+
+    try:
+        cli._run_copilot(args=[])
+    except SystemExit:
+        pass
+
+    assert exec_call["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://custom:4318"
+    assert exec_call["env"]["OTEL_SERVICE_NAME"] == "custom-service"
+    assert exec_call["env"]["COPILOT_OTEL_SOURCE_NAME"] == "custom.source"
+    assert exec_call["env"]["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "true"
+    assert "deployment.environment=dev" in exec_call["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+    assert "agent.framework=github-copilot" in exec_call["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+
+
+def test_run_copilot_missing_binary_exits(monkeypatch, capsys):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+
+    try:
+        cli._run_copilot(args=[])
+    except SystemExit as e:
+        assert e.code == 1
+
+    err = capsys.readouterr().err
+    assert "'copilot' not found in PATH" in err
 
 
 def _write_installed_plugins(home, plugins):

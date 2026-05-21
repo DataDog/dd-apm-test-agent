@@ -2,7 +2,8 @@
 
 Local development tooling for LLM Observability. Lapdog wraps the
 [Datadog APM test agent](https://github.com/DataDog/dd-apm-test-agent) and a
-small CLI so you can run an LLM coding agent (Claude Code, Pi, or your own)
+small CLI so you can run an LLM coding agent (Claude Code, GitHub Copilot CLI,
+Pi, or your own)
 locally and see every span, prompt, tool call, and cost in a browser — no
 Datadog account required.
 
@@ -36,8 +37,8 @@ want to know what `lapdog start` actually does).
 - Port **8126** free on `localhost`. If the port is taken, set `PORT=<other>`
   before running `lapdog start` and open the dashboard at
   `http://localhost:<port>/leash/`.
-- For `lapdog claude` / `lapdog pi` / `lapdog codex`: the `claude` / `pi` /
-  `codex` binary already on `PATH`.
+- For `lapdog claude` / `lapdog pi` / `lapdog codex` / `lapdog copilot`: the
+  `claude` / `pi` / `codex` / `copilot` binary already on `PATH`.
 
 ---
 
@@ -50,7 +51,7 @@ into your shell.
 
 ```bash
 brew install datadog/lapdog/lapdog
-lapdog claude     # or: lapdog pi
+lapdog claude     # or: lapdog pi / lapdog codex / lapdog copilot
 ```
 
 Upgrade later with `brew upgrade lapdog`.
@@ -183,6 +184,9 @@ lapdog claude
 # Or launch Codex with JSONL capture + proxy tracing wired up.
 lapdog codex
 
+# Or launch GitHub Copilot CLI with native OpenTelemetry pointed at Lapdog.
+lapdog copilot
+
 # Or launch Pi with the lapdog extension installed.
 lapdog pi
 
@@ -208,6 +212,12 @@ restarting Lapdog.
 Hook-only integrations are different: their non-blocking `curl` hooks fail
 open when Lapdog is down, so the coding agent keeps running but capture data
 is lost.
+
+`lapdog copilot` uses GitHub Copilot CLI's native OpenTelemetry export rather
+than proxying model requests. It points Copilot at Lapdog's OTLP HTTP endpoint
+(`http://localhost:4318` by default, or `OTLP_HTTP_PORT` if set), preserves
+existing OTel environment variables, and sets
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false` by default.
 
 Useful flags:
 

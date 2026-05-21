@@ -22,7 +22,7 @@ from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
 
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "copilot"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -32,6 +32,7 @@ LAPDOG_USAGE = (
     "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi      Start lapdog in background if needed, install extension, then launch pi\n"
     "  codex   Start lapdog in background if needed, then launch Codex with tracing\n"
+    "  copilot Start lapdog in background if needed, then launch GitHub Copilot CLI with OTel tracing\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
     "  lapdog python app.py\n"
@@ -105,6 +106,25 @@ def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
                 return int(arg.split("=", 1)[1])
             i += 1
     return int(os.environ.get("PORT", "8126"))
+
+
+def _resolved_otlp_http_port() -> int:
+    """Infer the OTLP HTTP port the same way the agent does: OTLP_HTTP_PORT env, else 4318."""
+    return int(os.environ.get("OTLP_HTTP_PORT", "4318"))
+
+
+def _default_otel_exporter_endpoint() -> str:
+    return f"http://localhost:{_resolved_otlp_http_port()}"
+
+
+def _merge_otel_resource_attributes(env: dict, attrs: List[str]) -> None:
+    """Prepend Lapdog resource attrs while preserving user-provided attrs."""
+    merged = [attr for attr in attrs if attr]
+    existing = env.get("OTEL_RESOURCE_ATTRIBUTES")
+    if existing:
+        merged.extend(part.strip() for part in existing.split(",") if part.strip())
+    if merged:
+        env["OTEL_RESOURCE_ATTRIBUTES"] = ",".join(merged)
 
 
 def _pid_file_path() -> str:
@@ -436,6 +456,32 @@ def _run_pi(args: Optional[List[str]] = None, port: Optional[int] = 8126) -> Non
     os.execve(pi_bin, [pi_bin] + args, env)
 
 
+def _run_copilot(args: Optional[List[str]] = None) -> None:
+    """Exec GitHub Copilot CLI with OpenTelemetry export pointed at Lapdog. Never returns."""
+    if args is None:
+        args = []
+    copilot_bin = shutil.which("copilot")
+    if not copilot_bin:
+        print("[lapdog] 'copilot' not found in PATH", file=sys.stderr)
+        sys.exit(1)
+
+    env = os.environ.copy()
+    env.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", _default_otel_exporter_endpoint())
+    env.setdefault("OTEL_SERVICE_NAME", "github-copilot-cli")
+    env.setdefault("COPILOT_OTEL_SOURCE_NAME", "github.copilot")
+    env.setdefault("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "false")
+    _merge_otel_resource_attributes(
+        env,
+        [
+            "service.name=github-copilot-cli",
+            "agent.framework=github-copilot",
+            "agent.runtime=cli",
+        ],
+    )
+
+    os.execve(copilot_bin, [copilot_bin] + args, env)
+
+
 def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
     """Ensure lapdog is running, install the pi extension, then launch pi."""
     port = _ensure_lapdog_running(forward_data, detached=True)
@@ -443,6 +489,17 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
 
     print(build_running_banner(data_type="coding session"))
     _run_pi(args=sub_cmd_args, port=port)
+
+
+def cmd_copilot(sub_cmd_args: List[str], forward_data: bool) -> None:
+    """Ensure lapdog is running, then launch GitHub Copilot CLI with OTel tracing."""
+    port = _ensure_lapdog_running(forward_data, detached=True)
+    if port is None:
+        print("[lapdog] Could not determine lapdog port. Run 'lapdog status' for details.", file=sys.stderr)
+        sys.exit(1)
+
+    print(build_running_banner(data_type="coding session"))
+    _run_copilot(args=sub_cmd_args)
 
 
 def _resolve_codex_cwd(args: List[str]) -> str:
@@ -640,6 +697,8 @@ def main() -> None:
         cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
     elif sub_cmd == "codex":
         cmd_codex(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+    elif sub_cmd == "copilot":
+        cmd_copilot(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
 
 
 if __name__ == "__main__":
