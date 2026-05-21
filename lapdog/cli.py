@@ -18,20 +18,22 @@ import requests
 
 from lapdog import tracer_inject
 from lapdog.lapdog_ascii_art import build_running_banner
+from lapdog.paths import LAPDOG_DIR
 from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
 
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "uninstall"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
-    "  start   Start lapdog (background)\n"
-    "  stop    Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
-    "  status  Show lapdog status (from /info)\n"
-    "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
-    "  pi      Start lapdog in background if needed, install extension, then launch pi\n"
-    "  codex   Start lapdog in background if needed, then launch Codex with tracing\n"
+    "  start      Start lapdog (background)\n"
+    "  stop       Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
+    "  status     Show lapdog status (from /info)\n"
+    "  claude     Start lapdog in background if needed, then launch Claude with intercept\n"
+    "  pi         Start lapdog in background if needed, install extension, then launch pi\n"
+    "  codex      Start lapdog in background if needed, then launch Codex with tracing\n"
+    "  uninstall  Stop lapdog and remove all state it wrote (~/.lapdog, Claude hooks, pi extension)\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
     "  lapdog python app.py\n"
@@ -43,7 +45,7 @@ LAPDOG_PLUGIN_NAME = "lapdog@lapdog"
 LAPDOG_MARKETPLACE_SOURCE = "DataDog/dd-apm-test-agent"
 
 
-def _lapdog_plugin_installed() -> bool:
+def _lapdog_claude_code_plugin_installed() -> bool:
     """Return True if the lapdog Claude Code plugin is installed for this user."""
     installed_path = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
     if not installed_path.exists():
@@ -56,9 +58,9 @@ def _lapdog_plugin_installed() -> bool:
     return bool(LAPDOG_PLUGIN_NAME in (data.get("plugins") or {}))
 
 
-def _ensure_lapdog_plugin_installed() -> None:
+def _ensure_lapdog_claude_code_plugin_installed() -> None:
     """Install the lapdog Claude Code plugin if missing. Best-effort: failures warn and continue."""
-    if _lapdog_plugin_installed():
+    if _lapdog_claude_code_plugin_installed():
         return
     claude_bin = shutil.which("claude")
     if not claude_bin:
@@ -89,6 +91,33 @@ def _ensure_lapdog_plugin_installed() -> None:
             )
             return
     print("[lapdog] Plugin installed.", file=sys.stderr)
+
+
+def _uninstall_lapdog_claude_code_plugin() -> None:
+    if not _lapdog_claude_code_plugin_installed():
+        return
+    
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        return
+
+    cmd = [claude_bin, "plugin", "uninstall", LAPDOG_PLUGIN_NAME]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or e.stdout or "").strip()
+        print(
+            f"[lapdog] '{' '.join(cmd[1:])}' failed (rc={e.returncode}): {detail}",
+            file=sys.stderr,
+        )
+        print(
+            "[lapdog] Failed to uninstall 'lapdog' Claude Code plugin "
+            "Uninstall manually:\n"
+            f"          claude plugin uninstall {LAPDOG_PLUGIN_NAME}",
+            file=sys.stderr,
+        )
+        return
+    print("[lapdog] Claude Code plugin uninstalled", file=sys.stderr)
 
 
 def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
@@ -282,9 +311,11 @@ def cmd_start(sub_cmd_args: List[str], forward_data: bool) -> None:
     print(f"[lapdog] Lapdog running at {_url_for_port(port)} (pid={pid}, logs: {log_path})")
 
 
-def cmd_stop() -> None:
+def cmd_stop(pid: Optional[int] = None) -> None:
     """Stop lapdog (started by 'lapdog start' or 'lapdog claude')."""
-    pid, _ = _read_pid_file()
+    if pid is None:
+        pid, _ = _read_pid_file()
+    
     if pid is None:
         print("[lapdog] No lapdog PID file found; lapdog may not be running.", file=sys.stderr)
         sys.exit(1)
@@ -372,7 +403,7 @@ def cmd_claude(
 ) -> None:
     """Ensure lapdog is running in background, then launch Claude with intercept."""
     if install_plugin:
-        _ensure_lapdog_plugin_installed()
+        _ensure_lapdog_claude_code_plugin_installed()
     _ensure_lapdog_running(forward_data, detached=True)
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
 
@@ -560,6 +591,35 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
     _run_codex(args=sub_cmd_args, port=port, proxy_session_key=proxy_session_key)
 
 
+def cmd_uninstall() -> None:
+    """Stops the lapdog server, removes ~/.lapdog directory, and uninstalls managed plugins"""
+
+    # stop lapdog server
+    pid, _ = _read_pid_file()
+    if pid is not None:
+        cmd_stop(pid=pid)
+
+    # remove ~/.lapdog dir
+    if os.path.isdir(LAPDOG_DIR):
+        shutil.rmtree(LAPDOG_DIR, ignore_errors=True)
+        print("[lapdog] Lapdog-related files under ~/.lapdog removed")
+
+    # remove claude code hook
+    _uninstall_lapdog_claude_code_plugin()
+
+    # remove pi extension
+    if os.path.isfile(_PI_EXT_DEST):
+        try:
+            os.remove(_PI_EXT_DEST)
+            print(f"[lapdog] Removed {_PI_EXT_DEST}.")
+        except OSError as e:
+            print(f"[lapdog] Failed to remove {_PI_EXT_DEST}: {e}", file=sys.stderr)
+
+    print("[lapdog] Lapdog successfully uninstalled")
+
+    
+
+
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
     lapdog_args: List[str] = []
 
@@ -640,6 +700,8 @@ def main() -> None:
         cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
     elif sub_cmd == "codex":
         cmd_codex(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+    elif sub_cmd == "uninstall":
+        cmd_uninstall()
 
 
 if __name__ == "__main__":

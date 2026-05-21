@@ -129,24 +129,24 @@ def _write_installed_plugins(home, plugins):
 def test_lapdog_plugin_installed_detects_marker(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: tmp_path))
     _write_installed_plugins(tmp_path, {cli.LAPDOG_PLUGIN_NAME: [{"scope": "user"}]})
-    assert cli._lapdog_plugin_installed() is True
+    assert cli._lapdog_claude_code_plugin_installed() is True
 
 
 def test_lapdog_plugin_installed_missing_file(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: tmp_path))
-    assert cli._lapdog_plugin_installed() is False
+    assert cli._lapdog_claude_code_plugin_installed() is False
 
 
 def test_lapdog_plugin_installed_missing_entry(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: tmp_path))
     _write_installed_plugins(tmp_path, {"other@market": [{"scope": "user"}]})
-    assert cli._lapdog_plugin_installed() is False
+    assert cli._lapdog_claude_code_plugin_installed() is False
 
 
 def test_ensure_lapdog_plugin_installed_noop_when_present(monkeypatch):
     monkeypatch.setattr(cli, "_lapdog_plugin_installed", lambda: True)
     with mock.patch("lapdog.cli.subprocess.run") as run:
-        cli._ensure_lapdog_plugin_installed()
+        cli._ensure_lapdog_claude_code_plugin_installed()
     run.assert_not_called()
 
 
@@ -154,7 +154,7 @@ def test_ensure_lapdog_plugin_installed_runs_both_commands(monkeypatch):
     monkeypatch.setattr(cli, "_lapdog_plugin_installed", lambda: False)
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/claude")
     with mock.patch("lapdog.cli.subprocess.run") as run:
-        cli._ensure_lapdog_plugin_installed()
+        cli._ensure_lapdog_claude_code_plugin_installed()
     assert run.call_count == 2
     args0 = run.call_args_list[0].args[0]
     args1 = run.call_args_list[1].args[0]
@@ -166,7 +166,7 @@ def test_ensure_lapdog_plugin_installed_skips_without_claude_binary(monkeypatch)
     monkeypatch.setattr(cli, "_lapdog_plugin_installed", lambda: False)
     monkeypatch.setattr(cli.shutil, "which", lambda name: None)
     with mock.patch("lapdog.cli.subprocess.run") as run:
-        cli._ensure_lapdog_plugin_installed()
+        cli._ensure_lapdog_claude_code_plugin_installed()
     run.assert_not_called()
 
 
@@ -178,7 +178,7 @@ def test_ensure_lapdog_plugin_installed_continues_on_failure(monkeypatch, capsys
         raise subprocess.CalledProcessError(returncode=1, cmd=cmd, stderr="boom")
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
-    cli._ensure_lapdog_plugin_installed()  # must not raise
+    cli._ensure_lapdog_claude_code_plugin_installed()  # must not raise
     err = capsys.readouterr().err
     assert "failed" in err
     assert "claude plugin install lapdog@lapdog" in err
