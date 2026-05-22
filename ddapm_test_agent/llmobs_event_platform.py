@@ -14,6 +14,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import TYPE_CHECKING
+from typing import Tuple
 import uuid
 
 from aiohttp import web
@@ -335,7 +336,7 @@ def _dedupe_copilot_parent_metrics(spans: List[Dict[str, Any]]) -> None:
 
 def extract_copilot_spans_from_otlp_traces(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Convert GitHub Copilot OTLP GenAI spans into LLMObs UI spans."""
-    by_session: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    by_session_trace: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
     resource_spans = _first_present(payload, "resourceSpans", "resource_spans") or []
     for resource_span in resource_spans:
         resource = _first_present(resource_span, "resource") or {}
@@ -351,13 +352,12 @@ def extract_copilot_spans_from_otlp_traces(payload: Dict[str, Any]) -> List[Dict
                     continue
                 session_id = _copilot_session_id(trace_id, span_attrs)
                 root_span_id = f"copilot-session-{trace_id}"
-                by_session[session_id].append(
+                by_session_trace[(session_id, trace_id)].append(
                     _copilot_child_span(otel_span, resource_attrs, span_attrs, session_id, root_span_id)
                 )
 
     spans: List[Dict[str, Any]] = []
-    for session_id, child_spans in by_session.items():
-        trace_id = str(child_spans[0].get("trace_id", ""))
+    for (session_id, trace_id), child_spans in by_session_trace.items():
         _dedupe_copilot_parent_metrics(child_spans)
         root_span = _copilot_root_span(session_id, trace_id, child_spans)
         root_id = root_span["span_id"]

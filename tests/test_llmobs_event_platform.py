@@ -4,6 +4,9 @@ import time
 import msgpack
 import pytest
 
+from ddapm_test_agent.llmobs_event_platform import _build_trace_aggregates
+from ddapm_test_agent.llmobs_event_platform import extract_copilot_spans_from_otlp_traces
+
 
 @pytest.fixture
 def llmobs_payload():
@@ -768,6 +771,56 @@ async def test_llmobs_aggregate_includes_copilot_otlp_session(testagent, testage
     assert values[0]["metrics"]["@trace.output_tokens:sum"] == 27
     assert values[0]["metrics"]["@trace.total_tokens:sum"] == 41558
     assert values[0]["metrics"]["@trace.estimated_total_cost:sum"] == 1
+
+
+def test_copilot_otlp_session_with_multiple_trace_ids_rolls_up_each_trace():
+    payload = {
+        "resourceSpans": [
+            {
+                "resource": {
+                    "attributes": [{"key": "service.name", "value": {"stringValue": "github-copilot-cli"}}]
+                },
+                "scopeSpans": [
+                    {
+                        "spans": [
+                            {
+                                "traceId": "trace-a",
+                                "spanId": "span-a",
+                                "name": "chat",
+                                "startTimeUnixNano": "100",
+                                "endTimeUnixNano": "200",
+                                "attributes": [
+                                    {"key": "gen_ai.conversation.id", "value": {"stringValue": "conversation-123"}},
+                                    {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "10"}},
+                                ],
+                            },
+                            {
+                                "traceId": "trace-b",
+                                "spanId": "span-b",
+                                "name": "chat",
+                                "startTimeUnixNano": "300",
+                                "endTimeUnixNano": "400",
+                                "attributes": [
+                                    {"key": "gen_ai.conversation.id", "value": {"stringValue": "conversation-123"}},
+                                    {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "20"}},
+                                ],
+                            },
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+
+    spans = extract_copilot_spans_from_otlp_traces(payload)
+    roots = [span for span in spans if span["parent_id"] == "undefined"]
+    trace_aggregates = _build_trace_aggregates(spans)
+
+    assert len(roots) == 2
+    assert {root["trace_id"] for root in roots} == {"trace-a", "trace-b"}
+    assert {span["parent_id"] for span in spans if span["span_id"] == "span-a"} == {"copilot-session-trace-a"}
+    assert {span["parent_id"] for span in spans if span["span_id"] == "span-b"} == {"copilot-session-trace-b"}
+    assert sum(trace_aggregates[root["trace_id"]]["input_tokens"] for root in roots) == 30
 
 
 async def test_llmobs_cors_headers(agent):
