@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Fix `lapdog codex app` so Codex Desktop sessions are tailed into Lapdog.
+    App launches now resolve the Desktop workspace path, keep the Codex JSONL
+    watcher alive after the short-lived launcher exits, and reuse an existing
+    watcher for repeated app launches in the same workspace.
