@@ -60,11 +60,13 @@ def test_cmd_codex_app_starts_watcher_with_app_path_and_lapdog_pid(monkeypatch, 
 
     with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
         with mock.patch("lapdog.cli._read_pid_file", return_value=(4242, 8126)):
-            with mock.patch("lapdog.cli._start_codex_watcher") as start_watcher:
-                with mock.patch("lapdog.cli._run_codex") as run_codex:
-                    with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
-                        cli.cmd_codex(["app", str(target_cwd)], forward_data=True)
+            with mock.patch("lapdog.cli._stop_codex_watcher_singleton") as stop_legacy:
+                with mock.patch("lapdog.cli._start_codex_watcher") as start_watcher:
+                    with mock.patch("lapdog.cli._run_codex") as run_codex:
+                        with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
+                            cli.cmd_codex(["app", str(target_cwd)], forward_data=True)
 
+    stop_legacy.assert_called_once_with(codex_args.app_watcher_key(8126, str(target_cwd)), 4242)
     start_watcher.assert_called_once_with(
         8126,
         proxy_session_key=None,
@@ -281,6 +283,36 @@ def test_codex_watcher_reusable_requires_current_parent(monkeypatch):
 
     assert cli._codex_watcher_reusable(4242, 1111)
     assert not cli._codex_watcher_reusable(4242, 2222)
+
+
+def test_stop_codex_watcher_singleton_terminates_matching_watcher(tmp_path, monkeypatch):
+    pid_path = tmp_path / "codex-watcher-legacy-key.pid"
+    pid_path.write_text("4242\n")
+    kills = []
+
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli, "_codex_watcher_reusable", lambda pid, parent_pid: pid == 4242 and parent_pid == 5252)
+    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: kills.append((pid, sig)))
+
+    cli._stop_codex_watcher_singleton("legacy-key", 5252)
+
+    assert kills == [(4242, cli.signal.SIGTERM)]
+    assert not pid_path.exists()
+
+
+def test_stop_codex_watcher_singleton_ignores_nonmatching_process(tmp_path, monkeypatch):
+    pid_path = tmp_path / "codex-watcher-legacy-key.pid"
+    pid_path.write_text("4242\n")
+    kill = mock.Mock()
+
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli, "_codex_watcher_reusable", lambda pid, parent_pid: False)
+    monkeypatch.setattr(cli.os, "kill", kill)
+
+    cli._stop_codex_watcher_singleton("legacy-key", 5252)
+
+    kill.assert_not_called()
+    assert not pid_path.exists()
 
 
 def test_start_codex_watcher_writes_singleton_pid(tmp_path, monkeypatch):

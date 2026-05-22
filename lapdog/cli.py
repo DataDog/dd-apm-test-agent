@@ -451,6 +451,14 @@ def _codex_watcher_pid_file(log_dir: str, singleton_key: str) -> str:
     return os.path.join(log_dir, f"codex-watcher-{singleton_key}.pid")
 
 
+def _codex_watcher_pid_from_file(pid_path: str) -> Optional[int]:
+    try:
+        with open(pid_path) as f:
+            return int((f.readline() or "").strip())
+    except (OSError, ValueError):
+        return None
+
+
 def _codex_watcher_reusable(pid: int, parent_pid: int) -> bool:
     if not _process_exists(pid):
         return False
@@ -482,6 +490,28 @@ def _codex_watcher_reusable(pid: int, parent_pid: int) -> bool:
     return parent_idx + 1 < len(parts) and parts[parent_idx + 1] == str(parent_pid)
 
 
+def _stop_codex_watcher_singleton(singleton_key: str, parent_pid: int) -> None:
+    log_path = _log_file_path()
+    log_dir = os.path.dirname(log_path)
+    pid_path = _codex_watcher_pid_file(log_dir, singleton_key)
+    existing_pid = _codex_watcher_pid_from_file(pid_path)
+    if not existing_pid:
+        return
+    if _codex_watcher_reusable(existing_pid, parent_pid):
+        try:
+            os.kill(existing_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            print(f"[lapdog] Failed to stop legacy Codex watcher (PID {existing_pid}): {exc}", file=sys.stderr)
+            return
+        print(f"[lapdog] Replacing legacy Codex watcher for this app workspace (PID {existing_pid}).", file=sys.stderr)
+    try:
+        os.remove(pid_path)
+    except OSError:
+        pass
+
+
 def _start_codex_watcher(
     port: int,
     proxy_session_key: Optional[str] = None,
@@ -498,11 +528,7 @@ def _start_codex_watcher(
     os.makedirs(log_dir, exist_ok=True)
     if singleton_key:
         pid_path = _codex_watcher_pid_file(log_dir, singleton_key)
-        try:
-            with open(pid_path) as f:
-                existing_pid = int((f.readline() or "").strip())
-        except (OSError, ValueError):
-            existing_pid = None
+        existing_pid = _codex_watcher_pid_from_file(pid_path)
         if existing_pid and _codex_watcher_reusable(existing_pid, watcher_parent_pid):
             print(
                 f"[lapdog] Codex watcher already running for this app workspace (PID {existing_pid}).",
@@ -606,6 +632,8 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
         lapdog_pid, _ = _read_pid_file()
         parent_pid = lapdog_pid or parent_pid
     codex_cwd = codex_args.resolve_cwd(sub_cmd_args)
+    if app_mode:
+        _stop_codex_watcher_singleton(codex_args.app_watcher_key(port, codex_cwd), parent_pid)
     _start_codex_watcher(
         port,
         proxy_session_key=proxy_session_key,
