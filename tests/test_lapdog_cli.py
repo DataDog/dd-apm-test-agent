@@ -146,6 +146,13 @@ def test_backfill_flag_parses():
     assert parsed.forward is False
 
 
+def test_subcommand_args_are_not_reparsed_as_lapdog_args():
+    lapdog_args, remaining = cli._parse_command(["claude", "--backfill"])
+
+    assert lapdog_args == []
+    assert remaining == ["claude", "--backfill"]
+
+
 def test_cmd_claude_backfill_does_not_exec_claude():
     with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126) as ensure:
         with mock.patch("lapdog.cli._run_claude") as run_claude:

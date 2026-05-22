@@ -100,6 +100,77 @@ def test_session_to_spans_multiple_user_prompts_create_multiple_traces():
     assert agents[1]["meta"]["input"]["value"] == "second"
 
 
+def test_session_to_spans_sets_model_from_first_assistant_in_each_turn():
+    entries = [
+        {
+            "type": "assistant",
+            "timestamp": "2026-05-11T11:59:59.000Z",
+            "message": {"role": "assistant", "model": "title-model", "content": [{"type": "text", "text": "title"}]},
+        },
+        {"type": "user", "timestamp": "2026-05-11T12:00:00.000Z", "message": {"role": "user", "content": "first"}},
+        {
+            "type": "assistant",
+            "timestamp": "2026-05-11T12:00:01.000Z",
+            "message": {"role": "assistant", "model": "turn-one-model", "content": [{"type": "text", "text": "ok1"}]},
+        },
+        {"type": "user", "timestamp": "2026-05-11T12:00:10.000Z", "message": {"role": "user", "content": "second"}},
+        {
+            "type": "assistant",
+            "timestamp": "2026-05-11T12:00:11.000Z",
+            "message": {"role": "assistant", "model": "turn-two-model", "content": [{"type": "text", "text": "ok2"}]},
+        },
+    ]
+
+    spans = claude_backfill.session_to_spans("sess-1", "/p", entries)
+
+    agents = [s for s in spans if s["meta"]["span"]["kind"] == "agent"]
+    assert [s["meta"]["model_name"] for s in agents] == ["turn-one-model", "turn-two-model"]
+    assert [s["meta"]["metadata"]["_dd"]["agent_manifest"]["model"] for s in agents] == [
+        "turn-one-model",
+        "turn-two-model",
+    ]
+
+
+def test_session_to_spans_renders_task_tool_as_subagent_span():
+    entries = [
+        {"type": "user", "timestamp": "2026-05-11T12:00:00.000Z", "message": {"role": "user", "content": "first"}},
+        {
+            "type": "assistant",
+            "timestamp": "2026-05-11T12:00:01.000Z",
+            "message": {
+                "role": "assistant",
+                "model": "claude-opus-4-7",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "task-1",
+                        "name": "Task",
+                        "input": {"description": "Explore", "prompt": "inspect the code"},
+                    }
+                ],
+            },
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-05-11T12:00:03.000Z",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "task-1", "content": "found it"}],
+            },
+        },
+    ]
+
+    spans = claude_backfill.session_to_spans("sess-1", "/p", entries)
+
+    agents = [s for s in spans if s["meta"]["span"]["kind"] == "agent"]
+    llm = next(s for s in spans if s["meta"]["span"]["kind"] == "llm")
+    subagent = next(s for s in agents if s["parent_id"] != "undefined")
+    assert subagent["name"] == "Task - Explore"
+    assert subagent["parent_id"] == llm["span_id"]
+    assert subagent["meta"]["output"]["value"] == "found it"
+    assert subagent["meta"]["metadata"]["subagent"]["prompt"] == "inspect the code"
+
+
 def test_session_to_spans_skips_entries_without_timestamps():
     entries = [
         {"type": "user", "message": {"role": "user", "content": "no ts"}},

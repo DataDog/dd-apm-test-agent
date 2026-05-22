@@ -18,38 +18,40 @@ pipeline does, so backfilled sessions are indistinguishable in the UI:
   * One LLM span per ``type=assistant`` entry, with model + token usage +
     cost computed via ``claude_cost_tracker.compute_cost_metrics``.
   * One tool span per tool_use / tool_result pair, parented to the LLM span
-    that requested it.
+    that requested it. Claude Code ``Task`` tool uses become child agent
+    spans so backfilled subagents are visible as agents rather than generic
+    tools.
 
 Timestamps come from the entries' ``timestamp`` field (ISO-8601). Durations
 between adjacent entries are used as best-effort span durations.
 """
 
-import datetime as _dt
+from datetime import datetime
 import getpass
 import os
-import secrets
 import socket
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
 
+from ddapm_test_agent.backfill_utils import backfill_metadata
+from ddapm_test_agent.backfill_utils import format_span_id
+from ddapm_test_agent.backfill_utils import format_trace_id
+from ddapm_test_agent.backfill_utils import to_text
 from ddapm_test_agent.claude_cost_tracker import compute_cost_metrics
-
-# Import from the live module so the ml_app value stays in sync — backfilled
-# spans must land in the same ml_app bucket as live ones.
-from ddapm_test_agent.claude_hooks import _ML_APP  # noqa: E402
+from ddapm_test_agent.lapdog_app_names import CLAUDE_CODE_ML_APP as _ML_APP
 
 _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 
 
 def _format_trace_id() -> str:
-    return f"{secrets.randbits(128):032x}"
+    return format_trace_id()
 
 
 def _format_span_id() -> str:
-    return str(secrets.randbits(63))
+    return format_span_id()
 
 
 def _parse_iso_ns(ts: Optional[str]) -> Optional[int]:
@@ -63,7 +65,7 @@ def _parse_iso_ns(ts: Optional[str]) -> Optional[int]:
         # Python 3.10 fromisoformat doesn't accept the trailing 'Z' (only +00:00).
         if ts.endswith("Z"):
             ts = ts[:-1] + "+00:00"
-        return int(_dt.datetime.fromisoformat(ts).timestamp() * 1_000_000_000)
+        return int(datetime.fromisoformat(ts).timestamp() * 1_000_000_000)
     except (TypeError, ValueError):
         return None
 
@@ -140,12 +142,12 @@ def _new_turn(session_id: str, cwd: str, model: str, start_ns: int, prompt: str)
             "model_provider": "anthropic",
             "metadata": {
                 "_dd": {
+                    **backfill_metadata(),
                     "agent_manifest": {
                         "name": _ML_APP,
                         "model": model,
                         "model_provider": "anthropic",
                     },
-                    "backfilled": True,
                 },
             },
         },
@@ -166,6 +168,7 @@ def _new_turn(session_id: str, cwd: str, model: str, start_ns: int, prompt: str)
         "total_tokens": 0,
         "total_cost": 0.0,
         "tools_used": set(),
+        "model_set": bool(model),
     }
 
 
@@ -223,7 +226,7 @@ def _build_llm_span(
             "output": {"messages": _format_output_messages(content)},
             "metadata": {
                 "stop_reason": msg.get("stop_reason", ""),
-                "_dd": {"backfilled": True},
+                "_dd": backfill_metadata(input_messages_unavailable=True),
             },
         },
         "metrics": {
@@ -255,12 +258,44 @@ def _build_tool_span(
     if isinstance(output_value, list):
         output_value = " ".join((b.get("text", "") if isinstance(b, dict) else str(b)) for b in output_value)
     elif not isinstance(output_value, str):
-        try:
-            import json as _json
-
-            output_value = _json.dumps(output_value)
-        except Exception:
-            output_value = str(output_value)
+        output_value = to_text(output_value)
+    if tool_name == "Task":
+        tool_description = ""
+        if isinstance(tool_input, dict):
+            tool_description = str(tool_input.get("description") or "")
+        span_name = f"Task - {tool_description}" if tool_description else "Task"
+        return {
+            "span_id": _format_span_id(),
+            "trace_id": trace_id,
+            "parent_id": pending["llm_span_id"],
+            "name": span_name,
+            "start_ns": start_ns,
+            "duration": duration,
+            "status": "error" if is_error else "ok",
+            "error": 1 if is_error else 0,
+            "ml_app": _ML_APP,
+            "service": _ML_APP,
+            "env": "local",
+            "session_id": session_id,
+            "tags": _common_tags(session_id, source="claude-code-backfill-subagent"),
+            "meta": {
+                "span": {"kind": "agent"},
+                "kind": "agent",
+                "input": {"value": to_text(tool_input)},
+                "output": {"value": output_value},
+                "metadata": {
+                    "subagent": {
+                        "tool_use_id": pending.get("id", ""),
+                        "description": tool_description,
+                        "prompt": tool_input.get("prompt", "") if isinstance(tool_input, dict) else "",
+                    },
+                    "_dd": backfill_metadata(),
+                },
+                **({"error": {"message": output_value}} if is_error else {}),
+            },
+            "metrics": {},
+            "span_links": [],
+        }
     return {
         "span_id": _format_span_id(),
         "trace_id": trace_id,
@@ -278,12 +313,12 @@ def _build_tool_span(
         "meta": {
             "span": {"kind": "tool"},
             "kind": "tool",
-            "input": {"value": _to_text(tool_input)},
+            "input": {"value": to_text(tool_input)},
             "output": {"value": output_value},
             "metadata": {
                 "tool_name": tool_name,
                 "tool_use_id": pending.get("id", ""),
-                "_dd": {"backfilled": True},
+                "_dd": backfill_metadata(),
             },
             **({"error": {"message": output_value}} if is_error else {}),
         },
@@ -292,15 +327,13 @@ def _build_tool_span(
     }
 
 
-def _to_text(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    try:
-        import json as _json
-
-        return _json.dumps(value)
-    except Exception:
-        return str(value)
+def _set_turn_model(turn: Dict[str, Any], model: str) -> None:
+    if not model or turn.get("model_set"):
+        return
+    root = turn["root_span"]
+    root["meta"]["model_name"] = model
+    root["meta"]["metadata"]["_dd"]["agent_manifest"]["model"] = model
+    turn["model_set"] = True
 
 
 def _finalize_turn(turn: Dict[str, Any]) -> None:
@@ -331,19 +364,9 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
     """
     spans: List[Dict[str, Any]] = []
     current: Optional[Dict[str, Any]] = None
-    last_assistant_ts_ns: Optional[int] = None
     # Track the previous entry's timestamp so the LLM span can have a non-zero
     # duration (best-effort: end-to-start of consecutive entries).
     previous_ts_ns: Optional[int] = None
-
-    # Resolve initial model — first assistant message wins.
-    initial_model = ""
-    for e in entries:
-        if e.get("type") == "assistant":
-            m = (e.get("message") or {}).get("model")
-            if isinstance(m, str) and m:
-                initial_model = m
-                break
 
     for entry in entries:
         etype = entry.get("type")
@@ -360,7 +383,7 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
                 # New user prompt → finalize prior turn, open a new one.
                 if current is not None:
                     _finalize_turn(current)
-                current = _new_turn(session_id, cwd, initial_model, ts_ns, content)
+                current = _new_turn(session_id, cwd, "", ts_ns, content)
                 spans.append(current["root_span"])
             elif isinstance(content, list) and current is not None:
                 for block in content:
@@ -376,7 +399,13 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
                         current["end_ns"] = max(current["end_ns"], ts_ns)
                         current["tools_used"].add(pending.get("name", ""))
         elif etype == "assistant" and isinstance(content, list) and current is not None:
-            model = msg.get("model") or initial_model
+            raw_model = msg.get("model")
+            model = (
+                raw_model
+                if isinstance(raw_model, str) and raw_model
+                else current["root_span"]["meta"].get("model_name", "")
+            )
+            _set_turn_model(current, model)
             # Best-effort duration: time since previous entry's timestamp.
             duration_ns = max(0, ts_ns - (previous_ts_ns or ts_ns))
             llm_span = _build_llm_span(
@@ -396,7 +425,6 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
             current["total_tokens"] += metrics.get("total_tokens", 0)
             current["total_cost"] += float(metrics.get("estimated_total_cost", 0) or 0)
             current["end_ns"] = max(current["end_ns"], ts_ns)
-            last_assistant_ts_ns = ts_ns
 
             for block in content:
                 if not isinstance(block, dict):
@@ -422,7 +450,4 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
     if current is not None:
         _finalize_turn(current)
 
-    # ``last_assistant_ts_ns`` is computed for future use (e.g. setting per-turn
-    # output close-time); silence "unused" linters by referencing it.
-    _ = last_assistant_ts_ns
     return spans

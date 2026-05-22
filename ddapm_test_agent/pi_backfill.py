@@ -15,27 +15,28 @@ the toolCall and the matching toolResult.
 
 import getpass
 import os
-import secrets
 import socket
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
 
-# Import from the live module so backfilled spans land in the same ml_app
-# bucket as live ones, regardless of env-var overrides.
-from ddapm_test_agent.pi_hooks import _ML_APP  # noqa: E402
+from ddapm_test_agent.backfill_utils import backfill_metadata
+from ddapm_test_agent.backfill_utils import format_span_id
+from ddapm_test_agent.backfill_utils import format_trace_id
+from ddapm_test_agent.backfill_utils import to_text
+from ddapm_test_agent.lapdog_app_names import PI_CODING_AGENT_ML_APP as _ML_APP
 
 _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 
 
 def _format_trace_id() -> str:
-    return f"{secrets.randbits(128):032x}"
+    return format_trace_id()
 
 
 def _format_span_id() -> str:
-    return str(secrets.randbits(63))
+    return format_span_id()
 
 
 def _parse_ts_ns(ts: Any) -> Optional[int]:
@@ -128,7 +129,7 @@ def _new_turn(session_id: str, cwd: str, model: str, start_ns: int, prompt: str)
             "output": {"value": ""},
             "model_name": model,
             "model_provider": "anthropic",
-            "metadata": {"_dd": {"backfilled": True}},
+            "metadata": {"_dd": backfill_metadata()},
         },
         "metrics": {},
         "span_links": [],
@@ -146,6 +147,7 @@ def _new_turn(session_id: str, cwd: str, model: str, start_ns: int, prompt: str)
         "total_tokens": 0,
         "total_cost_usd": 0.0,
         "tools_used": set(),
+        "model_set": bool(model),
     }
 
 
@@ -189,7 +191,7 @@ def _build_llm_span(
             "output": {"messages": _format_output_messages(msg.get("content") or [])},
             "metadata": {
                 "stop_reason": msg.get("stopReason", ""),
-                "_dd": {"backfilled": True},
+                "_dd": backfill_metadata(input_messages_unavailable=True),
             },
         },
         "metrics": {
@@ -248,12 +250,12 @@ def _build_tool_span(
         "meta": {
             "span": {"kind": "tool"},
             "kind": "tool",
-            "input": {"value": _to_text(pending.get("input") or {})},
+            "input": {"value": to_text(pending.get("input") or {})},
             "output": {"value": output_value},
             "metadata": {
                 "tool_name": tool_name,
                 "tool_call_id": pending.get("id", ""),
-                "_dd": {"backfilled": True},
+                "_dd": backfill_metadata(),
             },
             **({"error": {"message": output_value}} if is_error else {}),
         },
@@ -262,15 +264,11 @@ def _build_tool_span(
     }
 
 
-def _to_text(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    try:
-        import json as _json
-
-        return _json.dumps(value)
-    except Exception:
-        return str(value)
+def _set_turn_model(turn: Dict[str, Any], model: str) -> None:
+    if not model or turn.get("model_set"):
+        return
+    turn["root_span"]["meta"]["model_name"] = model
+    turn["model_set"] = True
 
 
 def _finalize_turn(turn: Dict[str, Any]) -> None:
@@ -294,17 +292,6 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
     current: Optional[Dict[str, Any]] = None
     previous_ts_ns: Optional[int] = None
 
-    # Resolve initial model from first assistant message.
-    initial_model = ""
-    for e in entries:
-        if e.get("type") != "message":
-            continue
-        m = e.get("message") or {}
-        if m.get("role") == "assistant":
-            initial_model = str(m.get("model") or "")
-            if initial_model:
-                break
-
     for entry in entries:
         if entry.get("type") != "message":
             continue
@@ -320,11 +307,12 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
                 continue
             if current is not None:
                 _finalize_turn(current)
-            current = _new_turn(session_id, cwd, initial_model, ts_ns, text)
+            current = _new_turn(session_id, cwd, "", ts_ns, text)
             spans.append(current["root_span"])
         elif role == "assistant" and current is not None:
             content = msg.get("content") or []
-            model = str(msg.get("model") or initial_model)
+            model = str(msg.get("model") or current["root_span"]["meta"].get("model_name", ""))
+            _set_turn_model(current, model)
             duration_ns = max(0, ts_ns - (previous_ts_ns or ts_ns))
             llm_span = _build_llm_span(
                 session_id=session_id,

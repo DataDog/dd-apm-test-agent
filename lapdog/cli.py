@@ -8,18 +8,18 @@ import signal
 import subprocess
 import sys
 import time
-import uuid
 from typing import List
 from typing import Optional
 from typing import Tuple
-
-from lapdog.lapdog_ascii_art import build_running_banner
+import uuid
 
 import requests
 
-from lapdog.hooks import write_claude_code_hooks
-from lapdog.paths import LOG_FILE, PID_FILE
 from lapdog import tracer_inject
+from lapdog.hooks import write_claude_code_hooks
+from lapdog.lapdog_ascii_art import build_running_banner
+from lapdog.paths import LOG_FILE
+from lapdog.paths import PID_FILE
 
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex"]
 LAPDOG_USAGE = (
@@ -147,7 +147,9 @@ def _maybe_write_claude_hooks(enable: bool) -> None:
     write_claude_code_hooks(claude_settings_path)
 
 
-def _start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False) -> Tuple[int, int, str]:
+def _start_lapdog(
+    port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False
+) -> Tuple[int, int, str]:
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -293,10 +295,15 @@ def _start_lapdog_detached(port: int, forward_data: bool) -> None:
         print("[lapdog] Failed to start lapdog in background.", file=sys.stderr)
         sys.exit(1)
 
-    # The child already verified lapdog is alive via _wait_for_lapdog before
-    # exiting, so we don't re-check here.  The forked child's exit can briefly
-    # disrupt the listening socket (shared fd), causing a transient connection
-    # refused that would make a re-check flaky.
+    # The forked child's exit can briefly disrupt the listening socket. Wait
+    # from the final parent too so immediate follow-up work, such as --backfill
+    # preflight POSTs, does not race the re-parented server.
+    for _ in range(50):
+        if _lapdog_alive(timeout=0.5):
+            return
+        time.sleep(0.2)
+    print("[lapdog] Lapdog failed to become reachable after background start.", file=sys.stderr)
+    sys.exit(1)
 
 
 def cmd_exec(app_cmd: List[str], forward_data: bool) -> None:
@@ -318,9 +325,7 @@ def cmd_exec(app_cmd: List[str], forward_data: bool) -> None:
     os.execvpe(resolved, app_cmd, env)
 
 
-def cmd_claude(
-    sub_cmd_args: List[str], forward_data: bool, enable_hooks: bool, backfill: bool = False
-) -> None:
+def cmd_claude(sub_cmd_args: List[str], forward_data: bool, enable_hooks: bool, backfill: bool = False) -> None:
     """Ensure lapdog is running in background, then launch Claude with intercept.
 
     When ``backfill`` is True: ensure lapdog is running, replay historical
@@ -559,29 +564,12 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = Fals
     _run_codex(args=sub_cmd_args, port=port, proxy_session_key=proxy_session_key)
 
 
-# Recognized lapdog flags. When found *after* the subcommand they are still
-# extracted as lapdog args rather than being forwarded to the underlying
-# binary — so ``lapdog claude --backfill`` and ``lapdog --backfill claude``
-# both work.
-_LAPDOG_FLAGS = ("--forward", "--hooks", "--backfill")
-
-
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
     lapdog_args: List[str] = []
 
     for arg_idx, arg in enumerate(cmd_args):
-        if not arg.startswith('--'):
-            # Found the subcommand. Anything after it that matches a known
-            # lapdog flag is also consumed as a lapdog arg, so the flag can
-            # appear in either position.
-            remaining = list(cmd_args[arg_idx:])
-            sub_cmd_and_args: List[str] = [remaining[0]]
-            for sub_arg in remaining[1:]:
-                if sub_arg in _LAPDOG_FLAGS:
-                    lapdog_args.append(sub_arg)
-                else:
-                    sub_cmd_and_args.append(sub_arg)
-            return lapdog_args, sub_cmd_and_args
+        if not arg.startswith("--"):
+            return lapdog_args, cmd_args[arg_idx:]
 
         lapdog_args.append(arg)
 

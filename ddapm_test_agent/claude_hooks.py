@@ -26,9 +26,13 @@ from aiohttp import web
 from aiohttp.web import Request
 import msgpack
 
+from ddapm_test_agent import claude_backfill
+
 from ._clock import monotonic_wall_ns
+from .backfill_utils import has_backfilled_session
 from .claude_cost_tracker import COST_METRIC_KEYS
 from .claude_link_tracker import ClaudeLinkTracker
+from .lapdog_app_names import CLAUDE_CODE_ML_APP
 from .llmobs_event_platform import with_cors
 
 log = logging.getLogger(__name__)
@@ -36,7 +40,7 @@ log = logging.getLogger(__name__)
 _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 _USER_HANDLE = os.environ.get("DD_USER_HANDLE", "")
-_ML_APP = os.environ.get("DD_CLAUDE_CODE_ML_APP", "claude-code")
+_ML_APP = CLAUDE_CODE_ML_APP
 
 # Models with 1M token context windows (native, no beta header needed).
 # All other models default to 200k.
@@ -1666,7 +1670,9 @@ class ClaudeHooksAPI:
         data = gzip.compress(msgpack.packb(payload))
         await self._post_to_backend(url, headers, data, f"forward {len(spans)} span updates")
 
-    async def _forward_trace_to_backend(self, session_id: str, trace_id: Optional[str] = None, span_source: str = "Claude hooks") -> None:
+    async def _forward_trace_to_backend(
+        self, session_id: str, trace_id: Optional[str] = None, span_source: str = "Claude hooks"
+    ) -> None:
         """Forward all assembled spans for a session's trace to the backend via the EVP proxy path."""
         session = self._sessions.get(session_id)
         if not session:
@@ -1685,7 +1691,11 @@ class ClaudeHooksAPI:
         # Strip locally-computed cost estimates before forwarding — let real cost tracking happen on ingestion
         forwarded_spans = []
         for s in spans:
-            span = {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}} if s.get("metrics") else dict(s)
+            span = (
+                {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}}
+                if s.get("metrics")
+                else dict(s)
+            )
             tags: List[Any] = span.get("tags") or []
             if "lapdog_forwarded:true" not in tags:
                 span["tags"] = tags + ["lapdog_forwarded:true"]
@@ -1697,7 +1707,9 @@ class ClaudeHooksAPI:
             "spans": forwarded_spans,
         }
         data = gzip.compress(msgpack.packb(payload))
-        await self._post_to_backend(url, headers, data, f"forward {len(spans)} {span_source} spans for trace {trace_id}")
+        await self._post_to_backend(
+            url, headers, data, f"forward {len(spans)} {span_source} spans for trace {trace_id}"
+        )
 
     async def _forward_eval_metrics_to_backend(self, session_id: str, trace_id: Optional[str] = None) -> None:
         """Forward evaluation metrics for all spans in a session's trace to the Datadog backend.
@@ -1840,7 +1852,15 @@ class ClaudeHooksAPI:
         if not session_id or not isinstance(entries, list):
             return web.json_response({"error": "session_id and entries required"}, status=400)
 
-        from ddapm_test_agent import claude_backfill
+        if has_backfilled_session(self._assembled_spans, session_id):
+            return web.json_response(
+                {
+                    "status": "skipped",
+                    "reason": "already_backfilled",
+                    "spans_created": 0,
+                    "traces_created": 0,
+                }
+            )
 
         try:
             spans = claude_backfill.session_to_spans(session_id, cwd, entries)

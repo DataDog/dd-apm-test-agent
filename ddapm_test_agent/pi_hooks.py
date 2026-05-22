@@ -27,7 +27,6 @@ Terminology mapping (pi → trajectory-dev proposal):
 
 import json
 import logging
-import os
 from typing import Any
 from typing import Dict
 from typing import List
@@ -37,7 +36,10 @@ from typing import Tuple
 from aiohttp import web
 from aiohttp.web import Request
 
+from ddapm_test_agent import pi_backfill
+
 from ._clock import monotonic_wall_ns
+from .backfill_utils import has_backfilled_session
 from .claude_cost_tracker import compute_cost_metrics
 from .claude_cost_tracker import cost_from_provider_usage
 from .claude_hooks import ClaudeHooksAPI
@@ -48,11 +50,12 @@ from .claude_hooks import _USER_HANDLE
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
+from .lapdog_app_names import PI_CODING_AGENT_ML_APP
 from .llmobs_event_platform import with_cors
 
 log = logging.getLogger(__name__)
 
-_ML_APP = os.environ.get("DD_PI_CODING_AGENT_ML_APP", "pi-coding-agent")
+_ML_APP = PI_CODING_AGENT_ML_APP
 
 
 class PendingLLMSpan:
@@ -971,7 +974,15 @@ class PiHooksAPI:
         if not session_id or not isinstance(entries, list):
             return web.json_response({"error": "session_id and entries required"}, status=400)
 
-        from ddapm_test_agent import pi_backfill
+        if has_backfilled_session(self._hooks_api._assembled_spans, session_id):
+            return web.json_response(
+                {
+                    "status": "skipped",
+                    "reason": "already_backfilled",
+                    "spans_created": 0,
+                    "traces_created": 0,
+                }
+            )
 
         try:
             spans = pi_backfill.session_to_spans(session_id, cwd, entries)

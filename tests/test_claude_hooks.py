@@ -64,6 +64,53 @@ async def test_hook_session_creates_agent_span(agent):
     assert root["trace_id"] in trace_ids
 
 
+async def test_backfill_session_is_idempotent_for_same_session(agent):
+    payload = {
+        "session_id": "sess-backfill-once",
+        "cwd": "/p",
+        "entries": [
+            {
+                "type": "user",
+                "timestamp": "2026-05-11T12:00:00.000Z",
+                "message": {"role": "user", "content": "do thing"},
+            },
+            {
+                "type": "assistant",
+                "timestamp": "2026-05-11T12:00:01.000Z",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-opus-4-7",
+                    "content": [{"type": "text", "text": "ok"}],
+                },
+            },
+        ],
+    }
+
+    first = await agent.post(
+        "/claude/hooks/backfill_session",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(payload),
+    )
+    assert first.status == 200
+    first_body = await first.json()
+    assert first_body["status"] == "ok"
+    assert first_body["spans_created"] == 2
+
+    second = await agent.post(
+        "/claude/hooks/backfill_session",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(payload),
+    )
+    assert second.status == 200
+    second_body = await second.json()
+    assert second_body["status"] == "skipped"
+    assert second_body["reason"] == "already_backfilled"
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = (await resp.json())["spans"]
+    assert len([s for s in spans if s.get("session_id") == "sess-backfill-once"]) == 2
+
+
 async def test_hook_tool_use_creates_tool_span(agent):
     session_id = "sess-tool-span"
 
