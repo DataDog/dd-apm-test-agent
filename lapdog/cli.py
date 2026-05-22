@@ -101,22 +101,26 @@ def _uninstall_lapdog_claude_code_plugin() -> None:
     if not claude_bin:
         return
 
-    cmd = [claude_bin, "plugin", "uninstall", LAPDOG_PLUGIN_NAME]
-    try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as e:
-        detail = (e.stderr or e.stdout or "").strip()
-        print(
-            f"[lapdog] '{' '.join(cmd[1:])}' failed (rc={e.returncode}): {detail}",
-            file=sys.stderr,
-        )
-        print(
-            "[lapdog] Failed to uninstall 'lapdog' Claude Code plugin "
-            "Uninstall manually:\n"
-            f"          claude plugin uninstall {LAPDOG_PLUGIN_NAME}",
-            file=sys.stderr,
-        )
-        return
+    commands = [
+        [claude_bin, "plugin", "uninstall", LAPDOG_PLUGIN_NAME],
+        [claude_bin, "plugin", "marketplace", "remove", LAPDOG_MARKETPLACE_SOURCE]
+    ]
+    for cmd in commands:
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            detail = (e.stderr or e.stdout or "").strip()
+            print(
+                f"[lapdog] '{' '.join(cmd[1:])}' failed (rc={e.returncode}): {detail}",
+                file=sys.stderr,
+            )
+            print(
+                "[lapdog] Failed to uninstall 'lapdog' Claude Code plugin "
+                "Uninstall manually:\n"
+                f"          claude plugin uninstall {LAPDOG_PLUGIN_NAME}",
+                file=sys.stderr,
+            )
+            return
     print("[lapdog] Claude Code plugin uninstalled", file=sys.stderr)
 
 
@@ -227,7 +231,7 @@ def _start_lapdog(
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    args = [sys.executable, "-m", "ddapm_test_agent.agent", "--enable-claude-code-hooks", "--lapdog-mode"]
+    args = [sys.executable, "-m", "ddapm_test_agent.agent", "--lapdog-mode"]
 
     if not forward_data:
         args.append("--disable-llmobs-data-forwarding")
@@ -604,7 +608,7 @@ def cmd_uninstall() -> None:
         shutil.rmtree(LAPDOG_DIR, ignore_errors=True)
         print("[lapdog] Lapdog-related files under ~/.lapdog removed")
 
-    # remove claude code hook
+    # remove claude code plugin
     _uninstall_lapdog_claude_code_plugin()
 
     # remove pi extension
