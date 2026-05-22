@@ -1,0 +1,11 @@
+---
+features:
+  - |
+    Add ``lapdog opencode`` command for tracing opencode coding agent sessions
+    through the dd-apm-test-agent. The command installs the bundled lapdog
+    plugin into ``~/.config/opencode/plugin/lapdog.ts``, launches opencode with
+    ``LAPDOG_URL`` configured, and assembles each opencode session into LLM
+    Observability spans (agent turn, per-inference step, LLM call with token
+    usage and cost, and tool executions) reachable at
+    ``/claude/hooks/spans``. Raw plugin events are also available at
+    ``/opencode/hooks/raw`` for debugging.

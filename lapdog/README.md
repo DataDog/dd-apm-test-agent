@@ -36,8 +36,8 @@ want to know what `lapdog start` actually does).
 - Port **8126** free on `localhost`. If the port is taken, set `PORT=<other>`
   before running `lapdog start` and open the dashboard at
   `http://localhost:<port>/leash/`.
-- For `lapdog claude` / `lapdog pi` / `lapdog codex`: the `claude` / `pi` /
-  `codex` binary already on `PATH`.
+- For `lapdog claude` / `lapdog pi` / `lapdog codex` / `lapdog opencode`: the
+  `claude` / `pi` / `codex` / `opencode` binary already on `PATH`.
 
 ---
 
@@ -171,6 +171,39 @@ and continues launching Claude rather than blocking the session.
 
 ---
 
+## OpenCode plugin
+
+`lapdog opencode` installs a TypeScript plugin into
+`~/.config/opencode/plugin/lapdog.ts` and launches opencode with `LAPDOG_URL`
+set to the local agent. The plugin hooks opencode's lifecycle events
+(`session.created`, `message.updated`, `tool.execute.before`/`after`,
+`session.idle`, …) and fire-and-forget POSTs each event to
+`http://localhost:8126/opencode/hooks` so the dashboard can build a
+session-by-session trace tree (agent → step → LLM → tool) alongside Claude
+Code, Codex, and Pi sessions.
+
+```bash
+lapdog opencode
+# [lapdog] Installed opencode plugin → ~/.config/opencode/plugin/lapdog.ts
+# ...launches opencode...
+```
+
+The plugin file is self-contained — no extra dependencies and no edits to
+`~/.config/opencode/opencode.json` are required. To remove it manually:
+
+```bash
+rm -f ~/.config/opencode/plugin/lapdog.ts
+```
+
+Because the plugin uses opencode's `message.updated` events (which include
+final token usage and per-call cost when the provider reports it), opencode
+captures do **not** require a model-traffic proxy — your provider keys keep
+talking to the provider directly. If `lapdog` is down, the plugin's
+`fetch` calls fail open (2 s timeout, silently swallowed), so opencode is
+never blocked.
+
+---
+
 ## Quickstart
 
 ```bash
@@ -182,6 +215,9 @@ lapdog claude
 
 # Or launch Codex with JSONL capture + proxy tracing wired up.
 lapdog codex
+
+# Or launch opencode with the lapdog plugin installed.
+lapdog opencode
 
 # Or launch Pi with the lapdog extension installed.
 lapdog pi
@@ -232,6 +268,7 @@ Knowing this up front makes the uninstall list below easy to verify.
 | `~/.lapdog/lapdog.pid` | `lapdog start` / `lapdog claude` / `lapdog pi` | PID + port of the background agent |
 | `~/.lapdog/lapdog.log` | same | stdout/stderr of the background agent |
 | `~/.claude/plugins/...` | `lapdog claude` (first run) | the auto-installed `lapdog@lapdog` Claude Code plugin lives entirely under here |
+| `~/.config/opencode/plugin/lapdog.ts` | `lapdog opencode` | opencode plugin that POSTs lifecycle events to the local agent |
 | `~/.pi/agent/extensions/lapdog.ts` | `lapdog pi` | Pi extension that reports tool calls to the local agent |
 
 No other state is created. There is no daemon installed at the OS level
@@ -267,6 +304,12 @@ claude plugin marketplace remove lapdog
 
 ```bash
 rm -f ~/.pi/agent/extensions/lapdog.ts
+```
+
+### 3b. Remove the opencode plugin (only if you used `lapdog opencode`)
+
+```bash
+rm -f ~/.config/opencode/plugin/lapdog.ts
 ```
 
 ### 4. Remove lapdog's working directory

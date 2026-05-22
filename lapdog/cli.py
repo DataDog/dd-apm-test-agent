@@ -22,16 +22,17 @@ from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
 
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "opencode"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
-    "  start   Start lapdog (background)\n"
-    "  stop    Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
-    "  status  Show lapdog status (from /info)\n"
-    "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
-    "  pi      Start lapdog in background if needed, install extension, then launch pi\n"
-    "  codex   Start lapdog in background if needed, then launch Codex with tracing\n"
+    "  start     Start lapdog (background)\n"
+    "  stop      Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
+    "  status    Show lapdog status (from /info)\n"
+    "  claude    Start lapdog in background if needed, then launch Claude with intercept\n"
+    "  pi        Start lapdog in background if needed, install extension, then launch pi\n"
+    "  codex     Start lapdog in background if needed, then launch Codex with tracing\n"
+    "  opencode  Start lapdog in background if needed, install plugin, then launch opencode\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
     "  lapdog python app.py\n"
@@ -445,6 +446,71 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
     _run_pi(args=sub_cmd_args, port=port)
 
 
+# ---------------------------------------------------------------------------
+# opencode plugin management
+# ---------------------------------------------------------------------------
+
+_OPENCODE_GLOBAL_PLUGIN_DIR = os.path.expanduser("~/.config/opencode/plugin")
+_OPENCODE_PLUGIN_DEST = os.path.join(_OPENCODE_GLOBAL_PLUGIN_DIR, "lapdog.ts")
+_OPENCODE_PLUGIN_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "opencode_lapdog_plugin.ts")
+
+
+def _install_opencode_plugin() -> None:
+    """Copy the bundled lapdog opencode plugin into opencode's global plugin directory.
+
+    If the plugin is already installed and identical, skip the copy.
+    LAPDOG_URL is injected at runtime via environment variable when opencode is launched.
+    """
+    if not os.path.isfile(_OPENCODE_PLUGIN_SOURCE):
+        print(f"[lapdog] opencode plugin source not found: {_OPENCODE_PLUGIN_SOURCE}", file=sys.stderr)
+        sys.exit(1)
+
+    with open(_OPENCODE_PLUGIN_SOURCE, "r") as f:
+        source = f.read()
+
+    is_update = False
+    if os.path.isfile(_OPENCODE_PLUGIN_DEST):
+        try:
+            with open(_OPENCODE_PLUGIN_DEST, "r") as f:
+                existing = f.read()
+            if existing == source:
+                print(f"[lapdog] opencode plugin already installed at {_OPENCODE_PLUGIN_DEST}")
+                return
+            is_update = True
+        except OSError:
+            pass
+
+    os.makedirs(_OPENCODE_GLOBAL_PLUGIN_DIR, exist_ok=True)
+    with open(_OPENCODE_PLUGIN_DEST, "w") as f:
+        f.write(source)
+
+    if is_update:
+        print(f"[lapdog] Updated opencode plugin → {_OPENCODE_PLUGIN_DEST}")
+    else:
+        print(f"[lapdog] Installed opencode plugin → {_OPENCODE_PLUGIN_DEST}")
+
+
+def _run_opencode(args: Optional[List[str]] = None, port: Optional[int] = 8126) -> None:
+    """Exec the opencode binary, forwarding arguments. Never returns."""
+    if args is None:
+        args = []
+    opencode_bin = shutil.which("opencode")
+    if not opencode_bin:
+        print("[lapdog] 'opencode' not found in PATH", file=sys.stderr)
+        sys.exit(1)
+    env = {**os.environ, "LAPDOG_URL": f"http://localhost:{port}"}
+    os.execve(opencode_bin, [opencode_bin] + args, env)
+
+
+def cmd_opencode(sub_cmd_args: List[str], forward_data: bool) -> None:
+    """Ensure lapdog is running, install the opencode plugin, then launch opencode."""
+    port = _ensure_lapdog_running(forward_data, detached=True)
+    _install_opencode_plugin()
+
+    print(build_running_banner(data_type="coding session"))
+    _run_opencode(args=sub_cmd_args, port=port)
+
+
 def _resolve_codex_cwd(args: List[str]) -> str:
     cwd = os.getcwd()
     idx = 0
@@ -640,6 +706,8 @@ def main() -> None:
         cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
     elif sub_cmd == "codex":
         cmd_codex(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+    elif sub_cmd == "opencode":
+        cmd_opencode(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
 
 
 if __name__ == "__main__":

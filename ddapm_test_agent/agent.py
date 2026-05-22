@@ -63,6 +63,7 @@ from .claude_proxy import ClaudeProxyAPI
 from .pi_hooks import PiHooksAPI
 from .codex_hooks import CodexHooksAPI
 from .codex_proxy import CodexProxyAPI
+from .opencode_hooks import OpenCodeHooksAPI
 from .integration import Integration
 from .llmobs_event_platform import LLMObsEventPlatformAPI
 from .logs import LOGS_ENDPOINT
@@ -2043,6 +2044,9 @@ def make_app(
 
     codex_proxy_api = CodexProxyAPI(hooks_api=codex_hooks_api)
     app.add_routes(codex_proxy_api.get_routes())
+
+    opencode_hooks_api = OpenCodeHooksAPI(hooks_api=claude_hooks_api)
+    app.add_routes(opencode_hooks_api.get_routes())
 
     async def _cleanup_claude_proxy(app: web.Application) -> None:
         await claude_proxy_api.close()
