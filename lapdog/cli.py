@@ -1,7 +1,6 @@
 """CLI for lapdog subcommands"""
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,6 +16,7 @@ import uuid
 
 import requests
 
+from lapdog import codex_args
 from lapdog import tracer_inject
 from lapdog.lapdog_ascii_art import build_running_banner
 from lapdog.paths import LOG_FILE
@@ -445,120 +445,6 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
     _run_pi(args=sub_cmd_args, port=port)
 
 
-_CODEX_VALUE_FLAGS = {
-    "-a",
-    "--ask-for-approval",
-    "-c",
-    "--config",
-    "-C",
-    "--cd",
-    "--download-url",
-    "--enable",
-    "-i",
-    "--image",
-    "--disable",
-    "--local-provider",
-    "-m",
-    "--model",
-    "-p",
-    "--profile",
-    "--profile-v2",
-    "--remote",
-    "--remote-auth-token-env",
-    "-s",
-    "--sandbox",
-}
-
-
-def _abs_path_from_cwd(path: str, cwd: Optional[str] = None) -> str:
-    resolved = str(Path(path).expanduser())
-    if not os.path.isabs(resolved):
-        resolved = os.path.join(cwd or os.getcwd(), resolved)
-    return os.path.abspath(resolved)
-
-
-def _resolve_codex_cd_cwd(args: List[str]) -> str:
-    cwd = os.getcwd()
-    idx = 0
-    while idx < len(args):
-        arg = args[idx]
-        if arg == "--":
-            break
-        next_idx = idx + 1
-        cd_value: Optional[str] = None
-        if arg in ("-C", "--cd"):
-            if next_idx < len(args):
-                cd_value = args[next_idx]
-                next_idx += 1
-        elif arg.startswith("--cd="):
-            cd_value = arg.split("=", 1)[1]
-        elif arg.startswith("-C") and arg != "-C":
-            cd_value = arg[2:].lstrip("=")
-        if cd_value:
-            cwd = _abs_path_from_cwd(cd_value)
-        idx = next_idx
-    return os.path.abspath(cwd)
-
-
-def _codex_command_index(args: List[str]) -> Optional[int]:
-    """Return the index of the first Codex subcommand, if one is present."""
-    idx = 0
-    while idx < len(args):
-        arg = args[idx]
-        if arg == "--":
-            return idx + 1 if idx + 1 < len(args) else None
-        if not arg.startswith("-"):
-            return idx
-        if arg in _CODEX_VALUE_FLAGS:
-            idx += 2
-            continue
-        idx += 1
-    return None
-
-
-def _is_codex_app_command(args: List[str]) -> bool:
-    command_idx = _codex_command_index(args)
-    return command_idx is not None and args[command_idx] == "app"
-
-
-def _resolve_codex_app_cwd(args: List[str]) -> Optional[str]:
-    """Resolve the workspace path for `codex app [PATH]` commands."""
-    command_idx = _codex_command_index(args)
-    if command_idx is None or args[command_idx] != "app":
-        return None
-
-    base_cwd = _resolve_codex_cd_cwd(args[:command_idx])
-    idx = command_idx + 1
-    while idx < len(args):
-        arg = args[idx]
-        if arg == "--":
-            if idx + 1 < len(args):
-                return _abs_path_from_cwd(args[idx + 1], cwd=base_cwd)
-            break
-        if arg in _CODEX_VALUE_FLAGS:
-            idx += 2
-            continue
-        if arg.startswith("-"):
-            idx += 1
-            continue
-        return _abs_path_from_cwd(arg, cwd=base_cwd)
-
-    return base_cwd
-
-
-def _resolve_codex_cwd(args: List[str]) -> str:
-    app_cwd = _resolve_codex_app_cwd(args)
-    if app_cwd is not None:
-        return app_cwd
-
-    return _resolve_codex_cd_cwd(args)
-
-
-def _codex_app_watcher_key(port: int, cwd: str) -> str:
-    key = f"{port}\0{os.path.realpath(cwd)}"
-    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
-
-
 def _codex_watcher_pid_file(log_dir: str, singleton_key: str) -> str:
     return os.path.join(log_dir, f"codex-watcher-{singleton_key}.pid")
 
@@ -672,19 +558,19 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
     if port is None:
         print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
         sys.exit(1)
-    app_mode = _is_codex_app_command(sub_cmd_args)
+    app_mode = codex_args.is_app_command(sub_cmd_args)
     proxy_session_key = None if app_mode else uuid.uuid4().hex
     parent_pid = os.getpid()
     if app_mode:
         lapdog_pid, _ = _read_pid_file()
         parent_pid = lapdog_pid or parent_pid
-    codex_cwd = _resolve_codex_cwd(sub_cmd_args)
+    codex_cwd = codex_args.resolve_cwd(sub_cmd_args)
     _start_codex_watcher(
         port,
         proxy_session_key=proxy_session_key,
         cwd=codex_cwd,
         parent_pid=parent_pid,
-        singleton_key=_codex_app_watcher_key(port, codex_cwd) if app_mode else None,
+        singleton_key=codex_args.app_watcher_key(port, codex_cwd) if app_mode else None,
     )
 
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))

@@ -2,6 +2,7 @@ import json
 import subprocess
 from unittest import mock
 
+from lapdog import codex_args
 from lapdog import cli
 
 
@@ -67,72 +68,95 @@ def test_cmd_codex_app_starts_watcher_with_app_path_and_lapdog_pid(monkeypatch, 
         proxy_session_key=None,
         cwd=str(target_cwd),
         parent_pid=4242,
-        singleton_key=cli._codex_app_watcher_key(8126, str(target_cwd)),
+        singleton_key=codex_args.app_watcher_key(8126, str(target_cwd)),
     )
     run_codex.assert_called_once_with(args=["app", str(target_cwd)], port=8126, proxy_session_key=None)
 
 
 def test_resolve_codex_cwd_handles_relative_cd(monkeypatch, tmp_path):
     wrapper_cwd = tmp_path / "wrapper"
-    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+    monkeypatch.setattr(codex_args.os, "getcwd", lambda: str(wrapper_cwd))
 
-    assert cli._resolve_codex_cwd(["-C", "repo"]) == str(wrapper_cwd / "repo")
+    assert codex_args.resolve_cwd(["-C", "repo"]) == str(wrapper_cwd / "repo")
 
 
 def test_resolve_codex_cwd_handles_equals_form(monkeypatch, tmp_path):
     wrapper_cwd = tmp_path / "wrapper"
     target_cwd = tmp_path / "target"
-    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+    monkeypatch.setattr(codex_args.os, "getcwd", lambda: str(wrapper_cwd))
 
-    assert cli._resolve_codex_cwd([f"--cd={target_cwd}"]) == str(target_cwd)
+    assert codex_args.resolve_cwd([f"--cd={target_cwd}"]) == str(target_cwd)
 
 
 def test_resolve_codex_cwd_ignores_args_after_double_dash(monkeypatch, tmp_path):
     wrapper_cwd = tmp_path / "wrapper"
-    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+    monkeypatch.setattr(codex_args.os, "getcwd", lambda: str(wrapper_cwd))
 
-    assert cli._resolve_codex_cwd(["--", "--cd", str(tmp_path / "ignored")]) == str(wrapper_cwd)
+    assert codex_args.resolve_cwd(["--", "--cd", str(tmp_path / "ignored")]) == str(wrapper_cwd)
 
 
 def test_resolve_codex_cwd_handles_app_path(monkeypatch, tmp_path):
     wrapper_cwd = tmp_path / "wrapper"
     target_cwd = tmp_path / "target"
-    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+    monkeypatch.setattr(codex_args.os, "getcwd", lambda: str(wrapper_cwd))
 
-    assert cli._resolve_codex_cwd(["app", str(target_cwd)]) == str(target_cwd)
+    assert codex_args.resolve_cwd(["app", str(target_cwd)]) == str(target_cwd)
 
 
 def test_resolve_codex_cwd_handles_relative_app_path(monkeypatch, tmp_path):
     wrapper_cwd = tmp_path / "wrapper"
-    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+    monkeypatch.setattr(codex_args.os, "getcwd", lambda: str(wrapper_cwd))
 
-    assert cli._resolve_codex_cwd(["app", "repo"]) == str(wrapper_cwd / "repo")
+    assert codex_args.resolve_cwd(["app", "repo"]) == str(wrapper_cwd / "repo")
 
 
 def test_resolve_codex_cwd_handles_app_options(monkeypatch, tmp_path):
     wrapper_cwd = tmp_path / "wrapper"
     target_cwd = tmp_path / "target"
-    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+    monkeypatch.setattr(codex_args.os, "getcwd", lambda: str(wrapper_cwd))
 
-    assert cli._resolve_codex_cwd(
+    assert codex_args.resolve_cwd(
         ["-c", 'model="gpt-5.5"', "app", "--download-url", "https://example.com", str(target_cwd)]
     ) == str(target_cwd)
+
+
+def test_resolve_codex_cwd_handles_app_add_dir_option(monkeypatch, tmp_path):
+    wrapper_cwd = tmp_path / "wrapper"
+    extra_cwd = tmp_path / "extra"
+    target_cwd = tmp_path / "target"
+    monkeypatch.setattr(codex_args.os, "getcwd", lambda: str(wrapper_cwd))
+
+    args = ["--add-dir", str(extra_cwd), "app", str(target_cwd)]
+
+    assert codex_args.is_app_command(args)
+    assert codex_args.resolve_cwd(args) == str(target_cwd)
+
+
+def test_resolve_codex_cwd_does_not_treat_image_arguments_as_app_command(monkeypatch, tmp_path):
+    wrapper_cwd = tmp_path / "wrapper"
+    image_cwd = tmp_path / "image"
+    monkeypatch.setattr(codex_args.os, "getcwd", lambda: str(wrapper_cwd))
+
+    args = ["-i", str(image_cwd), "app", "/another/image/path", "explain these images"]
+
+    assert not codex_args.is_app_command(args)
+    assert codex_args.resolve_cwd(args) == str(wrapper_cwd)
 
 
 def test_resolve_codex_cwd_handles_app_default_with_cd(monkeypatch, tmp_path):
     wrapper_cwd = tmp_path / "wrapper"
     target_cwd = tmp_path / "target"
-    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+    monkeypatch.setattr(codex_args.os, "getcwd", lambda: str(wrapper_cwd))
 
-    assert cli._resolve_codex_cwd(["--cd", str(target_cwd), "app"]) == str(target_cwd)
+    assert codex_args.resolve_cwd(["--cd", str(target_cwd), "app"]) == str(target_cwd)
 
 
 def test_resolve_codex_cwd_handles_relative_app_path_with_cd(monkeypatch, tmp_path):
     wrapper_cwd = tmp_path / "wrapper"
     target_cwd = tmp_path / "target"
-    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+    monkeypatch.setattr(codex_args.os, "getcwd", lambda: str(wrapper_cwd))
 
-    assert cli._resolve_codex_cwd(["--cd", str(target_cwd), "app", "repo"]) == str(target_cwd / "repo")
+    assert codex_args.resolve_cwd(["--cd", str(target_cwd), "app", "repo"]) == str(target_cwd / "repo")
 
 
 def test_start_codex_watcher_waits_for_ready_file(tmp_path, monkeypatch):
