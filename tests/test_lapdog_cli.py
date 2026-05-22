@@ -26,6 +26,7 @@ def test_cmd_codex_starts_watcher_and_execs_codex():
         cwd=cli.os.getcwd(),
         parent_pid=cli.os.getpid(),
         singleton_key=None,
+        include_all_cwds=False,
     )
     run_codex.assert_called_once_with(args=["--model", "gpt-5.5"], port=8126, proxy_session_key="proxy-key")
 
@@ -48,6 +49,7 @@ def test_cmd_codex_starts_watcher_with_forwarded_cd(monkeypatch, tmp_path):
         cwd=str(target_cwd),
         parent_pid=cli.os.getpid(),
         singleton_key=None,
+        include_all_cwds=False,
     )
 
 
@@ -68,7 +70,8 @@ def test_cmd_codex_app_starts_watcher_with_app_path_and_lapdog_pid(monkeypatch, 
         proxy_session_key=None,
         cwd=str(target_cwd),
         parent_pid=4242,
-        singleton_key=codex_args.app_watcher_key(8126, str(target_cwd)),
+        singleton_key=codex_args.app_watcher_key(8126),
+        include_all_cwds=True,
     )
     run_codex.assert_called_once_with(args=["app", str(target_cwd)], port=8126, proxy_session_key=None)
 
@@ -202,6 +205,27 @@ def test_start_codex_watcher_uses_parent_pid(tmp_path, monkeypatch):
     cli._start_codex_watcher(8126, cwd=str(tmp_path), parent_pid=4242)
 
     assert popen_args[0][popen_args[0].index("--parent-pid") + 1] == "4242"
+
+
+def test_start_codex_watcher_can_include_all_cwds(tmp_path, monkeypatch):
+    popen_args = []
+
+    def fake_popen(args, **kwargs):
+        popen_args.append(args)
+        ready_path = args[args.index("--ready-file") + 1]
+        with open(ready_path, "w") as f:
+            f.write("ready\n")
+        process = mock.Mock()
+        process.poll.return_value = None
+        return process
+
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+
+    cli._start_codex_watcher(8126, cwd=str(tmp_path), include_all_cwds=True)
+
+    assert "--include-all-cwds" in popen_args[0]
+    assert popen_args[0][popen_args[0].index("--cursor-path") + 1] == cli.CODEX_APP_CURSOR_FILE
 
 
 def test_start_codex_watcher_skips_live_singleton(tmp_path, monkeypatch):

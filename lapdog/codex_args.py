@@ -114,6 +114,6 @@ def resolve_cwd(args: List[str]) -> str:
     return _resolve_cd_cwd(args)
 
 
-def app_watcher_key(port: int, cwd: str) -> str:
-    key = f"{port}\0{os.path.realpath(cwd)}"
+def app_watcher_key(port: int, cwd: Optional[str] = None) -> str:
+    key = f"{port}\0{os.path.realpath(cwd) if cwd else 'all-cwds'}"
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]

@@ -20,6 +20,7 @@ import requests
 from lapdog import codex_args
 from lapdog import tracer_inject
 from lapdog.lapdog_ascii_art import build_running_banner
+from lapdog.paths import CODEX_APP_CURSOR_FILE
 from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
 
@@ -487,6 +488,7 @@ def _start_codex_watcher(
     cwd: Optional[str] = None,
     parent_pid: Optional[int] = None,
     singleton_key: Optional[str] = None,
+    include_all_cwds: bool = False,
 ) -> None:
     """Start the bundled Codex JSONL watcher for this working directory."""
     watcher_cwd = os.path.abspath(cwd or os.getcwd())
@@ -534,6 +536,8 @@ def _start_codex_watcher(
     ]
     if proxy_session_key:
         args += ["--proxy-session-key", proxy_session_key]
+    if include_all_cwds:
+        args += ["--include-all-cwds", "--cursor-path", CODEX_APP_CURSOR_FILE]
     with open(log_path, "a") as log_file:
         process = subprocess.Popen(
             args,
@@ -607,7 +611,8 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
         proxy_session_key=proxy_session_key,
         cwd=codex_cwd,
         parent_pid=parent_pid,
-        singleton_key=codex_args.app_watcher_key(port, codex_cwd) if app_mode else None,
+        singleton_key=codex_args.app_watcher_key(port) if app_mode else None,
+        include_all_cwds=app_mode,
     )
 
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
