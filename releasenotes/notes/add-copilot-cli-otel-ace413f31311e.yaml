@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Add `lapdog copilot` support for launching GitHub Copilot CLI with native
+    OpenTelemetry export to Lapdog.
