@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import signal
 import subprocess
 import sys
@@ -449,6 +450,37 @@ def _codex_watcher_pid_file(log_dir: str, singleton_key: str) -> str:
     return os.path.join(log_dir, f"codex-watcher-{singleton_key}.pid")
 
 
+def _codex_watcher_reusable(pid: int, parent_pid: int) -> bool:
+    if not _process_exists(pid):
+        return False
+    if os.name == "nt":
+        return True
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    command = result.stdout.strip()
+    if result.returncode != 0 or not command:
+        return False
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = command.split()
+    if "lapdog.codex_watcher" not in parts:
+        return False
+    try:
+        parent_idx = parts.index("--parent-pid")
+    except ValueError:
+        return False
+    return parent_idx + 1 < len(parts) and parts[parent_idx + 1] == str(parent_pid)
+
+
 def _start_codex_watcher(
     port: int,
     proxy_session_key: Optional[str] = None,
@@ -469,12 +501,17 @@ def _start_codex_watcher(
                 existing_pid = int((f.readline() or "").strip())
         except (OSError, ValueError):
             existing_pid = None
-        if existing_pid and _process_exists(existing_pid):
+        if existing_pid and _codex_watcher_reusable(existing_pid, watcher_parent_pid):
             print(
                 f"[lapdog] Codex watcher already running for this app workspace (PID {existing_pid}).",
                 flush=True,
             )
             return
+        if existing_pid:
+            print(
+                f"[lapdog] Replacing stale Codex watcher for this app workspace (PID {existing_pid}).",
+                file=sys.stderr,
+            )
     else:
         pid_path = None
     ready_path = os.path.join(log_dir, f"codex-watcher-{os.getpid()}.ready")

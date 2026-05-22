@@ -209,13 +209,54 @@ def test_start_codex_watcher_skips_live_singleton(tmp_path, monkeypatch):
     pid_path.write_text("4242\n")
 
     monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
-    monkeypatch.setattr(cli, "_process_exists", lambda pid: pid == 4242)
+    monkeypatch.setattr(cli, "_codex_watcher_reusable", lambda pid, parent_pid: pid == 4242)
     popen = mock.Mock()
     monkeypatch.setattr(cli.subprocess, "Popen", popen)
 
     cli._start_codex_watcher(8126, cwd=str(tmp_path), singleton_key="app-key")
 
     popen.assert_not_called()
+
+
+def test_start_codex_watcher_replaces_stale_singleton_parent(tmp_path, monkeypatch):
+    pid_path = tmp_path / "codex-watcher-app-key.pid"
+    pid_path.write_text("4242\n")
+    popen_args = []
+
+    def fake_popen(args, **kwargs):
+        popen_args.append(args)
+        ready_path = args[args.index("--ready-file") + 1]
+        with open(ready_path, "w") as f:
+            f.write("ready\n")
+        process = mock.Mock()
+        process.pid = 4343
+        process.poll.return_value = None
+        return process
+
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli, "_codex_watcher_reusable", lambda pid, parent_pid: False)
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+
+    cli._start_codex_watcher(8126, cwd=str(tmp_path), parent_pid=5252, singleton_key="app-key")
+
+    assert popen_args
+    assert popen_args[0][popen_args[0].index("--parent-pid") + 1] == "5252"
+    assert pid_path.read_text() == "4343\n"
+
+
+def test_codex_watcher_reusable_requires_current_parent(monkeypatch):
+    def fake_run(args, **kwargs):
+        assert args[:3] == ["ps", "-p", "4242"]
+        result = mock.Mock()
+        result.returncode = 0
+        result.stdout = "python -m lapdog.codex_watcher --parent-pid 1111 --cwd /repo"
+        return result
+
+    monkeypatch.setattr(cli, "_process_exists", lambda pid: pid == 4242)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli._codex_watcher_reusable(4242, 1111)
+    assert not cli._codex_watcher_reusable(4242, 2222)
 
 
 def test_start_codex_watcher_writes_singleton_pid(tmp_path, monkeypatch):
