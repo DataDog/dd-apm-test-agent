@@ -19,7 +19,13 @@ def test_cmd_codex_starts_watcher_and_execs_codex():
                         cli.cmd_codex(["--model", "gpt-5.5"], forward_data=True)
 
     ensure.assert_called_once_with(True, detached=True)
-    start_watcher.assert_called_once_with(8126, proxy_session_key="proxy-key", cwd=cli.os.getcwd())
+    start_watcher.assert_called_once_with(
+        8126,
+        proxy_session_key="proxy-key",
+        cwd=cli.os.getcwd(),
+        parent_pid=cli.os.getpid(),
+        singleton_key=None,
+    )
     run_codex.assert_called_once_with(args=["--model", "gpt-5.5"], port=8126, proxy_session_key="proxy-key")
 
 
@@ -35,7 +41,35 @@ def test_cmd_codex_starts_watcher_with_forwarded_cd(monkeypatch, tmp_path):
                     with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
                         cli.cmd_codex(["--cd", str(target_cwd), "--model", "gpt-5.5"], forward_data=True)
 
-    start_watcher.assert_called_once_with(8126, proxy_session_key="proxy-key", cwd=str(target_cwd))
+    start_watcher.assert_called_once_with(
+        8126,
+        proxy_session_key="proxy-key",
+        cwd=str(target_cwd),
+        parent_pid=cli.os.getpid(),
+        singleton_key=None,
+    )
+
+
+def test_cmd_codex_app_starts_watcher_with_app_path_and_lapdog_pid(monkeypatch, tmp_path):
+    wrapper_cwd = tmp_path / "wrapper"
+    target_cwd = tmp_path / "target"
+    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+
+    with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
+        with mock.patch("lapdog.cli._read_pid_file", return_value=(4242, 8126)):
+            with mock.patch("lapdog.cli._start_codex_watcher") as start_watcher:
+                with mock.patch("lapdog.cli._run_codex") as run_codex:
+                    with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
+                        cli.cmd_codex(["app", str(target_cwd)], forward_data=True)
+
+    start_watcher.assert_called_once_with(
+        8126,
+        proxy_session_key=None,
+        cwd=str(target_cwd),
+        parent_pid=4242,
+        singleton_key=cli._codex_app_watcher_key(8126, str(target_cwd)),
+    )
+    run_codex.assert_called_once_with(args=["app", str(target_cwd)], port=8126, proxy_session_key=None)
 
 
 def test_resolve_codex_cwd_handles_relative_cd(monkeypatch, tmp_path):
@@ -58,6 +92,47 @@ def test_resolve_codex_cwd_ignores_args_after_double_dash(monkeypatch, tmp_path)
     monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
 
     assert cli._resolve_codex_cwd(["--", "--cd", str(tmp_path / "ignored")]) == str(wrapper_cwd)
+
+
+def test_resolve_codex_cwd_handles_app_path(monkeypatch, tmp_path):
+    wrapper_cwd = tmp_path / "wrapper"
+    target_cwd = tmp_path / "target"
+    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+
+    assert cli._resolve_codex_cwd(["app", str(target_cwd)]) == str(target_cwd)
+
+
+def test_resolve_codex_cwd_handles_relative_app_path(monkeypatch, tmp_path):
+    wrapper_cwd = tmp_path / "wrapper"
+    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+
+    assert cli._resolve_codex_cwd(["app", "repo"]) == str(wrapper_cwd / "repo")
+
+
+def test_resolve_codex_cwd_handles_app_options(monkeypatch, tmp_path):
+    wrapper_cwd = tmp_path / "wrapper"
+    target_cwd = tmp_path / "target"
+    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+
+    assert cli._resolve_codex_cwd(
+        ["-c", 'model="gpt-5.5"', "app", "--download-url", "https://example.com", str(target_cwd)]
+    ) == str(target_cwd)
+
+
+def test_resolve_codex_cwd_handles_app_default_with_cd(monkeypatch, tmp_path):
+    wrapper_cwd = tmp_path / "wrapper"
+    target_cwd = tmp_path / "target"
+    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+
+    assert cli._resolve_codex_cwd(["--cd", str(target_cwd), "app"]) == str(target_cwd)
+
+
+def test_resolve_codex_cwd_handles_relative_app_path_with_cd(monkeypatch, tmp_path):
+    wrapper_cwd = tmp_path / "wrapper"
+    target_cwd = tmp_path / "target"
+    monkeypatch.setattr(cli.os, "getcwd", lambda: str(wrapper_cwd))
+
+    assert cli._resolve_codex_cwd(["--cd", str(target_cwd), "app", "repo"]) == str(target_cwd / "repo")
 
 
 def test_start_codex_watcher_waits_for_ready_file(tmp_path, monkeypatch):
@@ -83,6 +158,58 @@ def test_start_codex_watcher_waits_for_ready_file(tmp_path, monkeypatch):
     assert "--proxy-session-key" in popen_args[0]
     assert popen_args[0][popen_args[0].index("--proxy-session-key") + 1] == "proxy-key"
     assert popen_args[0][popen_args[0].index("--cwd") + 1] == str(tmp_path)
+
+
+def test_start_codex_watcher_uses_parent_pid(tmp_path, monkeypatch):
+    popen_args = []
+
+    def fake_popen(args, **kwargs):
+        popen_args.append(args)
+        ready_path = args[args.index("--ready-file") + 1]
+        with open(ready_path, "w") as f:
+            f.write("ready\n")
+        process = mock.Mock()
+        process.poll.return_value = None
+        return process
+
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+
+    cli._start_codex_watcher(8126, cwd=str(tmp_path), parent_pid=4242)
+
+    assert popen_args[0][popen_args[0].index("--parent-pid") + 1] == "4242"
+
+
+def test_start_codex_watcher_skips_live_singleton(tmp_path, monkeypatch):
+    pid_path = tmp_path / "codex-watcher-app-key.pid"
+    pid_path.write_text("4242\n")
+
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli, "_process_exists", lambda pid: pid == 4242)
+    popen = mock.Mock()
+    monkeypatch.setattr(cli.subprocess, "Popen", popen)
+
+    cli._start_codex_watcher(8126, cwd=str(tmp_path), singleton_key="app-key")
+
+    popen.assert_not_called()
+
+
+def test_start_codex_watcher_writes_singleton_pid(tmp_path, monkeypatch):
+    def fake_popen(args, **kwargs):
+        ready_path = args[args.index("--ready-file") + 1]
+        with open(ready_path, "w") as f:
+            f.write("ready\n")
+        process = mock.Mock()
+        process.pid = 4343
+        process.poll.return_value = None
+        return process
+
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+
+    cli._start_codex_watcher(8126, cwd=str(tmp_path), singleton_key="app-key")
+
+    assert (tmp_path / "codex-watcher-app-key.pid").read_text() == "4343\n"
 
 
 def test_run_codex_injects_lapdog_provider(monkeypatch):
