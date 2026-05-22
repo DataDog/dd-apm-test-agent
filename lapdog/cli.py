@@ -619,7 +619,12 @@ def cmd_uninstall() -> None:
         except OSError as e:
             print(f"[lapdog] Failed to remove {_PI_EXT_DEST}: {e}", file=sys.stderr)
 
-    print("[lapdog] Lapdog successfully uninstalled")
+    print(
+        "[lapdog] Lapdog cleanup complete. Now uninstall the package:\n"
+        "[lapdog]   brew uninstall lapdog\n"
+        "[lapdog]   pipx uninstall ddapm-test-agent\n"
+        "[lapdog]   pip uninstall ddapm-test-agent"
+    )
 
     
 
