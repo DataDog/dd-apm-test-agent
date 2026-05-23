@@ -316,7 +316,7 @@ ordering to be maintained.**
 
 - `SNAPSHOT_REGEX_PLACEHOLDERS` [`""`]: The regex expressions to replace by a placeholder. Expressed as a comma separated `key:value` list. Specifying `ba[rz]:placeholder` will change any occurrence of `bar` or `baz` to `{placeholder}`: `foobarbazqux` -> `foo{placeholder}{placeholder}qux`. This is in particular useful to strip path prefixes or other infrastructure dependent identifiers.
 
-- `DD_POOL_TRACE_CHECK_FAILURES` [`false`]: Set to `"true"` to pool Trace Check failures that occured within Test-Agent memory. These failures can be queried later using the `/test/trace_check/failures` endpoint. Can also be set using the `--pool-trace-check-failures=true` option.
+- `DD_POOL_TRACE_CHECK_FAILURES` [`false`]: Set to `"true"` to pool Trace Check failures that occurred within Test-Agent memory. These failures can be queried later using the `/test/trace_check/failures` endpoint. Can also be set using the `--pool-trace-check-failures=true` option.
 
 - `DD_DISABLE_ERROR_RESPONSES` [`false`]: Set to `"true"` to disable Test-Agent `<Response 400>` when a Trace Check fails, instead sending a valid `<Response 200>`. Recommended for use with the `DD_POOL_TRACE_CHECK_FAILURES` env variable. Can also be set using the `--disable-error-responses=true` option.
 
@@ -487,7 +487,7 @@ curl -X POST 'http://0.0.0.0:8126/test/session/responses/config/path' -d '{"path
 
 
 ### /test/trace_check/failures (GET)
-Get Trace Check failures that occured. If a token is included, trace failures for only that session token are returned unless used in conjuction with `return_all`, which can be used to return all failures regardless of inputted token.  This method returns a `<Response 200>` if no Trace Check failures are being returned and a `<Response 400>` if Trace Check failures are being returned. Trace Check failures are returned as a content type of text, with failure messages concatenated in the response body. Optionally, set the `use_json` query string parameter to `true` to return Trace Check failures as a JSON response in the following format:
+Get Trace Check failures that occurred. If a token is included, trace failures for only that session token are returned unless used in conjunction with `return_all`, which can be used to return all failures regardless of inputted token.  This method returns a `<Response 200>` if no Trace Check failures are being returned and a `<Response 400>` if Trace Check failures are being returned. Trace Check failures are returned as a content type of text, with failure messages concatenated in the response body. Optionally, set the `use_json` query string parameter to `true` to return Trace Check failures as a JSON response in the following format:
 ```
 response = {
   "<FAILING_CHECK_NAME>" : ["<FAILURE_MESSAGE_1>", "<FAILURE_MESSAGE_2>"]
@@ -506,7 +506,7 @@ curl -X GET 'http://0.0.0.0:8126/test/trace_check/failures'
 ```
 
 ### /test/trace_check/clear (GET)
-Clear Trace Check failures that occured. If a token is included, trace failures for only that session token are cleared unless used in conjuction with `clear_all`. This argument can be used to clear all failures (regardless of inputted session token).
+Clear Trace Check failures that occurred. If a token is included, trace failures for only that session token are cleared unless used in conjunction with `clear_all`. This argument can be used to clear all failures (regardless of inputted session token).
 
 #### [optional] `?test_session_token=`
 #### [optional] `X-Datadog-Test-Session-Token`
