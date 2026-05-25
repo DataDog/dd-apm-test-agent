@@ -446,6 +446,109 @@ async def test_llmobs_list_returns_spans_v4(agent, llmobs_payload):
     assert data["hitCount"] == 2
 
 
+_V04_TRACE_HEADERS = {
+    "Content-Type": "application/msgpack",
+    "X-Datadog-Trace-Count": "1",
+    "Datadog-Meta-Tracer-Version": "v0.1",
+    "datadog-meta-lang": "python",
+}
+
+
+def _v04_trace_with_llmobs_for_list_tests(span_id=1234, trace_id=4321, llmobs_overrides=None):
+    llmobs = {
+        "trace_id": "11111111111111111111111111111111",
+        "parent_id": "undefined",
+        "name": "openai.chat.completion",
+        "meta": {"span": {"kind": "llm"}, "input": {"value": "hi"}, "output": {"value": "hello"}},
+        "metrics": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12},
+        "tags": {"env": "test", "ml_app": "my-app"},
+    }
+    if llmobs_overrides:
+        llmobs.update(llmobs_overrides)
+    return msgpack.packb(
+        [
+            [
+                {
+                    "name": "openai.request",
+                    "span_id": span_id,
+                    "trace_id": trace_id,
+                    "start": 1_700_000_000_000_000_000,
+                    "duration": 250_000_000,
+                    "meta": {},
+                    "meta_struct": {"_llmobs": msgpack.packb(llmobs)},
+                }
+            ]
+        ]
+    )
+
+
+async def _list_llmobs(agent):
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    assert resp.status == 200
+    return await resp.json()
+
+
+async def test_llmobs_list_returns_spans_from_v04_meta_struct(agent):
+    resp = await agent.put("/v0.4/traces", headers=_V04_TRACE_HEADERS, data=_v04_trace_with_llmobs_for_list_tests())
+    assert resp.status == 200, await resp.text()
+
+    data = await _list_llmobs(agent)
+    assert data["hitCount"] == 1
+    event = data["result"]["events"][0]["event"]["custom"]
+    assert event["span_id"] == "1234"
+    assert event["trace_id"] == "11111111111111111111111111111111"
+    assert event["meta"]["span"]["kind"] == "llm"
+
+
+async def test_llmobs_list_merges_evp_and_meta_struct_spans(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)  # 2 EVP spans
+    resp = await agent.put(
+        "/v0.4/traces",
+        headers=_V04_TRACE_HEADERS,
+        data=_v04_trace_with_llmobs_for_list_tests(span_id=9999, trace_id=8888),
+    )
+    assert resp.status == 200, await resp.text()
+    assert (await _list_llmobs(agent))["hitCount"] == 3
+
+
+async def test_llmobs_list_dedupes_evp_post_against_meta_struct(agent):
+    same_trace_id = "22222222222222222222222222222222"
+    evp_envelope = {
+        "spans": [
+            {
+                "name": "openai.chat.completion",
+                "span_id": "1234",
+                "trace_id": same_trace_id,
+                "parent_id": "undefined",
+                "status": "ok",
+                "duration": 1,
+                "start_ns": 1,
+                "meta": {"span": {"kind": "llm"}},
+                "metrics": {},
+                "tags": [],
+            }
+        ],
+    }
+    resp = await agent.post(
+        "/evp_proxy/v2/api/v2/llmobs",
+        headers={"Content-Type": "application/msgpack", "Content-Encoding": "gzip"},
+        data=gzip.compress(msgpack.packb(evp_envelope)),
+    )
+    assert resp.status == 200, await resp.text()
+
+    resp = await agent.put(
+        "/v0.4/traces",
+        headers=_V04_TRACE_HEADERS,
+        data=_v04_trace_with_llmobs_for_list_tests(llmobs_overrides={"trace_id": same_trace_id}),
+    )
+    assert resp.status == 200, await resp.text()
+
+    assert (await _list_llmobs(agent))["hitCount"] == 1
+
+
 async def test_llmobs_list_filter_by_span_kind(agent, llmobs_payload):
     await _submit_llmobs_payload(agent, llmobs_payload)
     resp = await agent.post(

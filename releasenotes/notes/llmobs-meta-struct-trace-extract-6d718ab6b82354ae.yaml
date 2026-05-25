@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    Extract LLM Observability spans from ``meta_struct["_llmobs"]`` on v0.4 trace
+    payloads. ``GET /test/session/requests`` now reports synthetic
+    ``POST /evp_proxy/v4/api/v2/llmobs`` entries and ``get_llmobs_spans`` merges
+    these into UI / lapdog query results (deduped against real EVP posts).

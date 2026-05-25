@@ -657,6 +657,120 @@ async def test_evp_proxy_v2_api_v2_exposures(agent):
     assert len(reqs) == 1
 
 
+_LLMOBS_META_STRUCT_PAYLOAD = {
+    "trace_id": "11111111111111111111111111111111",
+    "parent_id": "00000000000000000000000000000001",
+    "name": "openai.chat.completion",
+    "meta": {
+        "span": {"kind": "llm"},
+        "input": {"value": "hi"},
+        "output": {"value": "hello"},
+        "model_name": "gpt-4",
+        "model_provider": "openai",
+    },
+    "metrics": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12},
+    "tags": {"env": "test", "service": "weblog"},
+}
+
+
+def _v04_trace_with_llmobs(llmobs_payload, span_id=1234, trace_id=4321):
+    return msgpack.packb(
+        [
+            [
+                {
+                    "name": "openai.request",
+                    "service": "weblog",
+                    "resource": "openai.chat.completion",
+                    "span_id": span_id,
+                    "trace_id": trace_id,
+                    "start": 1_700_000_000_000_000_000,
+                    "duration": 250_000_000,
+                    "error": 0,
+                    "meta": {},
+                    "meta_struct": {"_llmobs": msgpack.packb(llmobs_payload)},
+                }
+            ]
+        ]
+    )
+
+
+async def test_session_requests_synthesizes_llmobs_from_v04_meta_struct(
+    agent, v04_reference_http_trace_payload_headers
+):
+    import base64
+
+    resp = await agent.put(
+        "/v0.4/traces",
+        headers=v04_reference_http_trace_payload_headers,
+        data=_v04_trace_with_llmobs(_LLMOBS_META_STRUCT_PAYLOAD),
+    )
+    assert resp.status == 200, await resp.text()
+
+    resp = await agent.get("/test/session/requests")
+    reqs = await resp.json()
+    synthetic = [r for r in reqs if r["url"].endswith("/evp_proxy/v4/api/v2/llmobs")]
+    assert len(synthetic) == 1, reqs
+
+    event = json.loads(base64.b64decode(synthetic[0]["body"]))["spans"][0]
+    assert event["span_id"] == "1234"
+    assert event["trace_id"] == _LLMOBS_META_STRUCT_PAYLOAD["trace_id"]
+    assert event["start_ns"] == 1_700_000_000_000_000_000
+    assert event["status"] == "ok"
+    assert event["meta"]["span"]["kind"] == "llm"
+
+
+async def test_session_requests_no_synthesis_without_llmobs_meta_struct(
+    agent, v04_reference_http_trace_payload_headers
+):
+    payload = msgpack.packb([[{"name": "web", "span_id": 1, "trace_id": 2, "start": 1, "duration": 1, "meta": {}}]])
+    resp = await agent.put("/v0.4/traces", headers=v04_reference_http_trace_payload_headers, data=payload)
+    assert resp.status == 200, await resp.text()
+
+    reqs = await (await agent.get("/test/session/requests")).json()
+    assert not any(r["url"].endswith("/evp_proxy/v4/api/v2/llmobs") for r in reqs)
+
+
+async def test_session_requests_dedupes_real_evp_post_against_meta_struct(
+    agent, v04_reference_http_trace_payload_headers
+):
+    # Predicted-drop fallback: SDK posts directly to EVP for the same span that
+    # also rides via meta_struct. Synthesis must be suppressed to avoid duplicates.
+    real_envelope = {
+        "_dd.stage": "raw",
+        "event_type": "span",
+        "spans": [
+            {
+                "trace_id": _LLMOBS_META_STRUCT_PAYLOAD["trace_id"],
+                "span_id": "1234",
+                "start_ns": 1,
+                "duration": 1,
+                "status": "ok",
+                "meta": {},
+                "metrics": {},
+                "tags": [],
+                "_dd": {},
+            }
+        ],
+    }
+    resp = await agent.post(
+        "/evp_proxy/v4/api/v2/llmobs",
+        headers={"Content-Type": "application/msgpack"},
+        data=msgpack.packb(real_envelope),
+    )
+    assert resp.status == 200, await resp.text()
+
+    resp = await agent.put(
+        "/v0.4/traces",
+        headers=v04_reference_http_trace_payload_headers,
+        data=_v04_trace_with_llmobs(_LLMOBS_META_STRUCT_PAYLOAD),
+    )
+    assert resp.status == 200, await resp.text()
+
+    reqs = await (await agent.get("/test/session/requests")).json()
+    llmobs_entries = [r for r in reqs if r["url"].endswith("/evp_proxy/v4/api/v2/llmobs")]
+    assert len(llmobs_entries) == 1
+
+
 async def test_trace_v1(
     agent,
     v04_reference_http_trace_payload_headers,

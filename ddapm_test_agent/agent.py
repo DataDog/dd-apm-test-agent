@@ -65,6 +65,9 @@ from .codex_hooks import CodexHooksAPI
 from .codex_proxy import CodexProxyAPI
 from .integration import Integration
 from .llmobs_event_platform import LLMObsEventPlatformAPI
+from .llmobs_event_platform import decode_llmobs_payload as _llmobs_decode_payload
+from .llmobs_event_platform import extract_llmobs_envelopes_from_v04_traces
+from .llmobs_event_platform import synthetic_llmobs_session_request_entries
 from .logs import LOGS_ENDPOINT
 from .logs import OTLPLogsGRPCServicer
 from .logs import decode_logs_request
@@ -1448,8 +1451,12 @@ class Agent:
             return web.Response(status=200, headers=headers)
 
         token = request["session_token"]
+        session_reqs = self._requests_by_session(token)
         resp = []
-        for req in reversed(self._requests_by_session(token)):
+        # Track real EVP llmobs posts to suppress synthesis for the same span when
+        # dd-trace-py's predicted-drop fallback writer races with the meta_struct path.
+        real_llmobs_evp_keys: Set[Tuple[Any, Any]] = set()
+        for req in reversed(session_reqs):
             if req.match_info.handler not in (
                 self.handle_v04_traces,
                 self.handle_v05_traces,
@@ -1470,14 +1477,46 @@ class Agent:
                 self.handle_v1_traces_otlp,
             ):
                 continue
+            body_bytes = await req.read()
+            if req.match_info.handler in (
+                self.handle_evp_proxy_v2_api_v2_llmobs,
+                self.handle_evp_proxy_v4_api_v2_llmobs,
+            ):
+                try:
+                    for event in _llmobs_decode_payload(body_bytes, req.content_type or ""):
+                        for s in event.get("spans", []) or []:
+                            real_llmobs_evp_keys.add((s.get("trace_id"), s.get("span_id")))
+                except Exception as exc:
+                    log.debug("Failed to decode real EVP llmobs payload for dedup: %s", exc)
             resp.append(
                 {
                     "headers": dict(req.headers),
-                    "body": base64.b64encode(await req.read()).decode(),
+                    "body": base64.b64encode(body_bytes).decode(),
                     "url": str(req.url),
                     "method": req.method,
                 }
             )
+
+        synthetic_envelopes: List[Dict[str, Any]] = []
+        for req in session_reqs:
+            if req.match_info.handler != self.handle_v04_traces:
+                continue
+            try:
+                traces = self._decode_v04_traces(req)
+            except Exception as exc:
+                log.debug("Failed to decode v0.4 traces for llmobs extract: %s", exc)
+                continue
+            for envelope in extract_llmobs_envelopes_from_v04_traces(traces):
+                event = envelope["spans"][0]
+                if (event.get("trace_id"), event.get("span_id")) in real_llmobs_evp_keys:
+                    continue
+                synthetic_envelopes.append(envelope)
+
+        if synthetic_envelopes:
+            resp.extend(
+                synthetic_llmobs_session_request_entries(synthetic_envelopes, str(request.url.origin()))
+            )
+
         return web.json_response(resp, headers=headers)
 
     async def handle_test_traces(self, request: Request) -> web.Response:
