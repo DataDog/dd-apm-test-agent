@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    Advertise ``/v1.0/traces`` in the ``endpoints`` list returned by ``/info`` so tracers using the standard V1 enablement flow (``DD_TRACE_AGENT_PROTOCOL_VERSION=1.0``) can negotiate V1 against the test-agent without client-side overrides.
+  - |
+    Decode payload-level attributes (key ``10``) in V1 trace payloads. Attributes such as ``_dd.apm_mode`` and ``_dd.git.commit.sha`` are now propagated to every span in the payload, matching the behavior of the upstream Datadog Agent.
