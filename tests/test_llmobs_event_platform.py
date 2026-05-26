@@ -4,6 +4,8 @@ import time
 import msgpack
 import pytest
 
+from ddapm_test_agent.llmobs_event_platform import _resolve_span_kind
+
 
 @pytest.fixture
 def llmobs_payload():
@@ -500,6 +502,107 @@ async def test_llmobs_trace(agent, llmobs_payload):
     data = await resp.json()
     assert "data" in data
     assert data["data"]["attributes"]["root_id"] is not None
+
+
+@pytest.mark.parametrize(
+    "span,expected",
+    [
+        ({"meta": {"span": {"kind": "tool"}}}, "tool"),
+        ({"meta": {"span": {"kind": "agent"}}}, "agent"),
+        ({"meta": {"span.kind": "tool"}}, "tool"),
+        ({"meta": {"span.kind": "workflow"}}, "workflow"),
+        # nested form takes precedence over flat when both are present
+        ({"meta": {"span": {"kind": "tool"}, "span.kind": "agent"}}, "tool"),
+        # falls back to "llm" for missing / empty / malformed
+        ({"meta": {}}, "llm"),
+        ({"meta": {"span": {}}}, "llm"),
+        ({"meta": {"span": {"kind": ""}}}, "llm"),
+        ({"meta": {"span.kind": ""}}, "llm"),
+        ({}, "llm"),
+        ({"meta": "not-a-dict"}, "llm"),
+    ],
+)
+def test_resolve_span_kind(span, expected):
+    assert _resolve_span_kind(span) == expected
+
+
+async def test_llmobs_trace_preserves_nested_span_kind(agent):
+    """The trace endpoint must report the LLMObs span kind (tool/agent/etc.) from `meta.span.kind`.
+
+    Regression for #368: tool/agent spans were rendering as kind="llm".
+    """
+    now = int(time.time() * 1_000_000_000)
+    payload = {
+        "ml_app": "kinds",
+        "tags": [],
+        "spans": [
+            {
+                "name": "my_agent",
+                "span_id": "s-agent",
+                "trace_id": "trace-kinds-nested",
+                "parent_id": "undefined",
+                "status": "ok",
+                "start_ns": now,
+                "duration": 1_000_000,
+                "meta": {"span": {"kind": "agent"}},
+                "metrics": {},
+                "tags": [],
+            },
+            {
+                "name": "my_tool",
+                "span_id": "s-tool",
+                "trace_id": "trace-kinds-nested",
+                "parent_id": "s-agent",
+                "status": "ok",
+                "start_ns": now + 1,
+                "duration": 1_000_000,
+                "meta": {"span": {"kind": "tool"}},
+                "metrics": {},
+                "tags": [],
+            },
+        ],
+    }
+    await _submit_llmobs_payload(agent, payload)
+    resp = await agent.get("/api/ui/llm-obs/v1/trace/trace-kinds-nested")
+    spans = (await resp.json())["data"]["attributes"]["spans"]
+    by_name = {s["name"]: s for s in spans.values()}
+    assert by_name["my_agent"]["kind"] == "agent"
+    assert by_name["my_agent"]["meta"]["span"]["kind"] == "agent"
+    assert by_name["my_tool"]["kind"] == "tool"
+    assert by_name["my_tool"]["meta"]["span"]["kind"] == "tool"
+
+
+async def test_llmobs_trace_preserves_flat_span_kind(agent):
+    """Senders that emit `meta["span.kind"]` (flat dotted key) instead of the nested
+    `meta["span"]["kind"]` form must also have their kind preserved.
+
+    Regression for #368: lapdog was defaulting these to kind="llm".
+    """
+    now = int(time.time() * 1_000_000_000)
+    payload = {
+        "ml_app": "kinds",
+        "tags": [],
+        "spans": [
+            {
+                "name": "my_tool",
+                "span_id": "s-tool-flat",
+                "trace_id": "trace-kinds-flat",
+                "parent_id": "undefined",
+                "status": "ok",
+                "start_ns": now,
+                "duration": 1_000_000,
+                "meta": {"span.kind": "tool"},
+                "metrics": {},
+                "tags": [],
+            },
+        ],
+    }
+    await _submit_llmobs_payload(agent, payload)
+    resp = await agent.get("/api/ui/llm-obs/v1/trace/trace-kinds-flat")
+    spans = (await resp.json())["data"]["attributes"]["spans"]
+    span = next(iter(spans.values()))
+    assert span["kind"] == "tool"
+    assert span["meta"]["span"]["kind"] == "tool"
 
 
 async def test_llmobs_aggregate(agent, llmobs_payload):
