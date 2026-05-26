@@ -35,7 +35,7 @@ want to know what `lapdog start` actually does).
   bundles its own interpreter, so the system Python version does not matter.
 - Port **8126** free on `localhost`. If the port is taken, set `PORT=<other>`
   before running `lapdog start` and open the dashboard at
-  `http://localhost:<port>/leash/`.
+  `https://lapdog.datadoghq.com`.
 - For `lapdog claude` / `lapdog pi` / `lapdog codex`: the `claude` / `pi` /
   `codex` binary already on `PATH`.
 
