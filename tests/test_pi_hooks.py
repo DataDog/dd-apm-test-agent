@@ -45,13 +45,19 @@ def _session_start(
     return event
 
 
-def _agent_start(session_id=SESSION, prompt="hello", cwd=None):
+def _agent_start(
+    session_id=SESSION,
+    prompt="hello",
+    model_id="claude-sonnet-4-20250514",
+    model_provider="anthropic",
+    cwd=None,
+):
     event = {
         "session_id": session_id,
         "hook_event_name": "agent_start",
         "user_prompt": prompt,
-        "model_id": "claude-sonnet-4-20250514",
-        "model_provider": "anthropic",
+        "model_id": model_id,
+        "model_provider": model_provider,
     }
     if cwd:
         event["cwd"] = cwd
@@ -80,13 +86,20 @@ def _message_start(session_id=SESSION, system_prompt="", messages=None):
     }
 
 
-def _message_end(session_id=SESSION, content=None, usage=None, stop_reason="end_turn"):
+def _message_end(
+    session_id=SESSION,
+    content=None,
+    usage=None,
+    stop_reason="end_turn",
+    model_id="claude-sonnet-4-20250514",
+    model_provider="anthropic",
+):
     return {
         "session_id": session_id,
         "hook_event_name": "message_end",
         "message_role": "assistant",
-        "model_id": "claude-sonnet-4-20250514",
-        "model_provider": "anthropic",
+        "model_id": model_id,
+        "model_provider": model_provider,
         "content": content or [{"type": "text", "text": "Hello!"}],
         "usage": usage or {"input": 100, "output": 50, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 150},
         "stop_reason": stop_reason,
@@ -210,6 +223,95 @@ async def test_pi_project_metadata_from_extension_cwd(agent, tmp_path, monkeypat
         assert not any("commit" in tag for tag in span["tags"])
     assert root["meta"]["metadata"]["project_name"] == "pi-project"
     assert root["meta"]["metadata"]["git_repository_url"] == "github.com/DataDog/pi-project"
+
+
+async def test_ai_gateway_anthropic_model_id_gets_estimated_cost(agent):
+    """AI Gateway-style Anthropic model IDs still get local estimated costs."""
+    sid = "pi-ai-gateway-anthropic-cost"
+    model_id = "anthropic/claude-opus-4-7"
+    usage = {"input": 100, "output": 50, "cacheRead": 20, "cacheWrite": 10, "totalTokens": 180}
+    await _post(agent, _session_start(sid, model_id=model_id, model_provider="ai-gateway"))
+    await _post(agent, _agent_start(sid, model_id=model_id, model_provider="ai-gateway"))
+    await _post(agent, _turn_start(sid, turn_index=0))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid, usage=usage, model_id=model_id, model_provider="ai-gateway"))
+    await _post(agent, _turn_end(sid, turn_index=0))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = _spans(await resp.json())
+    llm = _by_kind([s for s in spans if s.get("session_id") == sid], "llm")[0]
+
+    metrics = llm["metrics"]
+    expected_input = 100 * 5_000 + 10 * 6_250 + 20 * 500
+    expected_output = 50 * 25_000
+    assert llm["meta"]["model_name"] == model_id
+    assert metrics["estimated_non_cached_input_cost"] == 100 * 5_000
+    assert metrics["estimated_cache_write_input_cost"] == 10 * 6_250
+    assert metrics["estimated_cache_read_input_cost"] == 20 * 500
+    assert metrics["estimated_output_cost"] == expected_output
+    assert metrics["estimated_total_cost"] == expected_input + expected_output
+
+
+async def test_ai_gateway_openai_model_id_gets_estimated_cost(agent):
+    """AI Gateway-style OpenAI model IDs are priced with the OpenAI cost table."""
+    sid = "pi-ai-gateway-openai-cost"
+    model_id = "openai/gpt-5.5"
+    usage = {"input": 80, "output": 30, "cacheRead": 20, "cacheWrite": 0, "totalTokens": 130}
+    await _post(agent, _session_start(sid, model_id=model_id, model_provider="ai-gateway"))
+    await _post(agent, _agent_start(sid, model_id=model_id, model_provider="ai-gateway"))
+    await _post(agent, _turn_start(sid, turn_index=0))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid, usage=usage, model_id=model_id, model_provider="ai-gateway"))
+    await _post(agent, _turn_end(sid, turn_index=0))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = _spans(await resp.json())
+    llm = _by_kind([s for s in spans if s.get("session_id") == sid], "llm")[0]
+
+    metrics = llm["metrics"]
+    assert llm["meta"]["model_name"] == model_id
+    assert metrics["estimated_input_cost"] == 410_000
+    assert metrics["estimated_output_cost"] == 900_000
+    assert metrics["estimated_total_cost"] == 1_310_000
+
+
+async def test_provider_reported_cost_is_preferred_over_model_estimate(agent):
+    """Use cost sent by pi hooks when present, even if model-based pricing is also known."""
+    sid = "pi-provider-cost-preferred"
+    model_id = "openai/gpt-5.5"
+    usage = {
+        "input": 80,
+        "output": 30,
+        "cacheRead": 20,
+        "cacheWrite": 0,
+        "totalTokens": 130,
+        "cost": {
+            "input": 0.000001,
+            "output": 0.000002,
+            "cacheRead": 0.000003,
+            "cacheWrite": 0.000004,
+        },
+    }
+    await _post(agent, _session_start(sid, model_id=model_id, model_provider="ai-gateway"))
+    await _post(agent, _agent_start(sid, model_id=model_id, model_provider="ai-gateway"))
+    await _post(agent, _turn_start(sid, turn_index=0))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid, usage=usage, model_id=model_id, model_provider="ai-gateway"))
+    await _post(agent, _turn_end(sid, turn_index=0))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = _spans(await resp.json())
+    llm = _by_kind([s for s in spans if s.get("session_id") == sid], "llm")[0]
+
+    metrics = llm["metrics"]
+    assert metrics["estimated_non_cached_input_cost"] == 1_000
+    assert metrics["estimated_output_cost"] == 2_000
+    assert metrics["estimated_cache_read_input_cost"] == 3_000
+    assert metrics["estimated_cache_write_input_cost"] == 4_000
+    assert metrics["estimated_total_cost"] == 10_000
 
 
 async def test_tools_parent_under_step(agent):
