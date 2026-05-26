@@ -134,6 +134,7 @@ async def test_info(agent):
             "/v0.4/traces",
             "/v0.5/traces",
             "/v0.7/traces",
+            "/v1.0/traces",
             "/v0.6/stats",
             "/telemetry/proxy/",
             "/v0.7/config",
@@ -835,6 +836,78 @@ async def test_trace_v1_span_event():
         "event-key3": {"type": 3, "double_value": 3.14},
         "event-key4": {"type": 2, "int_value": 123},
     }
+
+
+async def test_trace_v1_payload_attributes():
+    # Payload-level attributes at key 10 (e.g. `_dd.apm_mode`, `_dd.git.commit.sha`)
+    # should be decoded and propagated to every span across all chunks.
+    data = msgpack.packb(
+        {
+            10: [
+                "_dd.apm_mode",
+                1,
+                "off",
+                "_dd.git.commit.sha",
+                1,
+                "abc123",
+                "payload_num",
+                4,
+                7,
+            ],
+            11: [
+                {
+                    4: [
+                        {
+                            1: "svc-a",
+                            2: "span-a",
+                            3: "res-a",
+                            4: 1,
+                        },
+                        {
+                            1: "svc-a",
+                            2: "span-a2",
+                            3: "res-a2",
+                            4: 2,
+                            9: ["_dd.apm_mode", 1, "on"],  # span-level overrides payload-level
+                        },
+                    ],
+                    6: bytes(
+                        [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xE3]
+                    ),
+                },
+                {
+                    4: [
+                        {
+                            1: "svc-b",
+                            2: "span-b",
+                            3: "res-b",
+                            4: 3,
+                        }
+                    ],
+                    6: bytes(
+                        [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xE4]
+                    ),
+                },
+            ],
+        }
+    )
+    result = decode_v1(data)
+    assert len(result) == 2
+    # First chunk, first span — no per-span override, inherits payload-level attrs.
+    span_a = result[0][0]
+    assert span_a["meta"]["_dd.apm_mode"] == "off"
+    assert span_a["meta"]["_dd.git.commit.sha"] == "abc123"
+    assert span_a["metrics"]["payload_num"] == 7
+    # First chunk, second span — sets `_dd.apm_mode` itself, must win over payload-level.
+    span_a2 = result[0][1]
+    assert span_a2["meta"]["_dd.apm_mode"] == "on"
+    assert span_a2["meta"]["_dd.git.commit.sha"] == "abc123"
+    assert span_a2["metrics"]["payload_num"] == 7
+    # Second chunk also receives payload-level attrs.
+    span_b = result[1][0]
+    assert span_b["meta"]["_dd.apm_mode"] == "off"
+    assert span_b["meta"]["_dd.git.commit.sha"] == "abc123"
+    assert span_b["metrics"]["payload_num"] == 7
 
 
 async def test_trace_v1_span_links():

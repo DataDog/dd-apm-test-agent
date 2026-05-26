@@ -784,6 +784,8 @@ def _convert_v1_payload(data: Any) -> v04TracePayload:
     string_table: List[str] = [""]  # 0 is reserved for empty string
 
     v04Payload: List[List[Span]] = []
+    payload_meta: Dict[str, str] = {}
+    payload_metrics: Dict[str, MetricType] = {}
 
     for k, v in data.items():
         if k == 1:
@@ -792,6 +794,12 @@ def _convert_v1_payload(data: Any) -> v04TracePayload:
             # TODO: In the future we can assert on these keys
             if isinstance(v, str):
                 string_table.append(v)
+        elif k == 10:
+            # Payload-level attributes (e.g. `_dd.apm_mode`, `_dd.git.commit.sha`) — flat
+            # triplet array, same encoding as chunk/span attributes.
+            if not isinstance(v, list):
+                raise TypeError("Trace payload 'attributes' (10) must be a list, got type %r." % type(v))
+            _convert_v1_attributes(v, payload_meta, payload_metrics, string_table)
         elif k == 11:
             if not isinstance(v, list):
                 raise TypeError("Trace payload 'chunks' (11) must be a list.")
@@ -799,6 +807,14 @@ def _convert_v1_payload(data: Any) -> v04TracePayload:
                 v04Payload.append(_convert_v1_chunk(chunk, string_table))
         else:
             raise TypeError("Unknown key %r in v1 trace payload" % k)
+
+    if payload_meta or payload_metrics:
+        for chunk_spans in v04Payload:
+            for span in chunk_spans:
+                for meta_key, meta_value in payload_meta.items():
+                    span["meta"].setdefault(meta_key, meta_value)
+                for metric_key, metric_value in payload_metrics.items():
+                    span["metrics"].setdefault(metric_key, metric_value)
     return cast(v04TracePayload, v04Payload)
 
 
