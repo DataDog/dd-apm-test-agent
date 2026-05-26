@@ -5,6 +5,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
+from ddapm_test_agent._clock import monotonic_wall_ns
 from ddapm_test_agent.claude_hooks import ClaudeHooksAPI
 from ddapm_test_agent.claude_link_tracker import ClaudeLinkTracker
 from ddapm_test_agent.claude_proxy import ClaudeProxyAPI
@@ -114,10 +115,8 @@ def _simulate_llm_call(
     duration_ns: int = 10_000_000,
 ) -> Dict[str, Any]:
     """Call _create_llm_span directly (bypasses HTTP) and append the span."""
-    import time as _time
-
     if start_ns is None:
-        start_ns = _time.time_ns()
+        start_ns = monotonic_wall_ns()
     session = proxy_api._hooks_api._sessions.get(session_id)
     span = proxy_api._create_llm_span(
         session=session,
