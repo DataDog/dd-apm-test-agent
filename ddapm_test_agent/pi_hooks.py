@@ -60,13 +60,10 @@ _AI_GATEWAY_COST_PROVIDERS = frozenset({"anthropic", "openai"})
 
 def _split_ai_gateway_model_id(model_id: str) -> Tuple[Optional[str], str]:
     """Return (provider, model) for AI Gateway-style IDs like ``openai/gpt-5.5``."""
-    parts = model_id.split("/")
-    for index, provider in enumerate(parts[:-1]):
-        normalized_provider = provider.lower()
-        if normalized_provider in _AI_GATEWAY_COST_PROVIDERS:
-            model = "/".join(parts[index + 1 :])
-            if model:
-                return normalized_provider, model
+    provider, _, model = model_id.partition("/")
+    normalized_provider = provider.lower()
+    if model and normalized_provider in _AI_GATEWAY_COST_PROVIDERS:
+        return normalized_provider, model
     return None, model_id
 
 
@@ -97,7 +94,7 @@ def _compute_pi_cost_metrics(
     cost_provider, pricing_model_id = _split_ai_gateway_model_id(model_id)
     provider = cost_provider or model_provider.lower()
 
-    if provider == "openai":
+    if provider == "openai" or _looks_like_openai_model(pricing_model_id):
         return compute_openai_cost_metrics(
             model_id=pricing_model_id,
             non_cached_input_tokens=non_cached_input_tokens + cache_write_tokens,
@@ -114,14 +111,6 @@ def _compute_pi_cost_metrics(
     )
     if anthropic_cost is not None:
         return anthropic_cost
-
-    if _looks_like_openai_model(pricing_model_id):
-        return compute_openai_cost_metrics(
-            model_id=pricing_model_id,
-            non_cached_input_tokens=non_cached_input_tokens + cache_write_tokens,
-            cached_input_tokens=cache_read_tokens,
-            output_tokens=output_tokens,
-        )
 
     return {}
 
