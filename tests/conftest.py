@@ -30,8 +30,6 @@ from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import Me
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import TraceServiceStub
 import pytest
 
-from ddapm_test_agent.agent import DEFAULT_OTLP_GRPC_PORT
-from ddapm_test_agent.agent import DEFAULT_OTLP_HTTP_PORT
 from ddapm_test_agent.agent import _parse_csv
 from ddapm_test_agent.agent import make_app
 from ddapm_test_agent.agent import make_otlp_grpc_server_async
@@ -662,8 +660,7 @@ def do_reference_v2_http_apmtelemetry(
     yield fn
 
 
-@pytest.fixture
-def available_port() -> str:
+def _available_port() -> str:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("", 0))  # Bind to a free port provided by the host.
     port = s.getsockname()[1]  # Get the port number assigned.
@@ -672,8 +669,23 @@ def available_port() -> str:
 
 
 @pytest.fixture
+def available_port() -> str:
+    return _available_port()
+
+
+@pytest.fixture
 def testagent_port(available_port: str) -> str:
     return available_port
+
+
+@pytest.fixture
+def testagent_otlp_http_port() -> str:
+    return _available_port()
+
+
+@pytest.fixture
+def testagent_otlp_grpc_port() -> str:
+    return _available_port()
 
 
 @pytest.fixture
@@ -711,6 +723,8 @@ def test_agent_env(testagent_connection_type, testagent_uds_socket_path):
 async def testagent(
     loop,
     testagent_port,
+    testagent_otlp_http_port,
+    testagent_otlp_grpc_port,
     testagent_snapshot_ci_mode,
     test_agent_env,
     testagent_connection_type,
@@ -719,6 +733,8 @@ async def testagent(
     test_agent_env.update(
         {
             "PORT": testagent_port,
+            "OTLP_HTTP_PORT": testagent_otlp_http_port,
+            "OTLP_GRPC_PORT": testagent_otlp_grpc_port,
             "SNAPSHOT_CI": "1" if testagent_snapshot_ci_mode else "0",
             "SNAPSHOT_DIR": os.path.join(os.path.dirname(__file__), "integration_snapshots"),
         }
@@ -800,9 +816,9 @@ def host_name():
 
 # OTLP Infrastructure Fixtures
 @pytest.fixture
-def otlp_http_url(testagent_url):
+def otlp_http_url(testagent_url, testagent_otlp_http_port):
     parsed_url = urlparse(testagent_url)
-    return f"{parsed_url.scheme}://{parsed_url.hostname}:{DEFAULT_OTLP_HTTP_PORT}"
+    return f"{parsed_url.scheme}://{parsed_url.hostname}:{testagent_otlp_http_port}"
 
 
 @pytest.fixture
@@ -819,7 +835,8 @@ def otlp_test_client(otlp_http_url):
 @pytest.fixture(params=["logs", "metrics", "traces"])
 async def otlp_grpc_client(request):
     """GRPC client that can connect to logs, metrics, or traces service."""
-    channel = grpc_aio.insecure_channel(f"127.0.0.1:{DEFAULT_OTLP_GRPC_PORT}")
+    testagent_otlp_grpc_port = request.getfixturevalue("testagent_otlp_grpc_port")
+    channel = grpc_aio.insecure_channel(f"127.0.0.1:{testagent_otlp_grpc_port}")
 
     if request.param == "logs":
         stub = LogsServiceStub(channel)
@@ -836,9 +853,9 @@ async def otlp_grpc_client(request):
 
 
 @pytest.fixture
-async def otlp_logs_grpc_client():
+async def otlp_logs_grpc_client(testagent_otlp_grpc_port):
     """GRPC client specifically for logs service."""
-    channel = grpc_aio.insecure_channel(f"127.0.0.1:{DEFAULT_OTLP_GRPC_PORT}")
+    channel = grpc_aio.insecure_channel(f"127.0.0.1:{testagent_otlp_grpc_port}")
     stub = LogsServiceStub(channel)
 
     yield stub
@@ -847,9 +864,9 @@ async def otlp_logs_grpc_client():
 
 
 @pytest.fixture
-async def otlp_metrics_grpc_client():
+async def otlp_metrics_grpc_client(testagent_otlp_grpc_port):
     """GRPC client specifically for metrics service."""
-    channel = grpc_aio.insecure_channel(f"127.0.0.1:{DEFAULT_OTLP_GRPC_PORT}")
+    channel = grpc_aio.insecure_channel(f"127.0.0.1:{testagent_otlp_grpc_port}")
     stub = MetricsServiceStub(channel)
 
     yield stub
@@ -858,9 +875,9 @@ async def otlp_metrics_grpc_client():
 
 
 @pytest.fixture
-async def otlp_traces_grpc_client():
+async def otlp_traces_grpc_client(testagent_otlp_grpc_port):
     """GRPC client specifically for traces service."""
-    channel = grpc_aio.insecure_channel(f"127.0.0.1:{DEFAULT_OTLP_GRPC_PORT}")
+    channel = grpc_aio.insecure_channel(f"127.0.0.1:{testagent_otlp_grpc_port}")
     stub = TraceServiceStub(channel)
 
     yield stub

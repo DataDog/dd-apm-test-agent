@@ -4,6 +4,9 @@ import time
 import msgpack
 import pytest
 
+from ddapm_test_agent.llmobs_event_platform import _build_trace_aggregates
+from ddapm_test_agent.llmobs_event_platform import extract_copilot_spans_from_otlp_traces
+
 
 @pytest.fixture
 def llmobs_payload():
@@ -634,6 +637,190 @@ async def test_llmobs_aggregate_group_by_session_id(agent):
 
     paging_sessions = data["result"]["paging"]["after"]["@session_id"]
     assert set(paging_sessions) == {"session-a", "session-b"}
+
+
+async def test_llmobs_aggregate_includes_copilot_otlp_session(testagent, testagent_url, otlp_http_url):
+    now = int(time.time() * 1_000_000_000)
+    payload = {
+        "resourceSpans": [
+            {
+                "resource": {
+                    "attributes": [
+                        {"key": "service.name", "value": {"stringValue": "github-copilot-cli"}},
+                        {"key": "service.version", "value": {"stringValue": "1.0.51"}},
+                        {"key": "agent.framework", "value": {"stringValue": "github-copilot"}},
+                        {"key": "agent.runtime", "value": {"stringValue": "cli"}},
+                    ]
+                },
+                "scopeSpans": [
+                    {
+                        "scope": {"name": "github.copilot", "version": "1.0.51"},
+                        "spans": [
+                            {
+                                "traceId": "7aa56cab037f78e3c8b38b628fd67288",
+                                "spanId": "027c6f9675520315",
+                                "name": "invoke_agent",
+                                "kind": 3,
+                                "startTimeUnixNano": str(now),
+                                "endTimeUnixNano": str(now + 3_700_000_000),
+                                "attributes": [
+                                    {"key": "gen_ai.operation.name", "value": {"stringValue": "invoke_agent"}},
+                                    {"key": "gen_ai.provider.name", "value": {"stringValue": "github"}},
+                                    {
+                                        "key": "gen_ai.request.model",
+                                        "value": {"stringValue": "claude-opus-4.7-1m-internal"},
+                                    },
+                                    {
+                                        "key": "gen_ai.conversation.id",
+                                        "value": {"stringValue": "conversation-123"},
+                                    },
+                                    {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "41531"}},
+                                    {"key": "gen_ai.usage.output_tokens", "value": {"intValue": "27"}},
+                                    {
+                                        "key": "gen_ai.usage.cache_creation.input_tokens",
+                                        "value": {"intValue": "41525"},
+                                    },
+                                    {"key": "github.copilot.cost", "value": {"intValue": "1"}},
+                                    {
+                                        "key": "github.copilot.interaction_id",
+                                        "value": {"stringValue": "interaction-123"},
+                                    },
+                                ],
+                            },
+                            {
+                                "traceId": "7aa56cab037f78e3c8b38b628fd67288",
+                                "spanId": "d9e1aded59245440",
+                                "parentSpanId": "027c6f9675520315",
+                                "name": "chat claude-opus-4.7-1m-internal",
+                                "kind": 3,
+                                "startTimeUnixNano": str(now),
+                                "endTimeUnixNano": str(now + 3_500_000_000),
+                                "attributes": [
+                                    {"key": "gen_ai.operation.name", "value": {"stringValue": "chat"}},
+                                    {"key": "gen_ai.provider.name", "value": {"stringValue": "github"}},
+                                    {
+                                        "key": "gen_ai.request.model",
+                                        "value": {"stringValue": "claude-opus-4.7-1m-internal"},
+                                    },
+                                    {
+                                        "key": "gen_ai.conversation.id",
+                                        "value": {"stringValue": "conversation-123"},
+                                    },
+                                    {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "41531"}},
+                                    {"key": "gen_ai.usage.output_tokens", "value": {"intValue": "27"}},
+                                    {
+                                        "key": "gen_ai.usage.cache_creation.input_tokens",
+                                        "value": {"intValue": "41525"},
+                                    },
+                                    {"key": "github.copilot.cost", "value": {"intValue": "1"}},
+                                    {
+                                        "key": "github.copilot.interaction_id",
+                                        "value": {"stringValue": "interaction-123"},
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    resp = await testagent.post(f"{otlp_http_url}/v1/traces", json=payload)
+    assert resp.status == 200
+
+    aggregate_query = {
+        "aggregate": {
+            "groupBy": [
+                {
+                    "field": {
+                        "id": "@session_id",
+                        "output": "@session_id",
+                        "limit": 50,
+                        "sort": {"metric": {"order": "desc", "id": "timestamp:min"}},
+                    }
+                }
+            ],
+            "compute": [
+                {"total": {"metric": "count", "output": "count:count", "aggregation": "count"}},
+                {"total": {"metric": "@trace.input_tokens", "output": "@trace.input_tokens:sum", "aggregation": "sum"}},
+                {"total": {"metric": "@trace.output_tokens", "output": "@trace.output_tokens:sum", "aggregation": "sum"}},
+                {"total": {"metric": "@trace.total_tokens", "output": "@trace.total_tokens:sum", "aggregation": "sum"}},
+                {
+                    "total": {
+                        "metric": "@trace.estimated_total_cost",
+                        "output": "@trace.estimated_total_cost:sum",
+                        "aggregation": "sum",
+                    }
+                },
+            ],
+            "search": {"query": "@parent_id:undefined @session_id:*"},
+            "indexes": ["llmobs"],
+        }
+    }
+    resp = await testagent.post(
+        f"{testagent_url}/api/unstable/llm-obs-query-rewriter/aggregate?type=llmobs",
+        json=aggregate_query,
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    values = data["result"]["values"]
+    assert len(values) == 1
+    assert values[0]["by"]["@session_id"] == "conversation-123"
+    assert values[0]["metrics"]["count:count"] == 1
+    assert values[0]["metrics"]["@trace.input_tokens:sum"] == 41531
+    assert values[0]["metrics"]["@trace.output_tokens:sum"] == 27
+    assert values[0]["metrics"]["@trace.total_tokens:sum"] == 41558
+    assert values[0]["metrics"]["@trace.estimated_total_cost:sum"] == 1
+
+
+def test_copilot_otlp_session_with_multiple_trace_ids_rolls_up_each_trace():
+    payload = {
+        "resourceSpans": [
+            {
+                "resource": {
+                    "attributes": [{"key": "service.name", "value": {"stringValue": "github-copilot-cli"}}]
+                },
+                "scopeSpans": [
+                    {
+                        "spans": [
+                            {
+                                "traceId": "trace-a",
+                                "spanId": "span-a",
+                                "name": "chat",
+                                "startTimeUnixNano": "100",
+                                "endTimeUnixNano": "200",
+                                "attributes": [
+                                    {"key": "gen_ai.conversation.id", "value": {"stringValue": "conversation-123"}},
+                                    {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "10"}},
+                                ],
+                            },
+                            {
+                                "traceId": "trace-b",
+                                "spanId": "span-b",
+                                "name": "chat",
+                                "startTimeUnixNano": "300",
+                                "endTimeUnixNano": "400",
+                                "attributes": [
+                                    {"key": "gen_ai.conversation.id", "value": {"stringValue": "conversation-123"}},
+                                    {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "20"}},
+                                ],
+                            },
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+
+    spans = extract_copilot_spans_from_otlp_traces(payload)
+    roots = [span for span in spans if span["parent_id"] == "undefined"]
+    trace_aggregates = _build_trace_aggregates(spans)
+
+    assert len(roots) == 2
+    assert {root["trace_id"] for root in roots} == {"trace-a", "trace-b"}
+    assert {span["parent_id"] for span in spans if span["span_id"] == "span-a"} == {"copilot-session-trace-a"}
+    assert {span["parent_id"] for span in spans if span["span_id"] == "span-b"} == {"copilot-session-trace-b"}
+    assert sum(trace_aggregates[root["trace_id"]]["input_tokens"] for root in roots) == 30
 
 
 async def test_llmobs_cors_headers(agent):
