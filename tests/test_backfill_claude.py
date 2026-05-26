@@ -54,15 +54,18 @@ def test_session_to_spans_one_user_one_turn():
     ]
     spans = claude_backfill.session_to_spans("sess-1", "/p", entries)
     by_kind = {s["meta"]["span"]["kind"]: s for s in spans}
-    assert set(by_kind) == {"agent", "llm", "tool"}
+    assert set(by_kind) == {"agent", "step", "llm", "tool"}
     agent = by_kind["agent"]
+    step = by_kind["step"]
     llm = by_kind["llm"]
     tool = by_kind["tool"]
     # All in the same trace
-    assert agent["trace_id"] == llm["trace_id"] == tool["trace_id"]
-    # Tool parented to LLM, LLM to agent
-    assert llm["parent_id"] == agent["span_id"]
-    assert tool["parent_id"] == llm["span_id"]
+    assert agent["trace_id"] == step["trace_id"] == llm["trace_id"] == tool["trace_id"]
+    # Step sits between the root agent and its LLM/tool children.
+    assert step["parent_id"] == agent["span_id"]
+    assert llm["parent_id"] == step["span_id"]
+    assert tool["parent_id"] == step["span_id"]
+    assert step["duration"] == 2_000_000_000
     # Real timestamps (May 11 2026 ~= 1778932800 epoch seconds)
     assert agent["start_ns"] >= 1_778_000_000_000_000_000
     assert agent["start_ns"] <= 1_779_000_000_000_000_000
@@ -164,11 +167,25 @@ def test_session_to_spans_renders_task_tool_as_subagent_span():
 
     agents = [s for s in spans if s["meta"]["span"]["kind"] == "agent"]
     llm = next(s for s in spans if s["meta"]["span"]["kind"] == "llm")
+    step = next(s for s in spans if s["meta"]["span"]["kind"] == "step")
     subagent = next(s for s in agents if s["parent_id"] != "undefined")
     assert subagent["name"] == "Task - Explore"
-    assert subagent["parent_id"] == llm["span_id"]
+    assert llm["parent_id"] == step["span_id"]
+    assert subagent["parent_id"] == step["span_id"]
     assert subagent["meta"]["output"]["value"] == "found it"
     assert subagent["meta"]["metadata"]["subagent"]["prompt"] == "inspect the code"
+
+
+def test_session_to_spans_closes_zero_duration_turns():
+    entries = [
+        {"type": "user", "timestamp": "2026-05-11T12:00:00.000Z", "message": {"role": "user", "content": "only"}},
+    ]
+
+    spans = claude_backfill.session_to_spans("sess-1", "/p", entries)
+
+    agent = next(s for s in spans if s["meta"]["span"]["kind"] == "agent")
+    assert agent["duration"] == 1
+    assert agent["status"] == "ok"
 
 
 def test_session_to_spans_skips_entries_without_timestamps():

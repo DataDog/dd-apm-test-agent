@@ -84,7 +84,7 @@ async def test_backfill_session_is_idempotent_for_same_session(agent):
     assert first.status == 200
     first_body = await first.json()
     assert first_body["status"] == "ok"
-    assert first_body["spans_created"] == 2
+    assert first_body["spans_created"] == 3
 
     second = await agent.post(
         "/pi/hooks/backfill_session",
@@ -98,7 +98,7 @@ async def test_backfill_session_is_idempotent_for_same_session(agent):
 
     resp = await agent.get("/claude/hooks/spans")
     spans = (await resp.json())["spans"]
-    assert len([s for s in spans if s.get("session_id") == "pi-backfill-once"]) == 2
+    assert len([s for s in spans if s.get("session_id") == "pi-backfill-once"]) == 3
 
 
 def _agent_end(session_id=SESSION, messages=None):

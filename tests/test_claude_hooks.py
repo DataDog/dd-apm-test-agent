@@ -94,7 +94,7 @@ async def test_backfill_session_is_idempotent_for_same_session(agent):
     assert first.status == 200
     first_body = await first.json()
     assert first_body["status"] == "ok"
-    assert first_body["spans_created"] == 2
+    assert first_body["spans_created"] == 3
 
     second = await agent.post(
         "/claude/hooks/backfill_session",
@@ -108,7 +108,7 @@ async def test_backfill_session_is_idempotent_for_same_session(agent):
 
     resp = await agent.get("/claude/hooks/spans")
     spans = (await resp.json())["spans"]
-    assert len([s for s in spans if s.get("session_id") == "sess-backfill-once"]) == 2
+    assert len([s for s in spans if s.get("session_id") == "sess-backfill-once"]) == 3
 
 
 async def test_hook_tool_use_creates_tool_span(agent):

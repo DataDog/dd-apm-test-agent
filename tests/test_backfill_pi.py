@@ -63,14 +63,16 @@ def test_session_to_spans_full_turn():
     ]
     spans = pi_backfill.session_to_spans("sess-1", "/p", entries)
     by_kind = {s["meta"]["span"]["kind"]: s for s in spans}
-    assert set(by_kind) == {"agent", "llm", "tool"}
-    agent, llm, tool = by_kind["agent"], by_kind["llm"], by_kind["tool"]
-    assert agent["trace_id"] == llm["trace_id"] == tool["trace_id"]
-    assert llm["parent_id"] == agent["span_id"]
-    assert tool["parent_id"] == llm["span_id"]
+    assert set(by_kind) == {"agent", "step", "llm", "tool"}
+    agent, step, llm, tool = by_kind["agent"], by_kind["step"], by_kind["llm"], by_kind["tool"]
+    assert agent["trace_id"] == step["trace_id"] == llm["trace_id"] == tool["trace_id"]
+    assert step["parent_id"] == agent["span_id"]
+    assert llm["parent_id"] == step["span_id"]
+    assert tool["parent_id"] == step["span_id"]
     # Real timestamps in ns
     assert agent["start_ns"] == 1778932800000 * 1_000_000
-    assert llm["start_ns"] == 1778932801000 * 1_000_000
+    assert llm["start_ns"] == 1778932800000 * 1_000_000
+    assert step["duration"] == 3_000 * 1_000_000
     # Tool duration = (toolResult ts - toolCall ts) in ns
     assert tool["duration"] == 2_000 * 1_000_000
     # Cost converted to nanodollars (0.006 USD * 1e9)
@@ -111,6 +113,22 @@ def test_session_to_spans_multiple_user_prompts_create_multiple_traces():
     spans = pi_backfill.session_to_spans("s", "/p", entries)
     traces = {s["trace_id"] for s in spans}
     assert len(traces) == 2
+
+
+def test_session_to_spans_closes_zero_duration_turns():
+    entries = [
+        {"type": "session", "id": "s", "cwd": "/p"},
+        {
+            "type": "message",
+            "message": {"role": "user", "timestamp": 1778932800000, "content": [{"type": "text", "text": "only"}]},
+        },
+    ]
+
+    spans = pi_backfill.session_to_spans("s", "/p", entries)
+
+    agent = next(s for s in spans if s["meta"]["span"]["kind"] == "agent")
+    assert agent["duration"] == 1
+    assert agent["status"] == "ok"
 
 
 def test_backfill_walks_pi_and_omp_one_post_per_session(monkeypatch, tmp_path):

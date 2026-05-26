@@ -49,6 +49,16 @@ def _parse_ts_ns(ts: Any) -> Optional[int]:
         return None
 
 
+def _closed_duration_ns(start_ns: int, end_ns: int) -> int:
+    """Completed backfill spans must not use duration=0.
+
+    The static LLM Observability app treats a root span with zero duration as
+    still running. Historical backfill payloads are complete by definition, so
+    use a 1ns floor when adjacent transcript entries share a timestamp.
+    """
+    return max(1, end_ns - start_ns)
+
+
 def _common_tags(session_id: str, source: str = "pi-backfill") -> List[str]:
     return [
         f"ml_app:{_ML_APP}",
@@ -88,6 +98,16 @@ def _format_output_messages(content: List[Dict[str, Any]]) -> List[Dict[str, Any
                 }
             )
     return out
+
+
+def _assistant_text(content: List[Dict[str, Any]]) -> str:
+    chunks: List[str] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            text = block.get("text") or ""
+            if text:
+                chunks.append(text)
+    return "\n\n".join(chunks)
 
 
 def _user_text(message: Dict[str, Any]) -> str:
@@ -148,6 +168,59 @@ def _new_turn(session_id: str, cwd: str, model: str, start_ns: int, prompt: str)
         "total_cost_usd": 0.0,
         "tools_used": set(),
         "model_set": bool(model),
+        "step_count": 0,
+    }
+
+
+def _build_step_span(
+    session_id: str,
+    trace_id: str,
+    parent_span_id: str,
+    index: int,
+    start_ns: int,
+    end_ns: int,
+    content: List[Dict[str, Any]],
+    stop_reason: str,
+) -> Dict[str, Any]:
+    tool_use_ids = [
+        str(block.get("id"))
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "toolCall" and block.get("id")
+    ]
+    metadata: Dict[str, Any] = {
+        "message_index": index,
+        "_dd": backfill_metadata(),
+    }
+    if stop_reason:
+        metadata["stop_reason"] = stop_reason
+    if tool_use_ids:
+        metadata["tool_use_ids"] = tool_use_ids
+    if any(isinstance(block, dict) and block.get("type") == "thinking" for block in content):
+        metadata["has_thinking"] = True
+
+    return {
+        "span_id": _format_span_id(),
+        "trace_id": trace_id,
+        "parent_id": parent_span_id,
+        "name": f"inference-{index}",
+        "start_ns": start_ns,
+        "duration": _closed_duration_ns(start_ns, end_ns),
+        "status": "ok",
+        "error": 0,
+        "ml_app": _ML_APP,
+        "service": _ML_APP,
+        "env": "local",
+        "session_id": session_id,
+        "tags": _common_tags(session_id, source="pi-backfill-step") + ["trajectory.semantic_type:agent_message"],
+        "meta": {
+            "span": {"kind": "step"},
+            "kind": "step",
+            "input": {},
+            "output": {"value": _assistant_text(content)},
+            "metadata": metadata,
+        },
+        "metrics": {},
+        "span_links": [],
     }
 
 
@@ -230,13 +303,13 @@ def _build_tool_span(
 ) -> Dict[str, Any]:
     tool_name = pending.get("name", "unknown_tool")
     start_ns = pending["start_ns"]
-    duration = max(0, end_ns - start_ns)
+    duration = _closed_duration_ns(start_ns, end_ns)
     is_error = bool(tool_result_msg.get("isError", False))
     output_value = _tool_result_text(tool_result_msg)
     return {
         "span_id": _format_span_id(),
         "trace_id": trace_id,
-        "parent_id": pending["llm_span_id"],
+        "parent_id": pending.get("parent_span_id", pending["llm_span_id"]),
         "name": tool_name,
         "start_ns": start_ns,
         "duration": duration,
@@ -273,7 +346,7 @@ def _set_turn_model(turn: Dict[str, Any], model: str) -> None:
 
 def _finalize_turn(turn: Dict[str, Any]) -> None:
     root = turn["root_span"]
-    root["duration"] = max(0, turn["end_ns"] - turn["start_ns"])
+    root["duration"] = _closed_duration_ns(turn["start_ns"], turn["end_ns"])
     root["meta"]["output"]["value"] = "\n".join(turn["assistant_text_chunks"]).strip()
     if turn["total_tokens"]:
         root["metrics"]["input_tokens"] = turn["input_tokens"]
@@ -313,14 +386,28 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
             content = msg.get("content") or []
             model = str(msg.get("model") or current["root_span"]["meta"].get("model_name", ""))
             _set_turn_model(current, model)
-            duration_ns = max(0, ts_ns - (previous_ts_ns or ts_ns))
-            llm_span = _build_llm_span(
+            llm_start_ns = previous_ts_ns or current["end_ns"] or ts_ns
+            step_index = int(current["step_count"])
+            current["step_count"] = step_index + 1
+            step_span = _build_step_span(
                 session_id=session_id,
                 trace_id=current["trace_id"],
                 parent_span_id=current["root_span_id"],
+                index=step_index,
+                start_ns=llm_start_ns,
+                end_ns=ts_ns,
+                content=content,
+                stop_reason=str(msg.get("stopReason") or ""),
+            )
+            spans.append(step_span)
+            duration_ns = _closed_duration_ns(llm_start_ns, ts_ns)
+            llm_span = _build_llm_span(
+                session_id=session_id,
+                trace_id=current["trace_id"],
+                parent_span_id=step_span["span_id"],
                 msg=msg,
                 model=model,
-                start_ns=ts_ns,
+                start_ns=llm_start_ns,
                 duration_ns=duration_ns,
             )
             spans.append(llm_span)
@@ -347,6 +434,8 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
                             "input": block.get("arguments", {}),
                             "start_ns": ts_ns,
                             "llm_span_id": llm_span["span_id"],
+                            "parent_span_id": step_span["span_id"],
+                            "step_span": step_span,
                         }
                         current["tools_used"].add(block.get("name", "unknown_tool"))
         elif role == "toolResult" and current is not None:
@@ -356,6 +445,9 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
                 continue
             tool_span = _build_tool_span(session_id, current["trace_id"], pending, msg, ts_ns)
             spans.append(tool_span)
+            step_span = pending.get("step_span")
+            if isinstance(step_span, dict):
+                step_span["duration"] = _closed_duration_ns(step_span["start_ns"], ts_ns)
             current["end_ns"] = max(current["end_ns"], ts_ns)
 
         previous_ts_ns = ts_ns
