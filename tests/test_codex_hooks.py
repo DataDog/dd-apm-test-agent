@@ -2,6 +2,7 @@
 
 import gzip
 import json
+import subprocess
 
 import msgpack
 import pytest
@@ -173,6 +174,86 @@ async def test_codex_turn_llm_and_tool_spans(agent):
     assert llms[0]["metrics"]["estimated_input_cost"] == 410_000
     assert llms[0]["metrics"]["estimated_output_cost"] == 900_000
     assert llms[0]["metrics"]["estimated_total_cost"] == 1_310_000
+
+
+async def test_codex_project_metadata_from_session_git(agent):
+    sid = "codex-project-metadata"
+    session_meta = _session_meta(sid)
+    session_meta["git"] = {"repository_url": "git@github.com:DataDog/dd-apm-test-agent.git"}
+
+    await _post(agent, sid, session_meta)
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="hello"))
+    await _post(agent, sid, _event("agent_message", message="done"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    assert resp.status == 200
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    root = next(s for s in session_spans if s["parent_id"] == "undefined")
+
+    assert "project_name:dd-apm-test-agent" in root["tags"]
+    assert "git.repository_url:github.com/DataDog/dd-apm-test-agent" in root["tags"]
+    assert root["meta"]["metadata"]["project_name"] == "dd-apm-test-agent"
+    assert root["meta"]["metadata"]["git_repository_url"] == "github.com/DataDog/dd-apm-test-agent"
+    assert not any("commit" in tag for span in session_spans for tag in span.get("tags", []))
+    assert not any("commit" in key for key in root["meta"]["metadata"])
+
+
+async def test_codex_project_metadata_uses_local_git_fallback(agent, tmp_path, monkeypatch):
+    monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/DataDog/local-codex-repo.git"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    sid = "codex-local-git-project"
+    session_meta = _session_meta(sid)
+    session_meta["payload"]["cwd"] = str(tmp_path)
+    turn_context = _turn_context()
+    turn_context["payload"]["cwd"] = str(tmp_path)
+
+    await _post(agent, sid, session_meta)
+    await _post(agent, sid, turn_context)
+    await _post(agent, sid, _event("user_message", message="hello"))
+    await _post(agent, sid, _event("agent_message", message="done"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    assert resp.status == 200
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    root = next(s for s in session_spans if s["parent_id"] == "undefined")
+
+    assert "project_name:local-codex-repo" in root["tags"]
+    assert "git.repository_url:github.com/DataDog/local-codex-repo" in root["tags"]
+
+
+async def test_codex_project_metadata_uses_cwd_basename_without_git(agent, tmp_path, monkeypatch):
+    monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    cwd = tmp_path / "plain-codex-project"
+    cwd.mkdir()
+
+    sid = "codex-no-git-project"
+    session_meta = _session_meta(sid)
+    session_meta["payload"]["cwd"] = str(cwd)
+    turn_context = _turn_context()
+    turn_context["payload"]["cwd"] = str(cwd)
+
+    await _post(agent, sid, session_meta)
+    await _post(agent, sid, turn_context)
+    await _post(agent, sid, _event("user_message", message="hello"))
+    await _post(agent, sid, _event("agent_message", message="done"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    assert resp.status == 200
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    root = next(s for s in session_spans if s["parent_id"] == "undefined")
+
+    assert "project_name:plain-codex-project" in root["tags"]
+    assert not any(tag.startswith("git.repository_url:") for tag in root["tags"])
+    assert root["meta"]["metadata"]["project_name"] == "plain-codex-project"
+    assert "git_repository_url" not in root["meta"]["metadata"]
 
 
 async def test_codex_tool_status_reasoning_and_large_output_are_tracked_safely(agent):
@@ -1038,9 +1119,7 @@ async def test_codex_ignores_duplicate_session_for_existing_task_id(agent):
     spans = _spans(await resp.json())
 
     assert [span for span in spans if span.get("session_id") == duplicate_sid] == []
-    parent_roots = [
-        span for span in spans if span.get("session_id") == parent_sid and span["parent_id"] == "undefined"
-    ]
+    parent_roots = [span for span in spans if span.get("session_id") == parent_sid and span["parent_id"] == "undefined"]
     assert len(parent_roots) == 1
     assert parent_roots[0]["meta"]["input"]["value"] == "real work"
 
@@ -1457,29 +1536,54 @@ async def test_codex_subagent_call_id_reused_across_turns_yields_distinct_spans(
     await _post(agent, sid, _turn_context("turn-1"))
     await _post(agent, sid, _event("user_message", message="first"))
     await _post(
-        agent, sid,
-        _event("collab_agent_spawn_begin", timestamp="2026-05-11T17:00:02.500Z",
-               call_id="spawn-1", sender_thread_id="parent-thread", prompt="first sub"),
+        agent,
+        sid,
+        _event(
+            "collab_agent_spawn_begin",
+            timestamp="2026-05-11T17:00:02.500Z",
+            call_id="spawn-1",
+            sender_thread_id="parent-thread",
+            prompt="first sub",
+        ),
     )
     await _post(
-        agent, sid,
-        _event("collab_agent_spawn_end", timestamp="2026-05-11T17:00:03.000Z",
-               call_id="spawn-1", new_thread_id="child-1", new_agent_nickname="agent-a", status="ok"),
+        agent,
+        sid,
+        _event(
+            "collab_agent_spawn_end",
+            timestamp="2026-05-11T17:00:03.000Z",
+            call_id="spawn-1",
+            new_thread_id="child-1",
+            new_agent_nickname="agent-a",
+            status="ok",
+        ),
     )
-    await _post(agent, sid, _event("task_complete", timestamp="2026-05-11T17:00:03.500Z",
-                                   last_agent_message="done"))
+    await _post(agent, sid, _event("task_complete", timestamp="2026-05-11T17:00:03.500Z", last_agent_message="done"))
     # Turn 2 — same spawn call_id
     await _post(agent, sid, _turn_context("turn-2"))
     await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:04.000Z", message="second"))
     await _post(
-        agent, sid,
-        _event("collab_agent_spawn_begin", timestamp="2026-05-11T17:00:04.500Z",
-               call_id="spawn-1", sender_thread_id="parent-thread", prompt="second sub"),
+        agent,
+        sid,
+        _event(
+            "collab_agent_spawn_begin",
+            timestamp="2026-05-11T17:00:04.500Z",
+            call_id="spawn-1",
+            sender_thread_id="parent-thread",
+            prompt="second sub",
+        ),
     )
     await _post(
-        agent, sid,
-        _event("collab_agent_spawn_end", timestamp="2026-05-11T17:00:05.000Z",
-               call_id="spawn-1", new_thread_id="child-2", new_agent_nickname="agent-b", status="ok"),
+        agent,
+        sid,
+        _event(
+            "collab_agent_spawn_end",
+            timestamp="2026-05-11T17:00:05.000Z",
+            call_id="spawn-1",
+            new_thread_id="child-2",
+            new_agent_nickname="agent-b",
+            status="ok",
+        ),
     )
 
     resp = await agent.get("/claude/hooks/spans")
@@ -1500,24 +1604,50 @@ async def test_codex_subagent_call_id_reused_within_turn_yields_distinct_spans(a
     await _post(agent, sid, _turn_context("turn-1"))
     await _post(agent, sid, _event("user_message", message="delegate twice"))
     await _post(
-        agent, sid,
-        _event("collab_agent_spawn_begin", timestamp="2026-05-11T17:00:02.500Z",
-               call_id="spawn-1", sender_thread_id="parent-thread", prompt="first sub"),
+        agent,
+        sid,
+        _event(
+            "collab_agent_spawn_begin",
+            timestamp="2026-05-11T17:00:02.500Z",
+            call_id="spawn-1",
+            sender_thread_id="parent-thread",
+            prompt="first sub",
+        ),
     )
     await _post(
-        agent, sid,
-        _event("collab_agent_spawn_end", timestamp="2026-05-11T17:00:03.000Z",
-               call_id="spawn-1", new_thread_id="child-1", new_agent_nickname="agent-a", status="ok"),
+        agent,
+        sid,
+        _event(
+            "collab_agent_spawn_end",
+            timestamp="2026-05-11T17:00:03.000Z",
+            call_id="spawn-1",
+            new_thread_id="child-1",
+            new_agent_nickname="agent-a",
+            status="ok",
+        ),
     )
     await _post(
-        agent, sid,
-        _event("collab_agent_spawn_begin", timestamp="2026-05-11T17:00:03.500Z",
-               call_id="spawn-1", sender_thread_id="parent-thread", prompt="second sub"),
+        agent,
+        sid,
+        _event(
+            "collab_agent_spawn_begin",
+            timestamp="2026-05-11T17:00:03.500Z",
+            call_id="spawn-1",
+            sender_thread_id="parent-thread",
+            prompt="second sub",
+        ),
     )
     await _post(
-        agent, sid,
-        _event("collab_agent_spawn_end", timestamp="2026-05-11T17:00:04.000Z",
-               call_id="spawn-1", new_thread_id="child-2", new_agent_nickname="agent-b", status="ok"),
+        agent,
+        sid,
+        _event(
+            "collab_agent_spawn_end",
+            timestamp="2026-05-11T17:00:04.000Z",
+            call_id="spawn-1",
+            new_thread_id="child-2",
+            new_agent_nickname="agent-b",
+            status="ok",
+        ),
     )
 
     resp = await agent.get("/claude/hooks/spans")

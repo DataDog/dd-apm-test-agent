@@ -29,7 +29,13 @@ import msgpack
 from ._clock import monotonic_wall_ns
 from .claude_cost_tracker import COST_METRIC_KEYS
 from .claude_link_tracker import ClaudeLinkTracker
+from .coding_agent_metadata import apply_project_metadata_to_span
+from .coding_agent_metadata import extract_agent_project_name
+from .coding_agent_metadata import extract_git_repository_url
+from .coding_agent_metadata import project_metadata_tags
+from .coding_agent_metadata import resolve_project_metadata
 from .llmobs_event_platform import with_cors
+
 
 log = logging.getLogger(__name__)
 
@@ -132,6 +138,8 @@ class SessionState:
         # Currently active agents keyed by span_id, for concurrent subagent resolution.
         self.active_agents: Dict[str, Dict[str, Any]] = {}
         self.conversation_title: str = ""
+        self.cwd: str = ""
+        self.project_metadata = resolve_project_metadata()
         # Persists across turns so each turn's context_delta reflects growth from
         # the previous turn's final context size.
         self.last_known_input_tokens: int = 0
@@ -350,6 +358,41 @@ class ClaudeHooksAPI:
         """Merge key-value pairs into span['meta']['metadata']['_dd'], preserving existing values."""
         span["meta"].setdefault("metadata", {}).setdefault("_dd", {}).update(kwargs)
 
+    def _update_session_project_metadata(self, session: SessionState, body: Dict[str, Any]) -> None:
+        previous_cwd = session.cwd
+        cwd = body.get("cwd")
+        if isinstance(cwd, str) and cwd.strip():
+            session.cwd = cwd.strip()
+        cwd_changed = bool(session.cwd and session.cwd != previous_cwd)
+
+        project_name = extract_agent_project_name(body)
+        git_repository_url = extract_git_repository_url(body)
+        if session.cwd or project_name or git_repository_url:
+            session.project_metadata = resolve_project_metadata(
+                cwd=session.cwd,
+                project_name=project_name or ("" if cwd_changed else session.project_metadata.project_name),
+                git_repository_url=git_repository_url
+                or ("" if cwd_changed else session.project_metadata.git_repository_url),
+            )
+
+    def _base_tags(self, session: SessionState, source: str = "claude-code-hooks") -> List[str]:
+        tags = [
+            f"ml_app:{_ML_APP}",
+            f"session_id:{session.session_id}",
+            f"service:{_ML_APP}",
+            "env:local",
+            f"source:{source}",
+            "language:python",
+            f"hostname:{_HOSTNAME}",
+        ]
+        if _USER_HANDLE:
+            tags.append(f"user_handle:{_USER_HANDLE}")
+        tags.extend(project_metadata_tags(session.project_metadata))
+        return tags
+
+    def _apply_project_metadata_to_span(self, session: SessionState, span: Dict[str, Any]) -> None:
+        apply_project_metadata_to_span(span, session.project_metadata)
+
     def _set_permission_wait_critical_evaluation(self, span: Dict[str, Any], estimated_permission_wait_ms: int) -> None:
         """Embed a permission_wait_critical boolean evaluation on a span.
         The evaluation flags whether the permission wait was > 50% of span duration.
@@ -421,16 +464,7 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:claude-code-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-                "trajectory.semantic_type:agent_message",
-            ],
+            "tags": self._base_tags(session) + ["trajectory.semantic_type:agent_message"],
             "meta": {
                 "span": {"kind": "step"},
                 "input": {},
@@ -723,24 +757,17 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:claude-code-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-            ]
-            + ([f"user_handle:{_USER_HANDLE}"] if _USER_HANDLE else [])
+            "tags": self._base_tags(session)
             + ([f"topic:{session.conversation_title}"] if session.conversation_title else []),
             "meta": {
                 "span": {"kind": "agent"},
                 "input": {"value": prompt},
                 "output": {"value": ""},
+                "metadata": {},
             },
             "metrics": {},
         }
+        self._apply_project_metadata_to_span(session, root_span)
         self._assembled_spans.append(root_span)
         session._root_span_ref = root_span  # type: ignore[attr-defined]
 
@@ -856,19 +883,12 @@ class ClaudeHooksAPI:
                     "service": _ML_APP,
                     "env": "local",
                     "session_id": session.session_id,
-                    "tags": [
-                        f"ml_app:{_ML_APP}",
-                        f"session_id:{session.session_id}",
-                        f"service:{_ML_APP}",
-                        "env:local",
-                        "source:claude-code-hooks",
-                        "language:python",
-                        f"hostname:{_HOSTNAME}",
-                    ],
+                    "tags": self._base_tags(session),
                     "meta": {
                         "span": {"kind": "agent"},
                         "input": {"value": input_value},
                         "output": {"value": output_str},
+                        "metadata": {},
                     },
                     "metrics": {},
                     "span_links": span_links,
@@ -906,16 +926,7 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:claude-code-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-                f"tool_name:{actual_tool_name}",
-            ],
+            "tags": self._base_tags(session) + [f"tool_name:{actual_tool_name}"],
             "meta": {
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},
@@ -990,19 +1001,12 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:claude-code-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-            ],
+            "tags": self._base_tags(session),
             "meta": {
                 "span": {"kind": "agent"},
                 "input": {},
                 "output": {},
+                "metadata": {},
             },
             "metrics": {},
         }
@@ -1114,19 +1118,12 @@ class ClaudeHooksAPI:
                     "service": _ML_APP,
                     "env": "local",
                     "session_id": session.session_id,
-                    "tags": [
-                        f"ml_app:{_ML_APP}",
-                        f"session_id:{session.session_id}",
-                        f"service:{_ML_APP}",
-                        "env:local",
-                        "source:claude-code-hooks",
-                        "language:python",
-                        f"hostname:{_HOSTNAME}",
-                    ],
+                    "tags": self._base_tags(session),
                     "meta": {
                         "span": {"kind": "agent"},
                         "input": {},
                         "output": {},
+                        "metadata": {},
                     },
                     "metrics": {},
                 }
@@ -1319,6 +1316,7 @@ class ClaudeHooksAPI:
                     "model_provider": "anthropic",
                 }
             )
+            self._apply_project_metadata_to_span(session, root_span)
             dd_fields: Dict[str, Any] = {"agent_manifest": agent_manifest}
             if context_delta:
                 dd_fields["context_delta"] = context_delta
@@ -1344,17 +1342,8 @@ class ClaudeHooksAPI:
                 "service": _ML_APP,
                 "env": "local",
                 "session_id": session.session_id,
-                "tags": [
-                    f"ml_app:{_ML_APP}",
-                    f"session_id:{session.session_id}",
-                    f"service:{_ML_APP}",
-                    "env:local",
-                    "source:claude-code-hooks",
-                    "language:python",
-                    f"hostname:{_HOSTNAME}",
-                    f"user_name:{_USERNAME}",
-                ]
-                + ([f"user_handle:{_USER_HANDLE}"] if _USER_HANDLE else [])
+                "tags": self._base_tags(session)
+                + [f"user_name:{_USERNAME}"]
                 + ([f"topic:{session.conversation_title}"] if session.conversation_title else []),
                 "meta": {
                     "span": {"kind": "agent"},
@@ -1377,6 +1366,7 @@ class ClaudeHooksAPI:
                 self._set_permission_wait_critical_evaluation(root_span, estimated_permission_wait_ms)
             if tool_usage:
                 dd_fields["tool_usage"] = tool_usage
+            self._apply_project_metadata_to_span(session, root_span)
             self._set_hidden_metadata(root_span, **dd_fields)
             self._assembled_spans.append(root_span)
 
@@ -1482,16 +1472,7 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:claude-code-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-                f"tool_name:{actual_tool_name}",
-            ],
+            "tags": self._base_tags(session) + [f"tool_name:{actual_tool_name}"],
             "meta": {
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},
@@ -1570,6 +1551,9 @@ class ClaudeHooksAPI:
         """Dispatch a hook event to the appropriate handler."""
         session_id = body.get("session_id", "")
         hook_event_name = body.get("hook_event_name", "")
+        if session_id:
+            session = self._get_or_create_session(session_id)
+            self._update_session_project_metadata(session, body)
 
         handlers: Dict[str, Any] = {
             "SessionStart": self._handle_session_start,
@@ -1666,7 +1650,9 @@ class ClaudeHooksAPI:
         data = gzip.compress(msgpack.packb(payload))
         await self._post_to_backend(url, headers, data, f"forward {len(spans)} span updates")
 
-    async def _forward_trace_to_backend(self, session_id: str, trace_id: Optional[str] = None, span_source: str = "Claude hooks") -> None:
+    async def _forward_trace_to_backend(
+        self, session_id: str, trace_id: Optional[str] = None, span_source: str = "Claude hooks"
+    ) -> None:
         """Forward all assembled spans for a session's trace to the backend via the EVP proxy path."""
         session = self._sessions.get(session_id)
         if not session:
@@ -1685,7 +1671,11 @@ class ClaudeHooksAPI:
         # Strip locally-computed cost estimates before forwarding — let real cost tracking happen on ingestion
         forwarded_spans = []
         for s in spans:
-            span = {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}} if s.get("metrics") else dict(s)
+            span = (
+                {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}}
+                if s.get("metrics")
+                else dict(s)
+            )
             tags: List[Any] = span.get("tags") or []
             if "lapdog_forwarded:true" not in tags:
                 span["tags"] = tags + ["lapdog_forwarded:true"]
@@ -1697,7 +1687,9 @@ class ClaudeHooksAPI:
             "spans": forwarded_spans,
         }
         data = gzip.compress(msgpack.packb(payload))
-        await self._post_to_backend(url, headers, data, f"forward {len(spans)} {span_source} spans for trace {trace_id}")
+        await self._post_to_backend(
+            url, headers, data, f"forward {len(spans)} {span_source} spans for trace {trace_id}"
+        )
 
     async def _forward_eval_metrics_to_backend(self, session_id: str, trace_id: Optional[str] = None) -> None:
         """Forward evaluation metrics for all spans in a session's trace to the Datadog backend.

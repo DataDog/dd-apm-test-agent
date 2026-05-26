@@ -36,6 +36,7 @@ from .claude_link_tracker import ClaudeLinkTracker
 from .claude_link_tracker import SpanLink
 from .llmobs_event_platform import with_cors
 
+
 log = logging.getLogger(__name__)
 
 _HOSTNAME = socket.gethostname()
@@ -392,6 +393,8 @@ class ClaudeProxyAPI:
         for span in self._orphan_spans:
             span["trace_id"] = session.trace_id
             span["parent_id"] = session.root_span_id
+            span["session_id"] = session.session_id
+            span["tags"] = self._hooks_api._base_tags(session, source="claude-code-proxy") + [f"user_name:{_USERNAME}"]
         log.info("Re-parented %d orphan LLM spans into trace %s", len(self._orphan_spans), session.trace_id)
         self._orphan_spans.clear()
 
@@ -582,16 +585,19 @@ class ClaudeProxyAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:claude-code-proxy",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-                f"user_name:{_USERNAME}",
-            ]
-            + ([f"session_id:{session_id}"] if session_id else []),
+            "tags": (
+                self._hooks_api._base_tags(session, source="claude-code-proxy") + [f"user_name:{_USERNAME}"]
+                if session
+                else [
+                    f"ml_app:{_ML_APP}",
+                    f"service:{_ML_APP}",
+                    "env:local",
+                    "source:claude-code-proxy",
+                    "language:python",
+                    f"hostname:{_HOSTNAME}",
+                    f"user_name:{_USERNAME}",
+                ]
+            ),
             "meta": {
                 "span": {"kind": "llm"},
                 "model_name": model,
