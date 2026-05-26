@@ -36,7 +36,6 @@ from .claude_link_tracker import ClaudeLinkTracker
 from .claude_link_tracker import SpanLink
 from .llmobs_event_platform import with_cors
 
-
 log = logging.getLogger(__name__)
 
 _HOSTNAME = socket.gethostname()

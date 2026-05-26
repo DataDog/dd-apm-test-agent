@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Capture git repository and project name metadata for coding agent sessions captured by lapdog.

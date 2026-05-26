@@ -52,7 +52,6 @@ from .coding_agent_metadata import apply_project_metadata_to_span
 from .coding_agent_metadata import project_metadata_tags
 from .llmobs_event_platform import with_cors
 
-
 log = logging.getLogger(__name__)
 
 _ML_APP = os.environ.get("DD_PI_CODING_AGENT_ML_APP", "pi-coding-agent")
