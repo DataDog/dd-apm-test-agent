@@ -60,13 +60,13 @@ def test_cmd_codex_app_starts_watcher_with_app_path_and_lapdog_pid(monkeypatch, 
 
     with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
         with mock.patch("lapdog.cli._read_pid_file", return_value=(4242, 8126)):
-            with mock.patch("lapdog.cli._stop_codex_watcher_singleton") as stop_legacy:
+            with mock.patch("lapdog.cli._stop_legacy_codex_app_watchers") as stop_legacy:
                 with mock.patch("lapdog.cli._start_codex_watcher") as start_watcher:
                     with mock.patch("lapdog.cli._run_codex") as run_codex:
                         with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
                             cli.cmd_codex(["app", str(target_cwd)], forward_data=True)
 
-    stop_legacy.assert_called_once_with(codex_args.app_watcher_key(8126, str(target_cwd)), 4242)
+    stop_legacy.assert_called_once_with(8126, 4242, codex_args.app_watcher_key(8126))
     start_watcher.assert_called_once_with(
         8126,
         proxy_session_key=None,
@@ -233,15 +233,23 @@ def test_start_codex_watcher_can_include_all_cwds(tmp_path, monkeypatch):
 def test_start_codex_watcher_skips_live_singleton(tmp_path, monkeypatch):
     pid_path = tmp_path / "codex-watcher-app-key.pid"
     pid_path.write_text("4242\n")
+    reusable_calls = []
 
     monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
-    monkeypatch.setattr(cli, "_codex_watcher_reusable", lambda pid, parent_pid: pid == 4242)
+    monkeypatch.setattr(
+        cli,
+        "_codex_watcher_reusable",
+        lambda pid, parent_pid, **kwargs: reusable_calls.append((pid, parent_pid, kwargs)) or pid == 4242,
+    )
     popen = mock.Mock()
     monkeypatch.setattr(cli.subprocess, "Popen", popen)
 
-    cli._start_codex_watcher(8126, cwd=str(tmp_path), singleton_key="app-key")
+    cli._start_codex_watcher(8126, cwd=str(tmp_path), singleton_key="app-key", include_all_cwds=True)
 
     popen.assert_not_called()
+    assert reusable_calls == [
+        (4242, cli.os.getpid(), {"lapdog_url": "http://localhost:8126", "include_all_cwds": True})
+    ]
 
 
 def test_start_codex_watcher_replaces_stale_singleton_parent(tmp_path, monkeypatch):
@@ -260,7 +268,7 @@ def test_start_codex_watcher_replaces_stale_singleton_parent(tmp_path, monkeypat
         return process
 
     monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
-    monkeypatch.setattr(cli, "_codex_watcher_reusable", lambda pid, parent_pid: False)
+    monkeypatch.setattr(cli, "_codex_watcher_reusable", lambda pid, parent_pid, **kwargs: False)
     monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
 
     cli._start_codex_watcher(8126, cwd=str(tmp_path), parent_pid=5252, singleton_key="app-key")
@@ -270,19 +278,92 @@ def test_start_codex_watcher_replaces_stale_singleton_parent(tmp_path, monkeypat
     assert pid_path.read_text() == "4343\n"
 
 
+def test_start_codex_watcher_terminates_verified_stale_singleton(tmp_path, monkeypatch):
+    pid_path = tmp_path / "codex-watcher-app-key.pid"
+    pid_path.write_text("4242\n")
+    kills = []
+
+    def fake_popen(args, **kwargs):
+        ready_path = args[args.index("--ready-file") + 1]
+        with open(ready_path, "w") as f:
+            f.write("ready\n")
+        process = mock.Mock()
+        process.pid = 4343
+        process.poll.return_value = None
+        return process
+
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli, "_codex_watcher_reusable", lambda pid, parent_pid, **kwargs: False)
+    monkeypatch.setattr(cli, "_codex_watcher_matches", lambda pid, **kwargs: pid == 4242)
+    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: kills.append((pid, sig)))
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+
+    cli._start_codex_watcher(8126, cwd=str(tmp_path), parent_pid=5252, singleton_key="app-key")
+
+    assert kills == [(4242, cli.signal.SIGTERM)]
+    assert pid_path.read_text() == "4343\n"
+
+
 def test_codex_watcher_reusable_requires_current_parent(monkeypatch):
     def fake_run(args, **kwargs):
-        assert args[:3] == ["ps", "-p", "4242"]
         result = mock.Mock()
         result.returncode = 0
-        result.stdout = "python -m lapdog.codex_watcher --parent-pid 1111 --cwd /repo"
+        result.stdout = (
+            "python -m lapdog.codex_watcher --lapdog-url http://localhost:8126 " "--parent-pid 1111 --cwd /repo"
+        )
         return result
 
     monkeypatch.setattr(cli, "_process_exists", lambda pid: pid == 4242)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
-    assert cli._codex_watcher_reusable(4242, 1111)
+    assert cli._codex_watcher_reusable(
+        4242,
+        1111,
+        lapdog_url="http://localhost:8126",
+        include_all_cwds=False,
+    )
     assert not cli._codex_watcher_reusable(4242, 2222)
+    assert not cli._codex_watcher_reusable(4242, 1111, lapdog_url="http://localhost:8127")
+    assert not cli._codex_watcher_reusable(4242, 1111, include_all_cwds=True)
+
+
+def test_codex_watcher_reusable_checks_windows_command(monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        result = mock.Mock()
+        result.returncode = 0
+        result.stdout = (
+            "python -m lapdog.codex_watcher --lapdog-url http://localhost:8126 "
+            "--parent-pid 1111 --include-all-cwds --cwd C:\\repo"
+        )
+        return result
+
+    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli, "_process_exists", lambda pid: pid == 4242)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli._codex_watcher_reusable(
+        4242,
+        1111,
+        lapdog_url="http://localhost:8126",
+        include_all_cwds=True,
+    )
+    assert calls[0][:3] == ["powershell", "-NoProfile", "-Command"]
+
+
+def test_codex_watcher_reusable_rejects_unverified_command(monkeypatch):
+    def fake_run(args, **kwargs):
+        result = mock.Mock()
+        result.returncode = 1
+        result.stdout = ""
+        return result
+
+    monkeypatch.setattr(cli, "_process_exists", lambda pid: pid == 4242)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert not cli._codex_watcher_reusable(4242, 1111)
 
 
 def test_stop_codex_watcher_singleton_terminates_matching_watcher(tmp_path, monkeypatch):
@@ -291,7 +372,12 @@ def test_stop_codex_watcher_singleton_terminates_matching_watcher(tmp_path, monk
     kills = []
 
     monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
-    monkeypatch.setattr(cli, "_codex_watcher_reusable", lambda pid, parent_pid: pid == 4242 and parent_pid == 5252)
+    monkeypatch.setattr(cli, "_process_exists", lambda pid: pid == 4242)
+    monkeypatch.setattr(
+        cli,
+        "_codex_watcher_reusable",
+        lambda pid, parent_pid, **kwargs: pid == 4242 and parent_pid == 5252,
+    )
     monkeypatch.setattr(cli.os, "kill", lambda pid, sig: kills.append((pid, sig)))
 
     cli._stop_codex_watcher_singleton("legacy-key", 5252)
@@ -306,13 +392,52 @@ def test_stop_codex_watcher_singleton_ignores_nonmatching_process(tmp_path, monk
     kill = mock.Mock()
 
     monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
-    monkeypatch.setattr(cli, "_codex_watcher_reusable", lambda pid, parent_pid: False)
+    monkeypatch.setattr(cli, "_process_exists", lambda pid: pid == 4242)
+    monkeypatch.setattr(cli, "_codex_watcher_reusable", lambda pid, parent_pid, **kwargs: False)
+    monkeypatch.setattr(cli.os, "kill", kill)
+
+    cli._stop_codex_watcher_singleton("legacy-key", 5252)
+
+    kill.assert_not_called()
+    assert pid_path.exists()
+
+
+def test_stop_codex_watcher_singleton_removes_dead_pid_file(tmp_path, monkeypatch):
+    pid_path = tmp_path / "codex-watcher-legacy-key.pid"
+    pid_path.write_text("4242\n")
+    kill = mock.Mock()
+
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli, "_process_exists", lambda pid: False)
     monkeypatch.setattr(cli.os, "kill", kill)
 
     cli._stop_codex_watcher_singleton("legacy-key", 5252)
 
     kill.assert_not_called()
     assert not pid_path.exists()
+
+
+def test_stop_legacy_codex_app_watchers_skips_all_cwd_singleton(tmp_path, monkeypatch):
+    keep_key = codex_args.app_watcher_key(8126)
+    (tmp_path / f"codex-watcher-{keep_key}.pid").write_text("1111\n")
+    (tmp_path / "codex-watcher-legacy-a.pid").write_text("2222\n")
+    (tmp_path / "codex-watcher-legacy-b.pid").write_text("3333\n")
+    (tmp_path / "other.pid").write_text("4444\n")
+    stopped = []
+
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(
+        cli,
+        "_stop_codex_watcher_singleton",
+        lambda singleton_key, parent_pid, **kwargs: stopped.append((singleton_key, parent_pid, kwargs)),
+    )
+
+    cli._stop_legacy_codex_app_watchers(8126, 5252, keep_key)
+
+    assert sorted(stopped) == [
+        ("legacy-a", 5252, {"lapdog_url": "http://localhost:8126", "include_all_cwds": False}),
+        ("legacy-b", 5252, {"lapdog_url": "http://localhost:8126", "include_all_cwds": False}),
+    ]
 
 
 def test_start_codex_watcher_writes_singleton_pid(tmp_path, monkeypatch):

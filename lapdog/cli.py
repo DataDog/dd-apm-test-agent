@@ -135,8 +135,8 @@ def _lapdog_alive(timeout: float = 2.0) -> bool:
         return False
 
 
-def _read_pid_file() -> Tuple[Optional[int], Optional[int]]:
-    path = _pid_file_path()
+def _read_pid_file(path: Optional[str] = None) -> Tuple[Optional[int], Optional[int]]:
+    path = path or _pid_file_path()
     if not os.path.exists(path):
         return None, None
     try:
@@ -451,31 +451,52 @@ def _codex_watcher_pid_file(log_dir: str, singleton_key: str) -> str:
     return os.path.join(log_dir, f"codex-watcher-{singleton_key}.pid")
 
 
-def _codex_watcher_pid_from_file(pid_path: str) -> Optional[int]:
-    try:
-        with open(pid_path) as f:
-            return int((f.readline() or "").strip())
-    except (OSError, ValueError):
-        return None
-
-
-def _codex_watcher_reusable(pid: int, parent_pid: int) -> bool:
-    if not _process_exists(pid):
-        return False
+def _codex_watcher_command(pid: int) -> Optional[str]:
+    """Return the command line for a live watcher candidate, if it can be verified."""
     if os.name == "nt":
-        return True
+        cmd = [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            f'(Get-CimInstance Win32_Process -Filter "ProcessId = {int(pid)}").CommandLine',
+        ]
+    else:
+        cmd = ["ps", "-p", str(pid), "-o", "command="]
     try:
         result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "command="],
+            cmd,
             check=False,
             capture_output=True,
             text=True,
-            timeout=1,
+            timeout=2,
         )
     except (OSError, subprocess.SubprocessError):
-        return True
+        return None
     command = result.stdout.strip()
     if result.returncode != 0 or not command:
+        return None
+    return command
+
+
+def _arg_value(parts: List[str], flag: str) -> Optional[str]:
+    try:
+        idx = parts.index(flag)
+    except ValueError:
+        return None
+    return parts[idx + 1] if idx + 1 < len(parts) else None
+
+
+def _codex_watcher_matches(
+    pid: int,
+    parent_pid: Optional[int] = None,
+    lapdog_url: Optional[str] = None,
+    include_all_cwds: Optional[bool] = None,
+) -> bool:
+    """Return True when a live process matches the expected watcher metadata."""
+    if not _process_exists(pid):
+        return False
+    command = _codex_watcher_command(pid)
+    if not command:
         return False
     try:
         parts = shlex.split(command)
@@ -483,33 +504,120 @@ def _codex_watcher_reusable(pid: int, parent_pid: int) -> bool:
         parts = command.split()
     if "lapdog.codex_watcher" not in parts:
         return False
-    try:
-        parent_idx = parts.index("--parent-pid")
-    except ValueError:
+    if parent_pid is not None and _arg_value(parts, "--parent-pid") != str(parent_pid):
         return False
-    return parent_idx + 1 < len(parts) and parts[parent_idx + 1] == str(parent_pid)
+    if lapdog_url is not None and _arg_value(parts, "--lapdog-url") != lapdog_url:
+        return False
+    if include_all_cwds is not None and ("--include-all-cwds" in parts) is not include_all_cwds:
+        return False
+    return True
 
 
-def _stop_codex_watcher_singleton(singleton_key: str, parent_pid: int) -> None:
-    log_path = _log_file_path()
-    log_dir = os.path.dirname(log_path)
-    pid_path = _codex_watcher_pid_file(log_dir, singleton_key)
-    existing_pid = _codex_watcher_pid_from_file(pid_path)
-    if not existing_pid:
-        return
-    if _codex_watcher_reusable(existing_pid, parent_pid):
-        try:
-            os.kill(existing_pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        except OSError as exc:
-            print(f"[lapdog] Failed to stop legacy Codex watcher (PID {existing_pid}): {exc}", file=sys.stderr)
-            return
-        print(f"[lapdog] Replacing legacy Codex watcher for this app workspace (PID {existing_pid}).", file=sys.stderr)
+def _codex_watcher_reusable(
+    pid: int,
+    parent_pid: int,
+    lapdog_url: Optional[str] = None,
+    include_all_cwds: Optional[bool] = None,
+) -> bool:
+    """Return True only when a pid file points at the expected watcher process.
+
+    App watcher pid files can outlive the short `lapdog codex app` launcher, so
+    PID existence alone is not enough: a recycled PID could point at an
+    unrelated process. Validate the command line before reusing or terminating.
+    """
+    return _codex_watcher_matches(
+        pid,
+        parent_pid=parent_pid,
+        lapdog_url=lapdog_url,
+        include_all_cwds=include_all_cwds,
+    )
+
+
+def _terminate_codex_watcher(pid: int, pid_path: str, message: str) -> bool:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        print(f"[lapdog] Failed to stop Codex watcher (PID {pid}): {exc}", file=sys.stderr)
+        return False
+    print(message, file=sys.stderr)
     try:
         os.remove(pid_path)
     except OSError:
         pass
+    return True
+
+
+def _stop_codex_watcher_pid_file(
+    pid_path: str,
+    parent_pid: int,
+    lapdog_url: Optional[str] = None,
+    include_all_cwds: Optional[bool] = None,
+) -> None:
+    """Terminate a verified watcher from a pid file and remove stale pid files."""
+    existing_pid, _ = _read_pid_file(path=pid_path)
+    if not existing_pid:
+        return
+    if not _process_exists(existing_pid):
+        try:
+            os.remove(pid_path)
+        except OSError:
+            pass
+        return
+    if not _codex_watcher_reusable(
+        existing_pid,
+        parent_pid,
+        lapdog_url=lapdog_url,
+        include_all_cwds=include_all_cwds,
+    ):
+        return
+    _terminate_codex_watcher(
+        existing_pid,
+        pid_path,
+        f"[lapdog] Replacing legacy Codex watcher for this app workspace (PID {existing_pid}).",
+    )
+
+
+def _stop_codex_watcher_singleton(
+    singleton_key: str,
+    parent_pid: int,
+    lapdog_url: Optional[str] = None,
+    include_all_cwds: Optional[bool] = None,
+) -> None:
+    """Stop one legacy app watcher identified by its singleton key."""
+    log_dir = os.path.dirname(_log_file_path())
+    pid_path = _codex_watcher_pid_file(log_dir, singleton_key)
+    _stop_codex_watcher_pid_file(
+        pid_path,
+        parent_pid,
+        lapdog_url=lapdog_url,
+        include_all_cwds=include_all_cwds,
+    )
+
+
+def _stop_legacy_codex_app_watchers(port: int, parent_pid: int, keep_singleton_key: str) -> None:
+    """Stop verified cwd-keyed app watchers after migrating to one all-cwd watcher."""
+    log_dir = os.path.dirname(_log_file_path())
+    try:
+        filenames = os.listdir(log_dir)
+    except OSError:
+        return
+    prefix = "codex-watcher-"
+    suffix = ".pid"
+    lapdog_url = f"http://localhost:{port}"
+    for filename in filenames:
+        if not filename.startswith(prefix) or not filename.endswith(suffix):
+            continue
+        singleton_key = filename[len(prefix) : -len(suffix)]
+        if singleton_key == keep_singleton_key:
+            continue
+        _stop_codex_watcher_singleton(
+            singleton_key,
+            parent_pid,
+            lapdog_url=lapdog_url,
+            include_all_cwds=False,
+        )
 
 
 def _start_codex_watcher(
@@ -526,20 +634,33 @@ def _start_codex_watcher(
     log_path = _log_file_path()
     log_dir = os.path.dirname(log_path)
     os.makedirs(log_dir, exist_ok=True)
+    lapdog_url = f"http://localhost:{port}"
     if singleton_key:
         pid_path = _codex_watcher_pid_file(log_dir, singleton_key)
-        existing_pid = _codex_watcher_pid_from_file(pid_path)
-        if existing_pid and _codex_watcher_reusable(existing_pid, watcher_parent_pid):
+        existing_pid, _ = _read_pid_file(path=pid_path)
+        if existing_pid and _codex_watcher_reusable(
+            existing_pid,
+            watcher_parent_pid,
+            lapdog_url=lapdog_url,
+            include_all_cwds=include_all_cwds,
+        ):
             print(
                 f"[lapdog] Codex watcher already running for this app workspace (PID {existing_pid}).",
                 flush=True,
             )
             return
         if existing_pid:
-            print(
-                f"[lapdog] Replacing stale Codex watcher for this app workspace (PID {existing_pid}).",
-                file=sys.stderr,
-            )
+            if _codex_watcher_matches(existing_pid, lapdog_url=lapdog_url, include_all_cwds=include_all_cwds):
+                _terminate_codex_watcher(
+                    existing_pid,
+                    pid_path,
+                    f"[lapdog] Replacing stale Codex watcher for this app workspace (PID {existing_pid}).",
+                )
+            else:
+                print(
+                    f"[lapdog] Replacing stale Codex watcher for this app workspace (PID {existing_pid}).",
+                    file=sys.stderr,
+                )
     else:
         pid_path = None
     ready_path = os.path.join(log_dir, f"codex-watcher-{os.getpid()}.ready")
@@ -633,7 +754,7 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
         parent_pid = lapdog_pid or parent_pid
     codex_cwd = codex_args.resolve_cwd(sub_cmd_args)
     if app_mode:
-        _stop_codex_watcher_singleton(codex_args.app_watcher_key(port, codex_cwd), parent_pid)
+        _stop_legacy_codex_app_watchers(port, parent_pid, codex_args.app_watcher_key(port))
     _start_codex_watcher(
         port,
         proxy_session_key=proxy_session_key,
