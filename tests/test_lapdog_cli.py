@@ -269,6 +269,7 @@ def test_start_codex_watcher_replaces_stale_singleton_parent(tmp_path, monkeypat
 
     monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
     monkeypatch.setattr(cli, "_codex_watcher_reusable", lambda pid, parent_pid, **kwargs: False)
+    monkeypatch.setattr(cli, "_codex_watcher_matches", lambda pid, **kwargs: False)
     monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
 
     cli._start_codex_watcher(8126, cwd=str(tmp_path), parent_pid=5252, singleton_key="app-key")
