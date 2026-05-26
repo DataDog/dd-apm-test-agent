@@ -2551,7 +2551,7 @@ def main(args: Optional[List[str]] = None) -> None:
     async def run_servers():
         """Run APM and OTLP HTTP servers concurrently."""
         # Create runners for apps
-        apm_runner = web.AppRunner(app)
+        apm_runner = web.AppRunner(app, tcp_keepalive=False)
         await apm_runner.setup()
 
         otlp_http_runner = web.AppRunner(otlp_http_app)
