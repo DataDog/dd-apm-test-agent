@@ -4,6 +4,8 @@ import platform
 import signal
 import subprocess
 import time
+import urllib.error
+import urllib.request
 
 import msgpack
 import pytest
@@ -44,6 +46,34 @@ def test_log_level_default_is_info():
         timeout=5,
     )
     assert "INFO:" in p.stderr
+
+
+def test_no_tcp_keepalive_oserror_on_loopback(available_port):
+    env = os.environ.copy()
+    env["PORT"] = available_port
+
+    p = subprocess.Popen(
+        ["ddapm-test-agent"],
+        env=env,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        url = f"http://127.0.0.1:{available_port}/info"
+        connected = False
+        for _ in range(100):
+            try:
+                urllib.request.urlopen(url, timeout=1)
+                connected = True
+                break
+            except (urllib.error.URLError, OSError):
+                time.sleep(0.05)
+    finally:
+        p.terminate()
+        _, stderr = p.communicate(timeout=5)
+
+    assert connected, "Agent did not start in time"
+    assert "OSError: [Errno 22] Invalid argument" not in stderr
 
 
 # Windows-only import for named pipes
