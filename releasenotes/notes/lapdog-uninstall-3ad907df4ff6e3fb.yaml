@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Lapdog: adds a `lapdog uninstall` command that kills the running lapdog process, removes its working directory, and uninstalls all relevant coding agent plugins, extensions, and hooks.

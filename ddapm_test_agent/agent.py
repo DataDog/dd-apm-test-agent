@@ -2436,12 +2436,6 @@ def main(args: Optional[List[str]] = None) -> None:
         action="store_true",
         default=False,
     )
-    parser.add_argument(
-        "--enable-claude-code-hooks",
-        action="store_true",
-        default=os.environ.get("ENABLE_CLAUDE_CODE_HOOKS", "").lower() in ("true", "1", "yes"),
-        help="Enable writing Claude Code hooks to ~/.claude/settings.json",
-    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 

@@ -418,6 +418,38 @@ def test_stop_codex_watcher_singleton_removes_dead_pid_file(tmp_path, monkeypatc
     assert not pid_path.exists()
 
 
+def test_stop_all_codex_watchers_terminates_all_watcher_pid_files(tmp_path, monkeypatch):
+    (tmp_path / "codex-watcher-key-a.pid").write_text("1111\n")
+    (tmp_path / "codex-watcher-key-b.pid").write_text("2222\n")
+    (tmp_path / "lapdog.pid").write_text("3333\n")  # should be ignored
+    kills = []
+
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli, "_codex_watcher_matches", lambda pid, **kwargs: True)
+    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: kills.append((pid, sig)))
+
+    cli._stop_all_codex_watchers()
+
+    assert sorted(kills) == [(1111, cli.signal.SIGTERM), (2222, cli.signal.SIGTERM)]
+    assert not (tmp_path / "codex-watcher-key-a.pid").exists()
+    assert not (tmp_path / "codex-watcher-key-b.pid").exists()
+
+
+def test_stop_all_codex_watchers_removes_stale_pid_files(tmp_path, monkeypatch):
+    pid_path = tmp_path / "codex-watcher-stale.pid"
+    pid_path.write_text("9999\n")
+    kill = mock.Mock()
+
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli, "_codex_watcher_matches", lambda pid, **kwargs: False)
+    monkeypatch.setattr(cli.os, "kill", kill)
+
+    cli._stop_all_codex_watchers()
+
+    kill.assert_not_called()
+    assert not pid_path.exists()
+
+
 def test_stop_legacy_codex_app_watchers_skips_all_cwd_singleton(tmp_path, monkeypatch):
     keep_key = codex_args.app_watcher_key(8126)
     (tmp_path / f"codex-watcher-{keep_key}.pid").write_text("1111\n")
@@ -503,32 +535,32 @@ def _write_installed_plugins(home, plugins):
 def test_lapdog_plugin_installed_detects_marker(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: tmp_path))
     _write_installed_plugins(tmp_path, {cli.LAPDOG_PLUGIN_NAME: [{"scope": "user"}]})
-    assert cli._lapdog_plugin_installed() is True
+    assert cli._lapdog_claude_code_plugin_installed() is True
 
 
 def test_lapdog_plugin_installed_missing_file(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: tmp_path))
-    assert cli._lapdog_plugin_installed() is False
+    assert cli._lapdog_claude_code_plugin_installed() is False
 
 
 def test_lapdog_plugin_installed_missing_entry(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: tmp_path))
     _write_installed_plugins(tmp_path, {"other@market": [{"scope": "user"}]})
-    assert cli._lapdog_plugin_installed() is False
+    assert cli._lapdog_claude_code_plugin_installed() is False
 
 
-def test_ensure_lapdog_plugin_installed_noop_when_present(monkeypatch):
-    monkeypatch.setattr(cli, "_lapdog_plugin_installed", lambda: True)
+def test_ensure_lapdog_claude_code_plugin_installed_noop_when_present(monkeypatch):
+    monkeypatch.setattr(cli, "_lapdog_claude_code_plugin_installed", lambda: True)
     with mock.patch("lapdog.cli.subprocess.run") as run:
-        cli._ensure_lapdog_plugin_installed()
+        cli._ensure_lapdog_claude_code_plugin_installed()
     run.assert_not_called()
 
 
-def test_ensure_lapdog_plugin_installed_runs_both_commands(monkeypatch):
-    monkeypatch.setattr(cli, "_lapdog_plugin_installed", lambda: False)
+def test_ensure_lapdog_claude_code_plugin_installed_runs_both_commands(monkeypatch):
+    monkeypatch.setattr(cli, "_lapdog_claude_code_plugin_installed", lambda: False)
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/claude")
     with mock.patch("lapdog.cli.subprocess.run") as run:
-        cli._ensure_lapdog_plugin_installed()
+        cli._ensure_lapdog_claude_code_plugin_installed()
     assert run.call_count == 2
     args0 = run.call_args_list[0].args[0]
     args1 = run.call_args_list[1].args[0]
@@ -536,30 +568,30 @@ def test_ensure_lapdog_plugin_installed_runs_both_commands(monkeypatch):
     assert args1 == ["/usr/local/bin/claude", "plugin", "install", cli.LAPDOG_PLUGIN_NAME]
 
 
-def test_ensure_lapdog_plugin_installed_skips_without_claude_binary(monkeypatch):
-    monkeypatch.setattr(cli, "_lapdog_plugin_installed", lambda: False)
+def test_ensure_lapdog_claude_code_plugin_installed_skips_without_claude_binary(monkeypatch):
+    monkeypatch.setattr(cli, "_lapdog_claude_code_plugin_installed", lambda: False)
     monkeypatch.setattr(cli.shutil, "which", lambda name: None)
     with mock.patch("lapdog.cli.subprocess.run") as run:
-        cli._ensure_lapdog_plugin_installed()
+        cli._ensure_lapdog_claude_code_plugin_installed()
     run.assert_not_called()
 
 
-def test_ensure_lapdog_plugin_installed_continues_on_failure(monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_lapdog_plugin_installed", lambda: False)
+def test_ensure_lapdog_claude_code_plugin_installed_continues_on_failure(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_lapdog_claude_code_plugin_installed", lambda: False)
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/claude")
 
     def fake_run(cmd, **kwargs):
         raise subprocess.CalledProcessError(returncode=1, cmd=cmd, stderr="boom")
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
-    cli._ensure_lapdog_plugin_installed()  # must not raise
+    cli._ensure_lapdog_claude_code_plugin_installed()  # must not raise
     err = capsys.readouterr().err
     assert "failed" in err
     assert "claude plugin install lapdog@lapdog" in err
 
 
 def test_cmd_claude_auto_installs_plugin_by_default():
-    with mock.patch("lapdog.cli._ensure_lapdog_plugin_installed") as install:
+    with mock.patch("lapdog.cli._ensure_lapdog_claude_code_plugin_installed") as install:
         with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
             with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
                 with mock.patch("lapdog.cli._run_claude") as run_claude:
@@ -569,7 +601,7 @@ def test_cmd_claude_auto_installs_plugin_by_default():
 
 
 def test_cmd_claude_skips_plugin_install_when_opted_out():
-    with mock.patch("lapdog.cli._ensure_lapdog_plugin_installed") as install:
+    with mock.patch("lapdog.cli._ensure_lapdog_claude_code_plugin_installed") as install:
         with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
             with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
                 with mock.patch("lapdog.cli._run_claude"):
