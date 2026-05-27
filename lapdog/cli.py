@@ -99,7 +99,7 @@ def _ensure_lapdog_claude_code_plugin_installed() -> None:
 def _uninstall_lapdog_claude_code_plugin() -> None:
     if not _lapdog_claude_code_plugin_installed():
         return
-    
+
     claude_bin = shutil.which("claude")
     if not claude_bin:
         return
@@ -322,7 +322,7 @@ def cmd_stop(pid: Optional[int] = None) -> None:
     """Stop lapdog (started by 'lapdog start' or 'lapdog claude')."""
     if pid is None:
         pid, _ = _read_pid_file()
-    
+
     if pid is None:
         print("[lapdog] No lapdog PID file found; lapdog may not be running.", file=sys.stderr)
         sys.exit(1)
@@ -805,7 +805,7 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
 
 
 def cmd_uninstall() -> None:
-    """Stops the lapdog server, removes ~/.lapdog directory, and uninstalls managed plugins"""
+    """Stop the lapdog server, removes ~/.lapdog directory, and uninstalls managed plugins"""
 
     # stop lapdog server
     pid, _ = _read_pid_file()
@@ -834,8 +834,6 @@ def cmd_uninstall() -> None:
         "[lapdog]   pipx uninstall ddapm-test-agent\n"
         "[lapdog]   pip uninstall ddapm-test-agent"
     )
-
-    
 
 
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
