@@ -517,14 +517,14 @@ def test_lapdog_plugin_installed_missing_entry(monkeypatch, tmp_path):
     assert cli._lapdog_claude_code_plugin_installed() is False
 
 
-def test_ensure_lapdog_plugin_installed_noop_when_present(monkeypatch):
+def test_ensure_lapdog_claude_code_plugin_installed_noop_when_present(monkeypatch):
     monkeypatch.setattr(cli, "_lapdog_plugin_installed", lambda: True)
     with mock.patch("lapdog.cli.subprocess.run") as run:
         cli._ensure_lapdog_claude_code_plugin_installed()
     run.assert_not_called()
 
 
-def test_ensure_lapdog_plugin_installed_runs_both_commands(monkeypatch):
+def test_ensure_lapdog_claude_code_plugin_installed_runs_both_commands(monkeypatch):
     monkeypatch.setattr(cli, "_lapdog_plugin_installed", lambda: False)
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/claude")
     with mock.patch("lapdog.cli.subprocess.run") as run:
@@ -536,7 +536,7 @@ def test_ensure_lapdog_plugin_installed_runs_both_commands(monkeypatch):
     assert args1 == ["/usr/local/bin/claude", "plugin", "install", cli.LAPDOG_PLUGIN_NAME]
 
 
-def test_ensure_lapdog_plugin_installed_skips_without_claude_binary(monkeypatch):
+def test_ensure_lapdog_claude_code_plugin_installed_skips_without_claude_binary(monkeypatch):
     monkeypatch.setattr(cli, "_lapdog_plugin_installed", lambda: False)
     monkeypatch.setattr(cli.shutil, "which", lambda name: None)
     with mock.patch("lapdog.cli.subprocess.run") as run:
@@ -544,7 +544,7 @@ def test_ensure_lapdog_plugin_installed_skips_without_claude_binary(monkeypatch)
     run.assert_not_called()
 
 
-def test_ensure_lapdog_plugin_installed_continues_on_failure(monkeypatch, capsys):
+def test_ensure_lapdog_claude_code_plugin_installed_continues_on_failure(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_lapdog_plugin_installed", lambda: False)
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/claude")
 
@@ -559,7 +559,7 @@ def test_ensure_lapdog_plugin_installed_continues_on_failure(monkeypatch, capsys
 
 
 def test_cmd_claude_auto_installs_plugin_by_default():
-    with mock.patch("lapdog.cli._ensure_lapdog_plugin_installed") as install:
+    with mock.patch("lapdog.cli._ensure_lapdog_claude_code_plugin_installed") as install:
         with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
             with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
                 with mock.patch("lapdog.cli._run_claude") as run_claude:
@@ -569,7 +569,7 @@ def test_cmd_claude_auto_installs_plugin_by_default():
 
 
 def test_cmd_claude_skips_plugin_install_when_opted_out():
-    with mock.patch("lapdog.cli._ensure_lapdog_plugin_installed") as install:
+    with mock.patch("lapdog.cli._ensure_lapdog_claude_code_plugin_installed") as install:
         with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
             with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
                 with mock.patch("lapdog.cli._run_claude"):
