@@ -416,6 +416,39 @@ async def test_hook_agent_manifest(agent):
     assert root["meta"]["model_provider"] == "anthropic"
 
 
+async def test_hook_model_select_updates_model(agent):
+    session_id = "sess-model-select"
+
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "SessionStart",
+            "model": "claude-opus-4-7-20250514",
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "model_select",
+            "model_id": "claude-sonnet-4-6-20250514",
+            "model_provider": "anthropic",
+        },
+    )
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "Stop"})
+
+    resp = await agent.get("/claude/hooks/spans")
+    body = await resp.json()
+    spans = body["spans"]
+
+    root = [s for s in spans if s["parent_id"] == "undefined"][0]
+    assert root["meta"]["model_name"] == "claude-sonnet-4-6-20250514", (
+        "model_name should reflect the switched model, not the original session model"
+    )
+    assert root["meta"]["model_provider"] == "anthropic"
+
+
 async def test_hook_console_output_on_agent_span(agent):
     session_id = "sess-console"
 

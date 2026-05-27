@@ -645,6 +645,17 @@ class ClaudeHooksAPI:
 
         log.info("Claude session started: %s (model=%s)", session_id, model)
 
+    def _handle_model_select(self, session_id: str, body: Dict[str, Any]) -> None:
+        """Handle model_select hook event — update session model when user switches via /model."""
+        session = self._get_or_create_session(session_id)
+        model_id = body.get("model_id", "") or body.get("model", "")
+        model_provider = body.get("model_provider", "")
+        if model_id:
+            session.model = model_id
+        if model_provider:
+            session.model_provider = model_provider
+        log.info("Claude model changed: %s → %s", session_id, model_id)
+
     def _finalize_interrupted_turn(self, session: SessionState) -> None:
         """Finalize an in-progress turn that was interrupted (e.g. user Ctrl+C).
 
@@ -1561,6 +1572,7 @@ class ClaudeHooksAPI:
 
         handlers: Dict[str, Any] = {
             "SessionStart": self._handle_session_start,
+            "model_select": self._handle_model_select,
             "UserPromptSubmit": self._handle_user_prompt_submit,
             "PreToolUse": self._handle_pre_tool_use,
             "PostToolUse": self._handle_post_tool_use,

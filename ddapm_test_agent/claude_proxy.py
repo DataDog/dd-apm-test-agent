@@ -499,6 +499,9 @@ class ClaudeProxyAPI:
             session = self._get_active_session()
 
         if session:
+            # Keep session model in sync with the actual API response — same source as cost.
+            if model != "unknown":
+                session.model = model
             trace_id = session.trace_id
             # Default parent: use the agent stack (works for sequential execution)
             parent_id = self._hooks_api._current_parent_id(session)
