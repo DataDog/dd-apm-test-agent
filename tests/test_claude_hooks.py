@@ -442,7 +442,8 @@ async def test_hook_model_select_updates_model(agent):
     body = await resp.json()
     spans = body["spans"]
 
-    root = [s for s in spans if s["parent_id"] == "undefined"][0]
+    root = next((s for s in spans if s["parent_id"] == "undefined"), None)
+    assert root is not None, "Expected a root span with parent_id == 'undefined'"
     assert root["meta"]["model_name"] == "claude-sonnet-4-6-20250514", (
         "model_name should reflect the switched model, not the original session model"
     )

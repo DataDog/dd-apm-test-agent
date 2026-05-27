@@ -650,11 +650,12 @@ class ClaudeHooksAPI:
         session = self._get_or_create_session(session_id)
         model_id = body.get("model_id", "") or body.get("model", "")
         model_provider = body.get("model_provider", "")
-        if model_id:
+        previous_model = session.model
+        if model_id and model_id != "unknown":
             session.model = model_id
         if model_provider:
             session.model_provider = model_provider
-        log.info("Claude model changed: %s → %s", session_id, model_id)
+        log.info("Claude model changed: %s %s → %s", session_id, previous_model, model_id)
 
     def _finalize_interrupted_turn(self, session: SessionState) -> None:
         """Finalize an in-progress turn that was interrupted (e.g. user Ctrl+C).
