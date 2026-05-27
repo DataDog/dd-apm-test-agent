@@ -35,7 +35,7 @@ want to know what `lapdog start` actually does).
   bundles its own interpreter, so the system Python version does not matter.
 - Port **8126** free on `localhost`. If the port is taken, set `PORT=<other>`
   before running `lapdog start` and open the dashboard at
-  `http://localhost:<port>/leash/`.
+  `https://lapdog.datadoghq.com`.
 - For `lapdog claude` / `lapdog pi` / `lapdog codex`: the `claude` / `pi` /
   `codex` binary already on `PATH`.
 
@@ -96,7 +96,7 @@ docker run --rm \
 ```
 
 Then point your application at the host: `DD_TRACE_AGENT_URL=http://localhost:8126`.
-Open the dashboard at <http://localhost:8126/leash/>.
+Open the dashboard at <https://lapdog.datadoghq.com>.
 
 To persist sessions across container restarts, mount a host directory at
 `/snapshots`:
@@ -194,8 +194,10 @@ lapdog status
 lapdog stop
 ```
 
-Open <http://localhost:8126/leash/> while a session is running to see traces,
-sessions, costs, and permission friction in real time.
+Open <https://lapdog.datadoghq.com> while a session is running to see traces,
+sessions, costs, and permission friction in real time. The page reads directly
+from your local agent on `localhost:8126` — no Datadog account or login
+required.
 
 Important: `lapdog claude` and `lapdog codex` are proxy-backed workflows.
 They put the local Lapdog agent in the live model-request path. Keep Lapdog

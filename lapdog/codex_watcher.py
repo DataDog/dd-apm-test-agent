@@ -221,6 +221,7 @@ def _drain_file(
     lapdog_url: str,
     cwd: str,
     proxy_session_key: Optional[str] = None,
+    include_all_cwds: bool = False,
 ) -> Optional[str]:
     try:
         size = path.stat().st_size
@@ -283,12 +284,8 @@ def _drain_file(
                             break
                         rest_skipped += len(chunk)
                     dropped_total = len(line_bytes) + rest_skipped
-                    print(
-                        f"lapdog codex watcher: dropping oversized line "
-                        f"({dropped_total} bytes) in {path}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                    message = f"lapdog codex watcher: dropping oversized line " f"({dropped_total} bytes) in {path}"
+                    print(message, file=sys.stderr, flush=True)
                     cursor += dropped_total
                     state.scan_offset = cursor
                     # Only advance the durable cursor if nothing is buffered;
@@ -328,7 +325,10 @@ def _drain_file(
 
             record_cwd = _record_cwd(record)
             if record_cwd and state.matches_cwd is None:
-                state.matches_cwd = _is_under(record_cwd, cwd)
+                if include_all_cwds:
+                    state.matches_cwd = True
+                else:
+                    state.matches_cwd = _is_under(record_cwd, cwd)
 
             if state.matches_cwd is None:
                 if len(state.buffer) >= MAX_BUFFER_RECORDS:
@@ -380,9 +380,7 @@ def _drain_file(
                         return posted_session_id
                     state.buffer.clear()
                     state.buffer_ends.clear()
-                if not _post_record(
-                    lapdog_url, state.session_id, record, path, proxy_session_key=proxy_session_key
-                ):
+                if not _post_record(lapdog_url, state.session_id, record, path, proxy_session_key=proxy_session_key):
                     # Roll scan back to the durable cursor so the failed record
                     # is re-read on the next pass.
                     state.scan_offset = state.offset
@@ -397,7 +395,13 @@ def _drain_file(
     return posted_session_id
 
 
-def _prime_file_state(path: Path, state: FileState, cwd: str, up_to: int) -> None:
+def _prime_file_state(
+    path: Path,
+    state: FileState,
+    cwd: str,
+    up_to: int,
+    include_all_cwds: bool = False,
+) -> None:
     """Read old records only to learn session id and cwd; do not post them.
 
     Reads in binary mode so byte offsets stay byte-accurate (text-mode
@@ -426,7 +430,10 @@ def _prime_file_state(path: Path, state: FileState, cwd: str, up_to: int) -> Non
                     state.session_id = session_id
                 record_cwd = _record_cwd(record)
                 if record_cwd and state.matches_cwd is None:
-                    state.matches_cwd = _is_under(record_cwd, cwd)
+                    if include_all_cwds:
+                        state.matches_cwd = True
+                    else:
+                        state.matches_cwd = _is_under(record_cwd, cwd)
     except OSError:
         return
 
@@ -498,6 +505,7 @@ def _discover_new_files(
     proxy_session_key: Optional[str],
     started_at: float,
     replay_recent_seconds: float,
+    include_all_cwds: bool = False,
 ) -> None:
     """Glob the session dir and seed FileState for any new rollouts."""
     for path in _iter_jsonl_files(session_dir):
@@ -537,7 +545,7 @@ def _discover_new_files(
         if ignore_initial_path:
             states[path].ignored = True
         if initial_offset and not states[path].ignored:
-            _prime_file_state(path, states[path], cwd, initial_offset)
+            _prime_file_state(path, states[path], cwd, initial_offset, include_all_cwds=include_all_cwds)
 
 
 def watch_codex_sessions(
@@ -553,6 +561,7 @@ def watch_codex_sessions(
     cursor_path: Optional[Path] = None,
     discovery_interval: float = 1.0,
     parent_start_time: Optional[float] = None,
+    include_all_cwds: bool = False,
 ) -> None:
     states: Dict[Path, FileState] = {}
     started_at = time.time()
@@ -587,6 +596,7 @@ def watch_codex_sessions(
                 proxy_session_key=proxy_session_key,
                 started_at=started_at,
                 replay_recent_seconds=replay_recent_seconds,
+                include_all_cwds=include_all_cwds,
             )
             last_discovery = now
 
@@ -609,6 +619,7 @@ def watch_codex_sessions(
                     lapdog_url,
                     cwd,
                     proxy_session_key=proxy_session_key,
+                    include_all_cwds=include_all_cwds,
                 )
             except (KeyboardInterrupt, SystemExit):
                 raise
@@ -646,6 +657,7 @@ def watch_codex_sessions(
         proxy_session_key=proxy_session_key,
         started_at=started_at,
         replay_recent_seconds=replay_recent_seconds,
+        include_all_cwds=include_all_cwds,
     )
     shutdown_sessions: Dict[str, Path] = {}
     for path, state in list(states.items()):
@@ -656,6 +668,7 @@ def watch_codex_sessions(
                 lapdog_url,
                 cwd,
                 proxy_session_key=proxy_session_key,
+                include_all_cwds=include_all_cwds,
             )
             session_id = posted_session_id or state.session_id
             if session_id and not state.ignored and state.matches_cwd is not False:
@@ -701,6 +714,11 @@ def main() -> None:
     )
     parser.add_argument("--ready-file")
     parser.add_argument("--proxy-session-key")
+    parser.add_argument(
+        "--include-all-cwds",
+        action="store_true",
+        help="Capture Codex sessions regardless of session cwd. Used for Codex Desktop app launches.",
+    )
     parser.add_argument("--cursor-path", default=CODEX_CURSOR_FILE)
     args = parser.parse_args()
 
@@ -718,6 +736,7 @@ def main() -> None:
         cursor_path=cursor_path,
         discovery_interval=args.discovery_interval,
         parent_start_time=args.parent_start_time,
+        include_all_cwds=args.include_all_cwds,
     )
 
 

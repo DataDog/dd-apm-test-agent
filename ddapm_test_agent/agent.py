@@ -1183,6 +1183,7 @@ class Agent:
                 "/v0.4/traces",
                 "/v0.5/traces",
                 "/v0.7/traces",
+                "/v1.0/traces",
                 "/v0.6/stats",
                 "/telemetry/proxy/",
                 "/v0.7/config",
@@ -2544,7 +2545,7 @@ def main(args: Optional[List[str]] = None) -> None:
     async def run_servers():
         """Run APM and OTLP HTTP servers concurrently."""
         # Create runners for apps
-        apm_runner = web.AppRunner(app)
+        apm_runner = web.AppRunner(app, tcp_keepalive=False)
         await apm_runner.setup()
 
         otlp_http_runner = web.AppRunner(otlp_http_app)
