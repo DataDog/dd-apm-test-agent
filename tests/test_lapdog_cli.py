@@ -418,6 +418,38 @@ def test_stop_codex_watcher_singleton_removes_dead_pid_file(tmp_path, monkeypatc
     assert not pid_path.exists()
 
 
+def test_stop_all_codex_watchers_terminates_all_watcher_pid_files(tmp_path, monkeypatch):
+    (tmp_path / "codex-watcher-key-a.pid").write_text("1111\n")
+    (tmp_path / "codex-watcher-key-b.pid").write_text("2222\n")
+    (tmp_path / "lapdog.pid").write_text("3333\n")  # should be ignored
+    kills = []
+
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli, "_codex_watcher_matches", lambda pid, **kwargs: True)
+    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: kills.append((pid, sig)))
+
+    cli._stop_all_codex_watchers()
+
+    assert sorted(kills) == [(1111, cli.signal.SIGTERM), (2222, cli.signal.SIGTERM)]
+    assert not (tmp_path / "codex-watcher-key-a.pid").exists()
+    assert not (tmp_path / "codex-watcher-key-b.pid").exists()
+
+
+def test_stop_all_codex_watchers_removes_stale_pid_files(tmp_path, monkeypatch):
+    pid_path = tmp_path / "codex-watcher-stale.pid"
+    pid_path.write_text("9999\n")
+    kill = mock.Mock()
+
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli, "_codex_watcher_matches", lambda pid, **kwargs: False)
+    monkeypatch.setattr(cli.os, "kill", kill)
+
+    cli._stop_all_codex_watchers()
+
+    kill.assert_not_called()
+    assert not pid_path.exists()
+
+
 def test_stop_legacy_codex_app_watchers_skips_all_cwd_singleton(tmp_path, monkeypatch):
     keep_key = codex_args.app_watcher_key(8126)
     (tmp_path / f"codex-watcher-{keep_key}.pid").write_text("1111\n")
@@ -518,14 +550,14 @@ def test_lapdog_plugin_installed_missing_entry(monkeypatch, tmp_path):
 
 
 def test_ensure_lapdog_claude_code_plugin_installed_noop_when_present(monkeypatch):
-    monkeypatch.setattr(cli, "_lapdog_plugin_installed", lambda: True)
+    monkeypatch.setattr(cli, "_lapdog_claude_code_plugin_installed", lambda: True)
     with mock.patch("lapdog.cli.subprocess.run") as run:
         cli._ensure_lapdog_claude_code_plugin_installed()
     run.assert_not_called()
 
 
 def test_ensure_lapdog_claude_code_plugin_installed_runs_both_commands(monkeypatch):
-    monkeypatch.setattr(cli, "_lapdog_plugin_installed", lambda: False)
+    monkeypatch.setattr(cli, "_lapdog_claude_code_plugin_installed", lambda: False)
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/claude")
     with mock.patch("lapdog.cli.subprocess.run") as run:
         cli._ensure_lapdog_claude_code_plugin_installed()
@@ -537,7 +569,7 @@ def test_ensure_lapdog_claude_code_plugin_installed_runs_both_commands(monkeypat
 
 
 def test_ensure_lapdog_claude_code_plugin_installed_skips_without_claude_binary(monkeypatch):
-    monkeypatch.setattr(cli, "_lapdog_plugin_installed", lambda: False)
+    monkeypatch.setattr(cli, "_lapdog_claude_code_plugin_installed", lambda: False)
     monkeypatch.setattr(cli.shutil, "which", lambda name: None)
     with mock.patch("lapdog.cli.subprocess.run") as run:
         cli._ensure_lapdog_claude_code_plugin_installed()
@@ -545,7 +577,7 @@ def test_ensure_lapdog_claude_code_plugin_installed_skips_without_claude_binary(
 
 
 def test_ensure_lapdog_claude_code_plugin_installed_continues_on_failure(monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_lapdog_plugin_installed", lambda: False)
+    monkeypatch.setattr(cli, "_lapdog_claude_code_plugin_installed", lambda: False)
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/claude")
 
     def fake_run(cmd, **kwargs):

@@ -36,7 +36,7 @@ LAPDOG_USAGE = (
     "  claude     Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi         Start lapdog in background if needed, install extension, then launch pi\n"
     "  codex      Start lapdog in background if needed, then launch Codex with tracing\n"
-    "  uninstall  Stop lapdog and remove all state it wrote (~/.lapdog, Claude hooks, pi extension)\n"
+    "  uninstall  Stop lapdog and remove all state it wrote (~/.lapdog, Claude hooks, pi extension, Codex watchers)\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
     "  lapdog python app.py\n"
@@ -632,6 +632,35 @@ def _stop_codex_watcher_singleton(
     )
 
 
+def _stop_all_codex_watchers() -> None:
+    """Stop all running codex watcher processes found in the log directory."""
+    log_dir = os.path.dirname(_log_file_path())
+    try:
+        filenames = os.listdir(log_dir)
+    except OSError:
+        return
+    prefix = "codex-watcher-"
+    suffix = ".pid"
+    for filename in filenames:
+        if not filename.startswith(prefix) or not filename.endswith(suffix):
+            continue
+        pid_path = os.path.join(log_dir, filename)
+        existing_pid, _ = _read_pid_file(path=pid_path)
+        if not existing_pid:
+            continue
+        if not _codex_watcher_matches(existing_pid):
+            try:
+                os.remove(pid_path)
+            except OSError:
+                pass
+            continue
+        _terminate_codex_watcher(
+            existing_pid,
+            pid_path,
+            f"[lapdog] Stopped Codex watcher (PID {existing_pid}).",
+        )
+
+
 def _stop_legacy_codex_app_watchers(port: int, parent_pid: int, keep_singleton_key: str) -> None:
     """Stop verified cwd-keyed app watchers after migrating to one all-cwd watcher."""
     log_dir = os.path.dirname(_log_file_path())
@@ -827,6 +856,9 @@ def cmd_uninstall() -> None:
             print(f"[lapdog] Removed {_PI_EXT_DEST}.")
         except OSError as e:
             print(f"[lapdog] Failed to remove {_PI_EXT_DEST}: {e}", file=sys.stderr)
+
+    # stop codex watcher(s)
+    _stop_all_codex_watchers()
 
     print(
         "[lapdog] Lapdog cleanup complete. Now uninstall the package:\n"
