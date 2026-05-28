@@ -1,7 +1,7 @@
 ---
 features:
   - |
-    Add ``claude-opus-4-8`` to the Claude Code cost tracking table and 1M-token
+    Lapdog: Add ``claude-opus-4-8`` to the Claude Code cost tracking table and 1M-token
     context model set.  Regular-usage pricing matches Opus 4.7 ($5 / $25 / $0.50
     cache-read / $6.25 cache-write per Mtok).  Previously Opus 4.8 spans fell
     through the pricing table and received no cost estimate.
