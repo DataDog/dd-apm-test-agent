@@ -223,6 +223,21 @@ Useful flags:
   Code plugin.
 - `-p <port>` / `--port <port>` — bind to a different port (default `8126`).
 
+### Git commit tagging
+
+While Lapdog is running it watches the HEAD of the git repository it was
+started in and tags every captured span with `git.commit.sha` — the commit
+that was HEAD at the moment that span started (plus `git.repository_url` when
+an `origin` remote is configured). Because the tagged SHA flips the instant a
+commit lands, you can see *when* commits happen during a session and
+filter/group traces by commit.
+
+- `LAPDOG_GIT_REPO` — repository directory to watch (default: the directory
+  `lapdog start` was run in).
+- `LAPDOG_GIT_COMMIT_TAGGING=0` — disable commit tagging entirely.
+
+If the directory is not a git repository, tagging is silently skipped.
+
 ---
 
 ## What lapdog touches on your machine

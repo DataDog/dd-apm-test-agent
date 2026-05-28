@@ -63,6 +63,7 @@ from .claude_proxy import ClaudeProxyAPI
 from .pi_hooks import PiHooksAPI
 from .codex_hooks import CodexHooksAPI
 from .codex_proxy import CodexProxyAPI
+from .git_commit_tracker import build_tracker_from_env
 from .integration import Integration
 from .llmobs_event_platform import LLMObsEventPlatformAPI
 from .logs import LOGS_ENDPOINT
@@ -123,6 +124,34 @@ def _inject_lapdog_forwarded(data: bytes, content_encoding: str) -> bytes:
     except Exception:
         pass
     return data
+
+
+def _inject_git_commit_sha(data: bytes, content_encoding: str, tracker: Any) -> bytes:
+    """Decode a forwarded LLM obs msgpack payload and tag each span with the git
+    commit SHA that was HEAD at the span's start time, then re-encode.
+
+    Falls back to the original bytes if decoding fails or no SHA can be resolved.
+    """
+    if tracker is None:
+        return data
+    try:
+        from .llmobs_event_platform import apply_git_commit_tags
+
+        is_gzipped = "gzip" in content_encoding.lower()
+        decoded = gzip.decompress(data) if is_gzipped else data
+        payload = msgpack.unpackb(decoded, raw=False)
+        spans: List[Dict[str, Any]] = []
+        if isinstance(payload, dict):
+            ml_obs = payload.get("ml_obs")
+            spans = (ml_obs.get("spans") if isinstance(ml_obs, dict) else None) or payload.get("spans") or []
+        spans = [s for s in spans if isinstance(s, dict)]
+        if not spans:
+            return data
+        apply_git_commit_tags(spans, tracker)
+        encoded = msgpack.packb(payload, use_bin_type=True)
+        return gzip.compress(encoded) if is_gzipped else encoded
+    except Exception:
+        return data
 
 
 # Default ports
@@ -922,7 +951,9 @@ class Agent:
 
         raw = await request.read()
         if request.app["lapdog_mode"]:
-            raw = _inject_lapdog_forwarded(raw, request.headers.get("Content-Encoding", ""))
+            encoding = request.headers.get("Content-Encoding", "")
+            raw = _inject_lapdog_forwarded(raw, encoding)
+            raw = _inject_git_commit_sha(raw, encoding, request.app.get("git_commit_tracker"))
             headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
         async with ClientSession() as session:
             async with session.post(url, headers=headers, data=raw) as resp:
@@ -959,7 +990,9 @@ class Agent:
                     fwd_data = data
                     fwd_headers = headers
                     if request.app["lapdog_mode"]:
-                        fwd_data = _inject_lapdog_forwarded(data, headers.get("Content-Encoding", ""))
+                        encoding = headers.get("Content-Encoding", "")
+                        fwd_data = _inject_lapdog_forwarded(data, encoding)
+                        fwd_data = _inject_git_commit_sha(fwd_data, encoding, request.app.get("git_commit_tracker"))
                         fwd_headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
                     async with ClientSession() as session:
                         async with session.post(url, headers=fwd_headers, data=fwd_data) as resp:
@@ -1008,7 +1041,9 @@ class Agent:
 
         raw = await request.read()
         if request.app["lapdog_mode"]:
-            raw = _inject_lapdog_forwarded(raw, request.headers.get("Content-Encoding", ""))
+            encoding = request.headers.get("Content-Encoding", "")
+            raw = _inject_lapdog_forwarded(raw, encoding)
+            raw = _inject_git_commit_sha(raw, encoding, request.app.get("git_commit_tracker"))
             headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
         async with ClientSession() as session:
             async with session.post(url, headers=headers, data=raw) as resp:
@@ -1044,7 +1079,9 @@ class Agent:
                     fwd_data = data
                     fwd_headers = headers
                     if request.app["lapdog_mode"]:
-                        fwd_data = _inject_lapdog_forwarded(data, headers.get("Content-Encoding", ""))
+                        encoding = headers.get("Content-Encoding", "")
+                        fwd_data = _inject_lapdog_forwarded(data, encoding)
+                        fwd_data = _inject_git_commit_sha(fwd_data, encoding, request.app.get("git_commit_tracker"))
                         fwd_headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
                     async with ClientSession() as session:
                         async with session.post(url, headers=fwd_headers, data=fwd_data) as resp:
@@ -2025,6 +2062,22 @@ def make_app(
     llmobs_event_platform_api = LLMObsEventPlatformAPI(agent)
     app["llmobs_event_platform_api"] = llmobs_event_platform_api
     app.add_routes(llmobs_event_platform_api.get_routes())
+
+    # Git commit SHA tagging (lapdog local-dev): tag spans with the commit that
+    # was HEAD at the span's start time so the UI can see when commits happen.
+    git_commit_tracker = build_tracker_from_env(lapdog_mode)
+    app["git_commit_tracker"] = git_commit_tracker
+    llmobs_event_platform_api.set_git_commit_tracker(git_commit_tracker)
+    if git_commit_tracker is not None:
+
+        async def _start_git_commit_tracker(app: web.Application) -> None:
+            git_commit_tracker.start()
+
+        async def _stop_git_commit_tracker(app: web.Application) -> None:
+            git_commit_tracker.stop()
+
+        app.on_startup.append(_start_git_commit_tracker)
+        app.on_cleanup.append(_stop_git_commit_tracker)
 
     # Add Claude Code hooks and proxy routes with shared link tracker
     claude_link_tracker = ClaudeLinkTracker()

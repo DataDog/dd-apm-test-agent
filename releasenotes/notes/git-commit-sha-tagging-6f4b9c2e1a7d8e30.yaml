@@ -1,0 +1,11 @@
+---
+features:
+  - |
+    In lapdog mode, tag LLM Observability spans with ``git.commit.sha`` (and
+    ``git.repository_url`` when a remote is configured) reflecting the commit
+    that was HEAD at the moment each span started. A background watcher tracks
+    the repo's HEAD over time, so the tagged SHA changes the instant a commit
+    lands — capturing when commits happen during a coding-agent session. The
+    repo defaults to the test agent's working directory and can be overridden
+    with ``LAPDOG_GIT_REPO``; tagging can be disabled with
+    ``LAPDOG_GIT_COMMIT_TAGGING=0``.
