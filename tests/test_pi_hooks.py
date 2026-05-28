@@ -192,7 +192,10 @@ async def test_single_step_with_llm_no_tools(agent):
 
 
 async def test_pi_project_metadata_from_extension_cwd(agent, tmp_path, monkeypatch):
+    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+
     monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    _local_git_metadata.cache_clear()
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(
         ["git", "remote", "add", "origin", "git@github.com:DataDog/pi-project.git"],

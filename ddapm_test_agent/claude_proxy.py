@@ -34,7 +34,10 @@ from .claude_hooks import _format_trace_id
 from .claude_hooks import _get_context_limit
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_link_tracker import SpanLink
+from .coding_agent_metadata import apply_project_metadata_to_span
+from .coding_agent_metadata import project_metadata_tags
 from .llmobs_event_platform import with_cors
+
 
 log = logging.getLogger(__name__)
 
@@ -386,14 +389,26 @@ class ClaudeProxyAPI:
         return all_sessions[-1]
 
     def _adopt_orphan_spans(self, session: SessionState) -> None:
-        """Re-parent buffered orphan spans into the given session's trace."""
+        """Re-parent buffered orphan spans into the given session's trace.
+
+        Preserves span-specific tags (model, etc.) and only appends the
+        session-scoped tags that orphans were missing (session_id and the
+        project-metadata tags resolved once the session is known).
+        """
         if not self._orphan_spans:
             return
+        session_scoped_tags = [f"session_id:{session.session_id}"] + project_metadata_tags(session.project_metadata)
         for span in self._orphan_spans:
             span["trace_id"] = session.trace_id
             span["parent_id"] = session.root_span_id
             span["session_id"] = session.session_id
-            span["tags"] = self._hooks_api._base_tags(session, source="claude-code-proxy") + [f"user_name:{_USERNAME}"]
+            existing_tags = list(span.get("tags") or [])
+            existing_keys = {t.split(":", 1)[0] for t in existing_tags if ":" in t}
+            for tag in session_scoped_tags:
+                if tag.split(":", 1)[0] not in existing_keys:
+                    existing_tags.append(tag)
+            span["tags"] = existing_tags
+            apply_project_metadata_to_span(span, session.project_metadata)
         log.info("Re-parented %d orphan LLM spans into trace %s", len(self._orphan_spans), session.trace_id)
         self._orphan_spans.clear()
 
@@ -585,7 +600,7 @@ class ClaudeProxyAPI:
             "env": "local",
             "session_id": session_id,
             "tags": (
-                self._hooks_api._base_tags(session, source="claude-code-proxy") + [f"user_name:{_USERNAME}"]
+                self._hooks_api.base_tags(session, source="claude-code-proxy") + [f"user_name:{_USERNAME}"]
                 if session
                 else [
                     f"ml_app:{_ML_APP}",

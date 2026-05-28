@@ -200,7 +200,10 @@ async def test_codex_project_metadata_from_session_git(agent):
 
 
 async def test_codex_project_metadata_uses_local_git_fallback(agent, tmp_path, monkeypatch):
+    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+
     monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    _local_git_metadata.cache_clear()
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(
         ["git", "remote", "add", "origin", "https://github.com/DataDog/local-codex-repo.git"],
@@ -230,7 +233,10 @@ async def test_codex_project_metadata_uses_local_git_fallback(agent, tmp_path, m
 
 
 async def test_codex_project_metadata_uses_cwd_basename_without_git(agent, tmp_path, monkeypatch):
+    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+
     monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    _local_git_metadata.cache_clear()
     cwd = tmp_path / "plain-codex-project"
     cwd.mkdir()
 

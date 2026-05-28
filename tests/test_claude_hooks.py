@@ -116,7 +116,10 @@ async def test_hook_tool_use_creates_tool_span(agent):
 
 
 async def test_claude_project_metadata_from_hook_cwd(agent, tmp_path, monkeypatch):
+    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+
     monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    _local_git_metadata.cache_clear()
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(
         ["git", "remote", "add", "origin", "https://github.com/DataDog/claude-project.git"],

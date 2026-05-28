@@ -2,6 +2,7 @@
 
 import dataclasses
 from functools import lru_cache
+import logging
 import os
 from pathlib import Path
 import re
@@ -10,6 +11,9 @@ from typing import Any
 from typing import Dict
 from typing import List
 from urllib.parse import urlparse
+
+
+log = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -57,15 +61,19 @@ def project_name_from_git_repository_url(url: Any) -> str:
 
 
 def extract_agent_project_name(payload: Dict[str, Any]) -> str:
-    """Feature-detect stable project/workspace fields without using session titles."""
+    """Feature-detect stable project/workspace fields without using session titles.
+
+    Only matches the explicit ``*_name`` / ``*Name`` keys plus the nested
+    ``{project,workspace}.name`` form — bare ``project`` / ``workspace`` string
+    fields are intentionally not matched, since those names are too generic and
+    would risk capturing unrelated payload fields.
+    """
     for key in ("project_name", "projectName", "workspace_name", "workspaceName"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
     for key in ("project", "workspace"):
         value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
         if isinstance(value, dict):
             name = value.get("name")
             if isinstance(name, str) and name.strip():
@@ -134,6 +142,9 @@ def resolve_project_metadata(
     return CodingAgentProjectMetadata(project_name=project_name, git_repository_url=normalized_url)
 
 
+# Cached by cwd path. We assume the remote URL is effectively immutable for the
+# lifetime of a lapdog process; if a user re-points a remote mid-session they'll
+# need to restart the test agent to pick up the new value.
 @lru_cache(maxsize=256)
 def _local_git_metadata(cwd: str) -> CodingAgentProjectMetadata:
     cwd = str(cwd or "").strip()
@@ -160,9 +171,13 @@ def _run_git(cwd: str, *args: str) -> str:
             check=False,
             capture_output=True,
             text=True,
-            timeout=1,
+            timeout=3,
         )
-    except (OSError, subprocess.SubprocessError):
+    except subprocess.TimeoutExpired:
+        log.debug("git %s in %s timed out", " ".join(args), cwd)
+        return ""
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.debug("git %s in %s failed: %s", " ".join(args), cwd, exc)
         return ""
     if result.returncode != 0:
         return ""

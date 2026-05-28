@@ -36,6 +36,7 @@ from .coding_agent_metadata import project_metadata_tags
 from .coding_agent_metadata import resolve_project_metadata
 from .llmobs_event_platform import with_cors
 
+
 log = logging.getLogger(__name__)
 
 _HOSTNAME = socket.gethostname()
@@ -357,7 +358,7 @@ class ClaudeHooksAPI:
         """Merge key-value pairs into span['meta']['metadata']['_dd'], preserving existing values."""
         span["meta"].setdefault("metadata", {}).setdefault("_dd", {}).update(kwargs)
 
-    def _update_session_project_metadata(self, session: SessionState, body: Dict[str, Any]) -> None:
+    def update_session_project_metadata(self, session: SessionState, body: Dict[str, Any]) -> None:
         previous_cwd = session.cwd
         cwd = body.get("cwd")
         if isinstance(cwd, str) and cwd.strip():
@@ -374,7 +375,7 @@ class ClaudeHooksAPI:
                 or ("" if cwd_changed else session.project_metadata.git_repository_url),
             )
 
-    def _base_tags(self, session: SessionState, source: str = "claude-code-hooks") -> List[str]:
+    def base_tags(self, session: SessionState, source: str = "claude-code-hooks") -> List[str]:
         tags = [
             f"ml_app:{_ML_APP}",
             f"session_id:{session.session_id}",
@@ -463,7 +464,7 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": self._base_tags(session) + ["trajectory.semantic_type:agent_message"],
+            "tags": self.base_tags(session) + ["trajectory.semantic_type:agent_message"],
             "meta": {
                 "span": {"kind": "step"},
                 "input": {},
@@ -756,7 +757,7 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": self._base_tags(session)
+            "tags": self.base_tags(session)
             + ([f"topic:{session.conversation_title}"] if session.conversation_title else []),
             "meta": {
                 "span": {"kind": "agent"},
@@ -882,7 +883,7 @@ class ClaudeHooksAPI:
                     "service": _ML_APP,
                     "env": "local",
                     "session_id": session.session_id,
-                    "tags": self._base_tags(session),
+                    "tags": self.base_tags(session),
                     "meta": {
                         "span": {"kind": "agent"},
                         "input": {"value": input_value},
@@ -925,7 +926,7 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": self._base_tags(session) + [f"tool_name:{actual_tool_name}"],
+            "tags": self.base_tags(session) + [f"tool_name:{actual_tool_name}"],
             "meta": {
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},
@@ -1000,7 +1001,7 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": self._base_tags(session),
+            "tags": self.base_tags(session),
             "meta": {
                 "span": {"kind": "agent"},
                 "input": {},
@@ -1117,7 +1118,7 @@ class ClaudeHooksAPI:
                     "service": _ML_APP,
                     "env": "local",
                     "session_id": session.session_id,
-                    "tags": self._base_tags(session),
+                    "tags": self.base_tags(session),
                     "meta": {
                         "span": {"kind": "agent"},
                         "input": {},
@@ -1341,7 +1342,7 @@ class ClaudeHooksAPI:
                 "service": _ML_APP,
                 "env": "local",
                 "session_id": session.session_id,
-                "tags": self._base_tags(session)
+                "tags": self.base_tags(session)
                 + [f"user_name:{_USERNAME}"]
                 + ([f"topic:{session.conversation_title}"] if session.conversation_title else []),
                 "meta": {
@@ -1471,7 +1472,7 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": self._base_tags(session) + [f"tool_name:{actual_tool_name}"],
+            "tags": self.base_tags(session) + [f"tool_name:{actual_tool_name}"],
             "meta": {
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},
@@ -1552,7 +1553,7 @@ class ClaudeHooksAPI:
         hook_event_name = body.get("hook_event_name", "")
         if session_id:
             session = self._get_or_create_session(session_id)
-            self._update_session_project_metadata(session, body)
+            self.update_session_project_metadata(session, body)
 
         handlers: Dict[str, Any] = {
             "SessionStart": self._handle_session_start,

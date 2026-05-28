@@ -29,6 +29,7 @@ from .coding_agent_metadata import project_metadata_tags
 from .coding_agent_metadata import resolve_project_metadata
 from .llmobs_event_platform import with_cors
 
+
 log = logging.getLogger(__name__)
 
 CompletedTrace = Tuple[str, str]
