@@ -51,6 +51,7 @@ def _agent_start(
     model_id="claude-sonnet-4-20250514",
     model_provider="anthropic",
     cwd=None,
+    is_continuation=False,
 ):
     event = {
         "session_id": session_id,
@@ -58,6 +59,7 @@ def _agent_start(
         "user_prompt": prompt,
         "model_id": model_id,
         "model_provider": model_provider,
+        "is_continuation": is_continuation,
     }
     if cwd:
         event["cwd"] = cwd
@@ -93,6 +95,7 @@ def _message_end(
     stop_reason="end_turn",
     model_id="claude-sonnet-4-20250514",
     model_provider="anthropic",
+    error_message="",
 ):
     return {
         "session_id": session_id,
@@ -100,9 +103,10 @@ def _message_end(
         "message_role": "assistant",
         "model_id": model_id,
         "model_provider": model_provider,
-        "content": content or [{"type": "text", "text": "Hello!"}],
+        "content": content if content is not None else [{"type": "text", "text": "Hello!"}],
         "usage": usage or {"input": 100, "output": 50, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 150},
         "stop_reason": stop_reason,
+        "error_message": error_message,
     }
 
 
@@ -775,3 +779,165 @@ async def test_thinking_block_sets_has_thinking(agent):
     assert step["meta"]["metadata"].get("has_thinking") is True
     # Thinking text should NOT appear in output (only text blocks)
     assert step["meta"]["output"]["value"] == "Here's my answer."
+
+
+# ------------------------------------------------------------------
+# Bug 1: LLM errors should produce an error LLM span (not an empty step)
+# ------------------------------------------------------------------
+
+
+async def test_llm_error_emits_error_span(agent):
+    """A message_end with stop_reason=error yields an error LLM span + error step."""
+    sid = "pi-llm-error"
+    await _post(agent, _session_start(sid))
+    await _post(agent, _agent_start(sid))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    # Errored assistant message: empty content, stop_reason error, errorMessage set.
+    await _post(
+        agent,
+        _message_end(sid, content=[], stop_reason="error", error_message="rate limit exceeded"),
+    )
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+
+    llms = _by_kind(session_spans, "llm")
+    assert len(llms) == 1
+    llm = llms[0]
+    assert llm["status"] == "error"
+    assert llm["meta"]["error"]["message"] == "rate limit exceeded"
+    assert llm["meta"]["metadata"]["stop_reason"] == "error"
+
+    # The enclosing step reflects the failure (not silently empty/ok).
+    step = _by_kind(session_spans, "step")[0]
+    assert step["status"] == "error"
+    assert step["meta"]["error"]["message"] == "rate limit exceeded"
+
+
+async def test_orphaned_llm_call_emits_error_span_on_agent_end(agent):
+    """message_start with no message_end (thrown error) still yields an error LLM span."""
+    sid = "pi-llm-orphan"
+    await _post(agent, _session_start(sid))
+    await _post(agent, _agent_start(sid))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    # No message_end — the LLM call raised and pi unwound without finalizing.
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+
+    llms = _by_kind(session_spans, "llm")
+    assert len(llms) == 1, "orphaned pending LLM should still produce a span"
+    llm = llms[0]
+    assert llm["status"] == "error"
+    assert "did not complete" in llm["meta"]["error"]["message"]
+
+    step = _by_kind(session_spans, "step")[0]
+    assert step["status"] == "error"
+
+
+async def test_orphaned_llm_call_emits_error_span_on_session_shutdown(agent):
+    """Orphaned pending LLM is flushed as an error span on session_shutdown too."""
+    sid = "pi-llm-orphan-shutdown"
+    await _post(agent, _session_start(sid))
+    await _post(agent, _agent_start(sid))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _session_shutdown(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    llms = _by_kind(session_spans, "llm")
+    assert len(llms) == 1
+    assert llms[0]["status"] == "error"
+
+
+# ------------------------------------------------------------------
+# Bug 2: continuation agent_start must extend the current trace
+# ------------------------------------------------------------------
+
+
+async def test_continuation_agent_start_extends_trace(agent):
+    """A continuation agent_start (no user input) reuses the existing trace."""
+    sid = "pi-continuation"
+    await _post(agent, _session_start(sid))
+
+    # First (real) user turn.
+    await _post(agent, _agent_start(sid, prompt="do the thing"))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    root_before = next(s for s in session_spans if s["parent_id"] == "undefined")
+    trace_id = root_before["trace_id"]
+    root_span_id = root_before["span_id"]
+
+    # Continuation (e.g. after auto-compaction): no fresh user input.
+    await _post(agent, _agent_start(sid, prompt="", is_continuation=True))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+
+    # Exactly one trace and one root span — the continuation did NOT spawn a new one.
+    roots = [s for s in session_spans if s["parent_id"] == "undefined"]
+    assert len(roots) == 1
+    root = roots[0]
+    assert root["span_id"] == root_span_id
+    assert root["trace_id"] == trace_id
+    assert all(s["trace_id"] == trace_id for s in session_spans)
+
+    # User input is preserved on the single trace.
+    assert root["meta"]["input"]["value"] == "do the thing"
+    assert root["meta"]["metadata"].get("missing_user_input") is None
+
+    # Both inference cycles' steps live under the same trace/root.
+    steps = _by_kind(session_spans, "step")
+    assert len(steps) == 2
+    assert all(s["parent_id"] == root_span_id for s in steps)
+
+
+async def test_second_real_turn_still_rotates_trace(agent):
+    """A genuine second user turn (is_continuation=False) still starts a new trace."""
+    sid = "pi-two-real-turns"
+    await _post(agent, _session_start(sid))
+
+    await _post(agent, _agent_start(sid, prompt="first"))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    first_trace = next(s for s in session_spans if s["parent_id"] == "undefined")["trace_id"]
+
+    await _post(agent, _agent_start(sid, prompt="second"))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    roots = [s for s in session_spans if s["parent_id"] == "undefined"]
+    assert len(roots) == 2
+    trace_ids = {r["trace_id"] for r in roots}
+    assert len(trace_ids) == 2
+    assert first_trace in trace_ids
+    inputs = sorted(r["meta"]["input"]["value"] for r in roots)
+    assert inputs == ["first", "second"]

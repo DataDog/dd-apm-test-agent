@@ -1,0 +1,12 @@
+---
+fixes:
+  - |
+    lapdog (pi): a failed LLM call now produces an LLM span marked as an error
+    (with the provider error message) instead of an empty step. Covers both
+    pi's ``stopReason: "error"`` path and the case where an exception unwinds
+    the agent loop before ``message_end`` is emitted.
+  - |
+    lapdog (pi): continuation ``agent_start`` events emitted by
+    ``agent.continue()`` (after auto-compaction or auto-retry) no longer create
+    new, input-less traces. They now extend the current trace so each trace maps
+    to one user turn and always carries the user's prompt as input.
