@@ -29,6 +29,7 @@ from .claude_cost_tracker import compute_cost_metrics
 from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import SessionState
 from .claude_hooks import _ML_APP
+from .claude_hooks import _USER_HANDLE
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _get_context_limit
@@ -392,12 +393,15 @@ class ClaudeProxyAPI:
         """Re-parent buffered orphan spans into the given session's trace.
 
         Preserves span-specific tags (model, etc.) and only appends the
-        session-scoped tags that orphans were missing (session_id and the
-        project-metadata tags resolved once the session is known).
+        session-scoped tags that orphans were missing (session_id, user_handle,
+        and the project-metadata tags resolved once the session is known).
         """
         if not self._orphan_spans:
             return
-        session_scoped_tags = [f"session_id:{session.session_id}"] + project_metadata_tags(session.project_metadata)
+        session_scoped_tags = [f"session_id:{session.session_id}"]
+        if _USER_HANDLE:
+            session_scoped_tags.append(f"user_handle:{_USER_HANDLE}")
+        session_scoped_tags.extend(project_metadata_tags(session.project_metadata))
         for span in self._orphan_spans:
             span["trace_id"] = session.trace_id
             span["parent_id"] = session.root_span_id
@@ -587,6 +591,20 @@ class ClaudeProxyAPI:
             total_input_tokens,
             model,
         )
+        tags = [
+            f"ml_app:{_ML_APP}",
+            f"service:{_ML_APP}",
+            "env:local",
+            "source:claude-code-proxy",
+            "language:python",
+            f"hostname:{_HOSTNAME}",
+            f"user_name:{_USERNAME}",
+        ]
+        if session:
+            tags.append(f"session_id:{session.session_id}")
+            tags.extend(project_metadata_tags(session.project_metadata))
+            if _USER_HANDLE:
+                tags.append(f"user_handle:{_USER_HANDLE}")
         span: Dict[str, Any] = {
             "span_id": span_id,
             "trace_id": trace_id,
@@ -599,19 +617,7 @@ class ClaudeProxyAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session_id,
-            "tags": (
-                self._hooks_api.base_tags(session, source="claude-code-proxy") + [f"user_name:{_USERNAME}"]
-                if session
-                else [
-                    f"ml_app:{_ML_APP}",
-                    f"service:{_ML_APP}",
-                    "env:local",
-                    "source:claude-code-proxy",
-                    "language:python",
-                    f"hostname:{_HOSTNAME}",
-                    f"user_name:{_USERNAME}",
-                ]
-            ),
+            "tags": tags,
             "meta": {
                 "span": {"kind": "llm"},
                 "model_name": model,

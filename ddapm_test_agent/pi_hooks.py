@@ -44,14 +44,11 @@ from .claude_cost_tracker import cost_from_provider_usage
 from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import PendingToolSpan
 from .claude_hooks import SessionState
-from .claude_hooks import _HOSTNAME
-from .claude_hooks import _USER_HANDLE
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
 from .codex_cost_tracker import compute_openai_cost_metrics
 from .coding_agent_metadata import apply_project_metadata_to_span
-from .coding_agent_metadata import project_metadata_tags
 from .llmobs_event_platform import with_cors
 
 
@@ -312,24 +309,6 @@ class PiHooksAPI:
     def _append_span(self, span: Dict[str, Any]) -> None:
         self._hooks_api._assembled_spans.append(span)
 
-    def base_tags(self, session: SessionState, source: str = "pi-hooks") -> List[str]:
-        tags = [
-            f"ml_app:{_ML_APP}",
-            f"session_id:{session.session_id}",
-            f"service:{_ML_APP}",
-            "env:local",
-            f"source:{source}",
-            "language:python",
-            f"hostname:{_HOSTNAME}",
-        ]
-        if _USER_HANDLE:
-            tags.append(f"user_handle:{_USER_HANDLE}")
-        tags.extend(project_metadata_tags(session.project_metadata))
-        return tags
-
-    def _apply_project_metadata_to_span(self, session: SessionState, span: Dict[str, Any]) -> None:
-        apply_project_metadata_to_span(span, session.project_metadata)
-
     def _active_step_parent_id(self, session: SessionState) -> str:
         """Return active step span_id if one exists, else fall back to root/agent parent."""
         active = self._active_steps.get(session.session_id)
@@ -356,7 +335,9 @@ class PiHooksAPI:
         span_id = _format_span_id()
         parent_id = self._current_parent_id(session)
 
-        tags = self.base_tags(session) + ["trajectory.semantic_type:agent_message"]
+        tags = self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP) + [
+            "trajectory.semantic_type:agent_message"
+        ]
 
         step_span: Dict[str, Any] = {
             "span_id": span_id,
@@ -505,7 +486,7 @@ class PiHooksAPI:
         if model_provider:
             session.model_provider = model_provider
 
-        tags = self.base_tags(session) + ["trajectory.semantic_type:turn"]
+        tags = self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP) + ["trajectory.semantic_type:turn"]
 
         root_span: Dict[str, Any] = {
             "span_id": session.root_span_id,
@@ -530,7 +511,7 @@ class PiHooksAPI:
             },
             "metrics": {},
         }
-        self._apply_project_metadata_to_span(session, root_span)
+        apply_project_metadata_to_span(root_span, session.project_metadata)
         self._append_span(root_span)
         session._root_span_ref = root_span  # type: ignore[attr-defined]
 
@@ -581,7 +562,7 @@ class PiHooksAPI:
             root_span["meta"]["model_name"] = session.model
             root_span["meta"]["model_provider"] = session.model_provider
             root_span["meta"].setdefault("metadata", {})["models_used"] = session.models[:]
-            self._apply_project_metadata_to_span(session, root_span)
+            apply_project_metadata_to_span(root_span, session.project_metadata)
             # Do not roll token_usage up onto root_span["metrics"] —
             # production stores trace rollups in a separate `@trace.*`
             # document, not on the root span. Mirroring it here caused
@@ -600,7 +581,9 @@ class PiHooksAPI:
                 self._hooks_api._set_hidden_metadata(root_span, **dd_fields)
         else:
             # Fallback: create root span
-            tags = self.base_tags(session) + ["trajectory.semantic_type:turn"]
+            tags = self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP) + [
+                "trajectory.semantic_type:turn"
+            ]
             root_span = {
                 "span_id": session.root_span_id,
                 "trace_id": session.trace_id,
@@ -624,7 +607,7 @@ class PiHooksAPI:
                 },
                 # Intentionally no "metrics" key — see comment above.
             }
-            self._apply_project_metadata_to_span(session, root_span)
+            apply_project_metadata_to_span(root_span, session.project_metadata)
             self._append_span(root_span)
 
         session.root_span_emitted = True
@@ -783,7 +766,7 @@ class PiHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": self.base_tags(session),
+            "tags": self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP),
             "meta": {
                 "span": {"kind": "llm"},
                 "model_name": model_id,
@@ -880,7 +863,8 @@ class PiHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": self.base_tags(session) + [f"tool_name:{actual_tool_name}"],
+            "tags": self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP)
+            + [f"tool_name:{actual_tool_name}"],
             "meta": {
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},

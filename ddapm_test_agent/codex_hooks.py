@@ -437,9 +437,6 @@ class CodexHooksAPI:
             or ("" if cwd_changed else session.project_metadata.git_repository_url),
         )
 
-    def _apply_project_metadata_to_span(self, session: CodexSession, span: Dict[str, Any]) -> None:
-        apply_project_metadata_to_span(span, session.project_metadata)
-
     def _agent_manifest(self, session: CodexSession) -> Dict[str, Any]:
         model_settings: Dict[str, Any] = {}
         if session.effort:
@@ -733,7 +730,7 @@ class CodexHooksAPI:
         turn.root_span_ref["meta"]["model_name"] = session.model
         metadata = turn.root_span_ref["meta"]["metadata"]
         metadata["cwd"] = session.cwd
-        self._apply_project_metadata_to_span(session, turn.root_span_ref)
+        apply_project_metadata_to_span(turn.root_span_ref, session.project_metadata)
         metadata["reasoning_effort"] = session.effort
         self._update_agent_manifest(session)
 
@@ -827,7 +824,7 @@ class CodexHooksAPI:
             },
             "metrics": {},
         }
-        self._apply_project_metadata_to_span(session, root_span)
+        apply_project_metadata_to_span(root_span, session.project_metadata)
         self._append_span(root_span)
         turn.root_span_ref = root_span
         self._adopt_orphan_proxy_llm_spans(session, turn)

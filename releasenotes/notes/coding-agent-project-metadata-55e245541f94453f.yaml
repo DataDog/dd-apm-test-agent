@@ -1,8 +1,8 @@
 ---
 features:
   - |
-    Capture git repository and project name metadata for coding agent sessions
-    captured by lapdog. Metadata is resolved from hook payload fields, the
+    Lapdog: capture git repository and project name metadata for coding agent
+    sessions captured by lapdog. Metadata is resolved from hook payload fields, the
     ``DD_GIT_REPOSITORY_URL`` environment variable, the local git remote, or
     the working directory basename (in that order) and attached to spans as
     ``project_name`` / ``git.repository_url`` tags plus matching

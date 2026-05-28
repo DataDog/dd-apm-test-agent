@@ -375,11 +375,17 @@ class ClaudeHooksAPI:
                 or ("" if cwd_changed else session.project_metadata.git_repository_url),
             )
 
-    def base_tags(self, session: SessionState, source: str = "claude-code-hooks") -> List[str]:
+    def base_tags(
+        self,
+        session: SessionState,
+        source: str = "claude-code-hooks",
+        ml_app: Optional[str] = None,
+    ) -> List[str]:
+        app = ml_app or _ML_APP
         tags = [
-            f"ml_app:{_ML_APP}",
+            f"ml_app:{app}",
             f"session_id:{session.session_id}",
-            f"service:{_ML_APP}",
+            f"service:{app}",
             "env:local",
             f"source:{source}",
             "language:python",
@@ -389,9 +395,6 @@ class ClaudeHooksAPI:
             tags.append(f"user_handle:{_USER_HANDLE}")
         tags.extend(project_metadata_tags(session.project_metadata))
         return tags
-
-    def _apply_project_metadata_to_span(self, session: SessionState, span: Dict[str, Any]) -> None:
-        apply_project_metadata_to_span(span, session.project_metadata)
 
     def _set_permission_wait_critical_evaluation(self, span: Dict[str, Any], estimated_permission_wait_ms: int) -> None:
         """Embed a permission_wait_critical boolean evaluation on a span.
@@ -767,7 +770,7 @@ class ClaudeHooksAPI:
             },
             "metrics": {},
         }
-        self._apply_project_metadata_to_span(session, root_span)
+        apply_project_metadata_to_span(root_span, session.project_metadata)
         self._assembled_spans.append(root_span)
         session._root_span_ref = root_span  # type: ignore[attr-defined]
 
@@ -1316,7 +1319,7 @@ class ClaudeHooksAPI:
                     "model_provider": "anthropic",
                 }
             )
-            self._apply_project_metadata_to_span(session, root_span)
+            apply_project_metadata_to_span(root_span, session.project_metadata)
             dd_fields: Dict[str, Any] = {"agent_manifest": agent_manifest}
             if context_delta:
                 dd_fields["context_delta"] = context_delta
@@ -1366,7 +1369,7 @@ class ClaudeHooksAPI:
                 self._set_permission_wait_critical_evaluation(root_span, estimated_permission_wait_ms)
             if tool_usage:
                 dd_fields["tool_usage"] = tool_usage
-            self._apply_project_metadata_to_span(session, root_span)
+            apply_project_metadata_to_span(root_span, session.project_metadata)
             self._set_hidden_metadata(root_span, **dd_fields)
             self._assembled_spans.append(root_span)
 
