@@ -5,6 +5,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
+from ddapm_test_agent._clock import monotonic_wall_ns
 from ddapm_test_agent.claude_hooks import ClaudeHooksAPI
 from ddapm_test_agent.claude_link_tracker import ClaudeLinkTracker
 from ddapm_test_agent.claude_proxy import ClaudeProxyAPI
@@ -114,10 +115,8 @@ def _simulate_llm_call(
     duration_ns: int = 10_000_000,
 ) -> Dict[str, Any]:
     """Call _create_llm_span directly (bypasses HTTP) and append the span."""
-    import time as _time
-
     if start_ns is None:
-        start_ns = _time.time_ns()
+        start_ns = monotonic_wall_ns()
     session = proxy_api._hooks_api._sessions.get(session_id)
     span = proxy_api._create_llm_span(
         session=session,
@@ -642,9 +641,9 @@ def test_pretool_race_with_llm_span_creation():
     step = steps[0]
     assert len(tools) == 2
     for tool in tools:
-        assert tool["parent_id"] == step["span_id"], (
-            f"{tool['name']} parented to {tool['parent_id']!r}, expected step {step['span_id']!r}"
-        )
+        assert (
+            tool["parent_id"] == step["span_id"]
+        ), f"{tool['name']} parented to {tool['parent_id']!r}, expected step {step['span_id']!r}"
 
 
 def test_subagent_posttool_race_reparents_under_step():
@@ -715,8 +714,7 @@ def test_subagent_posttool_race_reparents_under_step():
     assert len(sub_tools) == 2
     for tool in sub_tools:
         assert tool["parent_id"] == sub_step["span_id"], (
-            f"{tool['name']} parented to {tool['parent_id']!r}, "
-            f"expected sub-agent step {sub_step['span_id']!r}"
+            f"{tool['name']} parented to {tool['parent_id']!r}, " f"expected sub-agent step {sub_step['span_id']!r}"
         )
 
 

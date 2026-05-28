@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import signal
 import subprocess
 import sys
@@ -16,22 +17,26 @@ import uuid
 
 import requests
 
+from lapdog import codex_args
 from lapdog import tracer_inject
 from lapdog.lapdog_ascii_art import build_running_banner
+from lapdog.paths import CODEX_APP_CURSOR_FILE
+from lapdog.paths import LAPDOG_DIR
 from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
 
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "uninstall"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
-    "  start   Start lapdog (background)\n"
-    "  stop    Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
-    "  status  Show lapdog status (from /info)\n"
-    "  claude  Start lapdog in background if needed, then launch Claude with intercept\n"
-    "  pi      Start lapdog in background if needed, install extension, then launch pi\n"
-    "  codex   Start lapdog in background if needed, then launch Codex with tracing\n"
+    "  start      Start lapdog (background)\n"
+    "  stop       Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
+    "  status     Show lapdog status (from /info)\n"
+    "  claude     Start lapdog in background if needed, then launch Claude with intercept\n"
+    "  pi         Start lapdog in background if needed, install extension, then launch pi\n"
+    "  codex      Start lapdog in background if needed, then launch Codex with tracing\n"
+    "  uninstall  Stop lapdog and remove all state it wrote (~/.lapdog, Claude hooks, pi extension, Codex watchers)\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
     "  lapdog python app.py\n"
@@ -43,7 +48,7 @@ LAPDOG_PLUGIN_NAME = "lapdog@lapdog"
 LAPDOG_MARKETPLACE_SOURCE = "DataDog/dd-apm-test-agent"
 
 
-def _lapdog_plugin_installed() -> bool:
+def _lapdog_claude_code_plugin_installed() -> bool:
     """Return True if the lapdog Claude Code plugin is installed for this user."""
     installed_path = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
     if not installed_path.exists():
@@ -56,9 +61,9 @@ def _lapdog_plugin_installed() -> bool:
     return bool(LAPDOG_PLUGIN_NAME in (data.get("plugins") or {}))
 
 
-def _ensure_lapdog_plugin_installed() -> None:
+def _ensure_lapdog_claude_code_plugin_installed() -> None:
     """Install the lapdog Claude Code plugin if missing. Best-effort: failures warn and continue."""
-    if _lapdog_plugin_installed():
+    if _lapdog_claude_code_plugin_installed():
         return
     claude_bin = shutil.which("claude")
     if not claude_bin:
@@ -89,6 +94,37 @@ def _ensure_lapdog_plugin_installed() -> None:
             )
             return
     print("[lapdog] Plugin installed.", file=sys.stderr)
+
+
+def _uninstall_lapdog_claude_code_plugin() -> None:
+    if not _lapdog_claude_code_plugin_installed():
+        return
+
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        return
+
+    commands = [
+        [claude_bin, "plugin", "uninstall", LAPDOG_PLUGIN_NAME],
+        [claude_bin, "plugin", "marketplace", "remove", LAPDOG_MARKETPLACE_SOURCE]
+    ]
+    for cmd in commands:
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            detail = (e.stderr or e.stdout or "").strip()
+            print(
+                f"[lapdog] '{' '.join(cmd[1:])}' failed (rc={e.returncode}): {detail}",
+                file=sys.stderr,
+            )
+            print(
+                "[lapdog] Failed to uninstall 'lapdog' Claude Code plugin "
+                "Uninstall manually:\n"
+                f"          claude plugin uninstall {LAPDOG_PLUGIN_NAME}",
+                file=sys.stderr,
+            )
+            return
+    print("[lapdog] Claude Code plugin uninstalled", file=sys.stderr)
 
 
 def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
@@ -133,8 +169,8 @@ def _lapdog_alive(timeout: float = 2.0) -> bool:
         return False
 
 
-def _read_pid_file() -> Tuple[Optional[int], Optional[int]]:
-    path = _pid_file_path()
+def _read_pid_file(path: Optional[str] = None) -> Tuple[Optional[int], Optional[int]]:
+    path = path or _pid_file_path()
     if not os.path.exists(path):
         return None, None
     try:
@@ -198,7 +234,7 @@ def _start_lapdog(
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    args = [sys.executable, "-m", "ddapm_test_agent.agent", "--enable-claude-code-hooks", "--lapdog-mode"]
+    args = [sys.executable, "-m", "ddapm_test_agent.agent", "--lapdog-mode"]
 
     if not forward_data:
         args.append("--disable-llmobs-data-forwarding")
@@ -282,9 +318,11 @@ def cmd_start(sub_cmd_args: List[str], forward_data: bool) -> None:
     print(f"[lapdog] Lapdog running at {_url_for_port(port)} (pid={pid}, logs: {log_path})")
 
 
-def cmd_stop() -> None:
+def cmd_stop(pid: Optional[int] = None) -> None:
     """Stop lapdog (started by 'lapdog start' or 'lapdog claude')."""
-    pid, _ = _read_pid_file()
+    if pid is None:
+        pid, _ = _read_pid_file()
+
     if pid is None:
         print("[lapdog] No lapdog PID file found; lapdog may not be running.", file=sys.stderr)
         sys.exit(1)
@@ -372,7 +410,7 @@ def cmd_claude(
 ) -> None:
     """Ensure lapdog is running in background, then launch Claude with intercept."""
     if install_plugin:
-        _ensure_lapdog_plugin_installed()
+        _ensure_lapdog_claude_code_plugin_installed()
     _ensure_lapdog_running(forward_data, detached=True)
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
 
@@ -445,37 +483,252 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
     _run_pi(args=sub_cmd_args, port=port)
 
 
-def _resolve_codex_cwd(args: List[str]) -> str:
-    cwd = os.getcwd()
-    idx = 0
-    while idx < len(args):
-        arg = args[idx]
-        if arg == "--":
-            break
-        next_idx = idx + 1
-        cd_value: Optional[str] = None
-        if arg in ("-C", "--cd"):
-            if next_idx < len(args):
-                cd_value = args[next_idx]
-                next_idx += 1
-        elif arg.startswith("--cd="):
-            cd_value = arg.split("=", 1)[1]
-        elif arg.startswith("-C") and arg != "-C":
-            cd_value = arg[2:].lstrip("=")
-        if cd_value:
-            cwd = str(Path(cd_value).expanduser())
-            if not os.path.isabs(cwd):
-                cwd = os.path.join(os.getcwd(), cwd)
-        idx = next_idx
-    return os.path.abspath(cwd)
+def _codex_watcher_pid_file(log_dir: str, singleton_key: str) -> str:
+    return os.path.join(log_dir, f"codex-watcher-{singleton_key}.pid")
 
 
-def _start_codex_watcher(port: int, proxy_session_key: Optional[str] = None, cwd: Optional[str] = None) -> None:
+def _codex_watcher_command(pid: int) -> Optional[str]:
+    """Return the command line for a live watcher candidate, if it can be verified."""
+    if os.name == "nt":
+        cmd = [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            f'(Get-CimInstance Win32_Process -Filter "ProcessId = {int(pid)}").CommandLine',
+        ]
+    else:
+        cmd = ["ps", "-p", str(pid), "-o", "command="]
+    try:
+        result = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    command = result.stdout.strip()
+    if result.returncode != 0 or not command:
+        return None
+    return command
+
+
+def _arg_value(parts: List[str], flag: str) -> Optional[str]:
+    try:
+        idx = parts.index(flag)
+    except ValueError:
+        return None
+    return parts[idx + 1] if idx + 1 < len(parts) else None
+
+
+def _codex_watcher_matches(
+    pid: int,
+    parent_pid: Optional[int] = None,
+    lapdog_url: Optional[str] = None,
+    include_all_cwds: Optional[bool] = None,
+) -> bool:
+    """Return True when a live process matches the expected watcher metadata."""
+    if not _process_exists(pid):
+        return False
+    command = _codex_watcher_command(pid)
+    if not command:
+        return False
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = command.split()
+    if "lapdog.codex_watcher" not in parts:
+        return False
+    if parent_pid is not None and _arg_value(parts, "--parent-pid") != str(parent_pid):
+        return False
+    if lapdog_url is not None and _arg_value(parts, "--lapdog-url") != lapdog_url:
+        return False
+    if include_all_cwds is not None and ("--include-all-cwds" in parts) is not include_all_cwds:
+        return False
+    return True
+
+
+def _codex_watcher_reusable(
+    pid: int,
+    parent_pid: int,
+    lapdog_url: Optional[str] = None,
+    include_all_cwds: Optional[bool] = None,
+) -> bool:
+    """Return True only when a pid file points at the expected watcher process.
+
+    App watcher pid files can outlive the short `lapdog codex app` launcher, so
+    PID existence alone is not enough: a recycled PID could point at an
+    unrelated process. Validate the command line before reusing or terminating.
+    """
+    return _codex_watcher_matches(
+        pid,
+        parent_pid=parent_pid,
+        lapdog_url=lapdog_url,
+        include_all_cwds=include_all_cwds,
+    )
+
+
+def _terminate_codex_watcher(pid: int, pid_path: str, message: str) -> bool:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        print(f"[lapdog] Failed to stop Codex watcher (PID {pid}): {exc}", file=sys.stderr)
+        return False
+    print(message, file=sys.stderr)
+    try:
+        os.remove(pid_path)
+    except OSError:
+        pass
+    return True
+
+
+def _stop_codex_watcher_pid_file(
+    pid_path: str,
+    parent_pid: int,
+    lapdog_url: Optional[str] = None,
+    include_all_cwds: Optional[bool] = None,
+) -> None:
+    """Terminate a verified watcher from a pid file and remove stale pid files."""
+    existing_pid, _ = _read_pid_file(path=pid_path)
+    if not existing_pid:
+        return
+    if not _process_exists(existing_pid):
+        try:
+            os.remove(pid_path)
+        except OSError:
+            pass
+        return
+    if not _codex_watcher_reusable(
+        existing_pid,
+        parent_pid,
+        lapdog_url=lapdog_url,
+        include_all_cwds=include_all_cwds,
+    ):
+        return
+    _terminate_codex_watcher(
+        existing_pid,
+        pid_path,
+        f"[lapdog] Replacing legacy Codex watcher for this app workspace (PID {existing_pid}).",
+    )
+
+
+def _stop_codex_watcher_singleton(
+    singleton_key: str,
+    parent_pid: int,
+    lapdog_url: Optional[str] = None,
+    include_all_cwds: Optional[bool] = None,
+) -> None:
+    """Stop one legacy app watcher identified by its singleton key."""
+    log_dir = os.path.dirname(_log_file_path())
+    pid_path = _codex_watcher_pid_file(log_dir, singleton_key)
+    _stop_codex_watcher_pid_file(
+        pid_path,
+        parent_pid,
+        lapdog_url=lapdog_url,
+        include_all_cwds=include_all_cwds,
+    )
+
+
+def _stop_all_codex_watchers() -> None:
+    """Stop all running codex watcher processes found in the log directory."""
+    log_dir = os.path.dirname(_log_file_path())
+    try:
+        filenames = os.listdir(log_dir)
+    except OSError:
+        return
+    prefix = "codex-watcher-"
+    suffix = ".pid"
+    for filename in filenames:
+        if not filename.startswith(prefix) or not filename.endswith(suffix):
+            continue
+        pid_path = os.path.join(log_dir, filename)
+        existing_pid, _ = _read_pid_file(path=pid_path)
+        if not existing_pid:
+            continue
+        if not _codex_watcher_matches(existing_pid):
+            try:
+                os.remove(pid_path)
+            except OSError:
+                pass
+            continue
+        _terminate_codex_watcher(
+            existing_pid,
+            pid_path,
+            f"[lapdog] Stopped Codex watcher (PID {existing_pid}).",
+        )
+
+
+def _stop_legacy_codex_app_watchers(port: int, parent_pid: int, keep_singleton_key: str) -> None:
+    """Stop verified cwd-keyed app watchers after migrating to one all-cwd watcher."""
+    log_dir = os.path.dirname(_log_file_path())
+    try:
+        filenames = os.listdir(log_dir)
+    except OSError:
+        return
+    prefix = "codex-watcher-"
+    suffix = ".pid"
+    lapdog_url = f"http://localhost:{port}"
+    for filename in filenames:
+        if not filename.startswith(prefix) or not filename.endswith(suffix):
+            continue
+        singleton_key = filename[len(prefix) : -len(suffix)]
+        if singleton_key == keep_singleton_key:
+            continue
+        _stop_codex_watcher_singleton(
+            singleton_key,
+            parent_pid,
+            lapdog_url=lapdog_url,
+            include_all_cwds=False,
+        )
+
+
+def _start_codex_watcher(
+    port: int,
+    proxy_session_key: Optional[str] = None,
+    cwd: Optional[str] = None,
+    parent_pid: Optional[int] = None,
+    singleton_key: Optional[str] = None,
+    include_all_cwds: bool = False,
+) -> None:
     """Start the bundled Codex JSONL watcher for this working directory."""
     watcher_cwd = os.path.abspath(cwd or os.getcwd())
+    watcher_parent_pid = parent_pid or os.getpid()
     log_path = _log_file_path()
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    ready_path = os.path.join(os.path.dirname(log_path), f"codex-watcher-{os.getpid()}.ready")
+    log_dir = os.path.dirname(log_path)
+    os.makedirs(log_dir, exist_ok=True)
+    lapdog_url = f"http://localhost:{port}"
+    if singleton_key:
+        pid_path = _codex_watcher_pid_file(log_dir, singleton_key)
+        existing_pid, _ = _read_pid_file(path=pid_path)
+        if existing_pid and _codex_watcher_reusable(
+            existing_pid,
+            watcher_parent_pid,
+            lapdog_url=lapdog_url,
+            include_all_cwds=include_all_cwds,
+        ):
+            print(
+                f"[lapdog] Codex watcher already running for this app workspace (PID {existing_pid}).",
+                flush=True,
+            )
+            return
+        if existing_pid:
+            if _codex_watcher_matches(existing_pid, lapdog_url=lapdog_url, include_all_cwds=include_all_cwds):
+                _terminate_codex_watcher(
+                    existing_pid,
+                    pid_path,
+                    f"[lapdog] Replacing stale Codex watcher for this app workspace (PID {existing_pid}).",
+                )
+            else:
+                print(
+                    f"[lapdog] Replacing stale Codex watcher for this app workspace (PID {existing_pid}).",
+                    file=sys.stderr,
+                )
+    else:
+        pid_path = None
+    ready_path = os.path.join(log_dir, f"codex-watcher-{os.getpid()}.ready")
     try:
         os.unlink(ready_path)
     except OSError:
@@ -489,12 +742,14 @@ def _start_codex_watcher(port: int, proxy_session_key: Optional[str] = None, cwd
         "--cwd",
         watcher_cwd,
         "--parent-pid",
-        str(os.getpid()),
+        str(watcher_parent_pid),
         "--ready-file",
         ready_path,
     ]
     if proxy_session_key:
         args += ["--proxy-session-key", proxy_session_key]
+    if include_all_cwds:
+        args += ["--include-all-cwds", "--cursor-path", CODEX_APP_CURSOR_FILE]
     with open(log_path, "a") as log_file:
         process = subprocess.Popen(
             args,
@@ -503,6 +758,9 @@ def _start_codex_watcher(port: int, proxy_session_key: Optional[str] = None, cwd
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+    if pid_path:
+        with open(pid_path, "w") as f:
+            f.write(f"{process.pid}\n")
     deadline = time.time() + 2
     while time.time() < deadline:
         if os.path.exists(ready_path):
@@ -553,11 +811,61 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
     if port is None:
         print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
         sys.exit(1)
-    proxy_session_key = uuid.uuid4().hex
-    _start_codex_watcher(port, proxy_session_key=proxy_session_key, cwd=_resolve_codex_cwd(sub_cmd_args))
+    app_mode = codex_args.is_app_command(sub_cmd_args)
+    proxy_session_key = None if app_mode else uuid.uuid4().hex
+    parent_pid = os.getpid()
+    if app_mode:
+        lapdog_pid, _ = _read_pid_file()
+        parent_pid = lapdog_pid or parent_pid
+    codex_cwd = codex_args.resolve_cwd(sub_cmd_args)
+    if app_mode:
+        _stop_legacy_codex_app_watchers(port, parent_pid, codex_args.app_watcher_key(port))
+    _start_codex_watcher(
+        port,
+        proxy_session_key=proxy_session_key,
+        cwd=codex_cwd,
+        parent_pid=parent_pid,
+        singleton_key=codex_args.app_watcher_key(port) if app_mode else None,
+        include_all_cwds=app_mode,
+    )
 
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
     _run_codex(args=sub_cmd_args, port=port, proxy_session_key=proxy_session_key)
+
+
+def cmd_uninstall() -> None:
+    """Stop the lapdog server, removes ~/.lapdog directory, and uninstalls managed plugins"""
+
+    # stop lapdog server
+    pid, _ = _read_pid_file()
+    if pid is not None:
+        cmd_stop(pid=pid)
+
+    # remove ~/.lapdog dir
+    if os.path.isdir(LAPDOG_DIR):
+        shutil.rmtree(LAPDOG_DIR, ignore_errors=True)
+        print("[lapdog] Lapdog-related files under ~/.lapdog removed")
+
+    # remove claude code plugin
+    _uninstall_lapdog_claude_code_plugin()
+
+    # remove pi extension
+    if os.path.isfile(_PI_EXT_DEST):
+        try:
+            os.remove(_PI_EXT_DEST)
+            print(f"[lapdog] Removed {_PI_EXT_DEST}.")
+        except OSError as e:
+            print(f"[lapdog] Failed to remove {_PI_EXT_DEST}: {e}", file=sys.stderr)
+
+    # stop codex watcher(s)
+    _stop_all_codex_watchers()
+
+    print(
+        "[lapdog] Lapdog cleanup complete. Now uninstall the package:\n"
+        "[lapdog]   brew uninstall lapdog\n"
+        "[lapdog]   pipx uninstall ddapm-test-agent\n"
+        "[lapdog]   pip uninstall ddapm-test-agent"
+    )
 
 
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
@@ -640,6 +948,8 @@ def main() -> None:
         cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
     elif sub_cmd == "codex":
         cmd_codex(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+    elif sub_cmd == "uninstall":
+        cmd_uninstall()
 
 
 if __name__ == "__main__":

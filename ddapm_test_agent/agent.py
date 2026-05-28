@@ -1183,6 +1183,7 @@ class Agent:
                 "/v0.4/traces",
                 "/v0.5/traces",
                 "/v0.7/traces",
+                "/v1.0/traces",
                 "/v0.6/stats",
                 "/telemetry/proxy/",
                 "/v0.7/config",
@@ -2435,12 +2436,6 @@ def main(args: Optional[List[str]] = None) -> None:
         action="store_true",
         default=False,
     )
-    parser.add_argument(
-        "--enable-claude-code-hooks",
-        action="store_true",
-        default=os.environ.get("ENABLE_CLAUDE_CODE_HOOKS", "").lower() in ("true", "1", "yes"),
-        help="Enable writing Claude Code hooks to ~/.claude/settings.json",
-    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -2550,7 +2545,7 @@ def main(args: Optional[List[str]] = None) -> None:
     async def run_servers():
         """Run APM and OTLP HTTP servers concurrently."""
         # Create runners for apps
-        apm_runner = web.AppRunner(app)
+        apm_runner = web.AppRunner(app, tcp_keepalive=False)
         await apm_runner.setup()
 
         otlp_http_runner = web.AppRunner(otlp_http_app)
