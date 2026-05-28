@@ -19,7 +19,7 @@ Pricing data last updated 2025-11 based on:
   * dd-go/domains/ml-observability/libs/costtracker/model_prices.go
 
 Note: Anthropic significantly reduced Opus prices starting with Opus 4.5
-(Nov 2025).  Opus 4.5 / 4.6 / 4.7 cost $5 / $25 / $0.50 / $6.25 per Mtok,
+(Nov 2025).  Opus 4.5 / 4.6 / 4.7 / 4.8 cost $5 / $25 / $0.50 / $6.25 per Mtok,
 whereas Opus 4 / 4.1 / 3 still cost $15 / $75 / $1.50 / $18.75 per Mtok.
 Using the old Opus rates for 4.5+ overcharges by exactly 3x.
 
@@ -86,7 +86,15 @@ _PRICING: List[Tuple[str, List[_PriceTier]]] = [
     # Source: Anthropic pricing page; pi-ai models.generated.js entries
     # "anthropic.claude-opus-4-5-...", "...claude-opus-4-6-v1", "...claude-opus-4-7".
     #
-    # claude-opus-4-7 / claude-opus-4.7  (latest)
+    # claude-opus-4-8 / claude-opus-4.8  (latest; regular-usage pricing
+    # unchanged from 4.7. Fast mode is $10/$50 per Mtok but is not
+    # distinguishable from the model ID, so provider-reported cost is used
+    # for those turns when available.)
+    (
+        "claude-opus-4-8",
+        [_PriceTier(0, _ONE_TIER, 5_000, 6_250, 500, 25_000)],
+    ),
+    # claude-opus-4-7 / claude-opus-4.7
     (
         "claude-opus-4-7",
         [_PriceTier(0, _ONE_TIER, 5_000, 6_250, 500, 25_000)],
