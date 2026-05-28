@@ -25,6 +25,7 @@ from .codex_cost_tracker import compute_openai_cost_metrics
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .coding_agent_metadata import extract_agent_project_name
 from .coding_agent_metadata import extract_git_repository_url
+from .coding_agent_metadata import git_commit_sha_tags
 from .coding_agent_metadata import project_metadata_tags
 from .coding_agent_metadata import resolve_project_metadata
 from .llmobs_event_platform import with_cors
@@ -419,6 +420,9 @@ class CodexHooksAPI:
         if self._config.user_handle:
             tags.append(f"user_handle:{self._config.user_handle}")
         tags.extend(project_metadata_tags(session.project_metadata))
+        # git.commit.sha: the commit that is HEAD of the same repo the
+        # git.repository_url tag describes, at the moment this span starts.
+        tags.extend(git_commit_sha_tags(session.cwd))
         return tags
 
     def _update_project_metadata(

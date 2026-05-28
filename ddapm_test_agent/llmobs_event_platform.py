@@ -26,42 +26,8 @@ from ._clock import monotonic_wall_ns
 if TYPE_CHECKING:
     from .agent import Agent
     from .claude_hooks import ClaudeHooksAPI
-    from .git_commit_tracker import GitCommitTracker
 
 log = logging.getLogger(__name__)
-
-_GIT_COMMIT_SHA_TAG = "git.commit.sha"
-_GIT_REPOSITORY_URL_TAG = "git.repository_url"
-
-
-def apply_git_commit_tags(spans: List[Dict[str, Any]], tracker: "GitCommitTracker") -> None:
-    """Tag each span with the git commit SHA that was HEAD at the span's start time.
-
-    Idempotent: any existing ``git.commit.sha`` / ``git.repository_url`` tags are
-    replaced so repeated calls (as the HEAD timeline grows) always reflect the
-    latest resolution. Best-effort; never raises.
-    """
-    repo_url = tracker.repository_url
-    for span in spans:
-        try:
-            sha = tracker.sha_at(span.get("start_ns"))
-        except Exception:  # pragma: no cover - defensive
-            sha = None
-        if not sha:
-            continue
-        tags = [
-            t
-            for t in (span.get("tags") or [])
-            if not (
-                isinstance(t, str)
-                and (t.startswith(_GIT_COMMIT_SHA_TAG + ":") or t.startswith(_GIT_REPOSITORY_URL_TAG + ":"))
-            )
-        ]
-        tags.append(f"{_GIT_COMMIT_SHA_TAG}:{sha}")
-        if repo_url:
-            tags.append(f"{_GIT_REPOSITORY_URL_TAG}:{repo_url}")
-        span["tags"] = tags
-
 
 # Allowed CORS origins: Datadog UI domains and localhost for local development
 _ALLOWED_ORIGIN_PATTERN = re.compile(
@@ -1084,15 +1050,10 @@ class LLMObsEventPlatformAPI:
         self._query_results: Dict[str, Dict[str, Any]] = {}
         self.decoded_llmobs_span_events: Dict[int, List[Dict[str, Any]]] = {}
         self._claude_hooks_api: Optional["ClaudeHooksAPI"] = None
-        self._git_commit_tracker: Optional["GitCommitTracker"] = None
 
     def set_claude_hooks_api(self, api: "ClaudeHooksAPI") -> None:
         """Wire up the Claude hooks API so its spans appear in LLMObs queries."""
         self._claude_hooks_api = api
-
-    def set_git_commit_tracker(self, tracker: Optional["GitCommitTracker"]) -> None:
-        """Wire up the git commit tracker so spans get tagged with git.commit.sha."""
-        self._git_commit_tracker = tracker
 
     def get_llmobs_spans(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all LLMObs spans from stored requests."""
@@ -1117,9 +1078,6 @@ class LLMObsEventPlatformAPI:
 
         if self._claude_hooks_api:
             all_spans.extend(self._claude_hooks_api._assembled_spans)
-
-        if self._git_commit_tracker is not None:
-            apply_git_commit_tags(all_spans, self._git_commit_tracker)
 
         all_spans.sort(key=lambda s: s.get("start_ns", 0), reverse=True)
         return all_spans

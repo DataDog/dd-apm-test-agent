@@ -168,6 +168,67 @@ async def test_claude_project_metadata_from_hook_cwd(agent, tmp_path, monkeypatc
     assert root["meta"]["metadata"]["git_repository_url"] == "github.com/DataDog/claude-project"
 
 
+async def test_claude_spans_tagged_with_git_commit_sha(agent, tmp_path, monkeypatch):
+    """Spans carry git.commit.sha for the same repo as the git.repository_url tag."""
+    from ddapm_test_agent.coding_agent_metadata import _commit_sha_cache
+    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+
+    monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    _local_git_metadata.cache_clear()
+    _commit_sha_cache.clear()
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True)
+
+    _git("init")
+    _git("config", "user.email", "qa@local")
+    _git("config", "user.name", "QA")
+    _git("remote", "add", "origin", "https://github.com/DataDog/claude-project.git")
+    (tmp_path / "README.md").write_text("# repo\n")
+    _git("add", "-A")
+    _git("commit", "-m", "initial commit")
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    session_id = "sess-commit-sha"
+    common = {"session_id": session_id, "cwd": str(tmp_path)}
+
+    await _post_hook(agent, {**common, "hook_event_name": "SessionStart"})
+    await _post_hook(agent, {**common, "hook_event_name": "UserPromptSubmit", "prompt": "list files"})
+    await _post_hook(
+        agent,
+        {
+            **common,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-commit-1",
+            "tool_input": {"command": "ls"},
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            **common,
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-commit-1",
+            "tool_response": "README.md",
+        },
+    )
+    await _post_hook(agent, {**common, "hook_event_name": "Stop"})
+
+    resp = await agent.get("/claude/hooks/spans")
+    assert resp.status == 200
+    spans = [s for s in (await resp.json())["spans"] if s.get("session_id") == session_id]
+    root = next(s for s in spans if s["parent_id"] == "undefined")
+    tool = next(s for s in spans if s["meta"]["span"]["kind"] == "tool")
+
+    for span in (root, tool):
+        assert f"git.commit.sha:{sha}" in span["tags"]
+        assert "git.repository_url:github.com/DataDog/claude-project" in span["tags"]
+
+
 async def test_claude_project_metadata_updates_when_cwd_changes(agent, tmp_path, monkeypatch):
     """A hook posted with a new cwd mid-session should re-resolve project metadata."""
     from ddapm_test_agent.coding_agent_metadata import _local_git_metadata

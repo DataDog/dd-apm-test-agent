@@ -225,18 +225,13 @@ Useful flags:
 
 ### Git commit tagging
 
-While Lapdog is running it watches the HEAD of the git repository it was
-started in and tags every captured span with `git.commit.sha` — the commit
-that was HEAD at the moment that span started (plus `git.repository_url` when
-an `origin` remote is configured). Because the tagged SHA flips the instant a
-commit lands, you can see *when* commits happen during a session and
-filter/group traces by commit.
-
-- `LAPDOG_GIT_REPO` — repository directory to watch (default: the directory
-  `lapdog start` was run in).
-- `LAPDOG_GIT_COMMIT_TAGGING=0` — disable commit tagging entirely.
-
-If the directory is not a git repository, tagging is silently skipped.
+Captured coding-agent spans are tagged with `git.commit.sha` — the commit that
+is HEAD of the session's repository at the moment each span starts. The repo is
+the same one the existing `git.repository_url` tag is derived from (resolved
+from the coding agent's working directory), so the two tags always describe the
+same repository. Because the tagged SHA flips the instant a commit lands, you
+can see *when* commits happen during a session and filter/group traces by
+commit. If the working directory is not a git repository, the tag is omitted.
 
 ---
 
