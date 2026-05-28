@@ -88,8 +88,8 @@ class TestCostCalculation:
             assert result["estimated_output_cost"] == 50 * 75_000, model
 
     def test_opus_share_reduced_pricing(self) -> None:
-        # Opus 4.5 / 4.6 / 4.7 all use the post-Nov-2025 reduced rates.
-        for model in ("claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7"):
+        # Opus 4.5 / 4.6 / 4.7 / 4.8 all use the post-Nov-2025 reduced rates.
+        for model in ("claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8"):
             result = compute_cost_metrics(model, 100, 200, 500, 50)
             assert result is not None, model
             assert result["estimated_non_cached_input_cost"] == 100 * 5_000, model
