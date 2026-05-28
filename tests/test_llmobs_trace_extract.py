@@ -3,11 +3,11 @@
 import base64
 import json
 
-from ddapm_test_agent.llmobs_event_platform import LLMOBS_ROOT_PARENT_ID
-from ddapm_test_agent.llmobs_event_platform import LLMOBS_STRUCT_KEY
-from ddapm_test_agent.llmobs_event_platform import build_sdk_span_event
-from ddapm_test_agent.llmobs_event_platform import extract_llmobs_envelopes_from_v04_traces
-from ddapm_test_agent.llmobs_event_platform import synthetic_llmobs_session_request_entries
+from ddapm_test_agent.llmobs_trace import LLMOBS_ROOT_PARENT_ID
+from ddapm_test_agent.llmobs_trace import LLMOBS_STRUCT_KEY
+from ddapm_test_agent.llmobs_trace import build_sdk_span_event
+from ddapm_test_agent.llmobs_trace import extract_llmobs_envelopes_from_v04_traces
+from ddapm_test_agent.llmobs_trace import synthetic_llmobs_session_request_entries
 
 
 def _apm_span(**overrides):

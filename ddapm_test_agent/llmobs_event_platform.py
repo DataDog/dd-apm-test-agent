@@ -1,9 +1,7 @@
 """LLM Observability Event Platform API."""
 
-import base64
 from collections import defaultdict
 from datetime import datetime
-import gzip
 import json
 import logging
 import re
@@ -21,21 +19,19 @@ import uuid
 
 from aiohttp import web
 from aiohttp.web import Request
-import msgpack
 
 from . import llmobs_query_parser
 from ._clock import monotonic_wall_ns
+from .llmobs_cors import cors_headers as _llmobs_cors_headers
+from .llmobs_payload import decode_llmobs_payload
+from .llmobs_payload import extract_spans_from_events
+from .llmobs_trace import extract_ui_spans_from_v04_traces
 
 if TYPE_CHECKING:
     from .agent import Agent
     from .claude_hooks import ClaudeHooksAPI
 
 log = logging.getLogger(__name__)
-
-# Allowed CORS origins: Datadog UI domains and localhost for local development
-_ALLOWED_ORIGIN_PATTERN = re.compile(
-    r"^https?://(localhost(:\d+)?|127\.0\.0\.1(:\d+)?|[\w.-]+\.datadoghq\.(com|eu)|[\w.-]+\.ddog-gov\.com|[\w.-]+\.datad0g\.com|[\w.-]+\.static-app\.us1\.staging\.dog)$"
-)
 
 _CORS_ALLOW_METHODS = "GET, POST, OPTIONS"
 _CORS_ALLOW_HEADERS = (
@@ -47,15 +43,7 @@ _CORS_ALLOW_HEADERS = (
 
 def _cors_headers(request: Request) -> Dict[str, str]:
     """Build CORS headers, only allowing known origins."""
-    headers: Dict[str, str] = {
-        "Access-Control-Allow-Methods": _CORS_ALLOW_METHODS,
-        "Access-Control-Allow-Headers": _CORS_ALLOW_HEADERS,
-        "Vary": "Origin",
-    }
-    origin = request.headers.get("Origin", "")
-    if _ALLOWED_ORIGIN_PATTERN.match(origin):
-        headers["Access-Control-Allow-Origin"] = origin
-    return headers
+    return _llmobs_cors_headers(request, allow_methods=_CORS_ALLOW_METHODS, allow_headers=_CORS_ALLOW_HEADERS)
 
 
 def with_cors(
@@ -81,211 +69,6 @@ def _deep_merge(source: Dict[str, Any], target: Dict[str, Any]) -> None:
             _deep_merge(value, target[key])
         else:
             target[key] = value
-
-
-def decode_llmobs_payload(data: bytes, content_type: str) -> List[Dict[str, Any]]:
-    """Decode LLMObs payload (gzip+msgpack or JSON)."""
-    events = []
-    try:
-        if content_type and "gzip" in content_type.lower():
-            data = gzip.decompress(data)
-
-        if content_type and "msgpack" in content_type.lower():
-            payload = msgpack.unpackb(data, raw=False, strict_map_key=False)
-        else:
-            try:
-                payload = json.loads(data)
-            except json.JSONDecodeError:
-                payload = msgpack.unpackb(data, raw=False, strict_map_key=False)
-
-        if isinstance(payload, list):
-            events.extend(payload)
-        else:
-            events.append(payload)
-    except Exception as e:
-        log.warning(f"Failed to decode LLMObs payload: {e}")
-    return events
-
-
-def extract_spans_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Extract individual spans from LLMObs event payloads."""
-    spans = []
-    for event in events:
-        event_ml_app = event.get("ml_app", "")
-        event_tags = event.get("tags", [])
-
-        for span in event.get("spans", []):
-            span_tags = span.get("tags", [])
-            if event_tags:
-                span_tags = list(set(span_tags + event_tags))
-            span["tags"] = span_tags
-            span = remap_sdk_span_to_ui_format(span, event_ml_app)
-            spans.append(span)
-    return spans
-
-
-def remap_sdk_span_to_ui_format(span: Dict[str, Any], event_ml_app: str = "") -> Dict[str, Any]:
-    """Remap span from SDK format to UI-expected format (extract ml_app, service, env, session_id from tags)."""
-    tags = span.get("tags", [])
-    extracted = extract_fields_from_tags(tags)
-
-    ml_app = extracted.get("ml_app") or event_ml_app or span.get("ml_app") or "lapdog"
-    span["ml_app"] = ml_app
-
-    if "service" not in span or not span["service"]:
-        span["service"] = extracted.get("service", "")
-    if "env" not in span or not span["env"]:
-        span["env"] = extracted.get("env", "")
-
-    # session_id: prefer top-level field, fall back to tag extraction
-    if "session_id" not in span or not span["session_id"]:
-        span["session_id"] = extracted.get("session_id", "")
-
-    # hostname: prefer top-level field, fall back to tag extraction
-    if "hostname" not in span or not span["hostname"]:
-        span["hostname"] = extracted.get("hostname", "")
-
-    meta = span.get("meta", {})
-    span_kind = meta.get("span", {}).get("kind", "llm")
-
-    if "meta" not in span:
-        span["meta"] = {}
-    if "span" not in span["meta"]:
-        span["meta"]["span"] = {}
-    span["meta"]["span"]["kind"] = span_kind
-    span["_ui_kind"] = span_kind
-    span["_ui_ml_app"] = ml_app
-
-    return span
-
-
-def extract_fields_from_tags(tags: List[str]) -> Dict[str, str]:
-    """Extract ml_app, service, env, session_id, etc. from tags array."""
-    result = {}
-    fields_to_extract = ["ml_app", "service", "env", "version", "source", "language", "session_id", "hostname"]
-    for tag in tags:
-        if not isinstance(tag, str) or ":" not in tag:
-            continue
-        key, value = tag.split(":", 1)
-        if key in fields_to_extract:
-            result[key] = value
-    return result
-
-
-# LLMObs trace meta_struct extraction (dd-trace-py PR #18254): when the SDK ships
-# LLMObs spans via meta_struct["_llmobs"] on v0.4 traces instead of POSTing to
-# /evp_proxy/.../llmobs, the helpers below rebuild SDK span events and writer
-# envelopes so existing EVP-shaped consumers keep working.
-
-LLMOBS_STRUCT_KEY = "_llmobs"
-LLMOBS_ROOT_PARENT_ID = "undefined"
-
-
-def _llmobs_tags_to_list(tags: Any) -> List[str]:
-    # SDK stores meta_struct tags as a dict but the wire event uses "k:v" strings.
-    if isinstance(tags, dict):
-        return sorted(f"{k}:{v}" for k, v in tags.items())
-    if isinstance(tags, list):
-        return [t for t in tags if isinstance(t, str)]
-    return []
-
-
-def build_sdk_span_event(llmobs_data: Dict[str, Any], span: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Rebuild an SDK span event from ``meta_struct['_llmobs']`` + its host APM span.
-
-    Mirrors dd-trace-py ``LLMObs._llmobs_span_event`` but reads from a decoded v0.4
-    trace payload. Returns ``None`` when required fields are missing.
-    """
-    if not isinstance(llmobs_data, dict) or not isinstance(span, dict):
-        return None
-
-    llmobs_trace_id = llmobs_data.get("trace_id")
-    apm_span_id = span.get("span_id")
-    apm_trace_id = span.get("trace_id")
-    if llmobs_trace_id is None or apm_span_id is None or apm_trace_id is None:
-        return None
-
-    _dd_attrs: Dict[str, Any] = dict(llmobs_data.get("_dd") or {})
-    try:
-        # 32-char lowercase hex matches dd-trace-py ``format_trace_id``.
-        apm_trace_id_hex = format(int(apm_trace_id), "032x")
-    except (TypeError, ValueError):
-        apm_trace_id_hex = str(apm_trace_id)
-    _dd_attrs.setdefault("span_id", str(apm_span_id))
-    _dd_attrs.setdefault("trace_id", apm_trace_id_hex)
-    _dd_attrs.setdefault("apm_trace_id", apm_trace_id_hex)
-
-    span_event: Dict[str, Any] = {
-        "trace_id": llmobs_trace_id,
-        "span_id": str(apm_span_id),
-        "parent_id": llmobs_data.get("parent_id") or LLMOBS_ROOT_PARENT_ID,
-        "name": llmobs_data.get("name") or span.get("name", ""),
-        "start_ns": span.get("start", 0),
-        "duration": span.get("duration", 0),
-        "status": "error" if span.get("error") else "ok",
-        "meta": llmobs_data.get("meta") or {},
-        "metrics": llmobs_data.get("metrics") or {},
-        "tags": _llmobs_tags_to_list(llmobs_data.get("tags")),
-        "_dd": _dd_attrs,
-    }
-    for optional_key in ("session_id", "ml_app", "config", "span_links"):
-        value = llmobs_data.get(optional_key)
-        if value:
-            span_event[optional_key] = value
-    return span_event
-
-
-def extract_llmobs_envelopes_from_v04_traces(traces: Any) -> List[Dict[str, Any]]:
-    """Build one ``LLMObsSpanWriter._data()``-shaped envelope per LLMObs-bearing span.
-
-    ``traces`` is an iterable of iterables of span dicts (``v04TracePayload`` shape).
-    """
-    envelopes: List[Dict[str, Any]] = []
-    for trace in traces or []:
-        if not isinstance(trace, list):
-            continue
-        for span in trace:
-            if not isinstance(span, dict):
-                continue
-            meta_struct = span.get("meta_struct") or {}
-            if not isinstance(meta_struct, dict):
-                continue
-            llmobs_data = meta_struct.get(LLMOBS_STRUCT_KEY)
-            if not llmobs_data:
-                continue
-            event = build_sdk_span_event(llmobs_data, span)
-            if event is None:
-                continue
-            envelope: Dict[str, Any] = {
-                "_dd.stage": "raw",
-                "_dd.tracer_version": "agent-extract",
-                "event_type": "span",
-                "spans": [event],
-            }
-            if event.get("_dd", {}).get("scope") == "experiments":
-                envelope["_dd.scope"] = "experiments"
-            envelopes.append(envelope)
-    return envelopes
-
-
-def synthetic_llmobs_session_request_entries(
-    envelopes: List[Dict[str, Any]],
-    base_url: str,
-) -> List[Dict[str, Any]]:
-    """Wrap envelopes as ``handle_session_requests``-shaped entries (base64 JSON body)."""
-    url = f"{(base_url or '').rstrip('/')}/evp_proxy/v4/api/v2/llmobs"
-    return [
-        {
-            "headers": {
-                "Content-Type": "application/json",
-                "X-Datadog-EVP-Subdomain": "llmobs-intake",
-            },
-            "body": base64.b64encode(json.dumps(envelope).encode("utf-8")).decode("ascii"),
-            "url": url,
-            "method": "POST",
-        }
-        for envelope in envelopes
-    ]
 
 
 DURATION_MULTIPLIERS = {
@@ -1202,10 +985,7 @@ class LLMObsEventPlatformAPI:
             try:
                 req_id = id(req)
                 if req_id not in self.decoded_trace_llmobs_spans:
-                    envelopes = extract_llmobs_envelopes_from_v04_traces(self.agent._decode_v04_traces(req))
-                    spans = [
-                        remap_sdk_span_to_ui_format(dict(span)) for env in envelopes for span in env.get("spans", [])
-                    ]
+                    spans = extract_ui_spans_from_v04_traces(self.agent._decode_v04_traces(req))
                     self.decoded_trace_llmobs_spans[req_id] = spans
                 else:
                     spans = self.decoded_trace_llmobs_spans[req_id]

@@ -64,10 +64,10 @@ from .pi_hooks import PiHooksAPI
 from .codex_hooks import CodexHooksAPI
 from .codex_proxy import CodexProxyAPI
 from .integration import Integration
+from .llmobs_cors import cors_headers
 from .llmobs_event_platform import LLMObsEventPlatformAPI
-from .llmobs_event_platform import decode_llmobs_payload as _llmobs_decode_payload
-from .llmobs_event_platform import extract_llmobs_envelopes_from_v04_traces
-from .llmobs_event_platform import synthetic_llmobs_session_request_entries
+from .llmobs_payload import llmobs_evp_dedup_keys_from_payload
+from .llmobs_trace import collect_synthetic_llmobs_session_requests
 from .logs import LOGS_ENDPOINT
 from .logs import OTLPLogsGRPCServicer
 from .logs import decode_logs_request
@@ -1114,16 +1114,7 @@ class Agent:
 
     async def handle_settings(self, request: Request) -> web.Response:
         """Allow to change test agent settings on the fly"""
-        from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
-
-        headers: Dict[str, str] = {
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
-            "Vary": "Origin",
-        }
-        origin = request.headers.get("Origin", "")
-        if _ALLOWED_ORIGIN_PATTERN.match(origin):
-            headers["Access-Control-Allow-Origin"] = origin
+        headers = cors_headers(request, allow_methods="POST, OPTIONS")
 
         # Handle OPTIONS preflight
         if request.method == "OPTIONS":
@@ -1165,16 +1156,7 @@ class Agent:
         return web.HTTPAccepted(headers=headers)
 
     async def handle_info(self, request: Request) -> web.Response:
-        from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
-
-        headers: Dict[str, str] = {
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
-            "Vary": "Origin",
-        }
-        origin = request.headers.get("Origin", "")
-        if _ALLOWED_ORIGIN_PATTERN.match(origin):
-            headers["Access-Control-Allow-Origin"] = origin
+        headers = cors_headers(request, allow_methods="GET, OPTIONS")
 
         # Handle OPTIONS preflight
         if request.method == "OPTIONS":
@@ -1435,16 +1417,7 @@ class Agent:
         return web.json_response(traces)
 
     async def handle_session_requests(self, request: Request) -> web.Response:
-        from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
-
-        headers: Dict[str, str] = {
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
-            "Vary": "Origin",
-        }
-        origin = request.headers.get("Origin", "")
-        if _ALLOWED_ORIGIN_PATTERN.match(origin):
-            headers["Access-Control-Allow-Origin"] = origin
+        headers = cors_headers(request, allow_methods="GET, OPTIONS")
 
         # Handle OPTIONS preflight
         if request.method == "OPTIONS":
@@ -1453,8 +1426,6 @@ class Agent:
         token = request["session_token"]
         session_reqs = self._requests_by_session(token)
         resp = []
-        # Track real EVP llmobs posts to suppress synthesis for the same span when
-        # dd-trace-py's predicted-drop fallback writer races with the meta_struct path.
         real_llmobs_evp_keys: Set[Tuple[Any, Any]] = set()
         for req in reversed(session_reqs):
             if req.match_info.handler not in (
@@ -1482,12 +1453,9 @@ class Agent:
                 self.handle_evp_proxy_v2_api_v2_llmobs,
                 self.handle_evp_proxy_v4_api_v2_llmobs,
             ):
-                try:
-                    for event in _llmobs_decode_payload(body_bytes, req.content_type or ""):
-                        for s in event.get("spans", []) or []:
-                            real_llmobs_evp_keys.add((s.get("trace_id"), s.get("span_id")))
-                except Exception as exc:
-                    log.debug("Failed to decode real EVP llmobs payload for dedup: %s", exc)
+                real_llmobs_evp_keys.update(
+                    llmobs_evp_dedup_keys_from_payload(body_bytes, req.content_type or "")
+                )
             resp.append(
                 {
                     "headers": dict(req.headers),
@@ -1497,25 +1465,15 @@ class Agent:
                 }
             )
 
-        synthetic_envelopes: List[Dict[str, Any]] = []
-        for req in session_reqs:
-            if req.match_info.handler != self.handle_v04_traces:
-                continue
-            try:
-                traces = self._decode_v04_traces(req)
-            except Exception as exc:
-                log.debug("Failed to decode v0.4 traces for llmobs extract: %s", exc)
-                continue
-            for envelope in extract_llmobs_envelopes_from_v04_traces(traces):
-                event = envelope["spans"][0]
-                if (event.get("trace_id"), event.get("span_id")) in real_llmobs_evp_keys:
-                    continue
-                synthetic_envelopes.append(envelope)
-
-        if synthetic_envelopes:
-            resp.extend(
-                synthetic_llmobs_session_request_entries(synthetic_envelopes, str(request.url.origin()))
+        resp.extend(
+            collect_synthetic_llmobs_session_requests(
+                session_reqs,
+                decode_v04_traces=self._decode_v04_traces,
+                is_v04_trace_request=lambda req: req.match_info.handler == self.handle_v04_traces,
+                real_llmobs_evp_keys=real_llmobs_evp_keys,
+                base_url=str(request.url.origin()),
             )
+        )
 
         return web.json_response(resp, headers=headers)
 
