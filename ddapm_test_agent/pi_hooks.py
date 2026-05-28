@@ -44,13 +44,13 @@ from .claude_cost_tracker import cost_from_provider_usage
 from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import PendingToolSpan
 from .claude_hooks import SessionState
-from .claude_hooks import _HOSTNAME
-from .claude_hooks import _USER_HANDLE
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
 from .codex_cost_tracker import compute_openai_cost_metrics
+from .coding_agent_metadata import apply_project_metadata_to_span
 from .llmobs_event_platform import with_cors
+
 
 log = logging.getLogger(__name__)
 
@@ -335,18 +335,9 @@ class PiHooksAPI:
         span_id = _format_span_id()
         parent_id = self._current_parent_id(session)
 
-        tags = [
-            f"ml_app:{_ML_APP}",
-            f"session_id:{session.session_id}",
-            f"service:{_ML_APP}",
-            "env:local",
-            "source:pi-hooks",
-            "language:python",
-            f"hostname:{_HOSTNAME}",
-            "trajectory.semantic_type:agent_message",
+        tags = self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP) + [
+            "trajectory.semantic_type:agent_message"
         ]
-        if _USER_HANDLE:
-            tags.append(f"user_handle:{_USER_HANDLE}")
 
         step_span: Dict[str, Any] = {
             "span_id": span_id,
@@ -495,18 +486,7 @@ class PiHooksAPI:
         if model_provider:
             session.model_provider = model_provider
 
-        tags = [
-            f"ml_app:{_ML_APP}",
-            f"session_id:{session.session_id}",
-            f"service:{_ML_APP}",
-            "env:local",
-            "source:pi-hooks",
-            "language:python",
-            f"hostname:{_HOSTNAME}",
-            "trajectory.semantic_type:turn",
-        ]
-        if _USER_HANDLE:
-            tags.append(f"user_handle:{_USER_HANDLE}")
+        tags = self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP) + ["trajectory.semantic_type:turn"]
 
         root_span: Dict[str, Any] = {
             "span_id": session.root_span_id,
@@ -531,6 +511,7 @@ class PiHooksAPI:
             },
             "metrics": {},
         }
+        apply_project_metadata_to_span(root_span, session.project_metadata)
         self._append_span(root_span)
         session._root_span_ref = root_span  # type: ignore[attr-defined]
 
@@ -581,6 +562,7 @@ class PiHooksAPI:
             root_span["meta"]["model_name"] = session.model
             root_span["meta"]["model_provider"] = session.model_provider
             root_span["meta"].setdefault("metadata", {})["models_used"] = session.models[:]
+            apply_project_metadata_to_span(root_span, session.project_metadata)
             # Do not roll token_usage up onto root_span["metrics"] —
             # production stores trace rollups in a separate `@trace.*`
             # document, not on the root span. Mirroring it here caused
@@ -599,18 +581,9 @@ class PiHooksAPI:
                 self._hooks_api._set_hidden_metadata(root_span, **dd_fields)
         else:
             # Fallback: create root span
-            tags = [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:pi-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-                "trajectory.semantic_type:turn",
+            tags = self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP) + [
+                "trajectory.semantic_type:turn"
             ]
-            if _USER_HANDLE:
-                tags.append(f"user_handle:{_USER_HANDLE}")
             root_span = {
                 "span_id": session.root_span_id,
                 "trace_id": session.trace_id,
@@ -634,6 +607,7 @@ class PiHooksAPI:
                 },
                 # Intentionally no "metrics" key — see comment above.
             }
+            apply_project_metadata_to_span(root_span, session.project_metadata)
             self._append_span(root_span)
 
         session.root_span_emitted = True
@@ -792,15 +766,7 @@ class PiHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:pi-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-            ],
+            "tags": self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP),
             "meta": {
                 "span": {"kind": "llm"},
                 "model_name": model_id,
@@ -897,16 +863,8 @@ class PiHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:pi-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-                f"tool_name:{actual_tool_name}",
-            ],
+            "tags": self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP)
+            + [f"tool_name:{actual_tool_name}"],
             "meta": {
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},
@@ -968,6 +926,9 @@ class PiHooksAPI:
     def _dispatch(self, body: Dict[str, Any]) -> None:
         session_id = body.get("session_id", "")
         event_name = body.get("hook_event_name", "")
+        if session_id:
+            session = self._get_or_create_session(session_id)
+            self._hooks_api.update_session_project_metadata(session, body)
         handler_name = self._HANDLERS.get(event_name)
         if handler_name:
             handler = getattr(self, handler_name)

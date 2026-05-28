@@ -384,7 +384,9 @@ async def test_codex_proxy_does_not_create_empty_codex_model_span(agent, aiohttp
 
 async def test_codex_proxy_span_parents_to_jsonl_turn_and_dedupes_token_count(agent, aiohttp_server):
     sid = "codex-proxy-hybrid"
-    await _post_codex(agent, sid, _session_meta(sid))
+    session_meta = _session_meta(sid)
+    session_meta["git"] = {"repository_url": "https://github.com/DataDog/codex-proxy-project.git"}
+    await _post_codex(agent, sid, session_meta)
     await _post_codex(agent, sid, _turn_context())
     await _post_codex(agent, sid, _event("user_message", message="hello"))
 
@@ -429,6 +431,8 @@ async def test_codex_proxy_span_parents_to_jsonl_turn_and_dedupes_token_count(ag
     assert llms[0]["parent_id"] == steps[0]["span_id"]
     assert steps[0]["parent_id"] == roots[0]["span_id"]
     assert "source:codex-proxy" in llms[0]["tags"]
+    assert "project_name:codex-proxy-project" in llms[0]["tags"]
+    assert "git.repository_url:github.com/DataDog/codex-proxy-project" in llms[0]["tags"]
 
 
 async def test_codex_proxy_overlapping_llm_spans_split_into_steps(agent, aiohttp_server):

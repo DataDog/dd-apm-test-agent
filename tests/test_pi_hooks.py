@@ -1,6 +1,7 @@
 """Tests for pi coding agent hooks — step span kind emission."""
 
 import json
+import subprocess
 
 
 async def _post(agent, event):
@@ -31,13 +32,17 @@ def _session_start(
     session_id=SESSION,
     model_id="claude-sonnet-4-20250514",
     model_provider="anthropic",
+    cwd=None,
 ):
-    return {
+    event = {
         "session_id": session_id,
         "hook_event_name": "session_start",
         "model_id": model_id,
         "model_provider": model_provider,
     }
+    if cwd:
+        event["cwd"] = cwd
+    return event
 
 
 def _agent_start(
@@ -45,14 +50,18 @@ def _agent_start(
     prompt="hello",
     model_id="claude-sonnet-4-20250514",
     model_provider="anthropic",
+    cwd=None,
 ):
-    return {
+    event = {
         "session_id": session_id,
         "hook_event_name": "agent_start",
         "user_prompt": prompt,
         "model_id": model_id,
         "model_provider": model_provider,
     }
+    if cwd:
+        event["cwd"] = cwd
+    return event
 
 
 def _agent_end(session_id=SESSION, messages=None):
@@ -180,6 +189,43 @@ async def test_single_step_with_llm_no_tools(agent):
 
     # Step name
     assert step["name"] == "inference-0"
+
+
+async def test_pi_project_metadata_from_extension_cwd(agent, tmp_path, monkeypatch):
+    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+
+    monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    _local_git_metadata.cache_clear()
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:DataDog/pi-project.git"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    sid = "pi-project-metadata"
+    cwd = str(tmp_path)
+    await _post(agent, _session_start(sid, cwd=cwd))
+    await _post(agent, _agent_start(sid, cwd=cwd))
+    await _post(agent, {**_turn_start(sid), "cwd": cwd})
+    await _post(agent, {**_message_start(sid), "cwd": cwd})
+    await _post(agent, {**_message_end(sid), "cwd": cwd})
+    await _post(agent, {**_turn_end(sid), "cwd": cwd})
+    await _post(agent, {**_agent_end(sid), "cwd": cwd})
+
+    resp = await agent.get("/claude/hooks/spans")
+    assert resp.status == 200
+    spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    root = next(s for s in spans if s["parent_id"] == "undefined")
+    llm = next(s for s in spans if s["meta"]["span"]["kind"] == "llm")
+
+    for span in (root, llm):
+        assert "project_name:pi-project" in span["tags"]
+        assert "git.repository_url:github.com/DataDog/pi-project" in span["tags"]
+        assert not any("commit" in tag for tag in span["tags"])
+    assert root["meta"]["metadata"]["project_name"] == "pi-project"
+    assert root["meta"]["metadata"]["git_repository_url"] == "github.com/DataDog/pi-project"
 
 
 async def test_ai_gateway_anthropic_model_id_gets_estimated_cost(agent):

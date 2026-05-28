@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import tempfile
 
 
@@ -112,6 +113,104 @@ async def test_hook_tool_use_creates_tool_span(agent):
     step_spans = [s for s in spans if s["meta"]["span"]["kind"] == "step"]
     assert step_spans == []
     assert tool["parent_id"] == root_spans[0]["span_id"]
+
+
+async def test_claude_project_metadata_from_hook_cwd(agent, tmp_path, monkeypatch):
+    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+
+    monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    _local_git_metadata.cache_clear()
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/DataDog/claude-project.git"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    session_id = "sess-project-metadata"
+    common = {"session_id": session_id, "cwd": str(tmp_path)}
+
+    await _post_hook(agent, {**common, "hook_event_name": "SessionStart"})
+    await _post_hook(agent, {**common, "hook_event_name": "UserPromptSubmit", "prompt": "list files"})
+    await _post_hook(
+        agent,
+        {
+            **common,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-project-1",
+            "tool_input": {"command": "ls"},
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            **common,
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-project-1",
+            "tool_response": "README.md",
+        },
+    )
+    await _post_hook(agent, {**common, "hook_event_name": "Stop"})
+
+    resp = await agent.get("/claude/hooks/spans")
+    assert resp.status == 200
+    spans = [s for s in (await resp.json())["spans"] if s.get("session_id") == session_id]
+    root = next(s for s in spans if s["parent_id"] == "undefined")
+    tool = next(s for s in spans if s["meta"]["span"]["kind"] == "tool")
+
+    for span in (root, tool):
+        assert "project_name:claude-project" in span["tags"]
+        assert "git.repository_url:github.com/DataDog/claude-project" in span["tags"]
+        assert not any("commit" in tag for tag in span["tags"])
+    assert root["meta"]["metadata"]["project_name"] == "claude-project"
+    assert root["meta"]["metadata"]["git_repository_url"] == "github.com/DataDog/claude-project"
+
+
+async def test_claude_project_metadata_updates_when_cwd_changes(agent, tmp_path, monkeypatch):
+    """A hook posted with a new cwd mid-session should re-resolve project metadata."""
+    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+
+    monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    _local_git_metadata.cache_clear()
+
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    for repo, remote in (
+        (repo_a, "https://github.com/DataDog/repo-a.git"),
+        (repo_b, "https://github.com/DataDog/repo-b.git"),
+    ):
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "remote", "add", "origin", remote], cwd=repo, check=True, capture_output=True)
+
+    session_id = "sess-cwd-change"
+
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "SessionStart", "cwd": str(repo_a)})
+    await _post_hook(
+        agent,
+        {"session_id": session_id, "hook_event_name": "UserPromptSubmit", "cwd": str(repo_a), "prompt": "first"},
+    )
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "Stop", "cwd": str(repo_a)})
+    # Second turn — cwd switches to a different repo.
+    await _post_hook(
+        agent,
+        {"session_id": session_id, "hook_event_name": "UserPromptSubmit", "cwd": str(repo_b), "prompt": "second"},
+    )
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "Stop", "cwd": str(repo_b)})
+
+    resp = await agent.get("/claude/hooks/spans")
+    assert resp.status == 200
+    spans = [s for s in (await resp.json())["spans"] if s.get("session_id") == session_id]
+    roots = [s for s in spans if s["parent_id"] == "undefined"]
+    assert len(roots) == 2
+    roots.sort(key=lambda s: s["start_ns"])
+    assert "project_name:repo-a" in roots[0]["tags"]
+    assert "git.repository_url:github.com/DataDog/repo-a" in roots[0]["tags"]
+    assert "project_name:repo-b" in roots[1]["tags"]
+    assert "git.repository_url:github.com/DataDog/repo-b" in roots[1]["tags"]
 
 
 async def test_hook_subagent_creates_nested_agent(agent):
