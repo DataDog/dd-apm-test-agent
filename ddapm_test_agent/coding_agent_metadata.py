@@ -180,6 +180,13 @@ def _run_git(cwd: str, *args: str) -> str:
         log.debug("git %s in %s failed: %s", " ".join(args), cwd, exc)
         return ""
     if result.returncode != 0:
+        log.debug(
+            "git %s in %s exited %s: %s",
+            " ".join(args),
+            cwd,
+            result.returncode,
+            result.stderr.strip(),
+        )
         return ""
     return result.stdout.strip()
 
