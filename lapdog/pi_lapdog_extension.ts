@@ -25,8 +25,8 @@ const HOOKS_ENDPOINT = `${LAPDOG_URL}/pi/hooks`;
 const LAPDOG_DASHBOARD_URL = "https://lapdog.datadoghq.com";
 // Key for the footer status entry created via ctx.ui.setStatus().
 const STATUS_KEY = "lapdog";
-// Modifier needed to open OSC-8 hyperlinks in common terminals.
-const CLICK_HINT = process.platform === "darwin" ? "⌘+click" : "Ctrl+click";
+// Dog face shown next to "lapdog" in the footer status.
+const DOG_EMOJI = "🐶";
 
 /** Build the lapdog dashboard deep-link for a pi session. */
 function sessionDashboardUrl(sid: string): string {
@@ -99,6 +99,18 @@ export default function lapdog(pi: ExtensionAPI): void {
 	// capture the UI context from session_start where it is fully typed.
 	let statusUi: ExtensionContext["ui"] | undefined;
 
+	// Render the dog + "lapdog" footer status. The label is a clickable OSC-8
+	// hyperlink to the lapdog dashboard for this session.
+	const renderStatus = () => {
+		if (!statusUi) return;
+		try {
+			const label = statusUi.theme.fg("accent", "lapdog");
+			statusUi.setStatus(STATUS_KEY, hyperlink(`${DOG_EMOJI} ${label}`, sessionDashboardUrl(sessionId)));
+		} catch {
+			// UI unavailable — ignore.
+		}
+	};
+
 	// Track the user prompt that started the current agent run so we can
 	// attach it to the agent_start event (input event fires before agent_start).
 	let pendingUserPrompt = "";
@@ -131,14 +143,11 @@ export default function lapdog(pi: ExtensionAPI): void {
 			model_provider: currentProvider,
 			model_id: currentModel,
 		}, ctx);
-		// Show a clickable link to this session in the lapdog dashboard. The
-		// label is short; the full URL lives in the OSC-8 escape and opens on
-		// ⌘/Ctrl+click in supporting terminals (hence the dim hint).
+		// Show a dog next to "lapdog" in the footer. The label is a clickable
+		// OSC-8 hyperlink to this session's lapdog dashboard.
 		try {
 			statusUi = ctx.ui;
-			const label = ctx.ui.theme.fg("accent", "view in lapdog");
-			const hint = ctx.ui.theme.fg("dim", `(${CLICK_HINT})`);
-			ctx.ui.setStatus(STATUS_KEY, `${hyperlink(label, sessionDashboardUrl(sessionId))} ${hint}`);
+			renderStatus();
 		} catch {
 			// Non-interactive mode (print/JSON) or UI unavailable — ignore.
 		}
