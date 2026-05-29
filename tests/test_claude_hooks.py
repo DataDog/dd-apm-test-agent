@@ -745,3 +745,79 @@ async def test_concurrent_subagents_parent_correctly(agent):
             f"Subagent {agent_span['name']} has parent_id={agent_span['parent_id']} "
             f"but expected root span_id={root['span_id']}"
         )
+
+
+async def test_duplicate_user_prompt_submit_emits_single_root(agent):
+    # A duplicate UserPromptSubmit delivery (e.g. stale settings.json hooks + the
+    # lapdog plugin both firing) must not produce a phantom errored root span.
+    session_id = "sess-dup-prompt"
+
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "SessionStart"})
+    prompt_event = {"session_id": session_id, "hook_event_name": "UserPromptSubmit", "prompt": "do the thing"}
+    await _post_hook(agent, prompt_event)
+    await _post_hook(agent, dict(prompt_event))  # duplicate delivery
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = (await resp.json())["spans"]
+    session_spans = [s for s in spans if s.get("session_id") == session_id]
+    root_spans = [s for s in session_spans if s["parent_id"] == "undefined"]
+
+    assert len(root_spans) == 1, f"Expected 1 root, got {len(root_spans)}"
+    assert root_spans[0]["status"] == "ok"
+    assert "error" not in root_spans[0]["meta"]
+
+    # The duplicate is still recorded in raw events for debugging, just not dispatched.
+    raw = (await (await agent.get("/claude/hooks/raw")).json())["events"]
+    prompt_raw = [
+        e for e in raw if e.get("session_id") == session_id and e.get("hook_event_name") == "UserPromptSubmit"
+    ]
+    assert len(prompt_raw) == 2
+
+
+async def test_duplicate_tool_use_emits_single_tool_span(agent):
+    # Duplicate PreToolUse/PostToolUse deliveries for the same tool_use_id collapse to one span.
+    session_id = "sess-dup-tool"
+
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "SessionStart"})
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "UserPromptSubmit", "prompt": "read it"})
+
+    pre = {
+        "session_id": session_id,
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Read",
+        "tool_use_id": "tool-1",
+        "tool_input": {"file_path": "/tmp/a.txt"},
+    }
+    post = {
+        "session_id": session_id,
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Read",
+        "tool_use_id": "tool-1",
+        "tool_response": "contents",
+    }
+    await _post_hook(agent, pre)
+    await _post_hook(agent, dict(pre))  # duplicate
+    await _post_hook(agent, post)
+    await _post_hook(agent, dict(post))  # duplicate
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = (await resp.json())["spans"]
+    tool_spans = [s for s in spans if s.get("session_id") == session_id and s["meta"]["span"]["kind"] == "tool"]
+    assert len(tool_spans) == 1, f"Expected 1 tool span, got {len(tool_spans)}"
+
+
+async def test_distinct_prompts_not_deduplicated(agent):
+    # Two genuinely different prompts across two turns must both produce a root.
+    session_id = "sess-distinct-prompts"
+
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "SessionStart"})
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "UserPromptSubmit", "prompt": "first"})
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "Stop"})
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "UserPromptSubmit", "prompt": "second"})
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "Stop"})
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = (await resp.json())["spans"]
+    root_spans = [s for s in spans if s.get("session_id") == session_id and s["parent_id"] == "undefined"]
+    assert len(root_spans) == 2, f"Expected 2 roots for 2 distinct prompts, got {len(root_spans)}"
+    assert all(r["status"] == "ok" for r in root_spans)

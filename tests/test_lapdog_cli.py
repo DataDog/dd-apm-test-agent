@@ -629,3 +629,75 @@ def test_run_codex_falls_back_without_openai_api_key(monkeypatch):
 
     assert exec_call["env"]["OPENAI_BASE_URL"] == "http://localhost:8126/codex/proxy/v1"
     assert exec_call["argv"] == ["/usr/local/bin/codex", "exec", "hello"]
+
+
+def _lapdog_hook_block():
+    return [
+        {
+            "matcher": "",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": (
+                        "curl -s --max-time 2 -X POST -H 'Content-Type: application/json' "
+                        "-d @- http://localhost:8126/claude/hooks >/dev/null 2>&1 || true"
+                    ),
+                    "async": True,
+                }
+            ],
+        }
+    ]
+
+
+def test_remove_legacy_claude_code_hooks_strips_lapdog_entries(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    settings = {
+        "permissions": {"allow": ["Bash"]},
+        "hooks": {
+            "UserPromptSubmit": _lapdog_hook_block(),
+            "PreToolUse": [
+                {
+                    "matcher": "",
+                    "hooks": [
+                        {"type": "command", "command": "curl -s http://localhost:8126/claude/hooks || true"},
+                        {"type": "command", "command": "my-custom-linter"},
+                    ],
+                }
+            ],
+            "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "echo done"}]}],
+        },
+    }
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps(settings))
+
+    removed = cli._remove_legacy_claude_code_hooks()
+    assert removed == 2
+
+    result = json.loads(settings_path.read_text())
+    hooks = result["hooks"]
+    # Event that contained only the lapdog hook is gone entirely.
+    assert "UserPromptSubmit" not in hooks
+    # Unrelated hook in a shared block survives; only the lapdog command is dropped.
+    pre_cmds = [h["command"] for h in hooks["PreToolUse"][0]["hooks"]]
+    assert pre_cmds == ["my-custom-linter"]
+    # Untouched events and unrelated top-level keys are preserved.
+    assert hooks["Stop"][0]["hooks"][0]["command"] == "echo done"
+    assert result["permissions"] == {"allow": ["Bash"]}
+
+
+def test_remove_legacy_claude_code_hooks_noop_when_clean(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    settings = {"hooks": {"Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "echo hi"}]}]}}
+    settings_path = tmp_path / "settings.json"
+    original = json.dumps(settings)
+    settings_path.write_text(original)
+
+    removed = cli._remove_legacy_claude_code_hooks()
+    assert removed == 0
+    # File left byte-for-byte unchanged when there is nothing to remove.
+    assert settings_path.read_text() == original
+
+
+def test_remove_legacy_claude_code_hooks_missing_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    assert cli._remove_legacy_claude_code_hooks() == 0

@@ -1,0 +1,18 @@
+---
+fixes:
+  - |
+    Stop lapdog from emitting a phantom errored trace before each real Claude
+    Code trace. When the lapdog hooks were registered in two places at once —
+    a stale ``~/.claude/settings.json`` block left over from the pre-plugin
+    ``--enable-claude-code-hooks`` flow plus the ``lapdog`` Claude Code plugin —
+    every hook event was POSTed to ``/claude/hooks`` twice. The duplicate
+    ``UserPromptSubmit`` made the agent treat the just-started turn as
+    interrupted, producing an errored zero-duration root span before the real
+    one. The ``/claude/hooks`` endpoint now drops byte-identical duplicate hook
+    deliveries seen within a short window (``SubagentStart``/``SubagentStop`` are
+    excluded, since distinct concurrent subagents legitimately share a payload).
+  - |
+    ``lapdog claude`` and ``lapdog uninstall`` now remove legacy
+    ``/claude/hooks`` entries from Claude Code's ``settings.json``, migrating
+    users off the pre-plugin hook registration so events are no longer delivered
+    twice.

@@ -27,7 +27,6 @@ from lapdog.paths import LAPDOG_DIR
 from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
 
-
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "uninstall"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
@@ -49,10 +48,23 @@ _PROXY_SESSION_WARNING_LINES = ["Keep Lapdog running; stopping it can break prox
 LAPDOG_PLUGIN_NAME = "lapdog@lapdog"
 LAPDOG_MARKETPLACE_SOURCE = "DataDog/dd-apm-test-agent"
 
+# Substring identifying a lapdog hook command in Claude Code's settings.json.
+# Pre-plugin lapdog versions wrote `curl ... http://localhost:<port>/claude/hooks`
+# entries directly into settings.json; the path is lapdog-specific.
+_LEGACY_HOOK_COMMAND_MARKER = "/claude/hooks"
+
+
+def _claude_config_dir() -> Path:
+    """Return Claude Code's config directory, honoring CLAUDE_CONFIG_DIR (default ~/.claude)."""
+    override = os.environ.get("CLAUDE_CONFIG_DIR")
+    if override:
+        return Path(override)
+    return Path.home() / ".claude"
+
 
 def _lapdog_claude_code_plugin_installed() -> bool:
     """Return True if the lapdog Claude Code plugin is installed for this user."""
-    installed_path = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    installed_path = _claude_config_dir() / "plugins" / "installed_plugins.json"
     if not installed_path.exists():
         return False
     try:
@@ -108,7 +120,7 @@ def _uninstall_lapdog_claude_code_plugin() -> None:
 
     commands = [
         [claude_bin, "plugin", "uninstall", LAPDOG_PLUGIN_NAME],
-        [claude_bin, "plugin", "marketplace", "remove", LAPDOG_MARKETPLACE_SOURCE]
+        [claude_bin, "plugin", "marketplace", "remove", LAPDOG_MARKETPLACE_SOURCE],
     ]
     for cmd in commands:
         try:
@@ -127,6 +139,80 @@ def _uninstall_lapdog_claude_code_plugin() -> None:
             )
             return
     print("[lapdog] Claude Code plugin uninstalled", file=sys.stderr)
+
+
+def _remove_legacy_claude_code_hooks() -> int:
+    """Strip stale lapdog hook entries from Claude Code's settings.json.
+
+    Older lapdog versions wrote `curl ... /claude/hooks` commands directly into
+    `settings.json` (the pre-plugin `--enable-claude-code-hooks` flow). Now that
+    hooks ship via the `lapdog` Claude Code plugin, those leftover entries fire a
+    second, duplicate POST for every hook event, which makes lapdog emit a phantom
+    errored trace before each real one. Remove them so only the plugin remains.
+
+    Returns the number of hook entries removed. Best-effort: file/JSON errors warn
+    and return 0 without raising, so they never block `lapdog claude`.
+    """
+    settings_path = _claude_config_dir() / "settings.json"
+    if not settings_path.exists():
+        return 0
+    try:
+        data = json.loads(settings_path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"[lapdog] Could not read {settings_path} to clean up legacy hooks: {e}", file=sys.stderr)
+        return 0
+    if not isinstance(data, dict) or not isinstance(data.get("hooks"), dict):
+        return 0
+
+    hooks: Dict[str, Any] = data["hooks"]
+
+    def _is_legacy(hook_obj: Any) -> bool:
+        return isinstance(hook_obj, dict) and _LEGACY_HOOK_COMMAND_MARKER in str(hook_obj.get("command", ""))
+
+    removed = 0
+    for event in list(hooks.keys()):
+        blocks = hooks.get(event)
+        if not isinstance(blocks, list):
+            continue
+        kept_blocks: List[Any] = []
+        event_removed = 0
+        for block in blocks:
+            cmds = block.get("hooks") if isinstance(block, dict) else None
+            if not isinstance(cmds, list):
+                kept_blocks.append(block)
+                continue
+            kept_cmds = [h for h in cmds if not _is_legacy(h)]
+            dropped = len(cmds) - len(kept_cmds)
+            event_removed += dropped
+            if dropped and not kept_cmds:
+                continue  # block had only legacy lapdog hooks -> drop the whole block
+            if dropped:
+                block["hooks"] = kept_cmds
+            kept_blocks.append(block)
+        removed += event_removed
+        # Only mutate events we actually touched; leave unrelated empty entries alone.
+        if event_removed and not kept_blocks:
+            del hooks[event]
+        elif event_removed:
+            hooks[event] = kept_blocks
+
+    if removed == 0:
+        return 0
+
+    data["hooks"] = hooks
+    try:
+        settings_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"[lapdog] Could not write {settings_path} to clean up legacy hooks: {e}", file=sys.stderr)
+        return 0
+
+    plural = "entry" if removed == 1 else "entries"
+    print(
+        f"[lapdog] Removed {removed} legacy Claude Code hook {plural} from {settings_path} "
+        "(hooks now ship via the 'lapdog' plugin).",
+        file=sys.stderr,
+    )
+    return removed
 
 
 def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
@@ -250,9 +336,7 @@ def _start_lapdog(
     if sys.platform == "win32":
         # On Windows, start_new_session is a no-op. Use creationflags to truly
         # detach the child so it survives after the launcher process exits.
-        popen_kwargs["creationflags"] = (
-            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-        )
+        popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
     with open(log_path, "w") as log_file:
@@ -432,6 +516,9 @@ def cmd_claude(
     """Ensure lapdog is running in background, then launch Claude with intercept."""
     if install_plugin:
         _ensure_lapdog_claude_code_plugin_installed()
+        # Migrate users off pre-plugin settings.json hooks so events aren't
+        # delivered twice (plugin + stale settings.json -> phantom errored traces).
+        _remove_legacy_claude_code_hooks()
     _ensure_lapdog_running(forward_data, detached=True)
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
 
@@ -869,6 +956,9 @@ def cmd_uninstall() -> None:
 
     # remove claude code plugin
     _uninstall_lapdog_claude_code_plugin()
+
+    # remove any legacy settings.json hooks written by pre-plugin lapdog versions
+    _remove_legacy_claude_code_hooks()
 
     # remove pi extension
     if os.path.isfile(_PI_EXT_DEST):

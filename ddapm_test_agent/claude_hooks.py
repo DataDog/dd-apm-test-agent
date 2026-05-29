@@ -7,6 +7,7 @@ into LLMObs-format spans that can be queried through the Event Platform APIs.
 import asyncio
 import getpass
 import gzip
+import hashlib
 import json
 import logging
 import os
@@ -36,7 +37,6 @@ from .coding_agent_metadata import project_metadata_tags
 from .coding_agent_metadata import resolve_project_metadata
 from .llmobs_event_platform import with_cors
 
-
 log = logging.getLogger(__name__)
 
 _HOSTNAME = socket.gethostname()
@@ -60,6 +60,26 @@ def _get_context_limit(model: str) -> int:
         if model.startswith(prefix):
             return 1_000_000
     return 200_000
+
+
+# A single Claude Code hook firing can be POSTed to /claude/hooks more than once
+# when the lapdog hooks are registered in two places at the same time — e.g. a
+# stale ``~/.claude/settings.json`` block left over from the pre-plugin
+# ``--enable-claude-code-hooks`` flow *and* the ``lapdog`` Claude Code plugin.
+# Both run the same curl, so every event is delivered twice. A duplicate
+# UserPromptSubmit makes ``_handle_user_prompt_submit`` treat the just-started
+# turn as interrupted, emitting a phantom errored zero-duration root span before
+# the real trace. We drop byte-identical events seen within this window. The two
+# duplicate deliveries are effectively simultaneous, so a few seconds is ample
+# while staying well below the gap between genuinely distinct turns.
+_DUPLICATE_EVENT_WINDOW_NS = 5 * 1_000_000_000
+
+# SubagentStart / SubagentStop carry no per-subagent discriminator in their hook
+# payloads, so two *distinct* concurrent subagents legitimately produce identical
+# bodies (see test_concurrent_subagents_parent_correctly). They are excluded from
+# dedup so real sibling subagents are never collapsed; the trade-off is that
+# genuine duplicate delivery of these two events is not suppressed.
+_NON_DEDUPED_HOOK_EVENTS = frozenset({"SubagentStart", "SubagentStop"})
 
 
 def _to_json_str(value: Any) -> str:
@@ -298,6 +318,10 @@ class ClaudeHooksAPI:
         self._raw_events: List[Dict[str, Any]] = []
         self._link_tracker = link_tracker
         self._app: Optional[web.Application] = None
+        # Fingerprint -> monotonic_wall_ns of the last time an identical hook body
+        # was seen, used to suppress duplicate hook deliveries (see
+        # _DUPLICATE_EVENT_WINDOW_NS).
+        self._recent_event_fingerprints: Dict[str, int] = {}
 
     def set_app(self, app: web.Application) -> None:
         """Set the aiohttp app reference for backend forwarding."""
@@ -1757,6 +1781,37 @@ class ClaudeHooksAPI:
             url, headers, json.dumps(payload).encode(), f"forward {len(metrics)} eval metric(s) for trace {trace_id}"
         )
 
+    def _is_duplicate_event(self, body: Dict[str, Any]) -> bool:
+        """Return True if an identical hook body was already seen within the dedup window.
+
+        Guards against a single Claude Code hook firing being POSTed to
+        ``/claude/hooks`` more than once (duplicate registration). Events whose
+        type is in ``_NON_DEDUPED_HOOK_EVENTS`` are never treated as duplicates
+        because distinct instances share an identical payload.
+
+        Must run synchronously (no ``await``) so the check-and-record is atomic
+        with respect to concurrently handled requests on the event loop.
+        """
+        if body.get("hook_event_name") in _NON_DEDUPED_HOOK_EVENTS:
+            return False
+        try:
+            fingerprint = hashlib.sha256(
+                json.dumps(body, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+        except (TypeError, ValueError):
+            # Unserializable body — fall back to processing it rather than dropping.
+            return False
+
+        now_ns = monotonic_wall_ns()
+        cutoff = now_ns - _DUPLICATE_EVENT_WINDOW_NS
+        # Evict expired fingerprints so the map only retains the recent window.
+        for fp in [fp for fp, seen_ns in self._recent_event_fingerprints.items() if seen_ns < cutoff]:
+            del self._recent_event_fingerprints[fp]
+
+        is_duplicate = fingerprint in self._recent_event_fingerprints
+        self._recent_event_fingerprints[fingerprint] = now_ns
+        return is_duplicate
+
     async def handle_hook(self, request: Request) -> web.Response:
         """Handle POST /claude/hooks — receives hook JSON and dispatches by event name."""
         try:
@@ -1769,6 +1824,16 @@ class ClaudeHooksAPI:
             return web.json_response({"error": "missing session_id"}, status=400)
 
         self._raw_events.append(body)
+
+        # Drop duplicate deliveries of the same hook firing (e.g. stale settings.json
+        # hooks + the lapdog plugin both POSTing) before they mutate session state.
+        if self._is_duplicate_event(body):
+            log.debug(
+                "Dropping duplicate %s hook for session %s",
+                body.get("hook_event_name", ""),
+                session_id,
+            )
+            return web.json_response({"status": "ok", "duplicate": True})
 
         # wait for the transcript to be fully flushed before dispatching the hook
         if body.get("hook_event_name") == "Stop":
