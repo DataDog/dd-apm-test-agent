@@ -2,6 +2,7 @@
 
 from collections import defaultdict
 from datetime import datetime
+import gzip
 import json
 import logging
 import re
@@ -12,26 +13,26 @@ from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
-from typing import Set
 from typing import TYPE_CHECKING
-from typing import Tuple
 import uuid
 
 from aiohttp import web
 from aiohttp.web import Request
+import msgpack
 
 from . import llmobs_query_parser
 from ._clock import monotonic_wall_ns
-from .llmobs_cors import cors_headers as _llmobs_cors_headers
-from .llmobs_payload import decode_llmobs_payload
-from .llmobs_payload import extract_spans_from_events
-from .llmobs_trace import extract_ui_spans_from_v04_traces
 
 if TYPE_CHECKING:
     from .agent import Agent
     from .claude_hooks import ClaudeHooksAPI
 
 log = logging.getLogger(__name__)
+
+# Allowed CORS origins: Datadog UI domains and localhost for local development
+_ALLOWED_ORIGIN_PATTERN = re.compile(
+    r"^https?://(localhost(:\d+)?|127\.0\.0\.1(:\d+)?|[\w.-]+\.datadoghq\.(com|eu)|[\w.-]+\.ddog-gov\.com|[\w.-]+\.datad0g\.com|[\w.-]+\.static-app\.us1\.staging\.dog)$"
+)
 
 _CORS_ALLOW_METHODS = "GET, POST, OPTIONS"
 _CORS_ALLOW_HEADERS = (
@@ -43,7 +44,15 @@ _CORS_ALLOW_HEADERS = (
 
 def _cors_headers(request: Request) -> Dict[str, str]:
     """Build CORS headers, only allowing known origins."""
-    return _llmobs_cors_headers(request, allow_methods=_CORS_ALLOW_METHODS, allow_headers=_CORS_ALLOW_HEADERS)
+    headers: Dict[str, str] = {
+        "Access-Control-Allow-Methods": _CORS_ALLOW_METHODS,
+        "Access-Control-Allow-Headers": _CORS_ALLOW_HEADERS,
+        "Vary": "Origin",
+    }
+    origin = request.headers.get("Origin", "")
+    if _ALLOWED_ORIGIN_PATTERN.match(origin):
+        headers["Access-Control-Allow-Origin"] = origin
+    return headers
 
 
 def with_cors(
@@ -69,6 +78,95 @@ def _deep_merge(source: Dict[str, Any], target: Dict[str, Any]) -> None:
             _deep_merge(value, target[key])
         else:
             target[key] = value
+
+
+def decode_llmobs_payload(data: bytes, content_type: str) -> List[Dict[str, Any]]:
+    """Decode LLMObs payload (gzip+msgpack or JSON)."""
+    events = []
+    try:
+        if content_type and "gzip" in content_type.lower():
+            data = gzip.decompress(data)
+
+        if content_type and "msgpack" in content_type.lower():
+            payload = msgpack.unpackb(data, raw=False, strict_map_key=False)
+        else:
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                payload = msgpack.unpackb(data, raw=False, strict_map_key=False)
+
+        if isinstance(payload, list):
+            events.extend(payload)
+        else:
+            events.append(payload)
+    except Exception as e:
+        log.warning(f"Failed to decode LLMObs payload: {e}")
+    return events
+
+
+def extract_spans_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Extract individual spans from LLMObs event payloads."""
+    spans = []
+    for event in events:
+        event_ml_app = event.get("ml_app", "")
+        event_tags = event.get("tags", [])
+
+        for span in event.get("spans", []):
+            span_tags = span.get("tags", [])
+            if event_tags:
+                span_tags = list(set(span_tags + event_tags))
+            span["tags"] = span_tags
+            span = remap_sdk_span_to_ui_format(span, event_ml_app)
+            spans.append(span)
+    return spans
+
+
+def remap_sdk_span_to_ui_format(span: Dict[str, Any], event_ml_app: str = "") -> Dict[str, Any]:
+    """Remap span from SDK format to UI-expected format (extract ml_app, service, env, session_id from tags)."""
+    tags = span.get("tags", [])
+    extracted = extract_fields_from_tags(tags)
+
+    ml_app = extracted.get("ml_app") or event_ml_app or span.get("ml_app") or "lapdog"
+    span["ml_app"] = ml_app
+
+    if "service" not in span or not span["service"]:
+        span["service"] = extracted.get("service", "")
+    if "env" not in span or not span["env"]:
+        span["env"] = extracted.get("env", "")
+
+    # session_id: prefer top-level field, fall back to tag extraction
+    if "session_id" not in span or not span["session_id"]:
+        span["session_id"] = extracted.get("session_id", "")
+
+    # hostname: prefer top-level field, fall back to tag extraction
+    if "hostname" not in span or not span["hostname"]:
+        span["hostname"] = extracted.get("hostname", "")
+
+    meta = span.get("meta", {})
+    span_kind = meta.get("span", {}).get("kind", "llm")
+
+    if "meta" not in span:
+        span["meta"] = {}
+    if "span" not in span["meta"]:
+        span["meta"]["span"] = {}
+    span["meta"]["span"]["kind"] = span_kind
+    span["_ui_kind"] = span_kind
+    span["_ui_ml_app"] = ml_app
+
+    return span
+
+
+def extract_fields_from_tags(tags: List[str]) -> Dict[str, str]:
+    """Extract ml_app, service, env, session_id, etc. from tags array."""
+    result = {}
+    fields_to_extract = ["ml_app", "service", "env", "version", "source", "language", "session_id", "hostname"]
+    for tag in tags:
+        if not isinstance(tag, str) or ":" not in tag:
+            continue
+        key, value = tag.split(":", 1)
+        if key in fields_to_extract:
+            result[key] = value
+    return result
 
 
 DURATION_MULTIPLIERS = {
@@ -951,7 +1049,6 @@ class LLMObsEventPlatformAPI:
         self.agent = agent
         self._query_results: Dict[str, Dict[str, Any]] = {}
         self.decoded_llmobs_span_events: Dict[int, List[Dict[str, Any]]] = {}
-        self.decoded_trace_llmobs_spans: Dict[int, List[Dict[str, Any]]] = {}
         self._claude_hooks_api: Optional["ClaudeHooksAPI"] = None
 
     def set_claude_hooks_api(self, api: "ClaudeHooksAPI") -> None:
@@ -961,7 +1058,7 @@ class LLMObsEventPlatformAPI:
     def get_llmobs_spans(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all LLMObs spans from stored requests."""
         requests = self.agent._requests_by_session(token) if token else self.agent._requests
-        all_spans: List[Dict[str, Any]] = []
+        all_spans = []
 
         for req in requests:
             if req.path in ("/evp_proxy/v2/api/v2/llmobs", "/evp_proxy/v4/api/v2/llmobs"):
@@ -978,32 +1075,6 @@ class LLMObsEventPlatformAPI:
                     all_spans.extend(spans)
                 except Exception as e:
                     log.warning(f"Failed to extract spans from request: {e}")
-
-        for req in requests:
-            if req.path != "/v0.4/traces":
-                continue
-            try:
-                req_id = id(req)
-                if req_id not in self.decoded_trace_llmobs_spans:
-                    spans = extract_ui_spans_from_v04_traces(self.agent._decode_v04_traces(req))
-                    self.decoded_trace_llmobs_spans[req_id] = spans
-                else:
-                    spans = self.decoded_trace_llmobs_spans[req_id]
-                all_spans.extend(spans)
-            except Exception as e:
-                log.warning(f"Failed to extract llmobs spans from v0.4 trace: {e}")
-
-        # Keep first occurrence so EVP-posted spans (already UI-remapped) win over
-        # trace-derived rebuilds for the same (trace_id, span_id).
-        seen: Set[Tuple[Any, Any]] = set()
-        deduped: List[Dict[str, Any]] = []
-        for s in all_spans:
-            key = (s.get("trace_id"), s.get("span_id"))
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(s)
-        all_spans = deduped
 
         if self._claude_hooks_api:
             all_spans.extend(self._claude_hooks_api._assembled_spans)

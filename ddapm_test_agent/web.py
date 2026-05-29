@@ -18,8 +18,6 @@ from aiohttp.web import StreamResponse
 from jinja2 import Environment
 from jinja2 import FileSystemLoader
 
-from .llmobs_cors import ALLOWED_ORIGIN_PATTERN
-
 
 log = logging.getLogger(__name__)
 
@@ -1118,6 +1116,8 @@ class WebUI:
 
     async def handle_requests_sse(self, request: web.Request) -> StreamResponse:
         """Handle Server-Sent Events for real-time request updates"""
+        from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
+
         sse_headers: Dict[str, str] = {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
@@ -1125,7 +1125,7 @@ class WebUI:
             "Vary": "Origin",
         }
         origin = request.headers.get("Origin", "")
-        if ALLOWED_ORIGIN_PATTERN.match(origin):
+        if _ALLOWED_ORIGIN_PATTERN.match(origin):
             sse_headers["Access-Control-Allow-Origin"] = origin
 
         response = StreamResponse(

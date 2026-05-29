@@ -1,13 +1,9 @@
 """Unit tests for LLMObs ``meta_struct['_llmobs']`` extraction helpers."""
 
-import base64
-import json
-
 from ddapm_test_agent.llmobs_trace import LLMOBS_ROOT_PARENT_ID
 from ddapm_test_agent.llmobs_trace import LLMOBS_STRUCT_KEY
 from ddapm_test_agent.llmobs_trace import build_sdk_span_event
 from ddapm_test_agent.llmobs_trace import extract_llmobs_envelopes_from_v04_traces
-from ddapm_test_agent.llmobs_trace import synthetic_llmobs_session_request_entries
 
 
 def _apm_span(**overrides):
@@ -138,29 +134,3 @@ def test_extract_envelopes_skips_malformed_inputs():
     assert extract_llmobs_envelopes_from_v04_traces([[None, "not a span"]]) == []
     bad = {**_apm_span(), "meta_struct": {LLMOBS_STRUCT_KEY: "not a dict"}}
     assert extract_llmobs_envelopes_from_v04_traces([[bad]]) == []
-
-
-def test_synthetic_session_request_entries_round_trip():
-    envelopes = [
-        {"_dd.stage": "raw", "event_type": "span", "spans": [{"span_id": "1"}]},
-        {"_dd.stage": "raw", "event_type": "span", "spans": [{"span_id": "2"}]},
-    ]
-    entries = synthetic_llmobs_session_request_entries(envelopes, "http://test-agent")
-
-    for entry, envelope in zip(entries, envelopes):
-        assert entry["url"] == "http://test-agent/evp_proxy/v4/api/v2/llmobs"
-        assert entry["method"] == "POST"
-        assert entry["headers"]["Content-Type"] == "application/json"
-        assert json.loads(base64.b64decode(entry["body"])) == envelope
-
-
-def test_synthetic_session_request_entries_strip_trailing_slash():
-    entries = synthetic_llmobs_session_request_entries(
-        [{"_dd.stage": "raw", "event_type": "span", "spans": [{"span_id": "1"}]}],
-        "http://test-agent/",
-    )
-    assert entries[0]["url"] == "http://test-agent/evp_proxy/v4/api/v2/llmobs"
-
-
-def test_synthetic_session_request_entries_empty_list():
-    assert synthetic_llmobs_session_request_entries([], "http://test-agent") == []

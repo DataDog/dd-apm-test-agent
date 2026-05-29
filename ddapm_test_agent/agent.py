@@ -48,6 +48,7 @@ from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportM
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import add_MetricsServiceServicer_to_server
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import add_TraceServiceServicer_to_server
+from yarl import URL
 
 from . import _get_version
 from . import trace_snapshot
@@ -64,10 +65,9 @@ from .pi_hooks import PiHooksAPI
 from .codex_hooks import CodexHooksAPI
 from .codex_proxy import CodexProxyAPI
 from .integration import Integration
-from .llmobs_cors import cors_headers
 from .llmobs_event_platform import LLMObsEventPlatformAPI
-from .llmobs_payload import llmobs_evp_dedup_keys_from_payload
-from .llmobs_trace import collect_synthetic_llmobs_session_requests
+from .llmobs_event_platform import decode_llmobs_payload
+from .llmobs_trace import extract_llmobs_envelopes_from_v04_traces
 from .logs import LOGS_ENDPOINT
 from .logs import OTLPLogsGRPCServicer
 from .logs import decode_logs_request
@@ -353,6 +353,43 @@ class MockRequest:
         self._data[key] = value
 
     def get(self, key, default=None):
+        return self._data.get(key, default)
+
+
+class _SyntheticMatchInfo:
+    """Mock match_info exposing the handler a synthetic stored request should be attributed to."""
+
+    def __init__(self, handler: Any) -> None:
+        self.handler = handler
+
+
+class _SyntheticRequest:
+    """Stored-request stand-in for EVP llmobs posts synthesized from v0.4 ``meta_struct``.
+
+    Implements just enough of the aiohttp ``Request`` surface used by the request log
+    consumers (``handle_session_requests``, ``get_llmobs_spans``, ``_requests_by_session``).
+    """
+
+    def __init__(self, url: URL, headers: Dict[str, str], body: bytes, handler: Any, session_token: Optional[str]):
+        self.method = "POST"
+        self.url = url
+        self.path = url.path
+        self.headers = headers
+        self.content_type = headers.get("Content-Type", "application/json")
+        self.match_info = _SyntheticMatchInfo(handler)
+        self._body = body
+        self._data: Dict[str, Any] = {"_testagent_data": body, "session_token": session_token}
+
+    async def read(self) -> bytes:
+        return self._body
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data.get(key)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._data[key] = value
+
+    def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)
 
 
@@ -728,6 +765,61 @@ class Agent:
         content_type = request.content_type
         raw_data = self._request_data(request)
         return trace_decode_v04(content_type, raw_data, request.app["suppress_trace_parse_errors"])
+
+    def _stored_llmobs_evp_span_keys(self) -> Set[Tuple[Any, Any]]:
+        """Collect (trace_id, span_id) keys from already-stored EVP llmobs requests."""
+        keys: Set[Tuple[Any, Any]] = set()
+        for req in self._requests:
+            if req.path not in ("/evp_proxy/v2/api/v2/llmobs", "/evp_proxy/v4/api/v2/llmobs"):
+                continue
+            try:
+                for event in decode_llmobs_payload(self._request_data(req), req.content_type or ""):
+                    for span in event.get("spans", []) or []:
+                        keys.add((span.get("trace_id"), span.get("span_id")))
+            except Exception as exc:
+                log.debug("Failed to decode stored EVP llmobs payload for dedup: %s", exc)
+        return keys
+
+    def _store_synthetic_llmobs_requests(self, source: Request, traces: v04TracePayload) -> None:
+        """Synthesize an EVP llmobs request per ``meta_struct['_llmobs']`` span on a v0.4 payload.
+
+        dd-trace-py can ship LLMObs spans via ``meta_struct['_llmobs']`` on kept agent-proxy
+        traces instead of POSTing to ``/evp_proxy/.../llmobs``. Injecting an equivalent stored
+        request here lets ``/test/session/requests`` and the LLMObs UI surface these spans
+        through the existing EVP code paths with no read-time special casing.
+        """
+        envelopes = extract_llmobs_envelopes_from_v04_traces(traces)
+        if not envelopes:
+            return
+
+        existing_keys = self._stored_llmobs_evp_span_keys()
+        token = source.get("session_token")
+        try:
+            base_url = str(source.url.origin())
+        except Exception:
+            base_url = "http://localhost"
+        url = URL(f"{base_url}/evp_proxy/v4/api/v2/llmobs")
+
+        for envelope in envelopes:
+            event = envelope["spans"][0]
+            if (event.get("trace_id"), event.get("span_id")) in existing_keys:
+                continue
+            headers = {
+                "Content-Type": "application/json",
+                "X-Datadog-EVP-Subdomain": "llmobs-intake",
+            }
+            if token:
+                headers["X-Datadog-Test-Session-Token"] = token
+            body = json.dumps(envelope).encode("utf-8")
+            self._requests.append(
+                _SyntheticRequest(
+                    url=url,
+                    headers=headers,
+                    body=body,
+                    handler=self.handle_evp_proxy_v4_api_v2_llmobs,
+                    session_token=token,
+                )
+            )
 
     def _decode_v05_traces(self, request: Request) -> v04TracePayload:
         raw_data = self._request_data(request)
@@ -1114,7 +1206,16 @@ class Agent:
 
     async def handle_settings(self, request: Request) -> web.Response:
         """Allow to change test agent settings on the fly"""
-        headers = cors_headers(request, allow_methods="POST, OPTIONS")
+        from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
+
+        headers: Dict[str, str] = {
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+            "Vary": "Origin",
+        }
+        origin = request.headers.get("Origin", "")
+        if _ALLOWED_ORIGIN_PATTERN.match(origin):
+            headers["Access-Control-Allow-Origin"] = origin
 
         # Handle OPTIONS preflight
         if request.method == "OPTIONS":
@@ -1156,7 +1257,16 @@ class Agent:
         return web.HTTPAccepted(headers=headers)
 
     async def handle_info(self, request: Request) -> web.Response:
-        headers = cors_headers(request, allow_methods="GET, OPTIONS")
+        from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
+
+        headers: Dict[str, str] = {
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+            "Vary": "Origin",
+        }
+        origin = request.headers.get("Origin", "")
+        if _ALLOWED_ORIGIN_PATTERN.match(origin):
+            headers["Access-Control-Allow-Origin"] = origin
 
         # Handle OPTIONS preflight
         if request.method == "OPTIONS":
@@ -1207,6 +1317,10 @@ class Agent:
             try:
                 if version == "v0.4":
                     traces = self._decode_v04_traces(request)
+                    try:
+                        self._store_synthetic_llmobs_requests(request, traces)
+                    except Exception as exc:
+                        log.debug("Failed to synthesize llmobs EVP request from v0.4 meta_struct: %s", exc)
                 elif version == "v0.5":
                     traces = self._decode_v05_traces(request)
                 elif version == "v0.7":
@@ -1417,17 +1531,24 @@ class Agent:
         return web.json_response(traces)
 
     async def handle_session_requests(self, request: Request) -> web.Response:
-        headers = cors_headers(request, allow_methods="GET, OPTIONS")
+        from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
+
+        headers: Dict[str, str] = {
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+            "Vary": "Origin",
+        }
+        origin = request.headers.get("Origin", "")
+        if _ALLOWED_ORIGIN_PATTERN.match(origin):
+            headers["Access-Control-Allow-Origin"] = origin
 
         # Handle OPTIONS preflight
         if request.method == "OPTIONS":
             return web.Response(status=200, headers=headers)
 
         token = request["session_token"]
-        session_reqs = self._requests_by_session(token)
         resp = []
-        real_llmobs_evp_keys: Set[Tuple[Any, Any]] = set()
-        for req in reversed(session_reqs):
+        for req in reversed(self._requests_by_session(token)):
             if req.match_info.handler not in (
                 self.handle_v04_traces,
                 self.handle_v05_traces,
@@ -1448,33 +1569,14 @@ class Agent:
                 self.handle_v1_traces_otlp,
             ):
                 continue
-            body_bytes = await req.read()
-            if req.match_info.handler in (
-                self.handle_evp_proxy_v2_api_v2_llmobs,
-                self.handle_evp_proxy_v4_api_v2_llmobs,
-            ):
-                real_llmobs_evp_keys.update(
-                    llmobs_evp_dedup_keys_from_payload(body_bytes, req.content_type or "")
-                )
             resp.append(
                 {
                     "headers": dict(req.headers),
-                    "body": base64.b64encode(body_bytes).decode(),
+                    "body": base64.b64encode(await req.read()).decode(),
                     "url": str(req.url),
                     "method": req.method,
                 }
             )
-
-        resp.extend(
-            collect_synthetic_llmobs_session_requests(
-                session_reqs,
-                decode_v04_traces=self._decode_v04_traces,
-                is_v04_trace_request=lambda req: req.match_info.handler == self.handle_v04_traces,
-                real_llmobs_evp_keys=real_llmobs_evp_keys,
-                base_url=str(request.url.origin()),
-            )
-        )
-
         return web.json_response(resp, headers=headers)
 
     async def handle_test_traces(self, request: Request) -> web.Response:

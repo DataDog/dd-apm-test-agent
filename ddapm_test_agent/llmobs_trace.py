@@ -1,33 +1,21 @@
-"""LLMObs trace meta_struct extraction and session request bridging.
+"""LLMObs trace meta_struct extraction.
 
 When dd-trace-py ships LLMObs via ``meta_struct["_llmobs"]`` on v0.4 traces instead of
-POSTing to ``/evp_proxy/.../llmobs``, helpers here rebuild SDK span events and synthesize
-EVP-shaped ``/test/session/requests`` entries (same role as ``traces_otlp.decode_*`` for OTLP).
+POSTing to ``/evp_proxy/.../llmobs``, these helpers rebuild SDK span events and writer
+envelopes so the agent can synthesize an equivalent EVP request at ingestion time.
 """
 
-import base64
-import json
 import logging
 from typing import Any
-from typing import Callable
 from typing import Dict
-from typing import Iterable
 from typing import List
 from typing import Optional
-from typing import Set
-from typing import Tuple
-
-from aiohttp.web import Request
-
-from .llmobs_payload import remap_sdk_span_to_ui_format
 
 
 log = logging.getLogger(__name__)
 
 LLMOBS_STRUCT_KEY = "_llmobs"
 LLMOBS_ROOT_PARENT_ID = "undefined"
-
-DecodeV04Traces = Callable[[Request], Any]
 
 
 def _llmobs_tags_to_list(tags: Any) -> List[str]:
@@ -106,60 +94,3 @@ def extract_llmobs_envelopes_from_v04_traces(traces: Any) -> List[Dict[str, Any]
                 envelope["_dd.scope"] = "experiments"
             envelopes.append(envelope)
     return envelopes
-
-
-def extract_ui_spans_from_v04_traces(traces: Any) -> List[Dict[str, Any]]:
-    """Extract UI-formatted LLMObs spans from decoded v0.4 trace payloads."""
-    return [
-        remap_sdk_span_to_ui_format(dict(span))
-        for envelope in extract_llmobs_envelopes_from_v04_traces(traces)
-        for span in envelope.get("spans", [])
-    ]
-
-
-def synthetic_llmobs_session_request_entries(
-    envelopes: List[Dict[str, Any]],
-    base_url: str,
-) -> List[Dict[str, Any]]:
-    """Wrap envelopes as ``handle_session_requests``-shaped entries (base64 JSON body)."""
-    url = f"{(base_url or '').rstrip('/')}/evp_proxy/v4/api/v2/llmobs"
-    return [
-        {
-            "headers": {
-                "Content-Type": "application/json",
-                "X-Datadog-EVP-Subdomain": "llmobs-intake",
-            },
-            "body": base64.b64encode(json.dumps(envelope).encode("utf-8")).decode("ascii"),
-            "url": url,
-            "method": "POST",
-        }
-        for envelope in envelopes
-    ]
-
-
-def collect_synthetic_llmobs_session_requests(
-    session_reqs: Iterable[Request],
-    *,
-    decode_v04_traces: DecodeV04Traces,
-    is_v04_trace_request: Callable[[Request], bool],
-    real_llmobs_evp_keys: Set[Tuple[Any, Any]],
-    base_url: str,
-) -> List[Dict[str, Any]]:
-    """Synthesize ``/evp_proxy/v4/api/v2/llmobs`` session entries from v0.4 ``meta_struct`` spans."""
-    synthetic_envelopes: List[Dict[str, Any]] = []
-    for req in session_reqs:
-        if not is_v04_trace_request(req):
-            continue
-        try:
-            traces = decode_v04_traces(req)
-        except Exception as exc:
-            log.debug("Failed to decode v0.4 traces for llmobs extract: %s", exc)
-            continue
-        for envelope in extract_llmobs_envelopes_from_v04_traces(traces):
-            event = envelope["spans"][0]
-            if (event.get("trace_id"), event.get("span_id")) in real_llmobs_evp_keys:
-                continue
-            synthetic_envelopes.append(envelope)
-    if not synthetic_envelopes:
-        return []
-    return synthetic_llmobs_session_request_entries(synthetic_envelopes, base_url)
