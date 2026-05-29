@@ -711,12 +711,66 @@ async def test_session_requests_synthesizes_llmobs_from_v04_meta_struct(
     synthetic = [r for r in reqs if r["url"].endswith("/evp_proxy/v4/api/v2/llmobs")]
     assert len(synthetic) == 1, reqs
 
-    event = json.loads(base64.b64decode(synthetic[0]["body"]))["spans"][0]
+    # The synthesized body is a JSON array of event envelopes, mirroring a batched
+    # LLMObsSpanWriter flush (one request, N events).
+    events = json.loads(base64.b64decode(synthetic[0]["body"]))
+    assert isinstance(events, list)
+    assert len(events) == 1
+    event = events[0]["spans"][0]
     assert event["span_id"] == "1234"
     assert event["trace_id"] == _LLMOBS_META_STRUCT_PAYLOAD["trace_id"]
     assert event["start_ns"] == 1_700_000_000_000_000_000
     assert event["status"] == "ok"
     assert event["meta"]["span"]["kind"] == "llm"
+
+
+async def test_session_requests_batches_multiple_llmobs_spans_into_one_request(
+    agent, v04_reference_http_trace_payload_headers
+):
+    import base64
+
+    # Two LLMObs-bearing spans in a single v0.4 POST must be synthesized as ONE EVP
+    # request carrying both events (matches prompt-caching: num=1 request, 2 spans).
+    payload = msgpack.packb(
+        [
+            [
+                {
+                    "name": "openai.request",
+                    "service": "weblog",
+                    "span_id": 1111,
+                    "trace_id": 4321,
+                    "start": 1_700_000_000_000_000_000,
+                    "duration": 1,
+                    "error": 0,
+                    "meta": {},
+                    "meta_struct": {"_llmobs": msgpack.packb(_LLMOBS_META_STRUCT_PAYLOAD)},
+                }
+            ],
+            [
+                {
+                    "name": "openai.request",
+                    "service": "weblog",
+                    "span_id": 2222,
+                    "trace_id": 8765,
+                    "start": 1_700_000_000_000_000_001,
+                    "duration": 1,
+                    "error": 0,
+                    "meta": {},
+                    "meta_struct": {"_llmobs": msgpack.packb(_LLMOBS_META_STRUCT_PAYLOAD)},
+                }
+            ],
+        ]
+    )
+    headers = dict(v04_reference_http_trace_payload_headers)
+    headers["X-Datadog-Trace-Count"] = "2"
+    resp = await agent.put("/v0.4/traces", headers=headers, data=payload)
+    assert resp.status == 200, await resp.text()
+
+    reqs = await (await agent.get("/test/session/requests")).json()
+    synthetic = [r for r in reqs if r["url"].endswith("/evp_proxy/v4/api/v2/llmobs")]
+    assert len(synthetic) == 1, reqs
+    events = json.loads(base64.b64decode(synthetic[0]["body"]))
+    assert {e["spans"][0]["span_id"] for e in events} == {"1111", "2222"}
 
 
 async def test_session_requests_no_synthesis_without_llmobs_meta_struct(

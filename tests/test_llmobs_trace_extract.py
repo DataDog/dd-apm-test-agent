@@ -52,7 +52,8 @@ def test_build_sdk_span_event_minimal_payload():
     assert event["status"] == "ok"
     assert event["meta"]["span"]["kind"] == "llm"
     assert event["metrics"]["total_tokens"] == 12
-    assert event["tags"] == ["env:test", "service:weblog"]
+    # The agent re-adds the proxy-mode ``error`` tag that the SDK appends at EVP-serialization time.
+    assert event["tags"] == ["env:test", "error:0", "service:weblog"]
     # _dd.trace_id is the 32-char hex render of the APM trace_id (not the LLMObs trace_id).
     assert event["_dd"]["trace_id"] == "00000000000000000000000000000abc"
     assert event["_dd"]["apm_trace_id"] == "00000000000000000000000000000abc"
@@ -82,7 +83,8 @@ def test_build_sdk_span_event_error_status_and_optional_fields():
     )
     assert event["status"] == "error"
     assert event["session_id"] == "sess-1"
-    assert event["ml_app"] == "my-app"
+    # ml_app is never promoted to a top-level field; it only appears inside ``tags``.
+    assert "ml_app" not in event
     assert event["config"] == {"experiment_id": "exp-1"}
     assert event["span_links"] == [{"span_id": "abc", "trace_id": "def"}]
 
@@ -97,7 +99,16 @@ def test_build_sdk_span_event_preserves_caller_dd_attrs():
 
 def test_build_sdk_span_event_accepts_list_tags():
     event = build_sdk_span_event(_llmobs_data(tags=["env:test", "version:1"]), _apm_span())
-    assert event["tags"] == ["env:test", "version:1"]
+    assert event["tags"] == ["env:test", "error:0", "version:1"]
+
+
+def test_build_sdk_span_event_injects_error_tags_from_apm_span():
+    event = build_sdk_span_event(
+        _llmobs_data(),
+        _apm_span(error=1, meta={"error.type": "ValueError"}),
+    )
+    assert "error:1" in event["tags"]
+    assert "error_type:ValueError" in event["tags"]
 
 
 def test_extract_envelopes_only_yields_spans_with_llmobs_struct():

@@ -781,18 +781,31 @@ class Agent:
         return keys
 
     def _store_synthetic_llmobs_requests(self, source: Request, traces: v04TracePayload) -> None:
-        """Synthesize an EVP llmobs request per ``meta_struct['_llmobs']`` span on a v0.4 payload.
+        """Synthesize a single EVP llmobs request from a v0.4 payload's ``meta_struct['_llmobs']``.
 
         dd-trace-py can ship LLMObs spans via ``meta_struct['_llmobs']`` on kept agent-proxy
         traces instead of POSTing to ``/evp_proxy/.../llmobs``. Injecting an equivalent stored
         request here lets ``/test/session/requests`` and the LLMObs UI surface these spans
         through the existing EVP code paths with no read-time special casing.
+
+        All envelopes extracted from one trace POST are batched into a single synthesized
+        request (a JSON array body), mirroring how ``LLMObsSpanWriter`` flushes buffered events
+        as one EVP request. This keeps the per-request count aligned with the real SDK contract
+        (e.g. prompt-caching emits two span events in one request).
         """
         envelopes = extract_llmobs_envelopes_from_v04_traces(traces)
         if not envelopes:
             return
 
         existing_keys = self._stored_llmobs_evp_span_keys()
+        new_envelopes = [
+            envelope
+            for envelope in envelopes
+            if (envelope["spans"][0].get("trace_id"), envelope["spans"][0].get("span_id")) not in existing_keys
+        ]
+        if not new_envelopes:
+            return
+
         token = source.get("session_token")
         try:
             base_url = str(source.url.origin())
@@ -800,26 +813,22 @@ class Agent:
             base_url = "http://localhost"
         url = URL(f"{base_url}/evp_proxy/v4/api/v2/llmobs")
 
-        for envelope in envelopes:
-            event = envelope["spans"][0]
-            if (event.get("trace_id"), event.get("span_id")) in existing_keys:
-                continue
-            headers = {
-                "Content-Type": "application/json",
-                "X-Datadog-EVP-Subdomain": "llmobs-intake",
-            }
-            if token:
-                headers["X-Datadog-Test-Session-Token"] = token
-            body = json.dumps(envelope).encode("utf-8")
-            self._requests.append(
-                _SyntheticRequest(
-                    url=url,
-                    headers=headers,
-                    body=body,
-                    handler=self.handle_evp_proxy_v4_api_v2_llmobs,
-                    session_token=token,
-                )
+        headers = {
+            "Content-Type": "application/json",
+            "X-Datadog-EVP-Subdomain": "llmobs-intake",
+        }
+        if token:
+            headers["X-Datadog-Test-Session-Token"] = token
+        body = json.dumps(new_envelopes).encode("utf-8")
+        self._requests.append(
+            _SyntheticRequest(
+                url=url,
+                headers=headers,
+                body=body,
+                handler=self.handle_evp_proxy_v4_api_v2_llmobs,
+                session_token=token,
             )
+        )
 
     def _decode_v05_traces(self, request: Request) -> v04TracePayload:
         raw_data = self._request_data(request)

@@ -18,12 +18,37 @@ LLMOBS_STRUCT_KEY = "_llmobs"
 LLMOBS_ROOT_PARENT_ID = "undefined"
 
 
-def _llmobs_tags_to_list(tags: Any) -> List[str]:
+ERROR_TYPE_TAG = "error.type"
+
+
+def _llmobs_tags_to_dict(tags: Any) -> Dict[str, str]:
+    """Normalize ``meta_struct['_llmobs']['tags']`` (dict or "k:v" list) into a dict."""
     if isinstance(tags, dict):
-        return sorted(f"{k}:{v}" for k, v in tags.items())
+        return {str(k): str(v) for k, v in tags.items()}
     if isinstance(tags, list):
-        return [t for t in tags if isinstance(t, str)]
-    return []
+        normalized: Dict[str, str] = {}
+        for tag in tags:
+            if isinstance(tag, str) and ":" in tag:
+                key, _, value = tag.partition(":")
+                normalized[key] = value
+        return normalized
+    return {}
+
+
+def _build_tags_list(llmobs_data: Dict[str, Any], span: Dict[str, Any]) -> List[str]:
+    """Rebuild the SDK ``tags`` list, adding the agent-proxy ``error``/``error_type`` tags.
+
+    dd-trace-py's ``LLMObs._llmobs_tags`` injects ``error`` (and ``error_type`` when present)
+    from the APM span status at EVP-serialization time for every non-agentless export. Since
+    ``meta_struct['_llmobs']['tags']`` carries only the base tag set, the agent must re-add
+    these so synthesized EVP spans match the legacy writer contract.
+    """
+    tags = _llmobs_tags_to_dict(llmobs_data.get("tags"))
+    tags["error"] = str(int(bool(span.get("error"))))
+    err_type = (span.get("meta") or {}).get(ERROR_TYPE_TAG)
+    if err_type:
+        tags["error_type"] = str(err_type)
+    return sorted(f"{k}:{v}" for k, v in tags.items())
 
 
 def build_sdk_span_event(llmobs_data: Dict[str, Any], span: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -56,10 +81,12 @@ def build_sdk_span_event(llmobs_data: Dict[str, Any], span: Dict[str, Any]) -> O
         "status": "error" if span.get("error") else "ok",
         "meta": llmobs_data.get("meta") or {},
         "metrics": llmobs_data.get("metrics") or {},
-        "tags": _llmobs_tags_to_list(llmobs_data.get("tags")),
+        "tags": _build_tags_list(llmobs_data, span),
         "_dd": _dd_attrs,
     }
-    for optional_key in ("session_id", "ml_app", "config", "span_links"):
+    # ml_app is intentionally excluded: the SDK keeps it only in ``tags`` (``ml_app:<app>``),
+    # never as a top-level span-event field. session_id/config/span_links mirror _llmobs_span_event.
+    for optional_key in ("session_id", "config", "span_links"):
         value = llmobs_data.get(optional_key)
         if value:
             span_event[optional_key] = value
