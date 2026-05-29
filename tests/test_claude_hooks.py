@@ -415,6 +415,7 @@ async def test_hook_agent_manifest(agent):
     assert root["meta"]["model_name"] == "claude-sonnet-4-5-20250929"
     assert root["meta"]["model_provider"] == "anthropic"
 
+
 async def test_hook_console_output_on_agent_span(agent):
     session_id = "sess-console"
 
