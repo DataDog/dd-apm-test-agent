@@ -1,6 +1,6 @@
 ---
 features:
   - |
-    The lapdog pi extension now shows a clickable link to the current session at
+    Lapdog: the pi extension now shows a clickable link to the current session at
     ``lapdog.datadoghq.com`` in the pi status bar, and registers a ``/lapdog``
     command that prints and copies the session dashboard URL.
