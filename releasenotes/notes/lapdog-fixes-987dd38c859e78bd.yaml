@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Lapdog: Resolves intermittent ``OSError``s (``[Errno 22] Invalid argument``)
+other:
+  - |
+    Lapdog: properly documents the correct URL for viewing LLM Observability data from ``lapdog``.

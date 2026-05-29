@@ -33,6 +33,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
+from typing import cast
 
 from aiohttp import web
 from aiohttp.web import Request
@@ -43,16 +44,75 @@ from .claude_cost_tracker import cost_from_provider_usage
 from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import PendingToolSpan
 from .claude_hooks import SessionState
-from .claude_hooks import _HOSTNAME
-from .claude_hooks import _USER_HANDLE
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
+from .codex_cost_tracker import compute_openai_cost_metrics
+from .coding_agent_metadata import apply_project_metadata_to_span
 from .llmobs_event_platform import with_cors
+
 
 log = logging.getLogger(__name__)
 
 _ML_APP = os.environ.get("DD_PI_CODING_AGENT_ML_APP", "pi-coding-agent")
+_AI_GATEWAY_COST_PROVIDERS = frozenset({"anthropic", "openai"})
+
+
+def _split_ai_gateway_model_id(model_id: str) -> Tuple[Optional[str], str]:
+    """Return (provider, model) for AI Gateway-style IDs like ``openai/gpt-5.5``."""
+    provider, _, model = model_id.partition("/")
+    normalized_provider = provider.lower()
+    if model and normalized_provider in _AI_GATEWAY_COST_PROVIDERS:
+        return normalized_provider, model
+    return None, model_id
+
+
+def _looks_like_openai_model(model_id: str) -> bool:
+    return model_id.lower().startswith("gpt-")
+
+
+def _has_provider_cost(provider_cost: Any) -> bool:
+    if not isinstance(provider_cost, dict):
+        return False
+    for key in ("input", "output", "cacheRead", "cacheWrite", "total"):
+        value = provider_cost.get(key, 0)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)) and value > 0:
+            return True
+    return False
+
+
+def _compute_pi_cost_metrics(
+    model_id: str,
+    model_provider: str,
+    non_cached_input_tokens: int,
+    cache_write_tokens: int,
+    cache_read_tokens: int,
+    output_tokens: int,
+) -> Dict[str, int]:
+    cost_provider, pricing_model_id = _split_ai_gateway_model_id(model_id)
+    provider = cost_provider or model_provider.lower()
+
+    if provider == "openai" or _looks_like_openai_model(pricing_model_id):
+        return compute_openai_cost_metrics(
+            model_id=pricing_model_id,
+            non_cached_input_tokens=non_cached_input_tokens + cache_write_tokens,
+            cached_input_tokens=cache_read_tokens,
+            output_tokens=output_tokens,
+        )
+
+    anthropic_cost = compute_cost_metrics(
+        model_id=pricing_model_id,
+        non_cached_input_tokens=non_cached_input_tokens,
+        cache_write_tokens=cache_write_tokens,
+        cache_read_tokens=cache_read_tokens,
+        output_tokens=output_tokens,
+    )
+    if anthropic_cost is not None:
+        return anthropic_cost
+
+    return {}
 
 
 class PendingLLMSpan:
@@ -275,18 +335,9 @@ class PiHooksAPI:
         span_id = _format_span_id()
         parent_id = self._current_parent_id(session)
 
-        tags = [
-            f"ml_app:{_ML_APP}",
-            f"session_id:{session.session_id}",
-            f"service:{_ML_APP}",
-            "env:local",
-            "source:pi-hooks",
-            "language:python",
-            f"hostname:{_HOSTNAME}",
-            "trajectory.semantic_type:agent_message",
+        tags = self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP) + [
+            "trajectory.semantic_type:agent_message"
         ]
-        if _USER_HANDLE:
-            tags.append(f"user_handle:{_USER_HANDLE}")
 
         step_span: Dict[str, Any] = {
             "span_id": span_id,
@@ -366,7 +417,7 @@ class PiHooksAPI:
 
     def _handle_session_start(self, session_id: str, body: Dict[str, Any]) -> None:
         session = self._get_or_create_session(session_id)
-        model_id = body.get("model_id", "")
+        model_id = body.get("model_id", "") or body.get("model", "")
         model_provider = body.get("model_provider", "")
         if model_id:
             session.model = model_id
@@ -378,7 +429,7 @@ class PiHooksAPI:
 
     def _handle_model_select(self, session_id: str, body: Dict[str, Any]) -> None:
         session = self._get_or_create_session(session_id)
-        model_id = body.get("model_id", "")
+        model_id = body.get("model_id", "") or body.get("model", "")
         model_provider = body.get("model_provider", "")
         if model_id:
             session.model = model_id
@@ -426,7 +477,7 @@ class PiHooksAPI:
         if prompt:
             session.user_prompts.append(prompt)
 
-        model_id = body.get("model_id", session.model)
+        model_id = body.get("model_id", "") or body.get("model", "") or session.model
         model_provider = body.get("model_provider", session.model_provider)
         if model_id:
             session.model = model_id
@@ -435,18 +486,7 @@ class PiHooksAPI:
         if model_provider:
             session.model_provider = model_provider
 
-        tags = [
-            f"ml_app:{_ML_APP}",
-            f"session_id:{session.session_id}",
-            f"service:{_ML_APP}",
-            "env:local",
-            "source:pi-hooks",
-            "language:python",
-            f"hostname:{_HOSTNAME}",
-            "trajectory.semantic_type:turn",
-        ]
-        if _USER_HANDLE:
-            tags.append(f"user_handle:{_USER_HANDLE}")
+        tags = self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP) + ["trajectory.semantic_type:turn"]
 
         root_span: Dict[str, Any] = {
             "span_id": session.root_span_id,
@@ -471,6 +511,7 @@ class PiHooksAPI:
             },
             "metrics": {},
         }
+        apply_project_metadata_to_span(root_span, session.project_metadata)
         self._append_span(root_span)
         session._root_span_ref = root_span  # type: ignore[attr-defined]
 
@@ -521,6 +562,7 @@ class PiHooksAPI:
             root_span["meta"]["model_name"] = session.model
             root_span["meta"]["model_provider"] = session.model_provider
             root_span["meta"].setdefault("metadata", {})["models_used"] = session.models[:]
+            apply_project_metadata_to_span(root_span, session.project_metadata)
             # Do not roll token_usage up onto root_span["metrics"] —
             # production stores trace rollups in a separate `@trace.*`
             # document, not on the root span. Mirroring it here caused
@@ -539,18 +581,9 @@ class PiHooksAPI:
                 self._hooks_api._set_hidden_metadata(root_span, **dd_fields)
         else:
             # Fallback: create root span
-            tags = [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:pi-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-                "trajectory.semantic_type:turn",
+            tags = self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP) + [
+                "trajectory.semantic_type:turn"
             ]
-            if _USER_HANDLE:
-                tags.append(f"user_handle:{_USER_HANDLE}")
             root_span = {
                 "span_id": session.root_span_id,
                 "trace_id": session.trace_id,
@@ -574,6 +607,7 @@ class PiHooksAPI:
                 },
                 # Intentionally no "metrics" key — see comment above.
             }
+            apply_project_metadata_to_span(root_span, session.project_metadata)
             self._append_span(root_span)
 
         session.root_span_emitted = True
@@ -659,7 +693,7 @@ class PiHooksAPI:
 
         duration = now_ns - start_ns
 
-        model_id = body.get("model_id", session.model)
+        model_id = body.get("model_id", "") or body.get("model", "") or session.model
         model_provider = body.get("model_provider", session.model_provider)
         usage = body.get("usage") or {}
         stop_reason = body.get("stop_reason", "")
@@ -708,18 +742,16 @@ class PiHooksAPI:
         # Cost: prefer provider-reported cost, fall back to model-based estimate
         provider_cost = usage.get("cost")
         cost_metrics: Dict[str, int] = {}
-        if isinstance(provider_cost, dict) and provider_cost.get("total", 0) > 0:
-            cost_metrics = cost_from_provider_usage(provider_cost)
+        if _has_provider_cost(provider_cost):
+            cost_metrics = cost_from_provider_usage(cast(Dict[str, float], provider_cost))
         else:
-            cost_metrics = (
-                compute_cost_metrics(
-                    model_id=model_id or "",
-                    non_cached_input_tokens=input_tokens,
-                    cache_write_tokens=cache_write,
-                    cache_read_tokens=cache_read,
-                    output_tokens=output_tokens,
-                )
-                or {}
+            cost_metrics = _compute_pi_cost_metrics(
+                model_id=model_id or "",
+                model_provider=model_provider or "",
+                non_cached_input_tokens=input_tokens,
+                cache_write_tokens=cache_write,
+                cache_read_tokens=cache_read,
+                output_tokens=output_tokens,
             )
 
         span: Dict[str, Any] = {
@@ -734,15 +766,7 @@ class PiHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:pi-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-            ],
+            "tags": self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP),
             "meta": {
                 "span": {"kind": "llm"},
                 "model_name": model_id,
@@ -839,16 +863,8 @@ class PiHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:pi-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-                f"tool_name:{actual_tool_name}",
-            ],
+            "tags": self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP)
+            + [f"tool_name:{actual_tool_name}"],
             "meta": {
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},
@@ -910,6 +926,9 @@ class PiHooksAPI:
     def _dispatch(self, body: Dict[str, Any]) -> None:
         session_id = body.get("session_id", "")
         event_name = body.get("hook_event_name", "")
+        if session_id:
+            session = self._get_or_create_session(session_id)
+            self._hooks_api.update_session_project_metadata(session, body)
         handler_name = self._HANDLERS.get(event_name)
         if handler_name:
             handler = getattr(self, handler_name)
