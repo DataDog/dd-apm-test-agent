@@ -3,6 +3,7 @@ from typing import Optional
 from typing import Tuple
 
 from ddapm_test_agent import _get_version
+from lapdog.constants import LAPDOG_DASHBOARD_URL
 
 # Letter masks (5 rows tall). '#' = filled, ' ' = blank. All letters share the
 # same height so they can be rendered side-by-side with a drop shadow.
@@ -147,7 +148,7 @@ def build_running_banner(data_type: str, warning_lines: Optional[List[str]] = No
         f"{bold}lapdog{reset} {dim}v{_get_version()}{reset}",
         "",
         f"{dim}Lapdog has started and is listening for data.{reset}",
-        f"{dim}Open {reset}{face}https://lapdog.datadoghq.com{reset}{dim} to view insights,{reset}",
+        f"{dim}Open {reset}{face}{LAPDOG_DASHBOARD_URL}{reset}{dim} to view insights,{reset}",
         f"{dim}costs, optimizations and more related to this {data_type}.{reset}",
     ]
     if warning_lines:

@@ -157,12 +157,19 @@ claude plugin marketplace add DataDog/dd-apm-test-agent
 claude plugin install lapdog@lapdog
 ```
 
-The plugin lives entirely under `~/.claude/plugins/...` — it does **not**
-modify `~/.claude/settings.json`. `claude plugin uninstall lapdog@lapdog`
-fully removes it.
+The plugin itself lives entirely under `~/.claude/plugins/...`.
+`claude plugin uninstall lapdog@lapdog` fully removes it.
+
+`lapdog claude` also adds a **status line** to `~/.claude/settings.json` that
+shows a clickable `🐶 lapdog` link deep-linking to the current session in the
+dashboard (the same item the Pi extension adds to its footer). Claude renders
+only one status line, so lapdog never overwrites an existing `statusLine` — if
+you already have one configured, lapdog leaves it untouched and skips the
+addition. `lapdog uninstall` removes the lapdog entry (and only that entry).
 
 To skip the auto-install (e.g. on a locked-down machine), run
-`lapdog --no-plugin-install claude`. LLM model calls are still captured
+`lapdog --no-plugin-install claude`. This also skips the status line.
+LLM model calls are still captured
 (via the BUN intercept), but Claude Code hook events — tool calls, prompts,
 session lifecycle, permission requests — are not, so the sessions view in
 the dashboard will be incomplete. The same fallback applies if the
@@ -220,7 +227,7 @@ Useful flags:
   — the tracer still gets a 200 OK, but nothing reaches Datadog. Setting
   `DD_AGENT_URL` instead bypasses both and forwards through that agent.
 - `--no-plugin-install` — skip the `lapdog claude` auto-install of the Claude
-  Code plugin.
+  Code plugin and status line.
 - `-p <port>` / `--port <port>` — bind to a different port (default `8126`).
 
 ---
@@ -234,6 +241,7 @@ Knowing this up front makes the uninstall list below easy to verify.
 | `~/.lapdog/lapdog.pid` | `lapdog start` / `lapdog claude` / `lapdog pi` | PID + port of the background agent |
 | `~/.lapdog/lapdog.log` | same | stdout/stderr of the background agent |
 | `~/.claude/plugins/...` | `lapdog claude` (first run) | the auto-installed `lapdog@lapdog` Claude Code plugin lives entirely under here |
+| `~/.claude/settings.json` | `lapdog claude` (first run) | adds a `statusLine` entry with a session dashboard link (only if no `statusLine` is already set) |
 | `~/.pi/agent/extensions/lapdog.ts` | `lapdog pi` | Pi extension that reports tool calls to the local agent |
 
 No other state is created. There is no daemon installed at the OS level
@@ -254,7 +262,7 @@ This will:
 ```bash
 lsof -ti tcp:8126 | xargs kill
 ```
-2. Remove the Claude Code plugin (if installed)
+2. Remove the Claude Code plugin (if installed) and the lapdog `statusLine` entry from `~/.claude/settings.json`
 3. Remove the Pi extension (only if you used `lapdog pi`)
 4. Removes Lapdog's working directory (at `~/.lapdog`)
 

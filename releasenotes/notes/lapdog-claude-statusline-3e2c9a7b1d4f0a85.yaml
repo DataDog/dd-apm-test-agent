@@ -1,0 +1,8 @@
+---
+features:
+  - |
+    Lapdog: ``lapdog claude`` now adds a status line to ``~/.claude/settings.json``
+    showing a clickable link to the current session in the dashboard at
+    ``lapdog.datadoghq.com`` (matching the pi extension footer). An existing
+    ``statusLine`` is never overwritten, and ``lapdog uninstall`` removes the
+    entry.

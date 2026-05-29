@@ -4,12 +4,14 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
 import time
+from typing import Any
+from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -24,7 +26,6 @@ from lapdog.paths import CODEX_APP_CURSOR_FILE
 from lapdog.paths import LAPDOG_DIR
 from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
-
 
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "uninstall"]
 LAPDOG_USAGE = (
@@ -106,7 +107,7 @@ def _uninstall_lapdog_claude_code_plugin() -> None:
 
     commands = [
         [claude_bin, "plugin", "uninstall", LAPDOG_PLUGIN_NAME],
-        [claude_bin, "plugin", "marketplace", "remove", LAPDOG_MARKETPLACE_SOURCE]
+        [claude_bin, "plugin", "marketplace", "remove", LAPDOG_MARKETPLACE_SOURCE],
     ]
     for cmd in commands:
         try:
@@ -125,6 +126,75 @@ def _uninstall_lapdog_claude_code_plugin() -> None:
             )
             return
     print("[lapdog] Claude Code plugin uninstalled", file=sys.stderr)
+
+
+# Claude Code statusLine config (in ~/.claude/settings.json) can't be shipped by
+# a plugin, so 'lapdog claude' wires it up to a script in this package that
+# prints a clickable session link. We detect/remove only our own entry.
+_CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
+_LAPDOG_STATUSLINE_MARKER = "lapdog.claude_statusline"
+
+
+def _lapdog_statusline_command() -> str:
+    """Command Claude runs to render the lapdog status line."""
+    return f"{shlex.quote(sys.executable)} -m lapdog.claude_statusline"
+
+
+def _read_claude_settings() -> Dict[str, Any]:
+    if not _CLAUDE_SETTINGS_PATH.exists():
+        return {}
+    try:
+        with _CLAUDE_SETTINGS_PATH.open() as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_claude_settings(data: Dict[str, Any]) -> None:
+    _CLAUDE_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _CLAUDE_SETTINGS_PATH.open("w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
+def _is_lapdog_statusline(status_line: object) -> bool:
+    return isinstance(status_line, dict) and _LAPDOG_STATUSLINE_MARKER in str(status_line.get("command", ""))
+
+
+def _ensure_lapdog_claude_statusline() -> None:
+    """Add the lapdog status line to ~/.claude/settings.json. Best-effort.
+
+    Never clobbers an existing, non-lapdog statusLine — Claude renders only one,
+    so we respect a user's own status line and warn instead of overwriting it.
+    """
+    settings = _read_claude_settings()
+    existing = settings.get("statusLine")
+    if _is_lapdog_statusline(existing):
+        return
+    if existing:
+        print(
+            "[lapdog] Existing Claude statusLine detected; leaving it as-is.",
+            file=sys.stderr,
+        )
+        return
+    settings["statusLine"] = {"type": "command", "command": _lapdog_statusline_command()}
+    try:
+        _write_claude_settings(settings)
+    except OSError as e:
+        print(f"[lapdog] Could not write Claude statusLine config: {e}", file=sys.stderr)
+
+
+def _remove_lapdog_claude_statusline() -> None:
+    settings = _read_claude_settings()
+    if not _is_lapdog_statusline(settings.get("statusLine")):
+        return
+    settings.pop("statusLine", None)
+    try:
+        _write_claude_settings(settings)
+        print("[lapdog] Removed Claude statusLine config", file=sys.stderr)
+    except OSError as e:
+        print(f"[lapdog] Could not remove Claude statusLine config: {e}", file=sys.stderr)
 
 
 def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
@@ -411,6 +481,7 @@ def cmd_claude(
     """Ensure lapdog is running in background, then launch Claude with intercept."""
     if install_plugin:
         _ensure_lapdog_claude_code_plugin_installed()
+        _ensure_lapdog_claude_statusline()
     _ensure_lapdog_running(forward_data, detached=True)
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
 
@@ -846,8 +917,9 @@ def cmd_uninstall() -> None:
         shutil.rmtree(LAPDOG_DIR, ignore_errors=True)
         print("[lapdog] Lapdog-related files under ~/.lapdog removed")
 
-    # remove claude code plugin
+    # remove claude code plugin + status line config
     _uninstall_lapdog_claude_code_plugin()
+    _remove_lapdog_claude_statusline()
 
     # remove pi extension
     if os.path.isfile(_PI_EXT_DEST):
@@ -902,10 +974,11 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
         action="store_false",
         default=True,
         help=(
-            "Skip auto-installing the 'lapdog' Claude Code plugin when running "
-            f"'lapdog claude'. By default, lapdog runs 'claude plugin marketplace "
-            f"add {LAPDOG_MARKETPLACE_SOURCE}' and 'claude plugin install "
-            f"{LAPDOG_PLUGIN_NAME}' if the plugin is not already installed."
+            "Skip auto-installing the 'lapdog' Claude Code plugin and status line "
+            "when running 'lapdog claude'. By default, lapdog runs 'claude plugin "
+            f"marketplace add {LAPDOG_MARKETPLACE_SOURCE}' and 'claude plugin install "
+            f"{LAPDOG_PLUGIN_NAME}' if the plugin is not already installed, and adds "
+            "a lapdog status line to ~/.claude/settings.json."
         ),
     )
 
