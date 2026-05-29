@@ -10,6 +10,8 @@ import signal
 import subprocess
 import sys
 import time
+from typing import Any
+from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -241,14 +243,20 @@ def _start_lapdog(
 
     if extra_args:
         args += extra_args
-    with open(log_path, "w") as log_file:
-        proc = subprocess.Popen(
-            args,
-            stdin=subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
+    popen_kwargs: Dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stderr": subprocess.STDOUT,
+    }
+    if sys.platform == "win32":
+        # On Windows, start_new_session is a no-op. Use creationflags to truly
+        # detach the child so it survives after the launcher process exits.
+        popen_kwargs["creationflags"] = (
+            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
         )
+    else:
+        popen_kwargs["start_new_session"] = True
+    with open(log_path, "w") as log_file:
+        proc = subprocess.Popen(args, stdout=log_file, **popen_kwargs)
     _write_pid_file(proc.pid, port)
     _wait_for_lapdog(proc, log_path)
 
@@ -289,6 +297,11 @@ def _run_claude(args: Optional[List[str]] = None) -> None:
     if args is None:
         args = sys.argv[1:]
     mjs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude_intercept.mjs")
+    # BUN_OPTIONS is re-parsed by Bun as a shell-like arg string, so backslashes
+    # in the path get treated as escape characters and stripped. Bun accepts
+    # forward slashes on Windows, which is the most reliable fix.
+    if sys.platform == "win32":
+        mjs_path = mjs_path.replace("\\", "/")
     claude_bin = shutil.which("claude")
     if not claude_bin:
         print("[ddapm] 'claude' not found in PATH", file=sys.stderr)
@@ -361,7 +374,15 @@ def _start_lapdog_detached(port: int, forward_data: bool) -> None:
     and starting lapdog in the child, the child exits immediately after lapdog
     is ready and lapdog gets re-parented to init/launchd — fully independent of
     the process that will become pi/claude.
+
+    On Windows there is no os.fork() and no SIGCHLD; the DETACHED_PROCESS /
+    CREATE_NEW_PROCESS_GROUP creation flags passed inside _start_lapdog already
+    detach the child from the launcher, so we just call it directly.
     """
+    if sys.platform == "win32":
+        _start_lapdog(port, forward_data=forward_data)
+        return
+
     child_pid = os.fork()
     if child_pid == 0:
         # Child: start lapdog, wait for it to be ready, then exit.
@@ -913,6 +934,19 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
 
 
 def main() -> None:
+    # On Windows the default stdout/stderr encoding is the system ANSI codepage
+    # (e.g. cp1252), which can't encode the banner's box-drawing glyphs. Force
+    # UTF-8 with a replacement fallback so lapdog never crashes on its own
+    # output. No-op on POSIX where the default is already UTF-8.
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if reconfigure is not None:
+                try:
+                    reconfigure(encoding="utf-8", errors="replace")
+                except OSError:
+                    pass
+
     args = sys.argv
     if len(args) < 2:
         print(LAPDOG_USAGE, file=sys.stderr)
