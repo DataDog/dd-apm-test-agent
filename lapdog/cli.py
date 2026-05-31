@@ -28,7 +28,7 @@ from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
 
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "uninstall"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "mcp", "uninstall"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -38,6 +38,7 @@ LAPDOG_USAGE = (
     "  claude     Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi         Start lapdog in background if needed, install extension, then launch pi\n"
     "  codex      Start lapdog in background if needed, then launch Codex with tracing\n"
+    "  mcp        Run a stdio MCP server exposing the running lapdog agent's traces\n"
     "  uninstall  Stop lapdog and remove all state it wrote (~/.lapdog, Claude hooks, pi extension, Codex watchers)\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
@@ -854,6 +855,24 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
     _run_codex(args=sub_cmd_args, port=port, proxy_session_key=proxy_session_key)
 
 
+def cmd_mcp() -> None:
+    """Run a stdio MCP server that exposes the running lapdog agent's traces.
+
+    The MCP dependencies are optional; install them with
+    `pip install "ddapm-test-agent[mcp]"`.
+    """
+    try:
+        from lapdog import mcp_server
+    except ImportError as e:
+        print(
+            f"[lapdog] MCP support is not installed ({e}).\n"
+            '[lapdog] Install it with: pip install "ddapm-test-agent[mcp]"',
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    mcp_server.run()
+
+
 def cmd_uninstall() -> None:
     """Stop the lapdog server, removes ~/.lapdog directory, and uninstalls managed plugins"""
 
@@ -982,6 +1001,8 @@ def main() -> None:
         cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
     elif sub_cmd == "codex":
         cmd_codex(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+    elif sub_cmd == "mcp":
+        cmd_mcp()
     elif sub_cmd == "uninstall":
         cmd_uninstall()
 

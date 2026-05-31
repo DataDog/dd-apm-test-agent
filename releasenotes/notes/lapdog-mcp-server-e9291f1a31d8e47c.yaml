@@ -1,0 +1,8 @@
+---
+features:
+  - |
+    Lapdog: adds a ``lapdog mcp`` command that runs a stdio MCP server exposing the
+    traces captured by a running lapdog agent. It provides ``list_sessions``,
+    ``get_session``, and ``search_spans`` tools so a coding agent can query its own
+    captured sessions, spans, tokens, and costs. Install the optional dependency with
+    ``pip install "ddapm-test-agent[mcp]"``.

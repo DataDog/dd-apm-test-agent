@@ -23,6 +23,7 @@ want to know what `lapdog start` actually does).
   - [Docker](#docker)
   - [From source](#from-source)
 - [Claude Code plugin](#claude-code-plugin)
+- [MCP server](#mcp-server)
 - [Quickstart](#quickstart)
 - [What lapdog touches on your machine](#what-lapdog-touches-on-your-machine)
 - [Uninstallation](#uninstallation)
@@ -168,6 +169,55 @@ session lifecycle, permission requests — are not, so the sessions view in
 the dashboard will be incomplete. The same fallback applies if the
 auto-install fails (no network, etc.): lapdog prints the manual commands
 and continues launching Claude rather than blocking the session.
+
+---
+
+## MCP server
+
+Lapdog can expose the traces it captures to an LLM agent over the
+[Model Context Protocol](https://modelcontextprotocol.io) so the agent can query
+its own sessions, spans, tokens, and costs. The server speaks MCP over **stdio** and
+is a thin client: it reads span data over HTTP from the lapdog agent you already have
+running (via `lapdog start` / `lapdog claude` / `lapdog codex`).
+
+Install the optional dependency and run it:
+
+```bash
+pip install "ddapm-test-agent[mcp]"
+lapdog start          # the agent must be running for the tools to return data
+lapdog mcp            # speaks MCP on stdio
+```
+
+Register it with an MCP client. For Claude Code:
+
+```bash
+claude mcp add lapdog -- lapdog mcp
+```
+
+Or via a client config file (e.g. Claude Desktop's `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "lapdog": {
+      "command": "lapdog",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+The server exposes three tools:
+
+| Tool | What it does |
+| --- | --- |
+| `list_sessions` | List captured sessions with per-session span count, error count, total tokens, estimated cost, and time range. |
+| `get_session` | Fetch all spans for one `session_id`, assembled into a parent/child tree with input/output and metrics. |
+| `search_spans` | Search spans using the agent's Datadog-style filter syntax (e.g. `@status:error`, `@ml_app:my-app`, `@meta.model_name:claude*`, `session_id:abc123`). |
+
+The lapdog agent must be running when a tool is called; if it is not reachable, the
+tools return an actionable error telling you to run `lapdog start`. The MCP server
+reads the agent's port from `~/.lapdog/lapdog.pid` (falling back to `PORT`, then 8126).
 
 ---
 
