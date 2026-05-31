@@ -22,12 +22,12 @@ def test_cmd_mcp_runs_server():
 def test_cmd_mcp_missing_dependency(capsys):
     real_import = __import__
 
-    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+    def fake_import(name, glbls=None, lcls=None, fromlist=(), level=0):
         if name == "lapdog" and fromlist and "mcp_server" in fromlist:
             raise ImportError("No module named 'mcp'")
         if name == "lapdog.mcp_server":
             raise ImportError("No module named 'mcp'")
-        return real_import(name, globals, locals, fromlist, level)
+        return real_import(name, glbls, lcls, fromlist, level)
 
     with mock.patch("builtins.__import__", side_effect=fake_import):
         with pytest.raises(SystemExit) as exc:
