@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    Fix lapdog session model slug not updating after a ``/model`` switch.
+    The session span now reflects the model selected during the session rather
+    than always showing the model set at session start.
