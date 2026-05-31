@@ -59,6 +59,10 @@ setup(
     extras_require={
         "testing": testing_deps,
         "ddtrace": ["ddtrace"],  # todo: pin?
+        # Optional stdio MCP server (`lapdog mcp`). Kept out of install_requires so
+        # the package's >=3.8 floor and lean CI installs are unaffected; the mcp SDK
+        # requires Python >=3.10 (lapdog itself documents 3.11+).
+        "mcp": ["mcp>=1.0"],
     },
     # Required for mypy compatibility, see
     # https://mypy.readthedocs.io/en/stable/installed_packages.html#making-pep-561-compatible-packages
