@@ -389,8 +389,10 @@ class ClaudeHooksAPI:
         session: BaseTagSession,
         source: str = "claude-code-hooks",
         ml_app: Optional[str] = None,
+        user_handle: Optional[str] = None,
     ) -> List[str]:
         app = ml_app or _ML_APP
+        handle = _USER_HANDLE if user_handle is None else user_handle
         tags = [
             f"ml_app:{app}",
             f"session_id:{session.session_id}",
@@ -400,8 +402,8 @@ class ClaudeHooksAPI:
             "language:python",
             f"hostname:{_HOSTNAME}",
         ]
-        if _USER_HANDLE:
-            tags.append(f"user_handle:{_USER_HANDLE}")
+        if handle:
+            tags.append(f"user_handle:{handle}")
         tags.extend(project_metadata_tags(session.project_metadata))
         # git.commit.sha: the commit that is HEAD of the same repo the
         # git.repository_url tag describes, at the moment this span starts.
