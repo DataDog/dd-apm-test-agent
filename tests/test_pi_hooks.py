@@ -426,6 +426,53 @@ async def test_multiple_steps(agent):
     assert tools[0]["parent_id"] == step0["span_id"]
 
 
+async def test_stale_turn_end_does_not_finalize_next_step(agent):
+    """Out-of-order turn_end for the previous turn must not emit an empty step."""
+    sid = "pi-stale-turn-end"
+    tool_call_id = "tc-a"
+    content1 = [
+        {"type": "toolCall", "id": tool_call_id, "name": "read", "arguments": {"path": "foo.py"}},
+    ]
+    content2 = [{"type": "text", "text": "Done!"}]
+
+    await _post(agent, _session_start(sid))
+    await _post(agent, _agent_start(sid))
+    await _post(agent, _turn_start(sid, turn_index=0))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid, content=content1, stop_reason="toolUse"))
+    await _post(agent, _tool_start(sid, tool_call_id, "read"))
+    await _post(agent, _tool_end(sid, tool_call_id, "read", "file contents"))
+
+    # Pi can emit the next turn_start before the previous turn_end. The stale
+    # turn_end(0) should not close turn 1 before its message_start/message_end.
+    await _post(agent, _turn_start(sid, turn_index=1))
+    await _post(agent, _turn_end(sid, turn_index=0))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid, content=content2, stop_reason="stop"))
+    await _post(agent, _turn_end(sid, turn_index=1))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = _spans(await resp.json())
+    session_spans = [s for s in spans if s.get("session_id") == sid]
+
+    root = [s for s in session_spans if s["parent_id"] == "undefined"][0]
+    steps = sorted(_by_kind(session_spans, "step"), key=lambda s: s["name"])
+    llms = _by_kind(session_spans, "llm")
+    tools = _by_kind(session_spans, "tool")
+
+    assert [s["name"] for s in steps] == ["inference-0", "inference-1"]
+    assert [s["parent_id"] for s in steps] == [root["span_id"], root["span_id"]]
+    assert len(llms) == 2
+    assert len(tools) == 1
+
+    step1 = steps[1]
+    assert step1["meta"]["output"]["value"] == "Done!"
+    assert step1["meta"]["metadata"]["turn_index"] == 1
+    assert any(llm["parent_id"] == step1["span_id"] for llm in llms)
+    assert all(any(child.get("parent_id") == step["span_id"] for child in session_spans) for step in steps)
+
+
 async def test_trajectory_tags(agent):
     """Root has trajectory.semantic_type:turn, step has trajectory.semantic_type:agent_message."""
     sid = "pi-tags"

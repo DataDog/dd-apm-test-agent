@@ -721,8 +721,20 @@ class PiHooksAPI:
 
     def _handle_turn_end(self, session_id: str, body: Dict[str, Any]) -> None:
         """Finalize the active step span (primary step finalization point)."""
+        active = self._active_steps.get(session_id)
+        turn_index = body.get("turn_index")
+        if active is not None and turn_index is not None and active.turn_index is not None:
+            if turn_index != active.turn_index:
+                log.debug(
+                    "Ignoring stale Pi turn_end for session %s: event turn_index=%s active turn_index=%s",
+                    session_id,
+                    turn_index,
+                    active.turn_index,
+                )
+                return
+
         self._finalize_active_step(session_id)
-        log.debug("Pi turn_end for session %s: turn_index=%s", session_id, body.get("turn_index"))
+        log.debug("Pi turn_end for session %s: turn_index=%s", session_id, turn_index)
 
     def _handle_message_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Begin tracking an LLM call.

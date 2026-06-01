@@ -10,3 +10,6 @@ fixes:
     ``agent.continue()`` (after auto-compaction or auto-retry) no longer create
     new, input-less traces. They now extend the current trace so each trace maps
     to one user turn and always carries the user's prompt as input.
+  - |
+    lapdog (pi): out-of-order stale ``turn_end`` events no longer close the
+    next active turn, preventing extra empty step spans.
