@@ -170,12 +170,10 @@ async def test_claude_project_metadata_from_hook_cwd(agent, tmp_path, monkeypatc
 
 async def test_claude_spans_tagged_with_git_commit_sha(agent, tmp_path, monkeypatch):
     """Spans carry git.commit.sha for the same repo as the git.repository_url tag."""
-    from ddapm_test_agent.coding_agent_metadata import _commit_sha_cache
     from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
 
     monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
     _local_git_metadata.cache_clear()
-    _commit_sha_cache.clear()
 
     def _git(*args):
         subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True)

@@ -1,7 +1,6 @@
 import dataclasses
 import subprocess
 
-from ddapm_test_agent.coding_agent_metadata import _commit_sha_cache
 from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
 from ddapm_test_agent.coding_agent_metadata import git_commit_sha_for_cwd
 from ddapm_test_agent.coding_agent_metadata import git_commit_sha_tags
@@ -99,7 +98,6 @@ def test_resolve_project_metadata_falls_back_to_cwd_name(monkeypatch, tmp_path):
 
 
 def test_git_commit_sha_for_cwd_tracks_head(tmp_path):
-    _commit_sha_cache.clear()
     sha0 = _init_repo(tmp_path)
     assert git_commit_sha_for_cwd(str(tmp_path)) == sha0
 
@@ -111,32 +109,10 @@ def test_git_commit_sha_for_cwd_tracks_head(tmp_path):
     ).stdout.strip()
     assert sha1 != sha0
 
-    # Bypass the TTL cache to observe the new HEAD deterministically.
-    _commit_sha_cache.clear()
     assert git_commit_sha_for_cwd(str(tmp_path)) == sha1
 
 
-def test_git_commit_sha_for_cwd_uses_ttl_cache(tmp_path):
-    _commit_sha_cache.clear()
-    sha0 = _init_repo(tmp_path)
-    clock = [1000.0]
-    assert git_commit_sha_for_cwd(str(tmp_path), _now=lambda: clock[0]) == sha0
-
-    # New commit, but within the TTL window -> cached old SHA is returned.
-    (tmp_path / "a.py").write_text("x\n")
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-m", "a")
-    clock[0] += 0.5
-    assert git_commit_sha_for_cwd(str(tmp_path), _now=lambda: clock[0]) == sha0
-
-    # Past the TTL -> re-resolves to the new HEAD.
-    clock[0] += 1.0
-    sha1 = git_commit_sha_for_cwd(str(tmp_path), _now=lambda: clock[0])
-    assert sha1 != sha0
-
-
 def test_git_commit_sha_for_non_repo_is_empty(tmp_path):
-    _commit_sha_cache.clear()
     plain = tmp_path / "plain"
     plain.mkdir()
     assert git_commit_sha_for_cwd(str(plain)) == ""
@@ -144,6 +120,5 @@ def test_git_commit_sha_for_non_repo_is_empty(tmp_path):
 
 
 def test_git_commit_sha_tags_format(tmp_path):
-    _commit_sha_cache.clear()
     sha0 = _init_repo(tmp_path)
     assert git_commit_sha_tags(str(tmp_path)) == [f"git.commit.sha:{sha0}"]

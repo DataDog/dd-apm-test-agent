@@ -7,15 +7,10 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import time
 from typing import Any
-from typing import Callable
 from typing import Dict
 from typing import List
-from typing import Optional
-from typing import Tuple
 from urllib.parse import urlparse
-
 
 log = logging.getLogger(__name__)
 
@@ -108,17 +103,7 @@ def project_metadata_tags(metadata: CodingAgentProjectMetadata) -> List[str]:
     return tags
 
 
-# Commit SHA changes over the life of a session (the agent makes commits), so —
-# unlike the immutable remote URL — it cannot live in the cached, frozen
-# CodingAgentProjectMetadata. Instead we resolve the repo's current HEAD on
-# demand, keyed on the same cwd the `git.repository_url` tag is derived from,
-# with a short TTL so new commits are reflected within ~1s without spawning git
-# for every span.
-_COMMIT_SHA_TTL_SECONDS = 1.0
-_commit_sha_cache: Dict[str, Tuple[float, str]] = {}
-
-
-def git_commit_sha_for_cwd(cwd: Any, *, _now: Optional[Callable[[], float]] = None) -> str:
+def git_commit_sha_for_cwd(cwd: Any) -> str:
     """Return the current HEAD commit SHA for the repo at ``cwd`` (best-effort).
 
     Uses the same cwd resolution as ``resolve_project_metadata`` (falling back
@@ -127,13 +112,7 @@ def git_commit_sha_for_cwd(cwd: Any, *, _now: Optional[Callable[[], float]] = No
     not inside a git work tree.
     """
     cwd = str(cwd or "").strip() or os.getcwd()
-    now = (_now or time.monotonic)()
-    cached = _commit_sha_cache.get(cwd)
-    if cached is not None and now - cached[0] < _COMMIT_SHA_TTL_SECONDS:
-        return cached[1]
-    sha = _run_git(cwd, "rev-parse", "HEAD")
-    _commit_sha_cache[cwd] = (now, sha)
-    return sha
+    return _run_git(cwd, "rev-parse", "HEAD")
 
 
 def git_commit_sha_tags(cwd: Any) -> List[str]:

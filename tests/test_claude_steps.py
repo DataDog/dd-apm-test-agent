@@ -1,5 +1,6 @@
 """Tests for Claude Code ``step`` span kind — one span per inference cycle."""
 
+import subprocess
 from typing import Any
 from typing import Dict
 from typing import List
@@ -139,6 +140,23 @@ def _by_kind(spans: List[Dict[str, Any]], kind: str) -> List[Dict[str, Any]]:
 
 def _find_root(spans: List[Dict[str, Any]]) -> Dict[str, Any]:
     return [s for s in spans if s["parent_id"] == "undefined"][0]
+
+
+def _git(repo: Any, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+
+
+def _init_repo(path: Any, remote: str) -> str:
+    _git(path, "init")
+    _git(path, "config", "user.email", "qa@local")
+    _git(path, "config", "user.name", "QA")
+    _git(path, "remote", "add", "origin", remote)
+    (path / "README.md").write_text("# repo\n")
+    _git(path, "add", "-A")
+    _git(path, "commit", "-m", "initial commit")
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=path, check=True, capture_output=True, text=True
+    ).stdout.strip()
 
 
 # ------------------------------------------------------------------
@@ -463,6 +481,25 @@ def test_step_has_semantic_type_tag():
 
     step = _by_kind(_spans_for_session(hooks_api, sid), "step")[0]
     assert "trajectory.semantic_type:agent_message" in step["tags"]
+
+
+def test_proxy_llm_span_uses_session_base_tags_with_git_commit_sha(tmp_path, monkeypatch):
+    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+
+    monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    _local_git_metadata.cache_clear()
+    sha = _init_repo(tmp_path, "https://github.com/DataDog/claude-project.git")
+
+    sid = "sess-proxy-commit-sha"
+    hooks_api, proxy_api, _ = _make_apis()
+
+    hooks_api._dispatch_hook({**_session_start(sid), "cwd": str(tmp_path)})
+    hooks_api._dispatch_hook({**_user_prompt(sid), "cwd": str(tmp_path)})
+    llm_span = _simulate_llm_call(proxy_api, sid, _response(text="ok"))
+
+    assert f"git.commit.sha:{sha}" in llm_span["tags"]
+    assert "git.repository_url:github.com/DataDog/claude-project" in llm_span["tags"]
+    assert "source:claude-code-proxy" in llm_span["tags"]
 
 
 def test_concurrent_subagents_each_have_steps():
