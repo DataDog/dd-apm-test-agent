@@ -19,6 +19,19 @@ LLMOBS_ROOT_PARENT_ID = "undefined"
 
 
 ERROR_TYPE_TAG = "error.type"
+TRACE_ID_HIGH_TAG = "_dd.p.tid"
+
+
+def _format_apm_trace_id(apm_trace_id: int, meta: Any) -> str:
+    """Render the full 128-bit APM trace id as 32-char hex.
+
+    A v0.4 span carries only the low 64 bits in ``trace_id``; the high 64 bits live in the
+    ``_dd.p.tid`` meta tag (hex). Recombine them the same way the APM backend does when
+    remapping meta_struct LLMObs spans.
+    """
+    tid = (meta or {}).get(TRACE_ID_HIGH_TAG)
+    high = int(tid, 16) if tid else 0
+    return format((high << 64) | apm_trace_id, "032x")
 
 
 def _llmobs_tags_to_dict(tags: Any) -> Dict[str, str]:
@@ -63,10 +76,7 @@ def build_sdk_span_event(llmobs_data: Dict[str, Any], span: Dict[str, Any]) -> O
         return None
 
     _dd_attrs: Dict[str, Any] = dict(llmobs_data.get("_dd") or {})
-    try:
-        apm_trace_id_hex = format(int(apm_trace_id), "032x")
-    except (TypeError, ValueError):
-        apm_trace_id_hex = str(apm_trace_id)
+    apm_trace_id_hex = _format_apm_trace_id(apm_trace_id, span.get("meta"))
     _dd_attrs.setdefault("span_id", str(apm_span_id))
     _dd_attrs.setdefault("trace_id", apm_trace_id_hex)
     _dd_attrs.setdefault("apm_trace_id", apm_trace_id_hex)

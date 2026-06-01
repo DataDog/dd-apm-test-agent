@@ -820,15 +820,14 @@ class Agent:
         if token:
             headers["X-Datadog-Test-Session-Token"] = token
         body = json.dumps(new_envelopes).encode("utf-8")
-        self._requests.append(
-            _SyntheticRequest(
-                url=url,
-                headers=headers,
-                body=body,
-                handler=self.handle_evp_proxy_v4_api_v2_llmobs,
-                session_token=token,
-            )
+        synthetic = _SyntheticRequest(
+            url=url,
+            headers=headers,
+            body=body,
+            handler=self.handle_evp_proxy_v4_api_v2_llmobs,
+            session_token=token,
         )
+        self._requests.append(cast(Request, synthetic))
 
     def _decode_v05_traces(self, request: Request) -> v04TracePayload:
         raw_data = self._request_data(request)

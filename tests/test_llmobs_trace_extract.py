@@ -59,6 +59,15 @@ def test_build_sdk_span_event_minimal_payload():
     assert event["_dd"]["apm_trace_id"] == "00000000000000000000000000000abc"
 
 
+def test_build_sdk_span_event_combines_128bit_trace_id_from_dd_p_tid():
+    # 128-bit traces carry the low 64 bits in span.trace_id and the high 64 bits in the
+    # _dd.p.tid meta tag; the rendered _dd.trace_id must recombine both halves.
+    span = _apm_span(trace_id=0xABC, meta={"_dd.p.tid": "640cfde200000000"})
+    event = build_sdk_span_event(_llmobs_data(), span)
+    assert event["_dd"]["trace_id"] == "640cfde2000000000000000000000abc"
+    assert event["_dd"]["apm_trace_id"] == "640cfde2000000000000000000000abc"
+
+
 def test_build_sdk_span_event_returns_none_when_required_fields_missing():
     assert build_sdk_span_event({"parent_id": "x"}, _apm_span()) is None
     assert build_sdk_span_event(_llmobs_data(), {"name": "no-ids"}) is None
