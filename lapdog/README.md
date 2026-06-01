@@ -223,6 +223,16 @@ Useful flags:
   Code plugin.
 - `-p <port>` / `--port <port>` — bind to a different port (default `8126`).
 
+### Git commit tagging
+
+Captured coding-agent spans are tagged with `git.commit.sha` — the commit that
+is HEAD of the session's repository at the moment each span starts. The repo is
+the same one the existing `git.repository_url` tag is derived from (resolved
+from the coding agent's working directory), so the two tags always describe the
+same repository. Because the tagged SHA flips the instant a commit lands, you
+can see *when* commits happen during a session and filter/group traces by
+commit. If the working directory is not a git repository, the tag is omitted.
+
 ---
 
 ## What lapdog touches on your machine

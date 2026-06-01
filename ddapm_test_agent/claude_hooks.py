@@ -17,6 +17,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Protocol
 from typing import Set
 from typing import Tuple
 from urllib.parse import urlparse
@@ -29,13 +30,14 @@ import msgpack
 from ._clock import monotonic_wall_ns
 from .claude_cost_tracker import COST_METRIC_KEYS
 from .claude_link_tracker import ClaudeLinkTracker
+from .coding_agent_metadata import CodingAgentProjectMetadata
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .coding_agent_metadata import extract_agent_project_name
 from .coding_agent_metadata import extract_git_repository_url
+from .coding_agent_metadata import git_commit_sha_tags
 from .coding_agent_metadata import project_metadata_tags
 from .coding_agent_metadata import resolve_project_metadata
 from .llmobs_event_platform import with_cors
-
 
 log = logging.getLogger(__name__)
 
@@ -158,6 +160,12 @@ class SessionState:
         # agent, even after the step has been finalized and removed from
         # active_steps_by_agent.
         self.step_agent_by_span_id: Dict[str, str] = {}
+
+
+class BaseTagSession(Protocol):
+    session_id: str
+    cwd: str
+    project_metadata: CodingAgentProjectMetadata
 
 
 _MAX_UINT_64 = (1 << 64) - 1
@@ -378,11 +386,13 @@ class ClaudeHooksAPI:
 
     def base_tags(
         self,
-        session: SessionState,
+        session: BaseTagSession,
         source: str = "claude-code-hooks",
         ml_app: Optional[str] = None,
+        user_handle: Optional[str] = None,
     ) -> List[str]:
         app = ml_app or _ML_APP
+        handle = _USER_HANDLE if user_handle is None else user_handle
         tags = [
             f"ml_app:{app}",
             f"session_id:{session.session_id}",
@@ -392,9 +402,12 @@ class ClaudeHooksAPI:
             "language:python",
             f"hostname:{_HOSTNAME}",
         ]
-        if _USER_HANDLE:
-            tags.append(f"user_handle:{_USER_HANDLE}")
+        if handle:
+            tags.append(f"user_handle:{handle}")
         tags.extend(project_metadata_tags(session.project_metadata))
+        # git.commit.sha: the commit that is HEAD of the same repo the
+        # git.repository_url tag describes, at the moment this span starts.
+        tags.extend(git_commit_sha_tags(session.cwd))
         return tags
 
     def _set_permission_wait_critical_evaluation(self, span: Dict[str, Any], estimated_permission_wait_ms: int) -> None:

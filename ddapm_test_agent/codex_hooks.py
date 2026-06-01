@@ -25,10 +25,8 @@ from .codex_cost_tracker import compute_openai_cost_metrics
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .coding_agent_metadata import extract_agent_project_name
 from .coding_agent_metadata import extract_git_repository_url
-from .coding_agent_metadata import project_metadata_tags
 from .coding_agent_metadata import resolve_project_metadata
 from .llmobs_event_platform import with_cors
-
 
 log = logging.getLogger(__name__)
 
@@ -406,21 +404,6 @@ class CodexHooksAPI:
             self._set_session_group(session_id, self._child_session_ids[session_id])
         return self._sessions[session_id]
 
-    def _base_tags(self, session: CodexSession, source: str = "codex-jsonl") -> List[str]:
-        tags = [
-            f"ml_app:{self._config.ml_app}",
-            f"session_id:{session.session_id}",
-            f"service:{self._config.service}",
-            f"env:{self._config.env}",
-            f"source:{source}",
-            "language:python",
-            f"hostname:{self._config.hostname}",
-        ]
-        if self._config.user_handle:
-            tags.append(f"user_handle:{self._config.user_handle}")
-        tags.extend(project_metadata_tags(session.project_metadata))
-        return tags
-
     def _update_project_metadata(
         self,
         session: CodexSession,
@@ -794,7 +777,12 @@ class CodexHooksAPI:
         session.agent_span_stack = []
         session.pending_subagents = {}
 
-        root_tags = self._base_tags(session) + ["trajectory.semantic_type:turn"]
+        root_tags = self._hooks_api.base_tags(
+            session,
+            source="codex-jsonl",
+            ml_app=self._config.ml_app,
+            user_handle=self._config.user_handle,
+        ) + ["trajectory.semantic_type:turn"]
         root_span: Dict[str, Any] = {
             "span_id": root_span_id,
             "trace_id": trace_id,
@@ -839,7 +827,12 @@ class CodexHooksAPI:
         turn.current_step_start_ns = start_ns
         turn.current_step_last_ns = start_ns
         turn.current_step_has_llm = False
-        step_tags = self._base_tags(session) + ["trajectory.semantic_type:agent_message"]
+        step_tags = self._hooks_api.base_tags(
+            session,
+            source="codex-jsonl",
+            ml_app=self._config.ml_app,
+            user_handle=self._config.user_handle,
+        ) + ["trajectory.semantic_type:agent_message"]
         step_span: Dict[str, Any] = {
             "span_id": step_span_id,
             "trace_id": turn.trace_id,
@@ -1184,7 +1177,12 @@ class CodexHooksAPI:
             "service": self._config.service,
             "env": self._config.env,
             "session_id": session.session_id,
-            "tags": self._base_tags(session),
+            "tags": self._hooks_api.base_tags(
+                session,
+                source="codex-jsonl",
+                ml_app=self._config.ml_app,
+                user_handle=self._config.user_handle,
+            ),
             "meta": {
                 "span": {"kind": "llm"},
                 "model_name": session.model,
@@ -1320,7 +1318,12 @@ class CodexHooksAPI:
         span["ml_app"] = self._config.ml_app
         span["service"] = self._config.service
         span["env"] = self._config.env
-        span["tags"] = self._base_tags(session, source="codex-proxy")
+        span["tags"] = self._hooks_api.base_tags(
+            session,
+            source="codex-proxy",
+            ml_app=self._config.ml_app,
+            user_handle=self._config.user_handle,
+        )
         tool_call_ids = self._normalize_proxy_tool_call_ids(session, span)
         if append:
             self._append_llm_span(turn, span)
@@ -1451,7 +1454,13 @@ class CodexHooksAPI:
             "service": self._config.service,
             "env": self._config.env,
             "session_id": session.session_id,
-            "tags": self._base_tags(session) + ["subagent:true"],
+            "tags": self._hooks_api.base_tags(
+                session,
+                source="codex-jsonl",
+                ml_app=self._config.ml_app,
+                user_handle=self._config.user_handle,
+            )
+            + ["subagent:true"],
             "meta": {
                 "span": {"kind": "agent"},
                 "input": {"value": prompt if isinstance(prompt, str) else _to_json_str(prompt)},
@@ -1700,7 +1709,13 @@ class CodexHooksAPI:
             "service": self._config.service,
             "env": self._config.env,
             "session_id": session.session_id,
-            "tags": self._base_tags(session) + [f"tool_name:{pending.tool_name}"],
+            "tags": self._hooks_api.base_tags(
+                session,
+                source="codex-jsonl",
+                ml_app=self._config.ml_app,
+                user_handle=self._config.user_handle,
+            )
+            + [f"tool_name:{pending.tool_name}"],
             "meta": {
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},

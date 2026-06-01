@@ -29,16 +29,13 @@ from .claude_cost_tracker import compute_cost_metrics
 from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import SessionState
 from .claude_hooks import _ML_APP
-from .claude_hooks import _USER_HANDLE
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _get_context_limit
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_link_tracker import SpanLink
 from .coding_agent_metadata import apply_project_metadata_to_span
-from .coding_agent_metadata import project_metadata_tags
 from .llmobs_event_platform import with_cors
-
 
 log = logging.getLogger(__name__)
 
@@ -398,10 +395,7 @@ class ClaudeProxyAPI:
         """
         if not self._orphan_spans:
             return
-        session_scoped_tags = [f"session_id:{session.session_id}"]
-        if _USER_HANDLE:
-            session_scoped_tags.append(f"user_handle:{_USER_HANDLE}")
-        session_scoped_tags.extend(project_metadata_tags(session.project_metadata))
+        session_scoped_tags = self._hooks_api.base_tags(session, source="claude-code-proxy")
         for span in self._orphan_spans:
             span["trace_id"] = session.trace_id
             span["parent_id"] = session.root_span_id
@@ -594,20 +588,18 @@ class ClaudeProxyAPI:
             total_input_tokens,
             model,
         )
-        tags = [
-            f"ml_app:{_ML_APP}",
-            f"service:{_ML_APP}",
-            "env:local",
-            "source:claude-code-proxy",
-            "language:python",
-            f"hostname:{_HOSTNAME}",
-            f"user_name:{_USERNAME}",
-        ]
         if session:
-            tags.append(f"session_id:{session.session_id}")
-            tags.extend(project_metadata_tags(session.project_metadata))
-            if _USER_HANDLE:
-                tags.append(f"user_handle:{_USER_HANDLE}")
+            tags = self._hooks_api.base_tags(session, source="claude-code-proxy") + [f"user_name:{_USERNAME}"]
+        else:
+            tags = [
+                f"ml_app:{_ML_APP}",
+                f"service:{_ML_APP}",
+                "env:local",
+                "source:claude-code-proxy",
+                "language:python",
+                f"hostname:{_HOSTNAME}",
+                f"user_name:{_USERNAME}",
+            ]
         span: Dict[str, Any] = {
             "span_id": span_id,
             "trace_id": trace_id,

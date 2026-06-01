@@ -205,12 +205,20 @@ async def test_codex_project_metadata_uses_local_git_fallback(agent, tmp_path, m
     monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
     _local_git_metadata.cache_clear()
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "qa@local"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "QA"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(
         ["git", "remote", "add", "origin", "https://github.com/DataDog/local-codex-repo.git"],
         cwd=tmp_path,
         check=True,
         capture_output=True,
     )
+    (tmp_path / "README.md").write_text("# repo\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial commit"], cwd=tmp_path, check=True, capture_output=True)
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
 
     sid = "codex-local-git-project"
     session_meta = _session_meta(sid)
@@ -230,6 +238,7 @@ async def test_codex_project_metadata_uses_local_git_fallback(agent, tmp_path, m
 
     assert "project_name:local-codex-repo" in root["tags"]
     assert "git.repository_url:github.com/DataDog/local-codex-repo" in root["tags"]
+    assert f"git.commit.sha:{sha}" in root["tags"]
 
 
 async def test_codex_project_metadata_uses_cwd_basename_without_git(agent, tmp_path, monkeypatch):

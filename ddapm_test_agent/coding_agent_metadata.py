@@ -12,7 +12,6 @@ from typing import Dict
 from typing import List
 from urllib.parse import urlparse
 
-
 log = logging.getLogger(__name__)
 
 
@@ -102,6 +101,24 @@ def project_metadata_tags(metadata: CodingAgentProjectMetadata) -> List[str]:
     if metadata.git_repository_url:
         tags.append(f"git.repository_url:{metadata.git_repository_url}")
     return tags
+
+
+def git_commit_sha_for_cwd(cwd: Any) -> str:
+    """Return the current HEAD commit SHA for the repo at ``cwd`` (best-effort).
+
+    Uses the same cwd resolution as ``resolve_project_metadata`` (falling back
+    to the process cwd when unset) so the commit SHA always describes the same
+    repository as the ``git.repository_url`` tag. Returns ``""`` when ``cwd`` is
+    not inside a git work tree.
+    """
+    cwd = str(cwd or "").strip() or os.getcwd()
+    return _run_git(cwd, "rev-parse", "HEAD")
+
+
+def git_commit_sha_tags(cwd: Any) -> List[str]:
+    """Return ``["git.commit.sha:<sha>"]`` for the repo at ``cwd``, or ``[]``."""
+    sha = git_commit_sha_for_cwd(cwd)
+    return [f"git.commit.sha:{sha}"] if sha else []
 
 
 def apply_project_metadata_to_span(span: Dict[str, Any], metadata: CodingAgentProjectMetadata) -> None:
