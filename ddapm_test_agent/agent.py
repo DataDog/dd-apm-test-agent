@@ -17,6 +17,7 @@ import requests
 import socket
 import sys
 import threading
+from types import SimpleNamespace
 from typing import Any
 from typing import Awaitable
 from typing import Callable
@@ -356,11 +357,9 @@ class MockRequest:
         return self._data.get(key, default)
 
 
-class _SyntheticMatchInfo:
-    """Mock match_info exposing the handler a synthetic stored request should be attributed to."""
-
-    def __init__(self, handler: Any) -> None:
-        self.handler = handler
+def _evp_span_key(span: Dict[str, Any]) -> Tuple[Any, Any]:
+    """Dedup key identifying an LLMObs EVP span event by its (trace_id, span_id)."""
+    return span.get("trace_id"), span.get("span_id")
 
 
 class _SyntheticRequest:
@@ -376,7 +375,7 @@ class _SyntheticRequest:
         self.path = url.path
         self.headers = headers
         self.content_type = headers.get("Content-Type", "application/json")
-        self.match_info = _SyntheticMatchInfo(handler)
+        self.match_info = SimpleNamespace(handler=handler)
         self._body = body
         self._data: Dict[str, Any] = {"_testagent_data": body, "session_token": session_token}
 
@@ -775,7 +774,7 @@ class Agent:
             try:
                 for event in decode_llmobs_payload(self._request_data(req), req.content_type or ""):
                     for span in event.get("spans", []) or []:
-                        keys.add((span.get("trace_id"), span.get("span_id")))
+                        keys.add(_evp_span_key(span))
             except Exception as exc:
                 log.debug("Failed to decode stored EVP llmobs payload for dedup: %s", exc)
         return keys
@@ -799,9 +798,7 @@ class Agent:
 
         existing_keys = self._stored_llmobs_evp_span_keys()
         new_envelopes = [
-            envelope
-            for envelope in envelopes
-            if (envelope["spans"][0].get("trace_id"), envelope["spans"][0].get("span_id")) not in existing_keys
+            envelope for envelope in envelopes if _evp_span_key(envelope["spans"][0]) not in existing_keys
         ]
         if not new_envelopes:
             return
