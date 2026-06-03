@@ -17,6 +17,7 @@ import requests
 import socket
 import sys
 import threading
+from types import SimpleNamespace
 from typing import Any
 from typing import Awaitable
 from typing import Callable
@@ -48,6 +49,7 @@ from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportM
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import add_MetricsServiceServicer_to_server
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import add_TraceServiceServicer_to_server
+from yarl import URL
 
 from . import _get_version
 from . import trace_snapshot
@@ -65,6 +67,8 @@ from .codex_hooks import CodexHooksAPI
 from .codex_proxy import CodexProxyAPI
 from .integration import Integration
 from .llmobs_event_platform import LLMObsEventPlatformAPI
+from .llmobs_event_platform import decode_llmobs_payload
+from .llmobs_trace import extract_llmobs_envelopes_from_v04_traces
 from .logs import LOGS_ENDPOINT
 from .logs import OTLPLogsGRPCServicer
 from .logs import decode_logs_request
@@ -350,6 +354,41 @@ class MockRequest:
         self._data[key] = value
 
     def get(self, key, default=None):
+        return self._data.get(key, default)
+
+
+def _evp_span_key(span: Dict[str, Any]) -> Tuple[Any, Any]:
+    """Dedup key identifying an LLMObs EVP span event by its (trace_id, span_id)."""
+    return span.get("trace_id"), span.get("span_id")
+
+
+class _SyntheticRequest:
+    """Stored-request stand-in for EVP llmobs posts synthesized from v0.4 ``meta_struct``.
+
+    Implements just enough of the aiohttp ``Request`` surface used by the request log
+    consumers (``handle_session_requests``, ``get_llmobs_spans``, ``_requests_by_session``).
+    """
+
+    def __init__(self, url: URL, headers: Dict[str, str], body: bytes, handler: Any, session_token: Optional[str]):
+        self.method = "POST"
+        self.url = url
+        self.path = url.path
+        self.headers = headers
+        self.content_type = headers.get("Content-Type", "application/json")
+        self.match_info = SimpleNamespace(handler=handler)
+        self._body = body
+        self._data: Dict[str, Any] = {"_testagent_data": body, "session_token": session_token}
+
+    async def read(self) -> bytes:
+        return self._body
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data.get(key)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._data[key] = value
+
+    def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)
 
 
@@ -725,6 +764,67 @@ class Agent:
         content_type = request.content_type
         raw_data = self._request_data(request)
         return trace_decode_v04(content_type, raw_data, request.app["suppress_trace_parse_errors"])
+
+    def _stored_llmobs_evp_span_keys(self) -> Set[Tuple[Any, Any]]:
+        """Collect (trace_id, span_id) keys from already-stored EVP llmobs requests."""
+        keys: Set[Tuple[Any, Any]] = set()
+        for req in self._requests:
+            if req.path not in ("/evp_proxy/v2/api/v2/llmobs", "/evp_proxy/v4/api/v2/llmobs"):
+                continue
+            try:
+                for event in decode_llmobs_payload(self._request_data(req), req.content_type or ""):
+                    for span in event.get("spans", []) or []:
+                        keys.add(_evp_span_key(span))
+            except Exception as exc:
+                log.debug("Failed to decode stored EVP llmobs payload for dedup: %s", exc)
+        return keys
+
+    def _store_synthetic_llmobs_requests(self, source: Request, traces: v04TracePayload) -> None:
+        """Synthesize a single EVP llmobs request from a v0.4 payload's ``meta_struct['_llmobs']``.
+
+        dd-trace-py can ship LLMObs spans via ``meta_struct['_llmobs']`` on kept agent-proxy
+        traces instead of POSTing to ``/evp_proxy/.../llmobs``. Injecting an equivalent stored
+        request here lets ``/test/session/requests`` and the LLMObs UI surface these spans
+        through the existing EVP code paths with no read-time special casing.
+
+        All envelopes extracted from one trace POST are batched into a single synthesized
+        request (a JSON array body), mirroring how ``LLMObsSpanWriter`` flushes buffered events
+        as one EVP request. This keeps the per-request count aligned with the real SDK contract
+        (e.g. prompt-caching emits two span events in one request).
+        """
+        envelopes = extract_llmobs_envelopes_from_v04_traces(traces)
+        if not envelopes:
+            return
+
+        existing_keys = self._stored_llmobs_evp_span_keys()
+        new_envelopes = [
+            envelope for envelope in envelopes if _evp_span_key(envelope["spans"][0]) not in existing_keys
+        ]
+        if not new_envelopes:
+            return
+
+        token = source.get("session_token")
+        try:
+            base_url = str(source.url.origin())
+        except Exception:
+            base_url = "http://localhost"
+        url = URL(f"{base_url}/evp_proxy/v4/api/v2/llmobs")
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-Datadog-EVP-Subdomain": "llmobs-intake",
+        }
+        if token:
+            headers["X-Datadog-Test-Session-Token"] = token
+        body = json.dumps(new_envelopes).encode("utf-8")
+        synthetic = _SyntheticRequest(
+            url=url,
+            headers=headers,
+            body=body,
+            handler=self.handle_evp_proxy_v4_api_v2_llmobs,
+            session_token=token,
+        )
+        self._requests.append(cast(Request, synthetic))
 
     def _decode_v05_traces(self, request: Request) -> v04TracePayload:
         raw_data = self._request_data(request)
@@ -1222,6 +1322,10 @@ class Agent:
             try:
                 if version == "v0.4":
                     traces = self._decode_v04_traces(request)
+                    try:
+                        self._store_synthetic_llmobs_requests(request, traces)
+                    except Exception as exc:
+                        log.debug("Failed to synthesize llmobs EVP request from v0.4 meta_struct: %s", exc)
                 elif version == "v0.5":
                     traces = self._decode_v05_traces(request)
                 elif version == "v0.7":
