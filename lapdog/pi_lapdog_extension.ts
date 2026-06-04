@@ -84,6 +84,13 @@ export default function lapdog(pi: ExtensionAPI): void {
 	// attach it to the agent_start event (input event fires before agent_start).
 	let pendingUserPrompt = "";
 
+	// True when the upcoming agent_start was triggered by a genuine user prompt
+	// (`before_agent_start` fires only via agent-session.prompt(), never via
+	// agent.continue()). When false, the agent_start is a continuation of the
+	// current turn (e.g. after auto-compaction or auto-retry) and must NOT spawn
+	// a new, input-less trace.
+	let userTurnPending = false;
+
 	// System prompt for the current turn, captured in before_agent_start.
 	// Reused for every LLM call inside the turn so each LLM span can record
 	// the system message as part of its input.
@@ -153,17 +160,35 @@ export default function lapdog(pi: ExtensionAPI): void {
 		} catch {
 			currentSystemPrompt = "";
 		}
+		// `before_agent_start` only fires for user-initiated prompts and carries
+		// the (expanded) prompt text. Use it as the authoritative "new turn"
+		// signal so the following agent_start is treated as a real turn, while
+		// agent.continue()'s agent_start (no before_agent_start) reads as a
+		// continuation.
+		userTurnPending = true;
+		const prompt = _event?.prompt;
+		if (typeof prompt === "string" && prompt) {
+			pendingUserPrompt = prompt;
+		}
 	});
 
 	pi.on("agent_start", (_event, ctx) => {
+		// A continuation is an agent_start with no preceding before_agent_start
+		// (i.e. agent.continue() after auto-compaction / auto-retry). These belong
+		// to the same user turn and must not start a fresh, input-less trace.
+		const isContinuation = !userTurnPending;
 		post("agent_start", sessionId, {
 			user_prompt: pendingUserPrompt,
+			is_continuation: isContinuation,
 			model: `${currentProvider}/${currentModel}`,
 			model_provider: currentProvider,
 			model_id: currentModel,
 			system_prompt: currentSystemPrompt,
 		}, ctx);
-		pendingUserPrompt = "";
+		userTurnPending = false;
+		if (!isContinuation) {
+			pendingUserPrompt = "";
+		}
 	});
 
 	pi.on("agent_end", (event, ctx) => {
@@ -240,6 +265,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 				cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
 			};
 			stopReason?: string;
+			errorMessage?: string;
 		};
 
 		post("message_end", sessionId, {
@@ -249,6 +275,9 @@ export default function lapdog(pi: ExtensionAPI): void {
 			api: msg.api,
 			usage: msg.usage ?? null,
 			stop_reason: msg.stopReason ?? "",
+			// pi sets errorMessage when stopReason is "error" (or "aborted").
+			// Forward it so the LLM span can be marked as an error with detail.
+			error_message: msg.errorMessage ?? "",
 			content: msg.content,
 		}, ctx);
 	});
