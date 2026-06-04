@@ -861,7 +861,7 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
         if "meta" not in span:
             span["meta"] = {}
         span["trace_id"] = trace_id
-        span["meta"]["_dd.p.tid"] = hex(trace_id_high)
+        span["meta"]["_dd.p.tid"] = format(trace_id_high, "016x")
         if sampling_mechanism is not None:
             span["meta"]["_dd.p.dm"] = "-" + str(sampling_mechanism)
         if origin != "":
