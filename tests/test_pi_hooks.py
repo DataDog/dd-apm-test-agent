@@ -828,11 +828,6 @@ async def test_thinking_block_sets_has_thinking(agent):
     assert step["meta"]["output"]["value"] == "Here's my answer."
 
 
-# ------------------------------------------------------------------
-# Bug 1: LLM errors should produce an error LLM span (not an empty step)
-# ------------------------------------------------------------------
-
-
 async def test_llm_error_emits_error_span(agent):
     """A message_end with stop_reason=error yields an error LLM span + error step."""
     sid = "pi-llm-error"
@@ -901,11 +896,6 @@ async def test_orphaned_llm_call_emits_error_span_on_session_shutdown(agent):
     llms = _by_kind(session_spans, "llm")
     assert len(llms) == 1
     assert llms[0]["status"] == "error"
-
-
-# ------------------------------------------------------------------
-# Bug 2: continuation agent_start must extend the current trace
-# ------------------------------------------------------------------
 
 
 async def test_continuation_agent_start_extends_trace(agent):
