@@ -844,7 +844,7 @@ async def test_trace_v1(
     assert len(result) == 1
     assert len(result[0]) == 1, result
     assert result[0][0]["trace_id"] == 8675
-    assert result[0][0]["meta"]["_dd.p.tid"] == "0x55"
+    assert result[0][0]["meta"]["_dd.p.tid"] == "0000000000000055"
     assert result[0][0]["service"] == "my-service"
 
 
@@ -902,7 +902,7 @@ async def test_trace_v1_basic():
         "component": "my-component",
         "span.kind": "internal",
         "some-global": "cool-value",
-        "_dd.p.tid": "0x55",
+        "_dd.p.tid": "0000000000000055",
         "_dd.p.dm": "-4",
         "_dd.origin": "rum",
     }
@@ -964,7 +964,7 @@ async def test_trace_v1_no_sampling_mechanism():
         "component": "my-component",
         "span.kind": "internal",
         "some-global": "cool-value",
-        "_dd.p.tid": "0x55",
+        "_dd.p.tid": "0000000000000055",
         "_dd.origin": "rum",
     }
     assert result_span["metrics"] == {"fooNum": 3.14, "_sampling_priority_v1": 1}
