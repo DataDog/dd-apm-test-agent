@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    Accept v1 trace payloads with OTEL ``span_kind`` set to ``0`` (unspecified)
+    and convert them without emitting a ``span.kind`` tag, matching the behavior
+    of equivalent ``v0.4`` payloads.
