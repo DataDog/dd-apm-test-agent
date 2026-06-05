@@ -1045,24 +1045,24 @@ async def test_trace_v1_span_event():
                             15: "my-component",
                             16: 1,
                             12: [
-    {
-       1: 9876,
-       2: "event-name",
-       3: [
-           "event-key",
-           1,
-           "event-value",
-           "event-key2",
-           2,
-           True,
-           "event-key3",
-           3,
-           3.14,
-           "event-key4",
-           4,
-           123,
-       ],
-    }
+                                {
+                                    1: 9876,
+                                    2: "event-name",
+                                    3: [
+                                        "event-key",
+                                        1,
+                                        "event-value",
+                                        "event-key2",
+                                        2,
+                                        True,
+                                        "event-key3",
+                                        3,
+                                        3.14,
+                                        "event-key4",
+                                        4,
+                                        123,
+                                    ],
+                                }
                             ],
                         }
                     ],
