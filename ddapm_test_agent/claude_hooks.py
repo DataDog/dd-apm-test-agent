@@ -1850,6 +1850,7 @@ class ClaudeHooksAPI:
         session_id = body.get("session_id") or ""
         cwd = body.get("cwd") or ""
         entries = body.get("entries") or []
+        subagents = body.get("subagents") or []
         if not session_id or not isinstance(entries, list):
             return web.json_response({"error": "session_id and entries required"}, status=400)
 
@@ -1864,7 +1865,7 @@ class ClaudeHooksAPI:
             )
 
         try:
-            spans = claude_backfill.session_to_spans(session_id, cwd, entries)
+            spans = claude_backfill.session_to_spans(session_id, cwd, entries, subagents=subagents)
         except Exception as exc:
             # A single malformed transcript shouldn't propagate as a 500 that
             # closes the connection — return a structured failure so the

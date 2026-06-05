@@ -357,10 +357,10 @@ async def test_query_scalar_multi_request(agent, llmobs_payload):
 
 
 async def test_query_scalar_trace_rollup_metric(agent, llmobs_payload):
-    # Fixture has 2 spans on the same trace with token counts 30 and 15.
-    # @trace.total_tokens rolls up per-trace: sum across spans = 45, but
+    # Fixture has 2 spans on the same trace; only the LLM token count contributes to @trace totals.
+    # @trace.total_tokens rolls up per-trace from LLM spans = 15, and
     # because both spans share trace-123, sum(@trace.total_tokens) over all
-    # spans must dedupe to 45 (not 90).
+    # spans must dedupe to 15 (not 30).
     await _submit_llmobs_payload(agent, llmobs_payload)
     resp = await agent.post(
         "/api/ui/query/scalar",
@@ -377,7 +377,7 @@ async def test_query_scalar_trace_rollup_metric(agent, llmobs_payload):
     )
     data = await resp.json()
     cols = data["data"][0]["attributes"]["columns"]
-    assert cols[0]["values"] == [45.0]
+    assert cols[0]["values"] == [15.0]
 
 
 async def test_query_scalar_formulas_reference_query(agent, llmobs_payload):
@@ -855,12 +855,14 @@ async def test_span_cost_metrics_surfaced_in_list(agent):
 
 
 async def test_trace_estimated_total_cost_aggregated_across_spans(agent):
-    """@trace.estimated_total_cost is the sum of estimated_total_cost across all spans in the trace."""
+    """@trace.estimated_total_cost is the sum of estimated_total_cost across LLM spans in the trace."""
     span_a = _create_span_for_facet_test(1, 300)
     span_a["metrics"]["estimated_total_cost"] = 10_000_000
     span_b = _create_span_for_facet_test(2, 300)
     span_b["metrics"]["estimated_total_cost"] = 5_000_000
-    await _submit_spans_for_facet_test(agent, [span_a, span_b])
+    agent_rollup = _create_span_for_facet_test(3, 300, span_kind="agent")
+    agent_rollup["metrics"]["estimated_total_cost"] = 15_000_000
+    await _submit_spans_for_facet_test(agent, [span_a, span_b, agent_rollup])
 
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
@@ -869,18 +871,20 @@ async def test_trace_estimated_total_cost_aggregated_across_spans(agent):
     assert resp.status == 200
     data = await resp.json()
 
-    # Both spans share trace 300; each should report the aggregated trace total
+    # All spans share trace 300, but the agent rollup should not be counted again.
     for event in data["result"]["events"]:
         assert event["event"]["custom"]["trace"]["estimated_total_cost"] == 15_000_000
 
 
 async def test_trace_token_metrics_aggregated_across_spans(agent):
-    """@trace.input_tokens, output_tokens, and total_tokens are summed across all spans in the trace."""
+    """@trace.input_tokens, output_tokens, and total_tokens are summed across LLM spans in the trace."""
     span_a = _create_span_for_facet_test(1, 400)
     span_a["metrics"] = {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}
     span_b = _create_span_for_facet_test(2, 400)
     span_b["metrics"] = {"input_tokens": 5, "output_tokens": 10, "total_tokens": 15}
-    await _submit_spans_for_facet_test(agent, [span_a, span_b])
+    agent_rollup = _create_span_for_facet_test(3, 400, span_kind="agent")
+    agent_rollup["metrics"] = {"input_tokens": 15, "output_tokens": 30, "total_tokens": 45}
+    await _submit_spans_for_facet_test(agent, [span_a, span_b, agent_rollup])
 
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
@@ -897,7 +901,7 @@ async def test_trace_token_metrics_aggregated_across_spans(agent):
 
 
 async def test_trace_level_fields_populated_for_session_query(agent):
-    """Trace-level token and cost fields are present for session-id-filtered queries (non-static app path)."""
+    """Trace-level token and cost fields ignore root agent metric rollups for session-id-filtered queries."""
     now = int(time.time() * 1_000_000_000)
     root_span = {
         "span_id": "span-sess-root",
@@ -946,10 +950,10 @@ async def test_trace_level_fields_populated_for_session_query(agent):
     assert data["hitCount"] == 1
 
     trace = data["result"]["events"][0]["event"]["custom"]["trace"]
-    assert trace["input_tokens"] == 12
-    assert trace["output_tokens"] == 18
-    assert trace["total_tokens"] == 30
-    assert trace["estimated_total_cost"] == 10_000_000
+    assert trace["input_tokens"] == 4
+    assert trace["output_tokens"] == 6
+    assert trace["total_tokens"] == 10
+    assert trace["estimated_total_cost"] == 3_000_000
 
 
 async def test_facet_range_info_with_filter_query(agent):

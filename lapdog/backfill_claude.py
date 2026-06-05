@@ -30,9 +30,30 @@ def _default_projects_dir() -> Path:
 
 
 def _iter_session_files(projects_dir: Path) -> List[Path]:
+    """Top-level session transcripts, newest last.
+
+    Subagent transcripts (under ``<session-id>/subagents/``) are excluded here
+    and bundled into their parent session's payload by ``_subagent_files`` —
+    otherwise the walker would pick each one up as an independent session,
+    exploding one logical session into many.
+    """
     if not projects_dir.exists():
         return []
-    return sorted(projects_dir.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime if p.exists() else 0)
+    files = [p for p in projects_dir.rglob("*.jsonl") if "subagents" not in p.parts]
+    return sorted(files, key=lambda p: p.stat().st_mtime if p.exists() else 0)
+
+
+def _subagent_files(session_path: Path) -> List[Path]:
+    """Subagent transcripts Claude wrote for ``session_path``.
+
+    Claude Code stores each subagent's (e.g. ``Explore``) conversation in
+    ``<session-dir>/<session-id>/subagents/agent-<id>.jsonl`` rather than in the
+    main transcript. ``rglob`` picks up nested subagents at any depth.
+    """
+    sub_dir = session_path.parent / session_path.stem
+    if not sub_dir.is_dir():
+        return []
+    return sorted(sub_dir.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime if p.exists() else 0)
 
 
 def _load_entries(path: Path) -> List[Dict[str, Any]]:
@@ -67,7 +88,12 @@ def _backfill_one(lapdog_url: str, path: Path) -> bool:
     if not entries:
         return False
     cwd = _resolve_cwd(entries)
-    body = {"session_id": session_id, "cwd": cwd, "entries": entries}
+    subagents: List[Dict[str, Any]] = []
+    for sub_path in _subagent_files(path):
+        sub_entries = _load_entries(sub_path)
+        if sub_entries:
+            subagents.append({"agent_id": sub_path.stem, "entries": sub_entries})
+    body = {"session_id": session_id, "cwd": cwd, "entries": entries, "subagents": subagents}
     return post_event(lapdog_url, "/claude/hooks/backfill_session", body)
 
 
