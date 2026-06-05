@@ -151,7 +151,7 @@ def _post_record(
     *,
     is_backfill: bool = False,
 ) -> bool:
-    body = {"session_id": session_id, "record": record, "source_path": str(source_path)}
+    body: Dict[str, Any] = {"session_id": session_id, "record": record, "source_path": str(source_path)}
     if proxy_session_key:
         body["proxy_session_key"] = proxy_session_key
     if is_backfill:
