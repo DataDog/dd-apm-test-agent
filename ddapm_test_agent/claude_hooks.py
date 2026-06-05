@@ -17,6 +17,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Protocol
 from typing import Set
 from typing import Tuple
 from urllib.parse import urlparse
@@ -32,6 +33,13 @@ from ._clock import monotonic_wall_ns
 from .backfill_utils import has_backfilled_session
 from .claude_cost_tracker import COST_METRIC_KEYS
 from .claude_link_tracker import ClaudeLinkTracker
+from .coding_agent_metadata import CodingAgentProjectMetadata
+from .coding_agent_metadata import apply_project_metadata_to_span
+from .coding_agent_metadata import extract_agent_project_name
+from .coding_agent_metadata import extract_git_repository_url
+from .coding_agent_metadata import git_commit_sha_tags
+from .coding_agent_metadata import project_metadata_tags
+from .coding_agent_metadata import resolve_project_metadata
 from .lapdog_app_names import CLAUDE_CODE_ML_APP
 from .llmobs_event_platform import with_cors
 
@@ -47,6 +55,7 @@ _ML_APP = CLAUDE_CODE_ML_APP
 _1M_CONTEXT_MODELS = {
     "claude-opus-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
     "claude-sonnet-4-6",
 }
 
@@ -136,6 +145,8 @@ class SessionState:
         # Currently active agents keyed by span_id, for concurrent subagent resolution.
         self.active_agents: Dict[str, Dict[str, Any]] = {}
         self.conversation_title: str = ""
+        self.cwd: str = ""
+        self.project_metadata = resolve_project_metadata()
         # Persists across turns so each turn's context_delta reflects growth from
         # the previous turn's final context size.
         self.last_known_input_tokens: int = 0
@@ -153,6 +164,12 @@ class SessionState:
         # agent, even after the step has been finalized and removed from
         # active_steps_by_agent.
         self.step_agent_by_span_id: Dict[str, str] = {}
+
+
+class BaseTagSession(Protocol):
+    session_id: str
+    cwd: str
+    project_metadata: CodingAgentProjectMetadata
 
 
 _MAX_UINT_64 = (1 << 64) - 1
@@ -354,6 +371,49 @@ class ClaudeHooksAPI:
         """Merge key-value pairs into span['meta']['metadata']['_dd'], preserving existing values."""
         span["meta"].setdefault("metadata", {}).setdefault("_dd", {}).update(kwargs)
 
+    def update_session_project_metadata(self, session: SessionState, body: Dict[str, Any]) -> None:
+        previous_cwd = session.cwd
+        cwd = body.get("cwd")
+        if isinstance(cwd, str) and cwd.strip():
+            session.cwd = cwd.strip()
+        cwd_changed = bool(session.cwd and session.cwd != previous_cwd)
+
+        project_name = extract_agent_project_name(body)
+        git_repository_url = extract_git_repository_url(body)
+        if session.cwd or project_name or git_repository_url:
+            session.project_metadata = resolve_project_metadata(
+                cwd=session.cwd,
+                project_name=project_name or ("" if cwd_changed else session.project_metadata.project_name),
+                git_repository_url=git_repository_url
+                or ("" if cwd_changed else session.project_metadata.git_repository_url),
+            )
+
+    def base_tags(
+        self,
+        session: BaseTagSession,
+        source: str = "claude-code-hooks",
+        ml_app: Optional[str] = None,
+        user_handle: Optional[str] = None,
+    ) -> List[str]:
+        app = ml_app or _ML_APP
+        handle = _USER_HANDLE if user_handle is None else user_handle
+        tags = [
+            f"ml_app:{app}",
+            f"session_id:{session.session_id}",
+            f"service:{app}",
+            "env:local",
+            f"source:{source}",
+            "language:python",
+            f"hostname:{_HOSTNAME}",
+        ]
+        if handle:
+            tags.append(f"user_handle:{handle}")
+        tags.extend(project_metadata_tags(session.project_metadata))
+        # git.commit.sha: the commit that is HEAD of the same repo the
+        # git.repository_url tag describes, at the moment this span starts.
+        tags.extend(git_commit_sha_tags(session.cwd))
+        return tags
+
     def _set_permission_wait_critical_evaluation(self, span: Dict[str, Any], estimated_permission_wait_ms: int) -> None:
         """Embed a permission_wait_critical boolean evaluation on a span.
         The evaluation flags whether the permission wait was > 50% of span duration.
@@ -425,16 +485,7 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:claude-code-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-                "trajectory.semantic_type:agent_message",
-            ],
+            "tags": self.base_tags(session) + ["trajectory.semantic_type:agent_message"],
             "meta": {
                 "span": {"kind": "step"},
                 "input": {},
@@ -727,24 +778,17 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:claude-code-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-            ]
-            + ([f"user_handle:{_USER_HANDLE}"] if _USER_HANDLE else [])
+            "tags": self.base_tags(session)
             + ([f"topic:{session.conversation_title}"] if session.conversation_title else []),
             "meta": {
                 "span": {"kind": "agent"},
                 "input": {"value": prompt},
                 "output": {"value": ""},
+                "metadata": {},
             },
             "metrics": {},
         }
+        apply_project_metadata_to_span(root_span, session.project_metadata)
         self._assembled_spans.append(root_span)
         session._root_span_ref = root_span  # type: ignore[attr-defined]
 
@@ -860,19 +904,12 @@ class ClaudeHooksAPI:
                     "service": _ML_APP,
                     "env": "local",
                     "session_id": session.session_id,
-                    "tags": [
-                        f"ml_app:{_ML_APP}",
-                        f"session_id:{session.session_id}",
-                        f"service:{_ML_APP}",
-                        "env:local",
-                        "source:claude-code-hooks",
-                        "language:python",
-                        f"hostname:{_HOSTNAME}",
-                    ],
+                    "tags": self.base_tags(session),
                     "meta": {
                         "span": {"kind": "agent"},
                         "input": {"value": input_value},
                         "output": {"value": output_str},
+                        "metadata": {},
                     },
                     "metrics": {},
                     "span_links": span_links,
@@ -910,16 +947,7 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:claude-code-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-                f"tool_name:{actual_tool_name}",
-            ],
+            "tags": self.base_tags(session) + [f"tool_name:{actual_tool_name}"],
             "meta": {
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},
@@ -994,19 +1022,12 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:claude-code-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-            ],
+            "tags": self.base_tags(session),
             "meta": {
                 "span": {"kind": "agent"},
                 "input": {},
                 "output": {},
+                "metadata": {},
             },
             "metrics": {},
         }
@@ -1118,19 +1139,12 @@ class ClaudeHooksAPI:
                     "service": _ML_APP,
                     "env": "local",
                     "session_id": session.session_id,
-                    "tags": [
-                        f"ml_app:{_ML_APP}",
-                        f"session_id:{session.session_id}",
-                        f"service:{_ML_APP}",
-                        "env:local",
-                        "source:claude-code-hooks",
-                        "language:python",
-                        f"hostname:{_HOSTNAME}",
-                    ],
+                    "tags": self.base_tags(session),
                     "meta": {
                         "span": {"kind": "agent"},
                         "input": {},
                         "output": {},
+                        "metadata": {},
                     },
                     "metrics": {},
                 }
@@ -1323,6 +1337,7 @@ class ClaudeHooksAPI:
                     "model_provider": "anthropic",
                 }
             )
+            apply_project_metadata_to_span(root_span, session.project_metadata)
             dd_fields: Dict[str, Any] = {"agent_manifest": agent_manifest}
             if context_delta:
                 dd_fields["context_delta"] = context_delta
@@ -1348,17 +1363,8 @@ class ClaudeHooksAPI:
                 "service": _ML_APP,
                 "env": "local",
                 "session_id": session.session_id,
-                "tags": [
-                    f"ml_app:{_ML_APP}",
-                    f"session_id:{session.session_id}",
-                    f"service:{_ML_APP}",
-                    "env:local",
-                    "source:claude-code-hooks",
-                    "language:python",
-                    f"hostname:{_HOSTNAME}",
-                    f"user_name:{_USERNAME}",
-                ]
-                + ([f"user_handle:{_USER_HANDLE}"] if _USER_HANDLE else [])
+                "tags": self.base_tags(session)
+                + [f"user_name:{_USERNAME}"]
                 + ([f"topic:{session.conversation_title}"] if session.conversation_title else []),
                 "meta": {
                     "span": {"kind": "agent"},
@@ -1381,6 +1387,7 @@ class ClaudeHooksAPI:
                 self._set_permission_wait_critical_evaluation(root_span, estimated_permission_wait_ms)
             if tool_usage:
                 dd_fields["tool_usage"] = tool_usage
+            apply_project_metadata_to_span(root_span, session.project_metadata)
             self._set_hidden_metadata(root_span, **dd_fields)
             self._assembled_spans.append(root_span)
 
@@ -1486,16 +1493,7 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:claude-code-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-                f"tool_name:{actual_tool_name}",
-            ],
+            "tags": self.base_tags(session) + [f"tool_name:{actual_tool_name}"],
             "meta": {
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},
@@ -1574,6 +1572,9 @@ class ClaudeHooksAPI:
         """Dispatch a hook event to the appropriate handler."""
         session_id = body.get("session_id", "")
         hook_event_name = body.get("hook_event_name", "")
+        if session_id:
+            session = self._get_or_create_session(session_id)
+            self.update_session_project_metadata(session, body)
 
         handlers: Dict[str, Any] = {
             "SessionStart": self._handle_session_start,

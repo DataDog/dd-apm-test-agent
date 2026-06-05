@@ -82,18 +82,18 @@ def _backfill_one(lapdog_url: str, path: Path, cwd_filter: Optional[str]) -> boo
                 # Flush any buffered records first.
                 if pending:
                     for buffered in pending:
-                        if _post_record(lapdog_url, session_id, buffered, path):
+                        if _post_record(lapdog_url, session_id, buffered, path, is_backfill=True):
                             posted_any = True
                     pending.clear()
 
-                if _post_record(lapdog_url, session_id, record, path):
+                if _post_record(lapdog_url, session_id, record, path, is_backfill=True):
                     posted_any = True
     except OSError as exc:
         print(f"lapdog backfill codex: cannot read {path}: {exc}", file=sys.stderr, flush=True)
         return posted_any
 
     if posted_any and session_id:
-        _post_shutdown_complete(lapdog_url, session_id, path)
+        _post_shutdown_complete(lapdog_url, session_id, path, is_backfill=True)
     return posted_any
 
 

@@ -1,10 +1,12 @@
 """Tests for Claude Code ``step`` span kind — one span per inference cycle."""
 
+import subprocess
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
 
+from ddapm_test_agent._clock import monotonic_wall_ns
 from ddapm_test_agent.claude_hooks import ClaudeHooksAPI
 from ddapm_test_agent.claude_link_tracker import ClaudeLinkTracker
 from ddapm_test_agent.claude_proxy import ClaudeProxyAPI
@@ -114,10 +116,8 @@ def _simulate_llm_call(
     duration_ns: int = 10_000_000,
 ) -> Dict[str, Any]:
     """Call _create_llm_span directly (bypasses HTTP) and append the span."""
-    import time as _time
-
     if start_ns is None:
-        start_ns = _time.time_ns()
+        start_ns = monotonic_wall_ns()
     session = proxy_api._hooks_api._sessions.get(session_id)
     span = proxy_api._create_llm_span(
         session=session,
@@ -140,6 +140,23 @@ def _by_kind(spans: List[Dict[str, Any]], kind: str) -> List[Dict[str, Any]]:
 
 def _find_root(spans: List[Dict[str, Any]]) -> Dict[str, Any]:
     return [s for s in spans if s["parent_id"] == "undefined"][0]
+
+
+def _git(repo: Any, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+
+
+def _init_repo(path: Any, remote: str) -> str:
+    _git(path, "init")
+    _git(path, "config", "user.email", "qa@local")
+    _git(path, "config", "user.name", "QA")
+    _git(path, "remote", "add", "origin", remote)
+    (path / "README.md").write_text("# repo\n")
+    _git(path, "add", "-A")
+    _git(path, "commit", "-m", "initial commit")
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=path, check=True, capture_output=True, text=True
+    ).stdout.strip()
 
 
 # ------------------------------------------------------------------
@@ -466,6 +483,25 @@ def test_step_has_semantic_type_tag():
     assert "trajectory.semantic_type:agent_message" in step["tags"]
 
 
+def test_proxy_llm_span_uses_session_base_tags_with_git_commit_sha(tmp_path, monkeypatch):
+    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+
+    monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    _local_git_metadata.cache_clear()
+    sha = _init_repo(tmp_path, "https://github.com/DataDog/claude-project.git")
+
+    sid = "sess-proxy-commit-sha"
+    hooks_api, proxy_api, _ = _make_apis()
+
+    hooks_api._dispatch_hook({**_session_start(sid), "cwd": str(tmp_path)})
+    hooks_api._dispatch_hook({**_user_prompt(sid), "cwd": str(tmp_path)})
+    llm_span = _simulate_llm_call(proxy_api, sid, _response(text="ok"))
+
+    assert f"git.commit.sha:{sha}" in llm_span["tags"]
+    assert "git.repository_url:github.com/DataDog/claude-project" in llm_span["tags"]
+    assert "source:claude-code-proxy" in llm_span["tags"]
+
+
 def test_concurrent_subagents_each_have_steps():
     """Two concurrent subagents each get their own step, parented correctly."""
     sid = "sess-concurrent-steps"
@@ -642,9 +678,9 @@ def test_pretool_race_with_llm_span_creation():
     step = steps[0]
     assert len(tools) == 2
     for tool in tools:
-        assert tool["parent_id"] == step["span_id"], (
-            f"{tool['name']} parented to {tool['parent_id']!r}, expected step {step['span_id']!r}"
-        )
+        assert (
+            tool["parent_id"] == step["span_id"]
+        ), f"{tool['name']} parented to {tool['parent_id']!r}, expected step {step['span_id']!r}"
 
 
 def test_subagent_posttool_race_reparents_under_step():
@@ -715,8 +751,7 @@ def test_subagent_posttool_race_reparents_under_step():
     assert len(sub_tools) == 2
     for tool in sub_tools:
         assert tool["parent_id"] == sub_step["span_id"], (
-            f"{tool['name']} parented to {tool['parent_id']!r}, "
-            f"expected sub-agent step {sub_step['span_id']!r}"
+            f"{tool['name']} parented to {tool['parent_id']!r}, " f"expected sub-agent step {sub_step['span_id']!r}"
         )
 
 

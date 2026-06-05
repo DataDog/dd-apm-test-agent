@@ -43,6 +43,7 @@ def test_backfill_posts_records_and_shutdown(monkeypatch, tmp_path):
     assert result == 1
     # Expect session_meta, turn_context, two event_msg, shutdown_complete = 5 records.
     assert len(posts) == 5
+    assert all(post["backfill"] is True for post in posts)
     assert posts[0]["session_id"] == "sess-abc"
     assert posts[0]["record"]["type"] == "session_meta"
     assert posts[-1]["record"]["payload"]["type"] == "shutdown_complete"
