@@ -66,6 +66,57 @@ def _agent_start(
     return event
 
 
+async def test_backfill_session_is_idempotent_for_same_session(agent):
+    payload = {
+        "session_id": "pi-backfill-once",
+        "cwd": "/p",
+        "entries": [
+            {"type": "session", "id": "pi-backfill-once", "cwd": "/p"},
+            {
+                "type": "message",
+                "message": {
+                    "role": "user",
+                    "timestamp": 1778932800000,
+                    "content": [{"type": "text", "text": "hi"}],
+                },
+            },
+            {
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "timestamp": 1778932801000,
+                    "model": "claude-opus-4-6",
+                    "content": [{"type": "text", "text": "ok"}],
+                },
+            },
+        ],
+    }
+
+    first = await agent.post(
+        "/pi/hooks/backfill_session",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(payload),
+    )
+    assert first.status == 200
+    first_body = await first.json()
+    assert first_body["status"] == "ok"
+    assert first_body["spans_created"] == 3
+
+    second = await agent.post(
+        "/pi/hooks/backfill_session",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(payload),
+    )
+    assert second.status == 200
+    second_body = await second.json()
+    assert second_body["status"] == "skipped"
+    assert second_body["reason"] == "already_backfilled"
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = (await resp.json())["spans"]
+    assert len([s for s in spans if s.get("session_id") == "pi-backfill-once"]) == 3
+
+
 def _agent_end(session_id=SESSION, messages=None):
     return {"session_id": session_id, "hook_event_name": "agent_end", "messages": messages or []}
 

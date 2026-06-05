@@ -148,10 +148,14 @@ def _post_record(
     record: Dict[str, Any],
     source_path: Path,
     proxy_session_key: Optional[str] = None,
+    *,
+    is_backfill: bool = False,
 ) -> bool:
-    body = {"session_id": session_id, "record": record, "source_path": str(source_path)}
+    body: Dict[str, Any] = {"session_id": session_id, "record": record, "source_path": str(source_path)}
     if proxy_session_key:
         body["proxy_session_key"] = proxy_session_key
+    if is_backfill:
+        body["backfill"] = True
     try:
         response = _session.post(
             f"{lapdog_url.rstrip('/')}/codex/hooks",
@@ -189,6 +193,8 @@ def _post_shutdown_complete(
     session_id: str,
     source_path: Path,
     proxy_session_key: Optional[str] = None,
+    *,
+    is_backfill: bool = False,
 ) -> bool:
     return _post_record(
         lapdog_url,
@@ -196,6 +202,7 @@ def _post_shutdown_complete(
         _shutdown_record(),
         source_path,
         proxy_session_key=proxy_session_key,
+        is_backfill=is_backfill,
     )
 
 

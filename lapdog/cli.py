@@ -19,6 +19,9 @@ import uuid
 
 import requests
 
+from lapdog import backfill_claude
+from lapdog import backfill_codex
+from lapdog import backfill_pi
 from lapdog import codex_args
 from lapdog import tracer_inject
 from lapdog.lapdog_ascii_art import build_running_banner
@@ -26,7 +29,6 @@ from lapdog.paths import CODEX_APP_CURSOR_FILE
 from lapdog.paths import LAPDOG_DIR
 from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
-
 
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "uninstall"]
 LAPDOG_USAGE = (
@@ -108,7 +110,7 @@ def _uninstall_lapdog_claude_code_plugin() -> None:
 
     commands = [
         [claude_bin, "plugin", "uninstall", LAPDOG_PLUGIN_NAME],
-        [claude_bin, "plugin", "marketplace", "remove", LAPDOG_MARKETPLACE_SOURCE]
+        [claude_bin, "plugin", "marketplace", "remove", LAPDOG_MARKETPLACE_SOURCE],
     ]
     for cmd in commands:
         try:
@@ -250,9 +252,7 @@ def _start_lapdog(
     if sys.platform == "win32":
         # On Windows, start_new_session is a no-op. Use creationflags to truly
         # detach the child so it survives after the launcher process exits.
-        popen_kwargs["creationflags"] = (
-            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-        )
+        popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
     with open(log_path, "w") as log_file:
@@ -399,10 +399,15 @@ def _start_lapdog_detached(port: int, forward_data: bool) -> None:
         print("[lapdog] Failed to start lapdog in background.", file=sys.stderr)
         sys.exit(1)
 
-    # The child already verified lapdog is alive via _wait_for_lapdog before
-    # exiting, so we don't re-check here.  The forked child's exit can briefly
-    # disrupt the listening socket (shared fd), causing a transient connection
-    # refused that would make a re-check flaky.
+    # The forked child's exit can briefly disrupt the listening socket. Wait
+    # from the final parent too so immediate follow-up work, such as --backfill
+    # preflight POSTs, does not race the re-parented server.
+    for _ in range(50):
+        if _lapdog_alive(timeout=0.5):
+            return
+        time.sleep(0.2)
+    print("[lapdog] Lapdog failed to become reachable after background start.", file=sys.stderr)
+    sys.exit(1)
 
 
 def cmd_exec(app_cmd: List[str], forward_data: bool) -> None:
@@ -428,8 +433,23 @@ def cmd_claude(
     sub_cmd_args: List[str],
     forward_data: bool,
     install_plugin: bool,
+    backfill: bool = False,
 ) -> None:
-    """Ensure lapdog is running in background, then launch Claude with intercept."""
+    """Ensure lapdog is running in background, then launch Claude with intercept.
+
+    When ``backfill`` is True: ensure lapdog is running, replay historical
+    Claude Code transcripts from ``~/.claude/projects`` through
+    ``/claude/hooks``, and exit without launching Claude. ``forward_data``
+    is forced off and plugin installation is skipped during backfill.
+    """
+    if backfill:
+        port = _ensure_lapdog_running(forward_data=False, detached=True)
+        if port is None:
+            print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+            sys.exit(1)
+        backfill_claude.backfill(f"http://localhost:{port}")
+        return
+
     if install_plugin:
         _ensure_lapdog_claude_code_plugin_installed()
     _ensure_lapdog_running(forward_data, detached=True)
@@ -495,8 +515,22 @@ def _run_pi(args: Optional[List[str]] = None, port: Optional[int] = 8126) -> Non
     os.execve(pi_bin, [pi_bin] + args, env)
 
 
-def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
-    """Ensure lapdog is running, install the pi extension, then launch pi."""
+def cmd_pi(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) -> None:
+    """Ensure lapdog is running, install the pi extension, then launch pi.
+
+    When ``backfill`` is True: ensure lapdog is running, replay historical
+    Pi/OMP sessions through ``/pi/hooks``, and exit without launching pi.
+    The extension is not installed during backfill (no live capture to wire
+    up); ``forward_data`` is forced off.
+    """
+    if backfill:
+        port = _ensure_lapdog_running(forward_data=False, detached=True)
+        if port is None:
+            print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+            sys.exit(1)
+        backfill_pi.backfill(f"http://localhost:{port}")
+        return
+
     port = _ensure_lapdog_running(forward_data, detached=True)
     _install_pi_extension()
 
@@ -826,8 +860,23 @@ def _run_codex(
     os.execve(codex_bin, [codex_bin] + proxy_args + args, env)
 
 
-def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
-    """Ensure lapdog is running, start the Codex JSONL watcher, then launch Codex."""
+def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) -> None:
+    """Ensure lapdog is running, start the Codex JSONL watcher, then launch Codex.
+
+    When ``backfill`` is True: ensure lapdog is running, replay historical
+    rollouts from ``~/.codex/sessions`` through ``/codex/hooks``, and exit
+    without launching Codex. ``forward_data`` is ignored (forced off) so a
+    backfill never accidentally streams thousands of historical spans to
+    Datadog.
+    """
+    if backfill:
+        port = _ensure_lapdog_running(forward_data=False, detached=True)
+        if port is None:
+            print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+            sys.exit(1)
+        backfill_codex.backfill(f"http://localhost:{port}", cwd=codex_args.resolve_cwd(sub_cmd_args))
+        return
+
     port = _ensure_lapdog_running(forward_data, detached=True)
     if port is None:
         print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
@@ -930,7 +979,42 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        default=False,
+        help=(
+            "Ingest historical sessions from disk by replaying them through the local "
+            "agent's /<source>/hooks endpoint, then exit without launching the underlying "
+            "CLI. Sources: ~/.codex/sessions (codex), ~/.claude/projects (claude), "
+            "~/.pi/agent/sessions + ~/.omp/agent/sessions (pi)."
+        ),
+    )
+
     return parser.parse_args(args=lapdog_args)
+
+
+def _consume_backfill_arg(args: List[str]) -> Tuple[List[str], bool]:
+    """Remove a command-local ``--backfill`` flag before forwarding args.
+
+    Arguments after ``--`` belong to the underlying command and are left alone.
+    """
+    cleaned: List[str] = []
+    backfill = False
+    passthrough = False
+    for arg in args:
+        if passthrough:
+            cleaned.append(arg)
+            continue
+        if arg == "--":
+            passthrough = True
+            cleaned.append(arg)
+            continue
+        if arg == "--backfill":
+            backfill = True
+            continue
+        cleaned.append(arg)
+    return cleaned, backfill
 
 
 def main() -> None:
@@ -957,6 +1041,10 @@ def main() -> None:
 
     sub_cmd = remaining[0].lower()
     sub_cmd_args = remaining[1:]
+    command_backfill = False
+    if sub_cmd in ("claude", "pi", "codex"):
+        sub_cmd_args, command_backfill = _consume_backfill_arg(sub_cmd_args)
+    backfill = lapdog_parsed_args.backfill or command_backfill
 
     if sub_cmd not in LAPDOG_COMMANDS:
         cmd_exec(
@@ -977,11 +1065,20 @@ def main() -> None:
             sub_cmd_args=sub_cmd_args,
             forward_data=lapdog_parsed_args.forward,
             install_plugin=lapdog_parsed_args.install_plugin,
+            backfill=backfill,
         )
     elif sub_cmd == "pi":
-        cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+        cmd_pi(
+            sub_cmd_args=sub_cmd_args,
+            forward_data=lapdog_parsed_args.forward,
+            backfill=backfill,
+        )
     elif sub_cmd == "codex":
-        cmd_codex(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+        cmd_codex(
+            sub_cmd_args=sub_cmd_args,
+            forward_data=lapdog_parsed_args.forward,
+            backfill=backfill,
+        )
     elif sub_cmd == "uninstall":
         cmd_uninstall()
 

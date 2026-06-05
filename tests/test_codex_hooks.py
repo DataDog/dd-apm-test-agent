@@ -22,11 +22,14 @@ def codex_env_overrides(monkeypatch):
     monkeypatch.setenv("DD_USER_HANDLE", "shared-user")
 
 
-async def _post(agent, session_id, record):
+async def _post(agent, session_id, record, *, backfill=False):
+    body = {"session_id": session_id, "record": record}
+    if backfill:
+        body["backfill"] = True
     return await agent.post(
         "/codex/hooks",
         headers={"Content-Type": "application/json"},
-        data=json.dumps({"session_id": session_id, "record": record}),
+        data=json.dumps(body),
     )
 
 
@@ -1049,6 +1052,33 @@ async def test_codex_new_turn_forwards_completed_trace_before_repointing_session
     forwarded_turn_ids = {span["meta"]["metadata"].get("turn_id") for span in forwarded_spans}
     assert forwarded_turn_ids == {"turn-a"}
     assert "Codex spans" in descriptions[0]
+
+
+async def test_codex_backfill_does_not_forward_completed_trace(agent, monkeypatch):
+    forwarded_payloads = []
+
+    def fake_resolve_backend_target(self, *args, **kwargs):
+        return "http://backend.example", {}
+
+    async def fake_post_to_backend(self, url, headers, data, description):
+        forwarded_payloads.append(msgpack.unpackb(gzip.decompress(data), raw=False))
+
+    monkeypatch.setattr(ClaudeHooksAPI, "_resolve_backend_target", fake_resolve_backend_target)
+    monkeypatch.setattr(ClaudeHooksAPI, "_post_to_backend", fake_post_to_backend)
+
+    sid = "codex-backfill-no-forward"
+    await _post(agent, sid, _session_meta(sid), backfill=True)
+    await _post(agent, sid, _turn_context("turn-a"), backfill=True)
+    await _post(agent, sid, _event("user_message", message="historical"), backfill=True)
+    await _post(agent, sid, _event("agent_message", message="done"), backfill=True)
+    await _post(agent, sid, _turn_context("turn-b"), backfill=True)
+
+    assert forwarded_payloads == []
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    roots = [s for s in session_spans if s["parent_id"] == "undefined"]
+    historical_roots = [root for root in roots if root["meta"].get("input", {}).get("value") == "historical"]
+    assert len(historical_roots) == 1
 
 
 async def test_codex_user_message_forwards_previous_trace_without_turn_context(agent, monkeypatch):
