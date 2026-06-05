@@ -1,0 +1,3 @@
+---
+fixes:
+  - The sampling mechanism (field 7) should only be represented on the first span in a chunk

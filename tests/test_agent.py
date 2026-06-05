@@ -971,6 +971,57 @@ async def test_trace_v1_no_sampling_mechanism():
     assert result_span["type"] == "span-type"
     assert result_span["trace_id"] == 8675
 
+async def test_trace_v1_sampling_mechanism_only_on_first_span():
+    """sampling_mechanism (field 7) should set _dd.p.dm only on the first span in the chunk."""
+    data = msgpack.packb(
+        {
+            2: "hello",
+            11: [
+                {                                                                                                                                                                                 
+                    1: 1,                                                                                                                                                          
+                    4: [
+                        {
+                            # root span (first in chunk)
+                            1: "my-service",
+                            2: "root-span",
+                            3: 1,
+                            4: 1000,
+                            5: 0,
+                            6: 987,
+                            7: 150,
+                            8: False,                                                                                                                                                             
+                            9: [],                                                                                                                                                 
+                            10: "web",
+                        },
+                        {
+                            # child span (not first in chunk)
+                            1: "my-service",                                                                                                                                                      
+                            2: "child-span",                                                                                                                                       
+                            3: 1,
+                            4: 2000,
+                            5: 1000,
+                            6: 990,
+                            7: 50,                                                                                                                                                                
+                            8: False,                                                                                                                                              
+                            9: [],
+                            10: "web",
+                        },
+                    ],
+                    6: bytes([0x00] * 16),                                                                                                                                                        
+                    7: 1,  # samplingMechanism = 1 → _dd.p.dm = "-1"                                                                                                               
+                }
+            ],
+        }
+    )
+    result = decode_v1(data)
+    assert len(result) == 1                                                                                                                                                                       
+    assert len(result[0]) == 2                                                                                                                                                     
+    first_span = result[0][0]
+    child_span = result[0][1]
+    assert first_span["meta"].get("_dd.p.dm") == "-1"
+    assert child_span["meta"].get("_dd.p.dm") is None, (
+        "non-first spans in a chunk should not have _dd.p.dm set from samplingMechanism"
+    )
 
 async def test_trace_v1_span_event():
     data = msgpack.packb(
