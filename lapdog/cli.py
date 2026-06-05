@@ -19,6 +19,9 @@ import uuid
 
 import requests
 
+from lapdog import backfill_claude
+from lapdog import backfill_codex
+from lapdog import backfill_pi
 from lapdog import codex_args
 from lapdog import tracer_inject
 from lapdog.lapdog_ascii_art import build_running_banner
@@ -107,7 +110,7 @@ def _uninstall_lapdog_claude_code_plugin() -> None:
 
     commands = [
         [claude_bin, "plugin", "uninstall", LAPDOG_PLUGIN_NAME],
-        [claude_bin, "plugin", "marketplace", "remove", LAPDOG_MARKETPLACE_SOURCE]
+        [claude_bin, "plugin", "marketplace", "remove", LAPDOG_MARKETPLACE_SOURCE],
     ]
     for cmd in commands:
         try:
@@ -249,9 +252,7 @@ def _start_lapdog(
     if sys.platform == "win32":
         # On Windows, start_new_session is a no-op. Use creationflags to truly
         # detach the child so it survives after the launcher process exits.
-        popen_kwargs["creationflags"] = (
-            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-        )
+        popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
     with open(log_path, "w") as log_file:
@@ -446,8 +447,6 @@ def cmd_claude(
         if port is None:
             print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
             sys.exit(1)
-        from lapdog import backfill_claude
-
         backfill_claude.backfill(f"http://localhost:{port}")
         return
 
@@ -529,8 +528,6 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) 
         if port is None:
             print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
             sys.exit(1)
-        from lapdog import backfill_pi
-
         backfill_pi.backfill(f"http://localhost:{port}")
         return
 
@@ -877,8 +874,6 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = Fals
         if port is None:
             print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
             sys.exit(1)
-        from lapdog import backfill_codex
-
         backfill_codex.backfill(f"http://localhost:{port}", cwd=codex_args.resolve_cwd(sub_cmd_args))
         return
 

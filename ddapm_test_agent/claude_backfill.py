@@ -46,14 +46,6 @@ _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 
 
-def _format_trace_id() -> str:
-    return format_trace_id()
-
-
-def _format_span_id() -> str:
-    return format_span_id()
-
-
 def _parse_iso_ns(ts: Optional[str]) -> Optional[int]:
     """Parse an ISO-8601 ``timestamp`` into nanoseconds since epoch.
 
@@ -137,8 +129,8 @@ def _common_tags(session_id: str, source: str = "claude-code-backfill") -> List[
 
 def _new_turn(session_id: str, cwd: str, model: str, start_ns: int, prompt: str) -> Dict[str, Any]:
     """Open a new turn — generate trace + root agent span."""
-    trace_id = _format_trace_id()
-    root_span_id = _format_span_id()
+    trace_id = format_trace_id()
+    root_span_id = format_span_id()
     root_span: Dict[str, Any] = {
         "span_id": root_span_id,
         "trace_id": trace_id,
@@ -220,7 +212,7 @@ def _build_step_span(
         metadata["has_thinking"] = True
 
     return {
-        "span_id": _format_span_id(),
+        "span_id": format_span_id(),
         "trace_id": trace_id,
         "parent_id": parent_span_id,
         "name": f"inference-{index}",
@@ -275,7 +267,7 @@ def _build_llm_span(
     )
 
     return {
-        "span_id": _format_span_id(),
+        "span_id": format_span_id(),
         "trace_id": trace_id,
         "parent_id": parent_span_id,
         "name": model or "llm-call",
@@ -339,7 +331,7 @@ def _build_tool_span(
             tool_description = str(tool_input.get("description") or "")
         span_name = f"Task - {tool_description}" if tool_description else "Task"
         return {
-            "span_id": _format_span_id(),
+            "span_id": format_span_id(),
             "trace_id": trace_id,
             "parent_id": pending.get("parent_span_id", pending["llm_span_id"]),
             "name": span_name,
@@ -371,7 +363,7 @@ def _build_tool_span(
             "span_links": [],
         }
     return {
-        "span_id": _format_span_id(),
+        "span_id": format_span_id(),
         "trace_id": trace_id,
         "parent_id": pending.get("parent_span_id", pending["llm_span_id"]),
         "name": f"{tool_name}",

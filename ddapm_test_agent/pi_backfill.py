@@ -13,9 +13,7 @@ tool spans hang off their owning LLM span and are sized by the gap between
 the toolCall and the matching toolResult.
 """
 
-import getpass
-import os
-import socket
+from dataclasses import dataclass
 from typing import Any
 from typing import Dict
 from typing import List
@@ -25,18 +23,27 @@ from ddapm_test_agent.backfill_utils import backfill_metadata
 from ddapm_test_agent.backfill_utils import format_span_id
 from ddapm_test_agent.backfill_utils import format_trace_id
 from ddapm_test_agent.backfill_utils import to_text
+from ddapm_test_agent.claude_hooks import ClaudeHooksAPI
+from ddapm_test_agent.coding_agent_metadata import CodingAgentProjectMetadata
+from ddapm_test_agent.coding_agent_metadata import resolve_project_metadata
 from ddapm_test_agent.lapdog_app_names import PI_CODING_AGENT_ML_APP as _ML_APP
 
-_HOSTNAME = socket.gethostname()
-_USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
+_TAGS_API = ClaudeHooksAPI()
 
 
-def _format_trace_id() -> str:
-    return format_trace_id()
+@dataclass
+class _BackfillTagSession:
+    session_id: str
+    cwd: str
+    project_metadata: CodingAgentProjectMetadata
 
 
-def _format_span_id() -> str:
-    return format_span_id()
+def _tag_session(session_id: str, cwd: str) -> _BackfillTagSession:
+    return _BackfillTagSession(
+        session_id=session_id,
+        cwd=cwd,
+        project_metadata=resolve_project_metadata(cwd=cwd),
+    )
 
 
 def _parse_ts_ns(ts: Any) -> Optional[int]:
@@ -59,18 +66,8 @@ def _closed_duration_ns(start_ns: int, end_ns: int) -> int:
     return max(1, end_ns - start_ns)
 
 
-def _common_tags(session_id: str, source: str = "pi-backfill") -> List[str]:
-    return [
-        f"ml_app:{_ML_APP}",
-        f"service:{_ML_APP}",
-        "env:local",
-        f"source:{source}",
-        "language:python",
-        f"hostname:{_HOSTNAME}",
-        f"user_name:{_USERNAME}",
-        f"session_id:{session_id}",
-        "backfilled:true",
-    ]
+def _common_tags(session_id: str, cwd: str, source: str = "pi-backfill") -> List[str]:
+    return _TAGS_API.base_tags(_tag_session(session_id, cwd), source=source, ml_app=_ML_APP) + ["backfilled:true"]
 
 
 def _format_output_messages(content: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -126,8 +123,8 @@ def _user_text(message: Dict[str, Any]) -> str:
 
 
 def _new_turn(session_id: str, cwd: str, model: str, start_ns: int, prompt: str) -> Dict[str, Any]:
-    trace_id = _format_trace_id()
-    root_span_id = _format_span_id()
+    trace_id = format_trace_id()
+    root_span_id = format_span_id()
     root_span: Dict[str, Any] = {
         "span_id": root_span_id,
         "trace_id": trace_id,
@@ -141,7 +138,7 @@ def _new_turn(session_id: str, cwd: str, model: str, start_ns: int, prompt: str)
         "service": _ML_APP,
         "env": "local",
         "session_id": session_id,
-        "tags": _common_tags(session_id) + ([f"cwd:{cwd}"] if cwd else []),
+        "tags": _common_tags(session_id, cwd) + ([f"cwd:{cwd}"] if cwd else []),
         "meta": {
             "span": {"kind": "agent"},
             "kind": "agent",
@@ -181,6 +178,7 @@ def _build_step_span(
     end_ns: int,
     content: List[Dict[str, Any]],
     stop_reason: str,
+    cwd: str,
 ) -> Dict[str, Any]:
     tool_use_ids = [
         str(block.get("id"))
@@ -199,7 +197,7 @@ def _build_step_span(
         metadata["has_thinking"] = True
 
     return {
-        "span_id": _format_span_id(),
+        "span_id": format_span_id(),
         "trace_id": trace_id,
         "parent_id": parent_span_id,
         "name": f"inference-{index}",
@@ -211,7 +209,7 @@ def _build_step_span(
         "service": _ML_APP,
         "env": "local",
         "session_id": session_id,
-        "tags": _common_tags(session_id, source="pi-backfill-step") + ["trajectory.semantic_type:agent_message"],
+        "tags": _common_tags(session_id, cwd, source="pi-backfill-step") + ["trajectory.semantic_type:agent_message"],
         "meta": {
             "span": {"kind": "step"},
             "kind": "step",
@@ -232,6 +230,7 @@ def _build_llm_span(
     model: str,
     start_ns: int,
     duration_ns: int,
+    cwd: str,
 ) -> Dict[str, Any]:
     usage = msg.get("usage") or {}
     input_tokens = int(usage.get("input", 0) or 0)
@@ -242,7 +241,7 @@ def _build_llm_span(
     cost = usage.get("cost") or {}
     total_cost_usd = float(cost.get("total", 0) or 0)
     return {
-        "span_id": _format_span_id(),
+        "span_id": format_span_id(),
         "trace_id": trace_id,
         "parent_id": parent_span_id,
         "name": model or "llm-call",
@@ -254,7 +253,7 @@ def _build_llm_span(
         "service": _ML_APP,
         "env": "local",
         "session_id": session_id,
-        "tags": _common_tags(session_id, source="pi-backfill-llm"),
+        "tags": _common_tags(session_id, cwd, source="pi-backfill-llm"),
         "meta": {
             "span": {"kind": "llm"},
             "kind": "llm",
@@ -300,6 +299,7 @@ def _build_tool_span(
     pending: Dict[str, Any],
     tool_result_msg: Dict[str, Any],
     end_ns: int,
+    cwd: str,
 ) -> Dict[str, Any]:
     tool_name = pending.get("name", "unknown_tool")
     start_ns = pending["start_ns"]
@@ -307,7 +307,7 @@ def _build_tool_span(
     is_error = bool(tool_result_msg.get("isError", False))
     output_value = _tool_result_text(tool_result_msg)
     return {
-        "span_id": _format_span_id(),
+        "span_id": format_span_id(),
         "trace_id": trace_id,
         "parent_id": pending.get("parent_span_id", pending["llm_span_id"]),
         "name": tool_name,
@@ -319,7 +319,7 @@ def _build_tool_span(
         "service": _ML_APP,
         "env": "local",
         "session_id": session_id,
-        "tags": _common_tags(session_id, source="pi-backfill-tool"),
+        "tags": _common_tags(session_id, cwd, source="pi-backfill-tool"),
         "meta": {
             "span": {"kind": "tool"},
             "kind": "tool",
@@ -398,6 +398,7 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
                 end_ns=ts_ns,
                 content=content,
                 stop_reason=str(msg.get("stopReason") or ""),
+                cwd=cwd,
             )
             spans.append(step_span)
             duration_ns = _closed_duration_ns(llm_start_ns, ts_ns)
@@ -409,6 +410,7 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
                 model=model,
                 start_ns=llm_start_ns,
                 duration_ns=duration_ns,
+                cwd=cwd,
             )
             spans.append(llm_span)
             metrics = llm_span["metrics"]
@@ -443,7 +445,7 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
             pending = current["pending_tools"].pop(tc_id, None)
             if pending is None:
                 continue
-            tool_span = _build_tool_span(session_id, current["trace_id"], pending, msg, ts_ns)
+            tool_span = _build_tool_span(session_id, current["trace_id"], pending, msg, ts_ns, cwd=cwd)
             spans.append(tool_span)
             step_span = pending.get("step_span")
             if isinstance(step_span, dict):
