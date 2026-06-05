@@ -686,6 +686,7 @@ def test_cmd_pi_backfill_does_not_exec_pi():
 
 def test_cmd_codex_backfill_does_not_exec_codex(monkeypatch):
     monkeypatch.setattr(cli.os, "getcwd", lambda: "/some/cwd")
+    expected_cwd = codex_args.resolve_cwd(["--cd", "/some/cwd"])
     with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126) as ensure:
         with mock.patch("lapdog.cli._start_codex_watcher") as start_watcher:
             with mock.patch("lapdog.cli._run_codex") as run_codex:
@@ -695,6 +696,6 @@ def test_cmd_codex_backfill_does_not_exec_codex(monkeypatch):
     # forward_data is forced to False during backfill so historical sessions
     # don't accidentally stream to Datadog.
     ensure.assert_called_once_with(forward_data=False, detached=True)
-    run_backfill.assert_called_once_with("http://localhost:8126", cwd="/some/cwd")
+    run_backfill.assert_called_once_with("http://localhost:8126", cwd=expected_cwd)
     start_watcher.assert_not_called()
     run_codex.assert_not_called()
