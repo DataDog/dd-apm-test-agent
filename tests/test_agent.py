@@ -1045,7 +1045,7 @@ async def test_trace_v1_span_event():
                             15: "my-component",
                             16: 1,
                             12: [
-   {
+    {
        1: 9876,
        2: "event-name",
        3: [
@@ -1062,7 +1062,7 @@ async def test_trace_v1_span_event():
            4,
            123,
        ],
-   }
+    }
                             ],
                         }
                     ],
@@ -1181,7 +1181,7 @@ async def test_trace_v1_span_links():
                             15: "my-component",
                             16: 1,
                             11: [
-   {
+    {
        1: bytes(
            [
                0x00,
@@ -1219,7 +1219,7 @@ async def test_trace_v1_span_links():
        ],
        4: "some-tracestate",
        5: 1,
-   }
+    }
                             ],
                         }
                     ],
