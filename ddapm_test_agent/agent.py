@@ -1994,7 +1994,9 @@ def make_otlp_http_app(agent: Agent) -> web.Application:
     return app
 
 
-async def make_otlp_grpc_server_async(agent: Agent, http_port: int, grpc_port: int) -> Any:
+async def make_otlp_grpc_server_async(
+    agent: Agent, http_port: int, grpc_port: int, host: str = "127.0.0.1"
+) -> Any:
     """Create and start a separate GRPC server for OTLP endpoints that forwards to HTTP server."""
     # Define the servicer class only when GRPC is available
     server = grpc_aio.server()
@@ -2011,8 +2013,15 @@ async def make_otlp_grpc_server_async(agent: Agent, http_port: int, grpc_port: i
     traces_servicer = OTLPTracesGRPCServicer(http_port)
     add_TraceServiceServicer_to_server(traces_servicer, server)
 
-    # Setup and start the server
-    listen_addr = f"[::]:{grpc_port}"
+    # Setup and start the server. Preserve the historical dual-stack
+    # all-interfaces bind for the default; otherwise bind the requested host,
+    # wrapping IPv6 literals in brackets.
+    if host == "0.0.0.0":
+        listen_addr = f"[::]:{grpc_port}"
+    elif ":" in host:
+        listen_addr = f"[{host}]:{grpc_port}"
+    else:
+        listen_addr = f"{host}:{grpc_port}"
     server.add_insecure_port(listen_addr)
     await server.start()
 
@@ -2352,6 +2361,16 @@ def main(args: Optional[List[str]] = None) -> None:
     )
     parser.add_argument("-p", "--port", type=int, default=int(os.environ.get("PORT", 8126)))
     parser.add_argument(
+        "--host",
+        type=str,
+        default=os.environ.get("HOST"),
+        help=(
+            "Host/interface to bind all servers to. Defaults to 127.0.0.1 "
+            "(loopback only). Set to 0.0.0.0 to accept connections from other "
+            "hosts, e.g. when running in a container with a published port."
+        ),
+    )
+    parser.add_argument(
         "--otlp-http-port",
         type=int,
         default=int(os.environ.get("OTLP_HTTP_PORT", 4318)),
@@ -2543,6 +2562,13 @@ def main(args: Optional[List[str]] = None) -> None:
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
+    # Bind to loopback by default so the agent is not exposed on the network.
+    # Deployments that must accept off-host traffic (the Docker image, CI)
+    # opt in explicitly via --host/HOST (the published Dockerfile sets
+    # HOST=0.0.0.0).
+    if parsed_args.host is None:
+        parsed_args.host = "127.0.0.1"
+
     if parsed_args.version:
         print(_get_version())
         sys.exit(0)
@@ -2663,21 +2689,21 @@ def main(args: Optional[List[str]] = None) -> None:
 
         # Start GRPC server if available (async creation)
         otlp_grpc_server = await make_otlp_grpc_server_async(
-            agent, parsed_args.otlp_http_port, parsed_args.otlp_grpc_port
+            agent, parsed_args.otlp_http_port, parsed_args.otlp_grpc_port, host=parsed_args.host
         )
 
         # Create sites for both apps
         if apm_sock:
             apm_site = web.SockSite(apm_runner, apm_sock)
         else:
-            apm_site = web.TCPSite(apm_runner, port=parsed_args.port)
+            apm_site = web.TCPSite(apm_runner, host=parsed_args.host, port=parsed_args.port)
 
-        otlp_http_site = web.TCPSite(otlp_http_runner, port=parsed_args.otlp_http_port)
+        otlp_http_site = web.TCPSite(otlp_http_runner, host=parsed_args.host, port=parsed_args.otlp_http_port)
 
         # Create Web UI site if enabled
         web_ui_site = None
         if web_ui_runner is not None:
-            web_ui_site = web.TCPSite(web_ui_runner, port=parsed_args.web_ui_port)
+            web_ui_site = web.TCPSite(web_ui_runner, host=parsed_args.host, port=parsed_args.web_ui_port)
 
         # Start servers concurrently
         sites_to_start = [apm_site.start(), otlp_http_site.start()]
