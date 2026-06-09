@@ -1302,7 +1302,7 @@ class Agent:
         }
 
         extra_info = json.loads(os.environ.get("DD_AGENT_EXTRA_INFO", "{}"))
-        info |= extra_info
+        info.update(extra_info)
         org_prop_marker = request.app.get("org_prop_marker", "")
         if org_prop_marker:
             info["org_prop_marker"] = org_prop_marker
