@@ -324,6 +324,8 @@ ordering to be maintained.**
 
 - `DD_DISABLE_ERROR_RESPONSES` [`false`]: Set to `"true"` to disable Test-Agent `<Response 400>` when a Trace Check fails, instead sending a valid `<Response 200>`. Recommended for use with the `DD_POOL_TRACE_CHECK_FAILURES` env variable. Can also be set using the `--disable-error-responses=true` option.
 
+- `DD_AGENT_EXTRA_INFO` [`{}`]: Json string with an object to merge with the default '/info' response content. Fields here take priority over the defaults.
+
 
 ## HTTP API
 
