@@ -1300,6 +1300,9 @@ class Agent:
             "llmobs_data_forwarding": not request.app["disable_llmobs_data_forwarding"],
             "authenticated": request.app.get("authenticated", False),
         }
+
+        extra_info = json.loads(os.environ.get("DD_AGENT_EXTRA_INFO", "{}"))
+        info |= extra_info
         org_prop_marker = request.app.get("org_prop_marker", "")
         if org_prop_marker:
             info["org_prop_marker"] = org_prop_marker
