@@ -221,6 +221,42 @@ def _by_kind(spans, kind):
     return [span for span in spans if span.get("meta", {}).get("span", {}).get("kind") == kind]
 
 
+async def test_codex_subagent_spawn_parents_to_active_step(agent):
+    sid = "codex-subagent-parent-step"
+
+    await _post_codex(agent, sid, _session_meta(sid))
+    await _post_codex(agent, sid, _turn_context())
+    await _post_codex(agent, sid, _event("user_message", message="delegate"))
+    await _post_codex(
+        agent,
+        sid,
+        _event(
+            "collab_agent_spawn_begin",
+            timestamp="2026-05-11T17:00:02.500Z",
+            call_id="spawn-1",
+            sender_thread_id=sid,
+            prompt="inspect the repo",
+            new_agent_nickname="worker",
+        ),
+    )
+
+    spans = await _spans(agent, sid)
+    roots = [span for span in spans if span["parent_id"] == "undefined"]
+    steps = _by_kind(spans, "step")
+    subagents = [
+        span
+        for span in _by_kind(spans, "agent")
+        if span["parent_id"] != "undefined" and span["meta"].get("metadata", {}).get("subagent", {})
+    ]
+
+    assert len(roots) == 1
+    assert len(steps) == 1
+    assert len(subagents) == 1
+    assert steps[0]["parent_id"] == roots[0]["span_id"]
+    assert subagents[0]["name"] == "worker"
+    assert subagents[0]["parent_id"] == steps[0]["span_id"]
+
+
 def test_codex_proxy_caps_messages_and_links_reasoning_to_tool_calls():
     class FakeConfig:
         ml_app = "codex"

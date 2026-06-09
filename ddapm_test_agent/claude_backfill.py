@@ -17,10 +17,15 @@ pipeline does, so backfilled sessions are indistinguishable in the UI:
     each UserPromptSubmit opens a new trace).
   * One LLM span per ``type=assistant`` entry, with model + token usage +
     cost computed via ``claude_cost_tracker.compute_cost_metrics``.
-  * One tool span per tool_use / tool_result pair, parented to the LLM span
-    that requested it. Claude Code ``Task`` tool uses become child agent
-    spans so backfilled subagents are visible as agents rather than generic
-    tools.
+  * One tool span per tool_use / tool_result pair, parented to the step span
+    for that inference cycle. Claude Code ``Task`` tool uses become child
+    agent spans parented to the same step span, so backfilled subagents are
+    visible as agents rather than generic tools while matching live traces.
+  * Subagent (e.g. ``Explore``) conversations — which Claude writes to
+    separate ``<session-id>/subagents/agent-*.jsonl`` files and the client
+    bundles into the ``subagents`` payload — are nested *under* the ``Task``
+    agent span that launched them (matched by launch prompt), in the same
+    trace and session, instead of being backfilled as standalone sessions.
 
 Timestamps come from the entries' ``timestamp`` field (ISO-8601). Durations
 between adjacent entries are used as best-effort span durations.
@@ -308,6 +313,86 @@ def _build_llm_span(
     }
 
 
+def _tool_result_text(tool_result_block: Dict[str, Any]) -> str:
+    """Render a ``tool_result`` block's content as a plain string."""
+    output_value = tool_result_block.get("content", "")
+    if isinstance(output_value, list):
+        return " ".join((b.get("text", "") if isinstance(b, dict) else str(b)) for b in output_value)
+    if not isinstance(output_value, str):
+        return to_text(output_value)
+    return output_value
+
+
+def _build_subagent_span(
+    session_id: str,
+    trace_id: str,
+    pending: Dict[str, Any],
+    tool_result_block: Dict[str, Any],
+    end_ns: int,
+    agent_id: str = "",
+) -> Dict[str, Any]:
+    """Build the ``agent`` span for a subagent-spawning tool call (``Task``).
+
+    The subagent's own conversation lives in a separate transcript that
+    ``_subagent_to_spans`` attaches *under* this span, so a backfilled subagent
+    shows up as a nested agent in the same trace — matching the live pipeline —
+    rather than leaking into a separate session.
+    """
+    tool_name = pending.get("name", "Task")
+    tool_input = pending.get("input", {}) or {}
+    start_ns = pending["start_ns"]
+    duration = _closed_duration_ns(start_ns, end_ns)
+    is_error = bool(tool_result_block.get("is_error", False))
+    output_value = _tool_result_text(tool_result_block)
+
+    description = subagent_type = prompt = ""
+    if isinstance(tool_input, dict):
+        description = str(tool_input.get("description") or "")
+        subagent_type = str(tool_input.get("subagent_type") or "")
+        prompt = str(tool_input.get("prompt") or "")
+    label = description or subagent_type
+    span_name = f"{tool_name} - {label}" if label else tool_name
+
+    subagent_meta: Dict[str, Any] = {
+        "tool_use_id": pending.get("id", ""),
+        "description": description,
+        "prompt": prompt,
+    }
+    if subagent_type:
+        subagent_meta["agent_type"] = subagent_type
+    if agent_id:
+        subagent_meta["agent_id"] = agent_id
+
+    return {
+        "span_id": format_span_id(),
+        "trace_id": trace_id,
+        "parent_id": pending.get("parent_span_id", pending["llm_span_id"]),
+        "name": span_name,
+        "start_ns": start_ns,
+        "duration": duration,
+        "status": "error" if is_error else "ok",
+        "error": 1 if is_error else 0,
+        "ml_app": _ML_APP,
+        "service": _ML_APP,
+        "env": "local",
+        "session_id": session_id,
+        "tags": _common_tags(session_id, source="claude-code-backfill-subagent"),
+        "meta": {
+            "span": {"kind": "agent"},
+            "kind": "agent",
+            "input": {"value": to_text(tool_input)},
+            "output": {"value": output_value},
+            "metadata": {
+                "subagent": subagent_meta,
+                "_dd": backfill_metadata(),
+            },
+            **({"error": {"message": output_value}} if is_error else {}),
+        },
+        "metrics": {},
+        "span_links": [],
+    }
+
+
 def _build_tool_span(
     session_id: str,
     trace_id: str,
@@ -320,48 +405,7 @@ def _build_tool_span(
     start_ns = pending["start_ns"]
     duration = _closed_duration_ns(start_ns, end_ns)
     is_error = bool(tool_result_block.get("is_error", False))
-    output_value = tool_result_block.get("content", "")
-    if isinstance(output_value, list):
-        output_value = " ".join((b.get("text", "") if isinstance(b, dict) else str(b)) for b in output_value)
-    elif not isinstance(output_value, str):
-        output_value = to_text(output_value)
-    if tool_name == "Task":
-        tool_description = ""
-        if isinstance(tool_input, dict):
-            tool_description = str(tool_input.get("description") or "")
-        span_name = f"Task - {tool_description}" if tool_description else "Task"
-        return {
-            "span_id": format_span_id(),
-            "trace_id": trace_id,
-            "parent_id": pending.get("parent_span_id", pending["llm_span_id"]),
-            "name": span_name,
-            "start_ns": start_ns,
-            "duration": duration,
-            "status": "error" if is_error else "ok",
-            "error": 1 if is_error else 0,
-            "ml_app": _ML_APP,
-            "service": _ML_APP,
-            "env": "local",
-            "session_id": session_id,
-            "tags": _common_tags(session_id, source="claude-code-backfill-subagent"),
-            "meta": {
-                "span": {"kind": "agent"},
-                "kind": "agent",
-                "input": {"value": to_text(tool_input)},
-                "output": {"value": output_value},
-                "metadata": {
-                    "subagent": {
-                        "tool_use_id": pending.get("id", ""),
-                        "description": tool_description,
-                        "prompt": tool_input.get("prompt", "") if isinstance(tool_input, dict) else "",
-                    },
-                    "_dd": backfill_metadata(),
-                },
-                **({"error": {"message": output_value}} if is_error else {}),
-            },
-            "metrics": {},
-            "span_links": [],
-        }
+    output_value = _tool_result_text(tool_result_block)
     return {
         "span_id": format_span_id(),
         "trace_id": trace_id,
@@ -419,15 +463,260 @@ def _finalize_turn(turn: Dict[str, Any]) -> None:
         ]
 
 
-def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _norm_prompt(prompt: Any) -> str:
+    return prompt.strip() if isinstance(prompt, str) else ""
+
+
+def _subagent_prompt(entries: List[Dict[str, Any]]) -> str:
+    """Return the prompt a subagent was launched with.
+
+    It is the first ``user`` message in the subagent's transcript, which Claude
+    stores as a plain string; that same string is the parent ``Task`` tool_use's
+    ``input.prompt``, which is how the two are re-linked across files.
+    """
+    for entry in entries:
+        if entry.get("type") != "user":
+            continue
+        content = (entry.get("message") or {}).get("content")
+        if isinstance(content, str) and content:
+            return content
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                    return str(block["text"])
+        return ""
+    return ""
+
+
+def _first_ts_ns(entries: List[Dict[str, Any]]) -> Optional[int]:
+    for entry in entries:
+        if entry.get("type") in ("user", "assistant"):
+            ts_ns = _parse_iso_ns(entry.get("timestamp"))
+            if ts_ns is not None:
+                return ts_ns
+    return None
+
+
+def _build_subagent_index(
+    subagents: Optional[List[Dict[str, Any]]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Index subagent transcripts by their normalized launch prompt.
+
+    Several subagents can share a prompt, so each key maps to a list consumed
+    in order as matching ``Task`` calls are encountered.
+    """
+    index: Dict[str, List[Dict[str, Any]]] = {}
+    for sub in subagents or []:
+        sub_entries = sub.get("entries") or []
+        prompt = _norm_prompt(_subagent_prompt(sub_entries))
+        if not prompt or not sub_entries:
+            continue
+        index.setdefault(prompt, []).append({"agent_id": sub.get("agent_id") or "", "entries": sub_entries})
+    return index
+
+
+def _claim_subagent(
+    index: Dict[str, List[Dict[str, Any]]],
+    prompt: Any,
+) -> Optional[Dict[str, Any]]:
+    """Pop (consume) the next subagent transcript launched with ``prompt``."""
+    key = _norm_prompt(prompt)
+    if not key:
+        return None
+    bucket = index.get(key)
+    if not bucket:
+        return None
+    return bucket.pop(0)
+
+
+def _finish_pending_tool_result(
+    session_id: str,
+    trace_id: str,
+    pending: Dict[str, Any],
+    tool_result_block: Dict[str, Any],
+    end_ns: int,
+    subagent_index: Dict[str, List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Convert a completed tool_result into either a tool span or subagent tree."""
+    tool_input = pending.get("input") or {}
+    prompt = tool_input.get("prompt") if isinstance(tool_input, dict) else None
+    claim = _claim_subagent(subagent_index, prompt)
+
+    if pending.get("name") == "Task" or claim is not None:
+        agent_span = _build_subagent_span(
+            session_id,
+            trace_id,
+            pending,
+            tool_result_block,
+            end_ns,
+            agent_id=(claim or {}).get("agent_id", ""),
+        )
+        spans = [agent_span]
+        if claim is not None:
+            spans.extend(_subagent_to_spans(session_id, agent_span, trace_id, claim["entries"], subagent_index))
+    else:
+        spans = [_build_tool_span(session_id, trace_id, pending, tool_result_block, end_ns)]
+
+    step_span = pending.get("step_span")
+    if isinstance(step_span, dict):
+        step_span["duration"] = _closed_duration_ns(step_span["start_ns"], end_ns)
+    return spans
+
+
+def _subagent_to_spans(
+    session_id: str,
+    agent_span: Dict[str, Any],
+    trace_id: str,
+    entries: List[Dict[str, Any]],
+    subagent_index: Dict[str, List[Dict[str, Any]]],
+    *,
+    standalone: bool = False,
+) -> List[Dict[str, Any]]:
+    """Convert a subagent's transcript into spans nested under ``agent_span``.
+
+    Mirrors the per-turn logic in ``session_to_spans`` but uses ``agent_span``
+    as the root: the subagent's first ``user`` message is its launch prompt —
+    already captured as the agent span's input — so it does not open a new
+    turn. Subagents the transcript itself spawned are nested recursively. The
+    aggregated token usage / cost is rolled up onto ``agent_span``.
+
+    When ``standalone`` is True the agent span is a freshly-minted root (used as
+    a fallback when a transcript couldn't be matched to a parent ``Task`` call),
+    so its start/duration/output are derived from the transcript here.
+    """
+    spans: List[Dict[str, Any]] = []
+    parent_span_id = str(agent_span["span_id"])
+    pending_tools: Dict[str, Dict[str, Any]] = {}
+    previous_ts_ns: Optional[int] = None
+    start_ns: Optional[int] = None
+    end_ns: Optional[int] = None
+    input_tokens = output_tokens = total_tokens = 0
+    total_cost = 0.0
+    text_chunks: List[str] = []
+    model_name = ""
+    step_count = 0
+
+    for entry in entries:
+        etype = entry.get("type")
+        if etype not in ("user", "assistant"):
+            continue
+        msg = entry.get("message") or {}
+        content = msg.get("content")
+        ts_ns = _parse_iso_ns(entry.get("timestamp"))
+        if ts_ns is None:
+            continue
+        if start_ns is None:
+            start_ns = ts_ns
+
+        if etype == "user":
+            # A string user message is the launch prompt (already the agent
+            # span's input) — never open a new turn inside a subagent.
+            if isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict) or block.get("type") != "tool_result":
+                        continue
+                    tu_id = block.get("tool_use_id") or ""
+                    pending = pending_tools.pop(tu_id, None)
+                    if pending is None:
+                        continue
+                    spans.extend(
+                        _finish_pending_tool_result(session_id, trace_id, pending, block, ts_ns, subagent_index)
+                    )
+                    end_ns = ts_ns if end_ns is None else max(end_ns, ts_ns)
+        elif etype == "assistant" and isinstance(content, list):
+            raw_model = msg.get("model")
+            model = raw_model if isinstance(raw_model, str) and raw_model else model_name
+            if not model_name and model:
+                model_name = model
+            llm_start_ns = previous_ts_ns or end_ns or start_ns or ts_ns
+            step_span = _build_step_span(
+                session_id=session_id,
+                trace_id=trace_id,
+                parent_span_id=parent_span_id,
+                index=step_count,
+                start_ns=llm_start_ns,
+                end_ns=ts_ns,
+                content=content,
+                stop_reason=str(msg.get("stop_reason") or ""),
+            )
+            step_count += 1
+            spans.append(step_span)
+            llm_span = _build_llm_span(
+                session_id=session_id,
+                msg=msg,
+                content=content,
+                model=model,
+                start_ns=llm_start_ns,
+                duration_ns=_closed_duration_ns(llm_start_ns, ts_ns),
+                parent_span_id=step_span["span_id"],
+                trace_id=trace_id,
+            )
+            spans.append(llm_span)
+            metrics = llm_span["metrics"]
+            input_tokens += metrics.get("input_tokens", 0)
+            output_tokens += metrics.get("output_tokens", 0)
+            total_tokens += metrics.get("total_tokens", 0)
+            total_cost += float(metrics.get("estimated_total_cost", 0) or 0)
+            end_ns = ts_ns if end_ns is None else max(end_ns, ts_ns)
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
+                    txt = block.get("text") or ""
+                    if txt:
+                        text_chunks.append(txt)
+                elif btype == "tool_use":
+                    tu_id = block.get("id") or ""
+                    if tu_id:
+                        pending_tools[tu_id] = {
+                            "id": tu_id,
+                            "name": block.get("name", "unknown_tool"),
+                            "input": block.get("input", {}),
+                            "start_ns": ts_ns,
+                            "llm_span_id": llm_span["span_id"],
+                            "parent_span_id": step_span["span_id"],
+                            "step_span": step_span,
+                        }
+        previous_ts_ns = ts_ns
+
+    if total_tokens:
+        agent_span["metrics"]["input_tokens"] = input_tokens
+        agent_span["metrics"]["output_tokens"] = output_tokens
+        agent_span["metrics"]["total_tokens"] = total_tokens
+        if total_cost:
+            agent_span["metrics"]["estimated_total_cost"] = total_cost
+    if model_name:
+        agent_span["meta"]["model_name"] = model_name
+        agent_span["meta"].setdefault("model_provider", "anthropic")
+    if standalone and start_ns is not None:
+        agent_span["start_ns"] = start_ns
+        agent_span["duration"] = _closed_duration_ns(start_ns, end_ns or start_ns)
+        agent_span["meta"]["output"]["value"] = "\n".join(text_chunks).strip()
+    return spans
+
+
+def session_to_spans(
+    session_id: str,
+    cwd: str,
+    entries: List[Dict[str, Any]],
+    subagents: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     """Convert a session's transcript entries into a flat list of LLMObs spans.
 
     A new turn (and a new trace_id) is started for every user prompt — so a
     file with N user prompts produces N traces, matching the live behavior of
     ``claude_hooks._handle_user_prompt_submit``.
 
+    ``subagents`` carries the transcripts Claude wrote for any subagents this
+    session spawned (``Task`` / ``Explore`` etc.), which live in separate files
+    on disk. Each is nested under the ``Task`` agent span that launched it,
+    sharing the parent turn's trace, so subagents no longer split off into
+    their own sessions.
+
     Entries without a parseable ``timestamp`` are skipped.
     """
+    subagent_index = _build_subagent_index(subagents)
     spans: List[Dict[str, Any]] = []
     current: Optional[Dict[str, Any]] = None
     # Track the previous entry's timestamp so the LLM span can have a non-zero
@@ -460,11 +749,16 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
                         pending = current["pending_tools"].pop(tu_id, None)
                         if pending is None:
                             continue
-                        tool_span = _build_tool_span(session_id, current["trace_id"], pending, block, ts_ns)
-                        spans.append(tool_span)
-                        step_span = pending.get("step_span")
-                        if isinstance(step_span, dict):
-                            step_span["duration"] = _closed_duration_ns(step_span["start_ns"], ts_ns)
+                        spans.extend(
+                            _finish_pending_tool_result(
+                                session_id,
+                                current["trace_id"],
+                                pending,
+                                block,
+                                ts_ns,
+                                subagent_index,
+                            )
+                        )
                         current["end_ns"] = max(current["end_ns"], ts_ns)
                         current["tools_used"].add(pending.get("name", ""))
         elif etype == "assistant" and isinstance(content, list) and current is not None:
@@ -536,5 +830,26 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
 
     if current is not None:
         _finalize_turn(current)
+
+    # Any subagent transcript that never matched a Task call still belongs to
+    # this session — emit it as its own trace under the SAME session_id rather
+    # than letting it leak into a separate session (the original bug). Draining
+    # by popping handles nested subagents claimed during recursion.
+    while True:
+        orphan = next((bucket.pop(0) for bucket in subagent_index.values() if bucket), None)
+        if orphan is None:
+            break
+        orphan_entries = orphan["entries"]
+        start_ns = _first_ts_ns(orphan_entries)
+        if start_ns is None:
+            continue
+        root = _new_turn(session_id, cwd, "", start_ns, _subagent_prompt(orphan_entries))["root_span"]
+        agent_id = orphan.get("agent_id") or ""
+        if agent_id:
+            root["meta"]["metadata"]["_dd"]["agent_id"] = agent_id
+        spans.append(root)
+        spans.extend(
+            _subagent_to_spans(session_id, root, root["trace_id"], orphan_entries, subagent_index, standalone=True)
+        )
 
     return spans
