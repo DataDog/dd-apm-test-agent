@@ -1301,8 +1301,11 @@ class Agent:
             "authenticated": request.app.get("authenticated", False),
         }
 
-        extra_info = json.loads(os.environ.get("DD_AGENT_EXTRA_INFO", "{}"))
-        info.update(extra_info)
+        try:
+            extra_info = json.loads(os.environ.get("DD_AGENT_EXTRA_INFO", "{}"))
+            info.update(extra_info)
+        except json.JSONDecodeError:
+            log.error("DD_AGENT_EXTRA_INFO is malformed json! Ignoring it...")
         org_prop_marker = request.app.get("org_prop_marker", "")
         if org_prop_marker:
             info["org_prop_marker"] = org_prop_marker
