@@ -855,7 +855,7 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
         else:
             raise TypeError("Unknown key %r in v1 trace chunk" % k)
 
-    for span in spans:
+    for i, span in enumerate(spans):
         if "metrics" not in span:
             span["metrics"] = {}
         if "meta" not in span:
@@ -863,7 +863,7 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
         span["trace_id"] = trace_id
         if trace_id_high != 0:
             span["meta"]["_dd.p.tid"] = format(trace_id_high, "016x")
-        if sampling_mechanism is not None and sampling_mechanism != 0:
+        if i == 0 and sampling_mechanism is not None and sampling_mechanism != 0:
             span["meta"]["_dd.p.dm"] = "-" + str(sampling_mechanism)
         if origin != "":
             span["meta"]["_dd.origin"] = origin
