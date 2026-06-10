@@ -515,6 +515,11 @@ def _build_trace_aggregates(
 
     result: Dict[str, Dict[str, Any]] = {}
     for tid, trace_spans in by_trace.items():
+        llm_spans = [
+            span
+            for span in trace_spans
+            if span.get("meta", {}).get("span", {}).get("kind") == "llm"
+        ]
         num_evaluations_failed = sum(
             sum(
                 1
@@ -527,10 +532,10 @@ def _build_trace_aggregates(
         result[tid] = {
             "num_evaluations_failed": num_evaluations_failed,
             "number_of_errors": number_of_errors,
-            "input_tokens": sum(span.get("metrics", {}).get("input_tokens", 0) for span in trace_spans),
-            "output_tokens": sum(span.get("metrics", {}).get("output_tokens", 0) for span in trace_spans),
-            "total_tokens": sum(span.get("metrics", {}).get("total_tokens", 0) for span in trace_spans),
-            "estimated_total_cost": sum(span.get("metrics", {}).get("estimated_total_cost", 0) for span in trace_spans),
+            "input_tokens": sum(span.get("metrics", {}).get("input_tokens", 0) for span in llm_spans),
+            "output_tokens": sum(span.get("metrics", {}).get("output_tokens", 0) for span in llm_spans),
+            "total_tokens": sum(span.get("metrics", {}).get("total_tokens", 0) for span in llm_spans),
+            "estimated_total_cost": sum(span.get("metrics", {}).get("estimated_total_cost", 0) for span in llm_spans),
         }
     return result
 

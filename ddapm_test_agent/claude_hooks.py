@@ -27,7 +27,10 @@ from aiohttp import web
 from aiohttp.web import Request
 import msgpack
 
+from ddapm_test_agent import claude_backfill
+
 from ._clock import monotonic_wall_ns
+from .backfill_utils import has_backfilled_session
 from .claude_cost_tracker import COST_METRIC_KEYS
 from .claude_link_tracker import ClaudeLinkTracker
 from .coding_agent_metadata import CodingAgentProjectMetadata
@@ -37,6 +40,7 @@ from .coding_agent_metadata import extract_git_repository_url
 from .coding_agent_metadata import git_commit_sha_tags
 from .coding_agent_metadata import project_metadata_tags
 from .coding_agent_metadata import resolve_project_metadata
+from .lapdog_app_names import CLAUDE_CODE_ML_APP
 from .llmobs_event_platform import with_cors
 
 log = logging.getLogger(__name__)
@@ -44,7 +48,7 @@ log = logging.getLogger(__name__)
 _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 _USER_HANDLE = os.environ.get("DD_USER_HANDLE", "")
-_ML_APP = os.environ.get("DD_CLAUDE_CODE_ML_APP", "claude-code")
+_ML_APP = CLAUDE_CODE_ML_APP
 
 # Models with 1M token context windows (native, no beta header needed).
 # All other models default to 200k.
@@ -1826,10 +1830,57 @@ class ClaudeHooksAPI:
         """Handle GET /claude/hooks/raw — return all raw received events for debugging."""
         return web.json_response({"events": self._raw_events})
 
+    async def handle_backfill_session(self, request: Request) -> web.Response:
+        """Ingest a historical Claude transcript as a batch of spans.
+
+        Body: ``{"session_id": str, "cwd": str, "entries": [transcript-jsonl entries]}``.
+
+        The live hooks pipeline isn't a good fit for backfill because it only
+        carries lifecycle metadata — the LLM call payload (model, content,
+        usage) lives in the proxy, which never fires for historical data.
+        This endpoint instead converts the entries directly into the same
+        span shape the live pipeline produces and appends them to
+        ``_assembled_spans``.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        session_id = body.get("session_id") or ""
+        cwd = body.get("cwd") or ""
+        entries = body.get("entries") or []
+        subagents = body.get("subagents") or []
+        if not session_id or not isinstance(entries, list):
+            return web.json_response({"error": "session_id and entries required"}, status=400)
+
+        if has_backfilled_session(self._assembled_spans, session_id):
+            return web.json_response(
+                {
+                    "status": "skipped",
+                    "reason": "already_backfilled",
+                    "spans_created": 0,
+                    "traces_created": 0,
+                }
+            )
+
+        try:
+            spans = claude_backfill.session_to_spans(session_id, cwd, entries, subagents=subagents)
+        except Exception as exc:
+            # A single malformed transcript shouldn't propagate as a 500 that
+            # closes the connection — return a structured failure so the
+            # client logs it and moves on.
+            log.warning("claude backfill_session failed for %s: %r", session_id, exc)
+            return web.json_response({"status": "error", "error": repr(exc)}, status=400)
+        self._assembled_spans.extend(spans)
+        traces = len({s.get("trace_id") for s in spans})
+        return web.json_response({"status": "ok", "spans_created": len(spans), "traces_created": traces})
+
     def get_routes(self) -> List[web.RouteDef]:
         """Return the routes for this API."""
         return [
             web.post("/claude/hooks", with_cors(self.handle_hook)),
+            web.post("/claude/hooks/backfill_session", with_cors(self.handle_backfill_session)),
             web.route("*", "/claude/hooks/sessions", with_cors(self.handle_sessions)),
             web.route("*", "/claude/hooks/spans", with_cors(self.handle_spans)),
             web.route("*", "/claude/hooks/raw", with_cors(self.handle_raw_events)),

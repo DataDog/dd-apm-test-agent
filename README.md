@@ -24,6 +24,10 @@ The test agent can be installed from PyPI:
     # HTTP on port 8126, OTLP HTTP on port 4318, OTLP GRPC on port 4317, with the web-ui enabled
     ddapm-test-agent --port=8126 --otlp-http-port=4318 --otlp-grpc-port=4317 --web-ui-port=8080
 
+The agent binds to `127.0.0.1` (loopback) by default. To accept connections from
+other hosts, pass `--host 0.0.0.0` or set `HOST=0.0.0.0`. The Docker image sets
+this for you so its published ports work.
+
 or from Docker:
 
     # Run the test agent and mount the snapshot directory
@@ -319,6 +323,8 @@ ordering to be maintained.**
 - `DD_POOL_TRACE_CHECK_FAILURES` [`false`]: Set to `"true"` to pool Trace Check failures that occured within Test-Agent memory. These failures can be queried later using the `/test/trace_check/failures` endpoint. Can also be set using the `--pool-trace-check-failures=true` option.
 
 - `DD_DISABLE_ERROR_RESPONSES` [`false`]: Set to `"true"` to disable Test-Agent `<Response 400>` when a Trace Check fails, instead sending a valid `<Response 200>`. Recommended for use with the `DD_POOL_TRACE_CHECK_FAILURES` env variable. Can also be set using the `--disable-error-responses=true` option.
+
+- `DD_AGENT_EXTRA_INFO` [`{}`]: Json string with an object to merge with the default '/info' response content. Fields here take priority over the defaults.
 
 
 ## HTTP API

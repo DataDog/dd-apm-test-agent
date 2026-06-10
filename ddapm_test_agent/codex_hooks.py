@@ -1942,12 +1942,14 @@ class CodexHooksAPI:
 
         self._raw_events.append(body)
         self._last_session_id = session_id
+        is_backfill = body.get("backfill") is True
         completed = self._dispatch(session_id, record, proxy_session_key=proxy_session_key)
-        for completed_session_id, completed_trace_id in completed:
-            await self._hooks_api._forward_trace_to_backend(
-                completed_session_id, trace_id=completed_trace_id, span_source="Codex"
-            )
-            await self._hooks_api._forward_eval_metrics_to_backend(completed_session_id, trace_id=completed_trace_id)
+        if not is_backfill:
+            for completed_session_id, completed_trace_id in completed:
+                await self._hooks_api._forward_trace_to_backend(
+                    completed_session_id, trace_id=completed_trace_id, span_source="Codex"
+                )
+                await self._hooks_api._forward_eval_metrics_to_backend(completed_session_id, trace_id=completed_trace_id)
         return web.json_response({"status": "ok"})
 
     async def handle_raw_events(self, request: Request) -> web.Response:

@@ -938,7 +938,10 @@ def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
         elif k == V1SpanKeys.SPAN_KIND:
             if not isinstance(v, int):
                 raise TypeError("Span kind must be an integer, got type %r." % type(v))
-            if v == 1:
+            if v == 0:
+                # OTEL span kind 0 is "unspecified"; keep the v0.4-like output tag absent.
+                spanKind = ""
+            elif v == 1:
                 spanKind = "internal"
             elif v == 2:
                 spanKind = "server"

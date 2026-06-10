@@ -3,6 +3,10 @@ import os
 import subprocess
 import tempfile
 
+from ddapm_test_agent.claude_hooks import ClaudeHooksAPI
+from ddapm_test_agent.claude_link_tracker import ClaudeLinkTracker
+from ddapm_test_agent.claude_proxy import ClaudeProxyAPI
+
 
 async def _post_hook(agent, event):
     return await agent.post(
@@ -63,6 +67,53 @@ async def test_hook_session_creates_agent_span(agent):
     events = data["result"]["events"]
     trace_ids = {e["event"]["trace_id"] for e in events}
     assert root["trace_id"] in trace_ids
+
+
+async def test_backfill_session_is_idempotent_for_same_session(agent):
+    payload = {
+        "session_id": "sess-backfill-once",
+        "cwd": "/p",
+        "entries": [
+            {
+                "type": "user",
+                "timestamp": "2026-05-11T12:00:00.000Z",
+                "message": {"role": "user", "content": "do thing"},
+            },
+            {
+                "type": "assistant",
+                "timestamp": "2026-05-11T12:00:01.000Z",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-opus-4-7",
+                    "content": [{"type": "text", "text": "ok"}],
+                },
+            },
+        ],
+    }
+
+    first = await agent.post(
+        "/claude/hooks/backfill_session",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(payload),
+    )
+    assert first.status == 200
+    first_body = await first.json()
+    assert first_body["status"] == "ok"
+    assert first_body["spans_created"] == 3
+
+    second = await agent.post(
+        "/claude/hooks/backfill_session",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(payload),
+    )
+    assert second.status == 200
+    second_body = await second.json()
+    assert second_body["status"] == "skipped"
+    assert second_body["reason"] == "already_backfilled"
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = (await resp.json())["spans"]
+    assert len([s for s in spans if s.get("session_id") == "sess-backfill-once"]) == 3
 
 
 async def test_hook_tool_use_creates_tool_span(agent):
@@ -804,3 +855,55 @@ async def test_concurrent_subagents_parent_correctly(agent):
             f"Subagent {agent_span['name']} has parent_id={agent_span['parent_id']} "
             f"but expected root span_id={root['span_id']}"
         )
+
+
+def test_instrumented_live_task_subagent_parents_to_spawning_step():
+    link_tracker = ClaudeLinkTracker()
+    hooks = ClaudeHooksAPI(link_tracker=link_tracker)
+    proxy = ClaudeProxyAPI(hooks_api=hooks, link_tracker=link_tracker)
+    session_id = "sess-live-step-subagent"
+
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "SessionStart", "lapdog_instrumented": True})
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "UserPromptSubmit", "user_prompt": "Run a task"})
+    session = hooks._sessions[session_id]
+    llm_span = proxy._create_llm_span(
+        session,
+        {"model": "claude-opus-4-7", "messages": [{"role": "user", "content": "Run a task"}]},
+        {
+            "model": "claude-opus-4-7",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "content": [
+                {"type": "text", "text": "Launching an Explore subagent."},
+                {
+                    "type": "tool_use",
+                    "id": "task-1",
+                    "name": "Task",
+                    "input": {"description": "Explore", "prompt": "go look"},
+                },
+            ],
+        },
+        start_ns=1_000,
+        duration_ns=500,
+    )
+    hooks._assembled_spans.append(llm_span)
+
+    hooks._dispatch_hook(
+        {
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Task",
+            "tool_use_id": "task-1",
+            "tool_input": {"description": "Explore", "prompt": "go look"},
+        }
+    )
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "SubagentStart", "agent_type": "Task"})
+
+    spans = [s for s in hooks._assembled_spans if s.get("session_id") == session_id]
+    by_id = {s["span_id"]: s for s in spans}
+    step = next(s for s in spans if s["meta"]["span"]["kind"] == "step")
+    subagent = next(s for s in spans if s["meta"]["span"]["kind"] == "agent" and s["parent_id"] != "undefined")
+
+    assert llm_span["parent_id"] == step["span_id"]
+    assert subagent["name"] == "Task - Explore"
+    assert subagent["parent_id"] == step["span_id"]
+    assert by_id[subagent["parent_id"]]["meta"]["span"]["kind"] == "step"
