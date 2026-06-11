@@ -1052,6 +1052,26 @@ def _convert_v1_span_link_attributes(attr: Any, string_table: List[str]) -> Dict
     return v4_attributes
 
 
+def _convert_v1_scalar_any_value(value_type: Any, value: Any, string_table: List[str]) -> Optional[Dict[str, Any]]:
+    """Map a v1 scalar AnyValue to its v0.4 typed-scalar representation ``{"type": <int>,
+    "<kind>_value": <value>}``, or return ``None`` for non-scalar value types
+    (ARRAY/BYTES/KEY_VALUE_LIST) so the caller can handle them.
+
+    Shared by span-event attribute decoding and array-element decoding to keep the
+    STRING/BOOL/INT/DOUBLE mapping in one place. Note the v0.4 ``type`` codes differ from the v1
+    wire codes (e.g. INT is 4 on the wire but 2 in v0.4).
+    """
+    if value_type == V1AnyValueKeys.STRING:
+        return {"type": 0, "string_value": _get_and_add_string(string_table, value)}
+    elif value_type == V1AnyValueKeys.BOOL:
+        return {"type": 1, "bool_value": value}
+    elif value_type == V1AnyValueKeys.INT:
+        return {"type": 2, "int_value": value}
+    elif value_type == V1AnyValueKeys.DOUBLE:
+        return {"type": 3, "double_value": value}
+    return None
+
+
 def _convert_v1_span_event_attributes(attr: Any, string_table: List[str]) -> Dict[str, Dict[str, Any]]:
     """
     Convert a v1 span event attributes to a v4 span event attributes. Unfortunately we need multiple implementations that
@@ -1063,32 +1083,50 @@ def _convert_v1_span_event_attributes(attr: Any, string_table: List[str]) -> Dic
         raise TypeError("Attribute list must have a multiple of 3 elements, got %r." % len(attr))
     attributes: Dict[str, Dict[str, Any]] = {}
     for i in range(0, len(attr), 3):
-        v4_attr_value: Dict[str, Any] = {}
         key = _get_and_add_string(string_table, attr[i])
         value_type = attr[i + 1]
         value = attr[i + 2]
-        if value_type == V1AnyValueKeys.STRING:
-            v4_attr_value["type"] = 0
-            v4_attr_value["string_value"] = _get_and_add_string(string_table, value)
-        elif value_type == V1AnyValueKeys.BOOL:
-            v4_attr_value["type"] = 1
-            v4_attr_value["bool_value"] = value
-        elif value_type == V1AnyValueKeys.DOUBLE:
-            v4_attr_value["type"] = 3
-            v4_attr_value["double_value"] = value
-        elif value_type == V1AnyValueKeys.INT:
-            v4_attr_value["type"] = 2  # Yes the constants are different here
-            v4_attr_value["int_value"] = value
+        scalar = _convert_v1_scalar_any_value(value_type, value, string_table)
+        if scalar is not None:
+            attributes[key] = scalar
+        elif value_type == V1AnyValueKeys.ARRAY:
+            attributes[key] = {"type": 4, "array_value": _convert_v1_array_value(value, string_table)}
         elif value_type == V1AnyValueKeys.BYTES:
             raise NotImplementedError("Bytes values are not supported yet.")
-        elif value_type == V1AnyValueKeys.ARRAY:
-            raise NotImplementedError("Array of strings values are not supported yet.")
         elif value_type == V1AnyValueKeys.KEY_VALUE_LIST:
             raise NotImplementedError("Key value list values are not supported yet.")
         else:
             raise TypeError("Unknown attribute value type %r." % value_type)
-        attributes[key] = v4_attr_value
     return attributes
+
+
+def _convert_v1_array_value(value: Any, string_table: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """Convert a v1 wire array attribute value into the v0.4 ``array_value`` representation.
+
+    The v1 wire format encodes an array attribute value as a flat list alternating item type and
+    item value: ``[item_type_0, item_value_0, item_type_1, item_value_1, ...]``.
+    Each item is converted to the same typed-scalar shape used elsewhere for v0.4 span event
+    attributes (``{"type": <int>, "<kind>_value": <value>}``).
+
+    Heterogeneous arrays are accepted on purpose: v1 attribute values derive from OTLP ``ArrayValue``
+    and the tracer (e.g. dd-trace-java's TraceMapperV1) emits mixed-type arrays. This is deliberately
+    more permissive than the v0.4 ``verify_span`` check that requires a single element type — that
+    check guards the raw v0.4/v0.7 verification path, which v1 decoding does not go through.
+    """
+    if not isinstance(value, list):
+        raise TypeError("Array value must be a list, got type %r." % type(value))
+    if len(value) % 2 != 0:
+        raise TypeError("Array value list must have a multiple of 2 elements, got %r." % len(value))
+    values: List[Dict[str, Any]] = []
+    for i in range(0, len(value), 2):
+        item_type = value[i]
+        item_value = value[i + 1]
+        v4_item = _convert_v1_scalar_any_value(item_type, item_value, string_table)
+        if v4_item is None:
+            # TraceMapperV1 only emits scalar array items (no nested arrays/bytes/key-value lists).
+            raise TypeError("Unsupported v1 array item value type %r." % item_type)
+        values.append(v4_item)
+    return {"values": values}
 
 
 def _convert_v1_attributes(
