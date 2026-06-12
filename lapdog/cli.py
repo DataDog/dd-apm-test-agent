@@ -15,9 +15,9 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
+import urllib.error
+import urllib.request
 import uuid
-
-import requests
 
 from lapdog import backfill_claude
 from lapdog import backfill_codex
@@ -159,6 +159,19 @@ def _url_for_port(port: int) -> str:
     return f"http://127.0.0.1:{port}/info"
 
 
+def _http_get_status(url: str, timeout: float) -> int:
+    """GET url and return the HTTP status code.
+
+    Uses an empty ProxyHandler so macOS _scproxy.get_proxy_settings is never
+    called.  That call crashes inside a forked child on Python 3.13 / macOS
+    because the parent process has internal threads at fork time, leaving
+    CoreFoundation's logging lock state corrupt in the child.
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(url, timeout=timeout) as resp:
+        return int(resp.status)
+
+
 def _lapdog_alive(timeout: float = 2.0) -> bool:
     """Check if the lapdog we started is running (pid file + process exists + /info responds)."""
     pid, port = _read_pid_file()
@@ -167,8 +180,7 @@ def _lapdog_alive(timeout: float = 2.0) -> bool:
     if not _process_exists(pid):
         return False
     try:
-        r = requests.get(_url_for_port(port), timeout=timeout)
-        return r.status_code == 200
+        return _http_get_status(_url_for_port(port), timeout=timeout) == 200
     except Exception:
         return False
 
@@ -268,8 +280,7 @@ def _port_in_use(port: Optional[int] = None) -> bool:
     if port is None:
         port = _resolved_port()
     try:
-        r = requests.get(_url_for_port(port), timeout=1)
-        return r.status_code == 200
+        return _http_get_status(_url_for_port(port), timeout=1) == 200
     except Exception:
         return False
 
@@ -358,9 +369,11 @@ def cmd_status() -> None:
         sys.exit(1)
     url = _url_for_port(port)
     try:
-        requests.get(url, timeout=2).raise_for_status()
+        status = _http_get_status(url, timeout=2)
+        if status >= 400:
+            raise OSError(f"HTTP {status}")
         print(f"[lapdog] Lapdog running at {url} (pid={pid}, logs: {_log_file_path()})", file=sys.stderr)
-    except requests.RequestException as e:
+    except Exception as e:
         print(f"[lapdog] Lapdog not reachable at {url}: {e}", file=sys.stderr)
         sys.exit(1)
 

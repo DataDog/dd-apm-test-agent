@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    lapdog: Fixes an issue where the Python process would occasionally crash when running lapdog
