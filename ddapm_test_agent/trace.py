@@ -47,6 +47,7 @@ SPAN_REQUIRED_ATTRS = [
 ]
 
 MetricType = Union[int, float]
+SpanEventAttributeValue = Union[str, bool, int, float, List[Union[str, bool, int, float]]]
 
 
 class SpanLink(TypedDict):
@@ -582,7 +583,7 @@ def add_span_event(
     s: Span,
     time_unix_nano: int = 1730405656000000000,
     name: str = "event",
-    attributes: Optional[Dict[str, Dict[str, Any]]] = None,
+    attributes: Optional[Dict[str, SpanEventAttributeValue]] = None,
 ) -> Span:
     if "span_events" not in s:
         s["span_events"] = []

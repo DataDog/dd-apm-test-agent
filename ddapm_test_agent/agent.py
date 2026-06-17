@@ -2700,7 +2700,7 @@ def main(args: Optional[List[str]] = None) -> None:
 
         # Always expose the APM receiver over TCP. When a UDS socket is also
         # configured, bind both so clients can reach the agent over either transport.
-        apm_sites = [web.TCPSite(apm_runner, host=parsed_args.host, port=parsed_args.port)]
+        apm_sites: List[web.BaseSite] = [web.TCPSite(apm_runner, host=parsed_args.host, port=parsed_args.port)]
         if apm_sock:
             apm_sites.append(web.SockSite(apm_runner, apm_sock))
 
