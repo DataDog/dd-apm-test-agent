@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.request
 
+import aiohttp
 import msgpack
 import pytest
 
@@ -1279,3 +1280,36 @@ async def test_traces_via_uds(
     assert resp.status == 200
     received_traces = await resp.json()
     assert received_traces == v04_reference_http_trace_payload_data_raw
+
+
+@pytest.mark.skipif(platform.system() == "Windows", reason="Unix domain sockets are not supported on Windows")
+async def test_tcp_available_when_uds_configured(
+    testagent,
+    testagent_port,
+    testagent_uds_socket_path,
+    v04_reference_http_trace_payload_headers,
+    v04_reference_http_trace_payload_data,
+    v04_reference_http_trace_payload_data_raw,
+):
+    """Configuring a UDS socket must not drop the TCP listener.
+
+    Regression test: setting DD_APM_RECEIVER_SOCKET used to replace the TCP
+    listener with a socket-only listener, so clients (and container
+    healthchecks) reaching the agent over the published port got connection
+    refused. The agent must bind both transports simultaneously.
+    """
+    assert testagent_uds_socket_path.exists(), f"UDS socket does not exist at {testagent_uds_socket_path}"
+
+    base_url = f"http://127.0.0.1:{testagent_port}"
+    async with aiohttp.ClientSession() as tcp_session:
+        resp = await tcp_session.put(
+            f"{base_url}/v0.4/traces",
+            headers=v04_reference_http_trace_payload_headers,
+            data=v04_reference_http_trace_payload_data,
+        )
+        assert resp.status == 200
+
+        resp = await tcp_session.get(f"{base_url}/test/traces")
+        assert resp.status == 200
+        received_traces = await resp.json()
+        assert received_traces == v04_reference_http_trace_payload_data_raw

@@ -2698,11 +2698,11 @@ def main(args: Optional[List[str]] = None) -> None:
             agent, parsed_args.otlp_http_port, parsed_args.otlp_grpc_port, host=parsed_args.host
         )
 
-        # Create sites for both apps
+        # Always expose the APM receiver over TCP. When a UDS socket is also
+        # configured, bind both so clients can reach the agent over either transport.
+        apm_sites = [web.TCPSite(apm_runner, host=parsed_args.host, port=parsed_args.port)]
         if apm_sock:
-            apm_site = web.SockSite(apm_runner, apm_sock)
-        else:
-            apm_site = web.TCPSite(apm_runner, host=parsed_args.host, port=parsed_args.port)
+            apm_sites.append(web.SockSite(apm_runner, apm_sock))
 
         otlp_http_site = web.TCPSite(otlp_http_runner, host=parsed_args.host, port=parsed_args.otlp_http_port)
 
@@ -2712,13 +2712,16 @@ def main(args: Optional[List[str]] = None) -> None:
             web_ui_site = web.TCPSite(web_ui_runner, host=parsed_args.host, port=parsed_args.web_ui_port)
 
         # Start servers concurrently
-        sites_to_start = [apm_site.start(), otlp_http_site.start()]
+        sites_to_start = [site.start() for site in apm_sites]
+        sites_to_start.append(otlp_http_site.start())
         if web_ui_site is not None:
             sites_to_start.append(web_ui_site.start())
 
         await asyncio.gather(*sites_to_start)
 
         print(f"======== Running APM server on port {parsed_args.port} ========")
+        if apm_sock:
+            print(f"======== Running APM server on UDS socket {parsed_args.trace_uds_socket} ========")
         print(f"======== Running OTLP HTTP server on port {parsed_args.otlp_http_port} ========")
         print(f"======== Running OTLP GRPC server on port {parsed_args.otlp_grpc_port} ========")
         if web_ui_site is not None:
