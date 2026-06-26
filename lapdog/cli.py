@@ -52,18 +52,30 @@ LAPDOG_MARKETPLACE_SOURCE = "DataDog/dd-apm-test-agent"
 
 
 def _run(
-    bin: str,
+    bin_path: str,
     argv: List[str],
     env: Optional[Dict[str, str]] = None,
+    search_path: bool = False,
 ) -> None:
     """Run the command, platform-dependant"""
     run_env = env if env is not None else os.environ
 
     if sys.platform == "win32":
-        proc = subprocess.Popen(argv, stdin=None, stdout=None, stderr=None)
+        kwargs = {
+            "env": run_env,
+            "stdin": None,
+            "stdout": None,
+            "stderr": None,
+        }
+
+        if not search_path:
+            kwargs["executable"] = bin_path
+
+        proc = subprocess.Popen(argv, **kwargs)
         sys.exit(proc.wait())
     else:
-        os.execv(bin, argv, run_env)
+        os_exec = os.execvpe if search_path else os.execve
+        os_exec(bin_path, argv, run_env)
 
 
 def _lapdog_claude_code_plugin_installed() -> bool:
@@ -337,7 +349,7 @@ def _run_claude(args: Optional[List[str]] = None) -> None:
     existing = os.environ.get("BUN_OPTIONS", "")
     os.environ["BUN_OPTIONS"] = f"--preload {mjs_path} {existing}".strip()
 
-    _run(bin=claude_bin, argv=([claude_bin] + args))
+    _run(bin_path=claude_bin, argv=([claude_bin] + args))
 
 
 def cmd_start(sub_cmd_args: List[str], forward_data: bool) -> None:
@@ -457,7 +469,7 @@ def cmd_exec(app_cmd: List[str], forward_data: bool) -> None:
         sys.exit(1)
 
     env = tracer_inject.build_instrumented_env(port=port)
-    _run(bin=resolved, argv=app_cmd, env=env)
+    _run(bin_path=resolved, argv=app_cmd, env=env, search_path=True)
 
 
 def cmd_claude(
@@ -543,7 +555,7 @@ def _run_pi(args: Optional[List[str]] = None, port: Optional[int] = 8126) -> Non
         print("[lapdog] 'pi' not found in PATH", file=sys.stderr)
         sys.exit(1)
     env = {**os.environ, "LAPDOG_URL": f"http://localhost:{port}"}
-    _run(bin=pi_bin, argv=([pi_bin] + args), env=env)
+    _run(bin_path=pi_bin, argv=([pi_bin] + args), env=env)
 
 
 def cmd_pi(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) -> None:
@@ -848,7 +860,7 @@ def _start_codex_watcher(
         else:
             popen_kwargs["start_new_session"] = True
 
-        process = subprocess.Popen(**popen_kwargs)
+        process = subprocess.Popen(args, **popen_kwargs)
     if pid_path:
         with open(pid_path, "w") as f:
             f.write(f"{process.pid}\n")
@@ -893,7 +905,7 @@ def _run_codex(
                 "[lapdog] Codex proxy capture requires OPENAI_API_KEY; continuing with JSONL-only tracing.",
                 file=sys.stderr,
             )
-    _run(bin=codex_bin, argv=([codex_bin] + proxy_args + args), env=env)
+    _run(bin_path=codex_bin, argv=([codex_bin] + proxy_args + args), env=env)
 
 
 def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) -> None:
