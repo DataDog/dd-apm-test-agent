@@ -849,7 +849,7 @@ def _start_codex_watcher(
     if include_all_cwds:
         args += ["--include-all-cwds", "--cursor-path", CODEX_APP_CURSOR_FILE]
     with open(log_path, "a") as log_file:
-        popen_kwargs = {
+        popen_kwargs: Dict[str, Any] = {
             "stdin": subprocess.DEVNULL,
             "stdout": log_file,
             "stderr": subprocess.STDOUT
