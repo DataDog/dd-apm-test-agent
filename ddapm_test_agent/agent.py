@@ -2052,6 +2052,7 @@ def make_app(
     vcr_provider_map: str,
     vcr_ignore_headers: str,
     vcr_json_body_normalizers: str,
+    vcr_body_regex_normalizers: str,
     dd_site: str,
     dd_api_key: Optional[str],
     disable_llmobs_data_forwarding: bool,
@@ -2204,6 +2205,7 @@ def make_app(
     app["vcr_provider_map"] = vcr_provider_map
     app["vcr_ignore_headers"] = vcr_ignore_headers
     app["vcr_json_body_normalizers"] = vcr_json_body_normalizers
+    app["vcr_body_regex_normalizers"] = vcr_body_regex_normalizers
     app["dd_site"] = dd_site
     app["dd_api_key"] = dd_api_key
     app["org_prop_marker"] = org_prop_marker
@@ -2525,6 +2527,12 @@ def main(args: Optional[List[str]] = None) -> None:
         help="Comma-separated list of normalizers to apply when recording VCR cassettes.",
     )
     parser.add_argument(
+        "--vcr-body-regex-normalizers",
+        type=str,
+        default=os.environ.get("VCR_BODY_REGEX_NORMALIZERS", ""),
+        help="Comma-separated list of regex patterns to replace with <normalized> in the body before hashing.",
+    )
+    parser.add_argument(
         "--web-ui-port",
         type=int,
         default=int(os.environ.get("WEB_UI_PORT", 0)),
@@ -2619,6 +2627,7 @@ def main(args: Optional[List[str]] = None) -> None:
         vcr_provider_map=parsed_args.vcr_provider_map,
         vcr_ignore_headers=parsed_args.vcr_ignore_headers,
         vcr_json_body_normalizers=parsed_args.vcr_json_body_normalizers,
+        vcr_body_regex_normalizers=parsed_args.vcr_body_regex_normalizers,
         dd_site=parsed_args.dd_site,
         dd_api_key=parsed_args.dd_api_key,
         disable_llmobs_data_forwarding=parsed_args.disable_llmobs_data_forwarding,
