@@ -1710,14 +1710,9 @@ class Agent:
             log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
 
         request["_headers"] = headers
-        if request.path in self._forward_endpoints:
-            if request.app["disable_data_forwarding"]:
-                return await handler(request)
-            # forward the request then call the handler
-            return await self._forward_request_to_agent(request, handler)
-        else:
-            # Call the original handler and do nothing
+        if request.path not in self._forward_endpoints or request.app["disable_data_forwarding"]:
             return await handler(request)
+        return await self._forward_request_to_agent(request, handler)
 
     async def _forward_request_to_agent(self, request: Request, handler: _Handler) -> web.Response:
         """Forward all requests to the agent_url if set."""
@@ -2236,8 +2231,9 @@ def make_app(
 
     # Keep the LLMObs-specific key for API compatibility. It now represents the
     # shared LLMObs/APM forwarding state.
-    app["disable_llmobs_data_forwarding"] = not forwarding_enabled
-    app["disable_data_forwarding"] = not forwarding_enabled
+    data_forwarding_disabled = not forwarding_enabled
+    app["disable_llmobs_data_forwarding"] = data_forwarding_disabled
+    app["disable_data_forwarding"] = data_forwarding_disabled
     app["forward_traces_to_v2_intake"] = forwarding_enabled and not agent_url
     app["lapdog_mode"] = lapdog_mode
 

@@ -18,6 +18,7 @@ import msgpack
 from typing_extensions import NotRequired
 from typing_extensions import TypedDict
 
+
 SpanId = int
 TraceId = int
 
@@ -1168,6 +1169,15 @@ def _verify_v07_payload(data: Any) -> v04TracePayload:
         raise TypeError("Trace payload must contain a 'chunks' key.")
     if not isinstance(data["chunks"], list):
         raise TypeError("Trace payload 'chunks' must be a list.")
+
+    payload_meta = {
+        "env": data.get("env"),
+        "version": data.get("app_version"),
+        "language": data.get("language_name"),
+        "_dd.tracer_version": data.get("tracer_version"),
+        "runtime-id": data.get("runtime_id"),
+        "_dd.hostname": data.get("hostname"),
+    }
     traces: List[List[Span]] = []
     for chunk in data["chunks"]:
         trace = _verify_v07_chunk(chunk)
@@ -1178,17 +1188,9 @@ def _verify_v07_payload(data: Any) -> v04TracePayload:
                 meta.setdefault("_dd.origin", chunk["origin"])
             if "priority" in chunk:
                 metrics.setdefault("_sampling_priority_v1", chunk["priority"])
-
-            for payload_key, meta_key in (
-                ("env", "env"),
-                ("app_version", "version"),
-                ("language_name", "language"),
-                ("tracer_version", "_dd.tracer_version"),
-                ("runtime_id", "runtime-id"),
-                ("hostname", "_dd.hostname"),
-            ):
-                if data.get(payload_key):
-                    meta.setdefault(meta_key, data[payload_key])
+            for key, value in payload_meta.items():
+                if value:
+                    meta.setdefault(key, value)
         traces.append(trace)
     return cast(v04TracePayload, traces)
 

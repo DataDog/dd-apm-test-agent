@@ -9,8 +9,8 @@ from ddapm_test_agent.trace_forwarding import trace_intake_url
 
 
 def test_trace_intake_url():
-    assert trace_intake_url("DATADOGHQ.COM") == ("https://public-trace-http-intake.logs.datadoghq.com/api/v2/spans")
-    assert trace_intake_url("us2.ddog-gov.com") == ("https://browser-intake-us2-ddog-gov.com/api/v2/spans")
+    assert trace_intake_url("DATADOGHQ.COM") == "https://public-trace-http-intake.logs.datadoghq.com/api/v2/spans"
+    assert trace_intake_url("us2.ddog-gov.com") == "https://browser-intake-us2-ddog-gov.com/api/v2/spans"
 
 
 def test_build_v2_trace_payload_preserves_spans_and_adds_minimal_tags():

@@ -15,6 +15,7 @@ from .trace import SpanLink
 from .trace import Trace
 from .trace import v04TracePayload
 
+
 log = logging.getLogger(__name__)
 
 
@@ -65,10 +66,6 @@ def _hex_id(value: Optional[int]) -> str:
     return f"{(value or 0) & 0xFFFFFFFFFFFFFFFF:016x}"
 
 
-def _trace_id(span: Span) -> str:
-    return _hex_id(span["trace_id"])
-
-
 def _span_link_to_v2(link: SpanLink) -> Dict[str, Any]:
     forwarded: Dict[str, Any] = {}
     if "attributes" in link:
@@ -97,10 +94,12 @@ def _span_to_v2(
     forwarding_tags: Mapping[str, str],
 ) -> Dict[str, Any]:
     span_values: Mapping[str, Any] = span
-    forwarded = {
-        key: span_values[key] for key in _V2_SPAN_FIELDS if key in span_values and span_values[key] is not None
-    }
-    forwarded["trace_id"] = _trace_id(span)
+    forwarded: Dict[str, Any] = {}
+    for key in _V2_SPAN_FIELDS:
+        value = span_values.get(key)
+        if value is not None:
+            forwarded[key] = value
+    forwarded["trace_id"] = _hex_id(span["trace_id"])
     forwarded["parent_id"] = _hex_id(span.get("parent_id"))
     forwarded["span_id"] = _hex_id(span["span_id"])
 
@@ -175,7 +174,7 @@ async def forward_traces_to_v2_intake(
     }
     async with ClientSession(timeout=ClientTimeout(total=10)) as session:
         async with session.post(url, headers=headers, data=json.dumps(payload).encode("utf-8")) as response:
-            if response.status < 200 or response.status >= 300:
+            if not 200 <= response.status < 300:
                 log.warning(
                     "Failed to forward traces to the v2 intake: %s %s",
                     response.status,
