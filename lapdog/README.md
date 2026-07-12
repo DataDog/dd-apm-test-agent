@@ -213,15 +213,12 @@ is lost.
 
 Useful flags:
 
-- `--forward` — also forward LLMObs events and captured APM traces to Datadog. Traces use
-  the agentless `/api/v2/spans` intake with minimal stats/root/top-level tagging. Requires both
+- `--forward` — also forward LLMObs events to Datadog. Requires both
   `DD_API_KEY` and `DD_SITE` to be set in the environment when Lapdog
   starts (e.g. `DD_SITE=datadoghq.com`, `datadoghq.eu`, `us3.datadoghq.com`,
   `ddog-gov.com`, …). If either is missing, forwarding is silently skipped
   — the tracer still gets a 200 OK, but nothing reaches Datadog. Setting
   `DD_AGENT_URL` instead bypasses both and forwards through that agent.
-  Set `FORWARD_TRACE_TAGS=key:value,other:value` to add tags to every directly
-  forwarded APM span.
 - `--no-plugin-install` — skip the `lapdog claude` auto-install of the Claude
   Code plugin.
 - `-p <port>` / `--port <port>` — bind to a different port (default `8126`).

@@ -2,38 +2,13 @@ import json
 import subprocess
 from unittest import mock
 
-from lapdog import cli
 from lapdog import codex_args
+from lapdog import cli
 
 
 def test_codex_command_is_registered():
     assert "codex" in cli.LAPDOG_COMMANDS
     assert "codex" in cli.LAPDOG_USAGE
-
-
-def test_start_lapdog_uses_shared_data_forwarding_switch(tmp_path):
-    process = mock.Mock(pid=1234)
-    with mock.patch.dict(cli.os.environ, {"DD_AGENT_URL": "", "DD_TRACE_AGENT_URL": ""}):
-        with mock.patch("lapdog.cli._log_file_path", return_value=str(tmp_path / "lapdog.log")):
-            with mock.patch("lapdog.cli._pid_file_path", return_value=str(tmp_path / "lapdog.pid")):
-                with mock.patch("lapdog.cli.subprocess.Popen", return_value=process) as popen:
-                    with mock.patch("lapdog.cli._wait_for_lapdog"):
-                        cli._start_lapdog(8126, forward_data=True)
-
-    args = popen.call_args.args[0]
-    assert "--disable-data-forwarding" not in args
-    assert "--disable-llmobs-data-forwarding" not in args
-
-
-def test_start_lapdog_disables_all_forwarding_without_forward(tmp_path):
-    process = mock.Mock(pid=1234)
-    with mock.patch("lapdog.cli._log_file_path", return_value=str(tmp_path / "lapdog.log")):
-        with mock.patch("lapdog.cli._pid_file_path", return_value=str(tmp_path / "lapdog.pid")):
-            with mock.patch("lapdog.cli.subprocess.Popen", return_value=process) as popen:
-                with mock.patch("lapdog.cli._wait_for_lapdog"):
-                    cli._start_lapdog(8126, forward_data=False)
-
-    assert "--disable-data-forwarding" in popen.call_args.args[0]
 
 
 def test_cmd_codex_starts_watcher_and_execs_codex():
