@@ -753,6 +753,8 @@ def decode_v07(data: bytes) -> v04TracePayload:
         droppedTrace: NotRequired[bool]
     """
     payload = msgpack.unpackb(data)
+    if isinstance(payload, dict) and isinstance(payload.get("chunks"), list):
+        _flexible_decode_meta_struct([chunk.get("spans") for chunk in payload["chunks"] if isinstance(chunk, dict)])
     return _verify_v07_payload(payload)
 
 

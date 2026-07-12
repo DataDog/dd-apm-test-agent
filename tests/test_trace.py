@@ -240,6 +240,29 @@ def test_decode_v04_meta_struct_llmobs_roundtrip():
     assert span["meta_struct"]["_llmobs"] == llmobs_payload
 
 
+def test_decode_v07_meta_struct_roundtrip():
+    payload = msgpack.packb(
+        {
+            "chunks": [
+                {
+                    "spans": [
+                        {
+                            "name": "openai.request",
+                            "span_id": 1234,
+                            "trace_id": 4321,
+                            "meta_struct": {"custom": msgpack.packb({"nested": "value"})},
+                        }
+                    ]
+                }
+            ]
+        }
+    )
+
+    span = decode_v07(payload)[0][0]
+
+    assert span["meta_struct"]["custom"] == {"nested": "value"}
+
+
 @pytest.mark.parametrize(
     "trace",
     [

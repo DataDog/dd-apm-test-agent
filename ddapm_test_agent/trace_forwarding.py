@@ -11,6 +11,7 @@ from aiohttp import ClientSession
 from aiohttp import ClientTimeout
 
 from .trace import Span
+from .trace import SpanLink
 from .trace import Trace
 from .trace import v04TracePayload
 
@@ -65,16 +66,20 @@ def _hex_id(value: Optional[int]) -> str:
 
 
 def _trace_id(span: Span) -> str:
-    low = _hex_id(span["trace_id"])
-    high = str((span.get("meta") or {}).get("_dd.p.tid", ""))
-    if len(high) == 16:
-        try:
-            int(high, 16)
-        except ValueError:
-            pass
-        else:
-            return high.lower() + low
-    return low
+    return _hex_id(span["trace_id"])
+
+
+def _span_link_to_v2(link: SpanLink) -> Dict[str, Any]:
+    forwarded: Dict[str, Any] = {}
+    if "attributes" in link:
+        forwarded["attributes"] = link["attributes"]
+    if link.get("tracestate") is not None:
+        forwarded["tracestate"] = link["tracestate"]
+    if link.get("flags") is not None:
+        forwarded["flags"] = link["flags"]
+    forwarded["trace_id"] = _hex_id(link.get("trace_id_high")) + _hex_id(link["trace_id"])
+    forwarded["span_id"] = _hex_id(link["span_id"])
+    return forwarded
 
 
 def _is_top_level(span: Span, spans_by_id: Mapping[int, Span]) -> bool:
@@ -113,6 +118,10 @@ def _span_to_v2(
         forwarded["meta"] = meta
     if metrics:
         forwarded["metrics"] = metrics
+    if span.get("span_links"):
+        forwarded["span_links"] = [_span_link_to_v2(link) for link in span["span_links"]]
+    if span.get("span_events"):
+        forwarded["span_events"] = span["span_events"]
     return forwarded
 
 

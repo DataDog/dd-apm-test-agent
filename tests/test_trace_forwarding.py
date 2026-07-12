@@ -62,7 +62,8 @@ def test_build_v2_trace_payload_preserves_spans_and_adds_minimal_tags():
 
     assert traces == original
     spans = payload["traces"][0]["spans"]
-    assert spans[0]["trace_id"] == "1234567890abcdef0000000000abcdef"
+    # The JSON intake keeps the low 64-bit ID here; _dd.p.tid carries the high bits.
+    assert spans[0]["trace_id"] == "0000000000abcdef"
     assert spans[0]["span_id"] == "0000000000000001"
     assert spans[0]["parent_id"] == "0000000000000000"
     assert spans[0]["meta"] == {
@@ -80,6 +81,50 @@ def test_build_v2_trace_payload_preserves_spans_and_adds_minimal_tags():
     assert all(span["meta"]["forwarded_by"] == "test-agent" for span in spans)
     assert all(span["meta"]["shared"] == "configured" for span in spans)
     assert all("_dd.origin" not in span.get("meta", {}) for span in spans[1:])
+
+
+def test_build_v2_trace_payload_preserves_span_links_and_events():
+    span_events = [
+        {
+            "name": "request finished",
+            "time_unix_nano": 123,
+            "attributes": {"result": {"type": 0, "string_value": "ok"}},
+        }
+    ]
+    traces = [
+        [
+            {
+                "trace_id": 1,
+                "span_id": 2,
+                "name": "request",
+                "span_links": [
+                    {
+                        "trace_id": 3,
+                        "trace_id_high": 4,
+                        "span_id": 5,
+                        "attributes": {"reason": "scheduled_by"},
+                        "tracestate": "vendor=value",
+                        "flags": 1,
+                    }
+                ],
+                "span_events": span_events,
+            }
+        ]
+    ]
+
+    forwarded = build_v2_trace_payload(traces)["traces"][0]["spans"][0]
+
+    assert {"span_links", "span_events"} <= forwarded.keys()
+    assert forwarded["span_links"] == [
+        {
+            "trace_id": "00000000000000040000000000000003",
+            "span_id": "0000000000000005",
+            "attributes": {"reason": "scheduled_by"},
+            "tracestate": "vendor=value",
+            "flags": 1,
+        }
+    ]
+    assert forwarded["span_events"] == span_events
 
 
 async def test_forward_traces_to_v2_intake(aiohttp_server, monkeypatch):
