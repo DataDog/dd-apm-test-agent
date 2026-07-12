@@ -18,7 +18,6 @@ import msgpack
 from typing_extensions import NotRequired
 from typing_extensions import TypedDict
 
-
 SpanId = int
 TraceId = int
 
@@ -1167,10 +1166,28 @@ def _verify_v07_payload(data: Any) -> v04TracePayload:
         raise TypeError("Trace payload must contain a 'chunks' key.")
     if not isinstance(data["chunks"], list):
         raise TypeError("Trace payload 'chunks' must be a list.")
-    # TODO:ban pull out the tags and other things that should be applied to all spans
     traces: List[List[Span]] = []
     for chunk in data["chunks"]:
-        traces.append(_verify_v07_chunk(chunk))
+        trace = _verify_v07_chunk(chunk)
+        for span in trace:
+            meta = span.setdefault("meta", {})
+            metrics = span.setdefault("metrics", {})
+            if chunk.get("origin"):
+                meta.setdefault("_dd.origin", chunk["origin"])
+            if "priority" in chunk:
+                metrics.setdefault("_sampling_priority_v1", chunk["priority"])
+
+            for payload_key, meta_key in (
+                ("env", "env"),
+                ("app_version", "version"),
+                ("language_name", "language"),
+                ("tracer_version", "_dd.tracer_version"),
+                ("runtime_id", "runtime-id"),
+                ("hostname", "_dd.hostname"),
+            ):
+                if data.get(payload_key):
+                    meta.setdefault(meta_key, data[payload_key])
+        traces.append(trace)
     return cast(v04TracePayload, traces)
 
 

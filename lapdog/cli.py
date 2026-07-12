@@ -4,8 +4,8 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -253,7 +253,7 @@ def _start_lapdog(
     args = [sys.executable, "-m", "ddapm_test_agent.agent", "--lapdog-mode"]
 
     if not forward_data:
-        args.append("--disable-llmobs-data-forwarding")
+        args.append("--disable-data-forwarding")
 
     if extra_args:
         args += extra_args

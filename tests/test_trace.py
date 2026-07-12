@@ -5,6 +5,7 @@ import pytest
 
 from ddapm_test_agent.trace import bfs_order
 from ddapm_test_agent.trace import decode_v04
+from ddapm_test_agent.trace import decode_v07
 from ddapm_test_agent.trace import dfs_order
 from ddapm_test_agent.trace import root_span
 
@@ -82,6 +83,33 @@ def test_trace_chunk():
 )
 def test_decode_v04(content_type, payload):
     assert decode_v04(content_type, payload, False) is not None
+
+
+def test_decode_v07_preserves_trace_and_payload_metadata():
+    payload = msgpack.packb(
+        {
+            "language_name": "python",
+            "tracer_version": "1.2.3",
+            "env": "prod",
+            "chunks": [
+                {
+                    "priority": 2,
+                    "origin": "synthetics",
+                    "spans": [{"name": "span", "span_id": 1, "trace_id": 2}],
+                }
+            ],
+        }
+    )
+
+    span = decode_v07(payload)[0][0]
+
+    assert span["meta"] == {
+        "_dd.origin": "synthetics",
+        "language": "python",
+        "_dd.tracer_version": "1.2.3",
+        "env": "prod",
+    }
+    assert span["metrics"] == {"_sampling_priority_v1": 2}
 
 
 @pytest.mark.parametrize(

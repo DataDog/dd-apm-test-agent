@@ -8,12 +8,14 @@ import urllib.error
 import urllib.request
 
 import aiohttp
+from aiohttp import web
 import msgpack
 import pytest
 
+from ddapm_test_agent.agent import Agent
+from ddapm_test_agent.agent import MockRequest
 from ddapm_test_agent.trace import decode_v1
 from ddapm_test_agent.trace import trace_id
-
 
 _FAST_EXIT_ARGS = ["--port=4318", "--otlp-http-port=4318"]
 
@@ -114,6 +116,76 @@ async def test_trace(
     assert await resp.text() == "[[]]"
 
 
+async def test_trace_v2_forwarding_uses_shared_forwarding_state(
+    agent,
+    monkeypatch,
+    v04_reference_http_trace_payload_headers,
+    v04_reference_http_trace_payload_data,
+    v04_reference_http_trace_payload_data_raw,
+):
+    forwarded = []
+
+    async def capture(traces, headers, site, api_key, tags):
+        forwarded.append((traces, headers, site, api_key, tags))
+        return True
+
+    monkeypatch.setattr("ddapm_test_agent.agent.forward_traces_to_v2_intake", capture)
+
+    await agent.put(
+        "/v0.4/traces",
+        headers=v04_reference_http_trace_payload_headers,
+        data=v04_reference_http_trace_payload_data,
+    )
+    assert forwarded == []
+
+    agent.app["forward_traces_to_v2_intake"] = True
+    agent.app["forward_trace_tags"] = {"forwarded_by": "test-agent"}
+    await agent.put(
+        "/v0.4/traces",
+        headers=v04_reference_http_trace_payload_headers,
+        data=v04_reference_http_trace_payload_data,
+    )
+
+    assert len(forwarded) == 1
+    assert forwarded[0][0] == v04_reference_http_trace_payload_data_raw
+    assert forwarded[0][1]["Datadog-Meta-Lang"] == "python"
+    assert forwarded[0][2:] == ("datadoghq.com", "1234567890", {"forwarded_by": "test-agent"})
+
+
+async def test_llmobs_agent_forwarding_happens_once(monkeypatch):
+    forwarded = []
+
+    async def capture(data, request, headers):
+        forwarded.append((data, request.path, headers))
+        return web.Response(status=202)
+
+    monkeypatch.setattr("ddapm_test_agent.agent._prepare_and_send_request", capture)
+    app = web.Application()
+    app["agent_url"] = "http://agent:8126"
+    app["disable_data_forwarding"] = False
+    app["disable_llmobs_data_forwarding"] = False
+
+    local_agent = Agent()
+    body = b"payload"
+    request = MockRequest(
+        "POST",
+        "/evp_proxy/v2/api/v2/llmobs",
+        {"Content-Type": "application/msgpack"},
+        body,
+        local_agent,
+        app,
+    )
+    request["_testagent_data"] = body
+
+    response = await local_agent.request_forwarder_middleware(
+        request,
+        local_agent.handle_evp_proxy_v2_api_v2_llmobs,
+    )
+
+    assert response.status == 200
+    assert [(data, path) for data, path, _ in forwarded] == [(body, "/evp_proxy/v2/api/v2/llmobs")]
+
+
 async def test_trace_clear_token(
     agent,
     v04_reference_http_trace_payload_headers,
@@ -182,7 +254,10 @@ async def test_info(agent):
         "config": {},
         "client_drop_p0s": True,
         "span_events": True,
+        "data_forwarding": False,
         "llmobs_data_forwarding": False,
+        "trace_v2_forwarding": False,
+        "trace_forwarding_tags": {},
         "authenticated": False,
     }
 
@@ -1021,9 +1096,9 @@ async def test_trace_v1_sampling_mechanism_only_on_first_span():
     first_span = result[0][0]
     child_span = result[0][1]
     assert first_span["meta"].get("_dd.p.dm") == "-1"
-    assert child_span["meta"].get("_dd.p.dm") is None, (
-        "non-first spans in a chunk should not have _dd.p.dm set from samplingMechanism"
-    )
+    assert (
+        child_span["meta"].get("_dd.p.dm") is None
+    ), "non-first spans in a chunk should not have _dd.p.dm set from samplingMechanism"
 
 
 async def test_trace_v1_span_event():
