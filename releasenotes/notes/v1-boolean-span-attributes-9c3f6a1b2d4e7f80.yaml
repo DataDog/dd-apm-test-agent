@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    Preserve boolean span attributes from ``v1`` trace payloads as ``"true"`` or ``"false"``
+    strings in the legacy ``meta`` projection instead of converting them to numeric metrics.

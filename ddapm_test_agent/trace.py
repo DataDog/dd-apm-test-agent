@@ -1144,8 +1144,8 @@ def _convert_v1_attributes(
         if value_type == V1AnyValueKeys.STRING:
             meta[key] = _get_and_add_string(string_table, value)
         elif value_type == V1AnyValueKeys.BOOL:
-            # Treat v1 boolean attributes as metrics with a value of 1 or 0
-            metrics[key] = 1 if value else 0
+            # Project typed v1 booleans into the legacy string meta representation.
+            meta[key] = "true" if value else "false"
         elif value_type == V1AnyValueKeys.DOUBLE:
             metrics[key] = value
         elif value_type == V1AnyValueKeys.INT:
