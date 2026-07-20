@@ -31,6 +31,11 @@ from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
 
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "uninstall"]
+# Managed launchers that also exist as external binaries a user might invoke by
+# an explicit path (e.g. ``lapdog ~/.local/bin/claude``). Unlike start/stop/
+# status/uninstall, these must be recognized whether spelled as a bare name or
+# a path so they route to their dedicated launcher instead of ``cmd_exec``.
+_PATH_ROUTABLE_LAUNCHERS = ("claude", "pi", "codex")
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -1030,6 +1035,41 @@ def _consume_backfill_arg(args: List[str]) -> Tuple[List[str], bool]:
     return cleaned, backfill
 
 
+def _canonical_launcher(target: str) -> Optional[str]:
+    """Map an invocation target to a managed launcher name, or return None.
+
+    A managed launcher may be invoked either by bare name (``claude``) or by an
+    explicit path that resolves to the same binary (``~/.local/bin/claude``,
+    i.e. what ``which claude`` returns). Both must route to the dedicated
+    launcher (``cmd_claude``/``cmd_pi``/``cmd_codex``). The generic ``cmd_exec``
+    wrapper injects a ``PYTHONPATH`` pointing at ``lapdog/bootstrap`` that is
+    inherited by every Python subprocess the agent later spawns; each then
+    fails ``sitecustomize``'s ``import ddtrace`` check with
+    "[lapdog] ddtrace is not installed" (MLOB-7870).
+
+    A bare, unknown word (e.g. ``python``) returns None so it still falls
+    through to ``cmd_exec`` unchanged.
+
+    Matching is by resolved target, not basename: Claude Code installs as a
+    versioned binary (``.../versions/2.1.215``) with a ``claude`` symlink, so
+    ``realpath`` of the invoked path and of ``which claude`` both point at the
+    same versioned file even though its basename is not ``claude``.
+    """
+    if target.lower() in _PATH_ROUTABLE_LAUNCHERS:
+        return target.lower()
+
+    # Only treat the target as a path when it looks like one.
+    if not (target.startswith("~") or os.sep in target or (os.altsep and os.altsep in target)):
+        return None
+
+    invoked = os.path.realpath(os.path.expanduser(target))
+    for launcher in _PATH_ROUTABLE_LAUNCHERS:
+        on_path = shutil.which(launcher)
+        if on_path and os.path.realpath(on_path) == invoked:
+            return launcher
+    return None
+
+
 def main() -> None:
     # On Windows the default stdout/stderr encoding is the system ANSI codepage
     # (e.g. cp1252), which can't encode the banner's box-drawing glyphs. Force
@@ -1052,10 +1092,14 @@ def main() -> None:
     lapdog_args, remaining = _parse_command(args[1:])
     lapdog_parsed_args = _parse_lapdog_args(lapdog_args)
 
-    sub_cmd = remaining[0].lower()
+    # Resolve path-form invocations of a managed launcher (e.g.
+    # ``lapdog ~/.local/bin/claude``) to their canonical command so they route
+    # to the dedicated launcher rather than the generic cmd_exec wrapper
+    # (MLOB-7870). Unknown targets fall through to cmd_exec unchanged.
+    sub_cmd = _canonical_launcher(remaining[0]) or remaining[0].lower()
     sub_cmd_args = remaining[1:]
     command_backfill = False
-    if sub_cmd in ("claude", "pi", "codex"):
+    if sub_cmd in _PATH_ROUTABLE_LAUNCHERS:
         sub_cmd_args, command_backfill = _consume_backfill_arg(sub_cmd_args)
     backfill = lapdog_parsed_args.backfill or command_backfill
 

@@ -699,3 +699,66 @@ def test_cmd_codex_backfill_does_not_exec_codex(monkeypatch):
     run_backfill.assert_called_once_with("http://localhost:8126", cwd=expected_cwd)
     start_watcher.assert_not_called()
     run_codex.assert_not_called()
+
+
+def test_canonical_launcher_bare_name():
+    assert cli._canonical_launcher("claude") == "claude"
+    assert cli._canonical_launcher("Codex") == "codex"
+
+
+def test_canonical_launcher_path_resolving_to_launcher(monkeypatch, tmp_path):
+    # Claude installs as a versioned binary with a `claude` symlink. A path
+    # invocation that resolves to the same file as `which claude` must map to
+    # the `claude` command so it routes to cmd_claude, not cmd_exec (MLOB-7870).
+    real = tmp_path / "versions" / "2.1.215"
+    real.parent.mkdir(parents=True)
+    real.write_text("#!/bin/sh\n")
+    link = tmp_path / "bin" / "claude"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(real)
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: str(link) if name == "claude" else None)
+
+    # Invoked via the symlink or via the versioned real path — both resolve to
+    # the same target as `which claude`.
+    assert cli._canonical_launcher(str(link)) == "claude"
+    assert cli._canonical_launcher(str(real)) == "claude"
+
+
+def test_canonical_launcher_ignores_unknown_targets(monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    assert cli._canonical_launcher("python") is None
+    assert cli._canonical_launcher("/usr/bin/python") is None
+
+
+def test_canonical_launcher_path_not_matching_which_falls_through(monkeypatch, tmp_path):
+    # A path whose basename is `claude` but which does not resolve to the
+    # managed claude binary must NOT be rerouted.
+    other = tmp_path / "claude"
+    other.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    assert cli._canonical_launcher(str(other)) is None
+
+
+def test_main_routes_full_path_claude_to_cmd_claude(monkeypatch, tmp_path):
+    claude = tmp_path / "claude"
+    claude.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: str(claude) if name == "claude" else None)
+    monkeypatch.setattr(cli.sys, "argv", ["lapdog", str(claude)])
+    with mock.patch("lapdog.cli.cmd_claude") as cmd_claude:
+        with mock.patch("lapdog.cli.cmd_exec") as cmd_exec:
+            cli.main()
+
+    cmd_claude.assert_called_once()
+    cmd_exec.assert_not_called()
+
+
+def test_main_routes_unknown_command_to_cmd_exec(monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    monkeypatch.setattr(cli.sys, "argv", ["lapdog", "/usr/bin/python", "app.py"])
+    with mock.patch("lapdog.cli.cmd_claude") as cmd_claude:
+        with mock.patch("lapdog.cli.cmd_exec") as cmd_exec:
+            cli.main()
+
+    cmd_exec.assert_called_once()
+    cmd_claude.assert_not_called()
