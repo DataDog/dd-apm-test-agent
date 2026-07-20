@@ -32,9 +32,7 @@ from lapdog.paths import PID_FILE
 
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "uninstall"]
 # Managed launchers that also exist as external binaries a user might invoke by
-# an explicit path (e.g. ``lapdog ~/.local/bin/claude``). Unlike start/stop/
-# status/uninstall, these must be recognized whether spelled as a bare name or
-# a path so they route to their dedicated launcher instead of ``cmd_exec``.
+# an explicit path (e.g. ``lapdog ~/.local/bin/claude``)
 _PATH_ROUTABLE_LAUNCHERS = ("claude", "pi", "codex")
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
@@ -1041,24 +1039,14 @@ def _canonical_launcher(target: str) -> Optional[str]:
     A managed launcher may be invoked either by bare name (``claude``) or by an
     explicit path that resolves to the same binary (``~/.local/bin/claude``,
     i.e. what ``which claude`` returns). Both must route to the dedicated
-    launcher (``cmd_claude``/``cmd_pi``/``cmd_codex``). The generic ``cmd_exec``
-    wrapper injects a ``PYTHONPATH`` pointing at ``lapdog/bootstrap`` that is
-    inherited by every Python subprocess the agent later spawns; each then
-    fails ``sitecustomize``'s ``import ddtrace`` check with
-    "[lapdog] ddtrace is not installed" (MLOB-7870).
+    launcher (``cmd_claude``/``cmd_pi``/``cmd_codex``).
 
     A bare, unknown word (e.g. ``python``) returns None so it still falls
     through to ``cmd_exec`` unchanged.
-
-    Matching is by resolved target, not basename: Claude Code installs as a
-    versioned binary (``.../versions/2.1.215``) with a ``claude`` symlink, so
-    ``realpath`` of the invoked path and of ``which claude`` both point at the
-    same versioned file even though its basename is not ``claude``.
     """
     if target.lower() in _PATH_ROUTABLE_LAUNCHERS:
         return target.lower()
 
-    # Only treat the target as a path when it looks like one.
     if not (target.startswith("~") or os.sep in target or (os.altsep and os.altsep in target)):
         return None
 
@@ -1092,10 +1080,6 @@ def main() -> None:
     lapdog_args, remaining = _parse_command(args[1:])
     lapdog_parsed_args = _parse_lapdog_args(lapdog_args)
 
-    # Resolve path-form invocations of a managed launcher (e.g.
-    # ``lapdog ~/.local/bin/claude``) to their canonical command so they route
-    # to the dedicated launcher rather than the generic cmd_exec wrapper
-    # (MLOB-7870). Unknown targets fall through to cmd_exec unchanged.
     sub_cmd = _canonical_launcher(remaining[0]) or remaining[0].lower()
     sub_cmd_args = remaining[1:]
     command_backfill = False
