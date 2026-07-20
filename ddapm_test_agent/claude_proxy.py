@@ -728,10 +728,10 @@ class ClaudeProxyAPI:
                 if span.get("parent_id") == "undefined":
                     # No session yet — buffer for later re-parenting
                     self._orphan_spans.append(span)
-                    self._hooks_api._assembled_spans.append(span)
+                    self._hooks_api._append_span(span)
                     log.info("Buffered orphan LLM span %s (no session yet)", span["span_id"])
                 else:
-                    self._hooks_api._assembled_spans.append(span)
+                    self._hooks_api._append_span(span)
                 log.info(
                     "LLM span %s: model=%s tokens=%d+%d duration=%.1fs",
                     span["span_id"],
@@ -763,10 +763,10 @@ class ClaudeProxyAPI:
                 span = self._create_llm_span(session, request_body, response_data, start_ns, duration_ns)
                 if span.get("parent_id") == "undefined":
                     self._orphan_spans.append(span)
-                    self._hooks_api._assembled_spans.append(span)
+                    self._hooks_api._append_span(span)
                     log.info("Buffered orphan LLM span %s (no session yet)", span["span_id"])
                 else:
-                    self._hooks_api._assembled_spans.append(span)
+                    self._hooks_api._append_span(span)
                 log.info(
                     "LLM span %s: model=%s tokens=%d+%d duration=%.1fs",
                     span["span_id"],

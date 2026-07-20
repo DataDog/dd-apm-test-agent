@@ -78,6 +78,24 @@ def _to_json_str(value: Any) -> str:
         return str(value)
 
 
+def _dd_tags_from_env() -> List[str]:
+    """Parse DD_TAGS atomically, returning no tags when any entry is malformed."""
+    value = os.environ.get("DD_TAGS")
+    if not value:
+        return []
+
+    tags: List[str] = []
+    for entry in value.split(","):
+        parts = entry.split(":")
+        if len(parts) != 2:
+            return []
+        key, tag_value = (part.strip() for part in parts)
+        if not key or not tag_value:
+            return []
+        tags.append(f"{key}:{tag_value}")
+    return tags
+
+
 class PendingToolSpan:
     """Tracks a tool invocation between PreToolUse and PostToolUse."""
 
@@ -315,6 +333,25 @@ class ClaudeHooksAPI:
         """Set the aiohttp app reference for backend forwarding."""
         self._app = app
 
+    def _append_span(self, span: Dict[str, Any], index: Optional[int] = None) -> None:
+        """Store a span with the DD_TAGS value observed at creation time."""
+        dd_tags = _dd_tags_from_env()
+        span_tags = span.get("tags")
+        if not isinstance(span_tags, list):
+            span_tags = []
+            span["tags"] = span_tags
+        for tag in dd_tags:
+            if tag not in span_tags:
+                span_tags.append(tag)
+        if index is None:
+            self._assembled_spans.append(span)
+        else:
+            self._assembled_spans.insert(index, span)
+
+    def _extend_spans(self, spans: List[Dict[str, Any]]) -> None:
+        for span in spans:
+            self._append_span(span)
+
     def _get_or_create_session(self, session_id: str) -> SessionState:
         """Get existing session or create a new one."""
         if session_id not in self._sessions:
@@ -494,7 +531,7 @@ class ClaudeHooksAPI:
             },
             "metrics": {},
         }
-        self._assembled_spans.append(step_span)
+        self._append_span(step_span)
 
         active = ActiveStep(
             span_id=step_span_id,
@@ -789,7 +826,7 @@ class ClaudeHooksAPI:
             "metrics": {},
         }
         apply_project_metadata_to_span(root_span, session.project_metadata)
-        self._assembled_spans.append(root_span)
+        self._append_span(root_span)
         session._root_span_ref = root_span  # type: ignore[attr-defined]
 
     def _handle_pre_tool_use(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -916,7 +953,7 @@ class ClaudeHooksAPI:
                 }
                 if context_delta:
                     self._set_hidden_metadata(span, context_delta=context_delta)
-                self._assembled_spans.append(span)
+                self._append_span(span)
             return
 
         # Normal tool span
@@ -959,7 +996,7 @@ class ClaudeHooksAPI:
         }
         if estimated_permission_wait_ms is not None:
             self._set_hidden_metadata(span, estimated_permission_wait_ms=estimated_permission_wait_ms)
-        self._assembled_spans.append(span)
+        self._append_span(span)
 
     def _handle_subagent_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SubagentStart hook event — pushes a new agent onto the stack.
@@ -1031,7 +1068,7 @@ class ClaudeHooksAPI:
             },
             "metrics": {},
         }
-        self._assembled_spans.append(preliminary_span)
+        self._append_span(preliminary_span)
 
         task_prompt = ""
         if isinstance(task_tool_input, dict):
@@ -1150,7 +1187,7 @@ class ClaudeHooksAPI:
                 }
                 if context_delta:
                     self._set_hidden_metadata(span, context_delta=context_delta)
-                self._assembled_spans.append(span)
+                self._append_span(span)
 
     def _compute_token_usage(self, trace_id: str) -> Dict[str, int]:
         """Sum token metrics from all LLM spans in the given trace."""
@@ -1389,7 +1426,7 @@ class ClaudeHooksAPI:
                 dd_fields["tool_usage"] = tool_usage
             apply_project_metadata_to_span(root_span, session.project_metadata)
             self._set_hidden_metadata(root_span, **dd_fields)
-            self._assembled_spans.append(root_span)
+            self._append_span(root_span)
 
         session.root_span_emitted = True
 
@@ -1508,7 +1545,7 @@ class ClaudeHooksAPI:
             span["meta"]["error"]["type"] = "interrupt"
         if estimated_permission_wait_ms is not None:
             self._set_hidden_metadata(span, estimated_permission_wait_ms=estimated_permission_wait_ms)
-        self._assembled_spans.append(span)
+        self._append_span(span)
 
     def _handle_pre_compact(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle PreCompact hook event — marks the current active span with compaction metadata.
@@ -1872,7 +1909,7 @@ class ClaudeHooksAPI:
             # client logs it and moves on.
             log.warning("claude backfill_session failed for %s: %r", session_id, exc)
             return web.json_response({"status": "error", "error": repr(exc)}, status=400)
-        self._assembled_spans.extend(spans)
+        self._extend_spans(spans)
         traces = len({s.get("trace_id") for s in spans})
         return web.json_response({"status": "ok", "spans_created": len(spans), "traces_created": traces})
 

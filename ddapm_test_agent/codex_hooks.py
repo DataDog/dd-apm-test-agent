@@ -362,7 +362,7 @@ class CodexHooksAPI:
         self._ignored_session_ids: Set[str] = set()
 
     def _append_span(self, span: Dict[str, Any]) -> None:
-        self._hooks_api._assembled_spans.append(span)
+        self._hooks_api._append_span(span)
 
     def _replace_session_id_tag(self, span: Dict[str, Any], old_session_id: str, new_session_id: str) -> None:
         tags = span.get("tags", [])
@@ -695,7 +695,7 @@ class CodexHooksAPI:
         if insert_at is None:
             self._append_span(span)
         else:
-            self._hooks_api._assembled_spans.insert(insert_at, span)
+            self._hooks_api._append_span(span, index=insert_at)
         turn.last_llm_span_ref = span
 
     def _apply_turn_context(self, session: CodexSession, record: Dict[str, Any]) -> None:

@@ -37,6 +37,38 @@ async def test_hook_missing_session_id(agent):
     assert "session_id" in body["error"]
 
 
+def test_dd_tags_are_read_when_each_span_is_created(monkeypatch):
+    hooks = ClaudeHooksAPI()
+
+    monkeypatch.delenv("DD_TAGS", raising=False)
+    without_tags = {"tags": ["existing:value"]}
+    hooks._append_span(without_tags)
+
+    monkeypatch.setenv(
+        "DD_TAGS",
+        "dd_auto_experiment_id:c0817213-61d4-43d6-8261-050d7560011a,iteration:2",
+    )
+    with_tags = {"tags": ["existing:value"]}
+    hooks._append_span(with_tags)
+
+    assert without_tags["tags"] == ["existing:value"]
+    assert with_tags["tags"] == [
+        "existing:value",
+        "dd_auto_experiment_id:c0817213-61d4-43d6-8261-050d7560011a",
+        "iteration:2",
+    ]
+
+
+def test_malformed_dd_tags_are_rejected_atomically(monkeypatch):
+    hooks = ClaudeHooksAPI()
+
+    for value in ("key", "key:", ":value", "key:value,", "key:value,broken", "key:value:extra"):
+        monkeypatch.setenv("DD_TAGS", value)
+        span = {"tags": ["existing:value"]}
+        hooks._append_span(span)
+        assert span["tags"] == ["existing:value"]
+
+
 async def test_hook_session_creates_agent_span(agent):
     session_id = "sess-agent-span"
 
