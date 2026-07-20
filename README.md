@@ -201,6 +201,18 @@ To ignore headers in recorded cassettes, you can use the `--vcr-ignore-headers` 
 
 To normalize JSON bodies in recorded cassettes, you can use the `--vcr-json-body-normalizers` flag or `VCR_JSON_BODY_NORMALIZERS` environment variable. The list should take the form of `json.path1,json.path2,json.path3`, and the values at those JSON paths will be replaced with a placeholder in the recorded cassettes. This is particularly useful for normalizing request bodies with dynamic values such as timestamps or ids.
 
+#### Normalizing request bodies with regex in recorded cassettes
+
+For non-JSON content (or for values embedded in JSON strings that aren't reachable via a path), use the `--vcr-body-regex-normalizers` flag or `VCR_BODY_REGEX_NORMALIZERS` environment variable. The list should take the form of `pattern1,pattern2,pattern3`. Each pattern is a Python regex; every match in the request body is replaced with `<normalized>` before the cassette hash is computed.
+
+```
+VCR_BODY_REGEX_NORMALIZERS=agentId: [a-f0-9]+,"client_timestamp":"[^"]+",cc_version=[^;]+
+```
+
+This is useful for masking volatile identifiers, timestamps, or telemetry fields that vary every run but should be collapsed to a single cassette. Anchor each pattern on a unique prefix or surrounding key so it does not match unrelated content.
+
+Regex normalizers run before JSON-path normalizers, and both can be configured at the same time.
+
 #### AWS Services
 AWS service proxying, specifically recording cassettes for the first time, requires a `AWS_SECRET_ACCESS_KEY` environment variable to be set for the container running the test agent. This is used to recalculate the AWS signature for the request, as the one generated client-side likely used `{test-agent-host}:{test-agent-port}/vcr/{aws-service}` as the host, and the signature will mismatch that on the actual AWS service.
 
