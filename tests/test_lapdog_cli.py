@@ -33,7 +33,12 @@ def test_cmd_codex_starts_watcher_and_execs_codex():
         singleton_key=None,
         include_all_cwds=False,
     )
-    run_codex.assert_called_once_with(args=["--model", "gpt-5.5"], port=8126, proxy_session_key="proxy-key")
+    run_codex.assert_called_once_with(
+        args=["--model", "gpt-5.5"],
+        port=8126,
+        proxy_session_key="proxy-key",
+        session_token="proxy-key",
+    )
 
 
 def test_cmd_codex_starts_watcher_with_forwarded_cd(monkeypatch, tmp_path):
@@ -68,19 +73,25 @@ def test_cmd_codex_app_starts_watcher_with_app_path_and_lapdog_pid(monkeypatch, 
             with mock.patch("lapdog.cli._stop_legacy_codex_app_watchers") as stop_legacy:
                 with mock.patch("lapdog.cli._start_codex_watcher") as start_watcher:
                     with mock.patch("lapdog.cli._run_codex") as run_codex:
-                        with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
-                            cli.cmd_codex(["app", str(target_cwd)], forward_data=True)
+                        with mock.patch("lapdog.cli.uuid.uuid4", return_value=mock.Mock(hex="app-token")):
+                            with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
+                                cli.cmd_codex(["app", str(target_cwd)], forward_data=True)
 
     stop_legacy.assert_called_once_with(8126, 4242, codex_args.app_watcher_key(8126))
     start_watcher.assert_called_once_with(
         8126,
-        proxy_session_key=None,
+        proxy_session_key="app-token",
         cwd=str(target_cwd),
         parent_pid=4242,
         singleton_key=codex_args.app_watcher_key(8126),
         include_all_cwds=True,
     )
-    run_codex.assert_called_once_with(args=["app", str(target_cwd)], port=8126, proxy_session_key=None)
+    run_codex.assert_called_once_with(
+        args=["app", str(target_cwd)],
+        port=8126,
+        proxy_session_key=None,
+        session_token="app-token",
+    )
 
 
 def test_resolve_codex_cwd_handles_relative_cd(monkeypatch, tmp_path):
@@ -253,7 +264,15 @@ def test_start_codex_watcher_skips_live_singleton(tmp_path, monkeypatch):
 
     popen.assert_not_called()
     assert reusable_calls == [
-        (4242, cli.os.getpid(), {"lapdog_url": "http://localhost:8126", "include_all_cwds": True})
+        (
+            4242,
+            cli.os.getpid(),
+            {
+                "lapdog_url": "http://localhost:8126",
+                "include_all_cwds": True,
+                "proxy_session_key": None,
+            },
+        )
     ]
 
 
@@ -315,7 +334,8 @@ def test_codex_watcher_reusable_requires_current_parent(monkeypatch):
         result = mock.Mock()
         result.returncode = 0
         result.stdout = (
-            "python -m lapdog.codex_watcher --lapdog-url http://localhost:8126 " "--parent-pid 1111 --cwd /repo"
+            "python -m lapdog.codex_watcher --lapdog-url http://localhost:8126 "
+            "--parent-pid 1111 --proxy-session-key proxy-key --cwd /repo"
         )
         return result
 
@@ -331,6 +351,8 @@ def test_codex_watcher_reusable_requires_current_parent(monkeypatch):
     assert not cli._codex_watcher_reusable(4242, 2222)
     assert not cli._codex_watcher_reusable(4242, 1111, lapdog_url="http://localhost:8127")
     assert not cli._codex_watcher_reusable(4242, 1111, include_all_cwds=True)
+    assert cli._codex_watcher_reusable(4242, 1111, proxy_session_key="proxy-key")
+    assert not cli._codex_watcher_reusable(4242, 1111, proxy_session_key="other-key")
 
 
 def test_codex_watcher_reusable_checks_windows_command(monkeypatch):
@@ -511,12 +533,19 @@ def test_run_codex_injects_lapdog_provider(monkeypatch):
     monkeypatch.setattr(cli.os, "execve", fake_execve)
 
     try:
-        cli._run_codex(args=["exec", "hello"], port=8126, proxy_session_key="proxy-key")
+        cli._run_codex(
+            args=["exec", "hello"],
+            port=8126,
+            proxy_session_key="proxy-key",
+            session_token="session-token",
+        )
     except SystemExit:
         pass
 
     assert exec_call["binary"] == "/usr/local/bin/codex"
     assert exec_call["env"]["OPENAI_BASE_URL"] == "http://localhost:8126/codex/proxy/proxy-key/v1"
+    assert exec_call["env"]["LAPDOG_URL"] == "http://localhost:8126"
+    assert exec_call["env"]["LAPDOG_SESSION_TOKEN"] == "session-token"
     assert exec_call["argv"][:5] == [
         "/usr/local/bin/codex",
         "-c",

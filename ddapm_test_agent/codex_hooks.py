@@ -362,7 +362,7 @@ class CodexHooksAPI:
         self._ignored_session_ids: Set[str] = set()
 
     def _append_span(self, span: Dict[str, Any]) -> None:
-        self._hooks_api._assembled_spans.append(span)
+        self._hooks_api._append_span(span)
 
     def _replace_session_id_tag(self, span: Dict[str, Any], old_session_id: str, new_session_id: str) -> None:
         tags = span.get("tags", [])
@@ -385,6 +385,7 @@ class CodexHooksAPI:
                     continue
                 span["session_id"] = group_session_id
                 self._replace_session_id_tag(span, old_session_id, group_session_id)
+                self._hooks_api._apply_registered_session_tags(span)
         shared_session = self._hooks_api._sessions.get(raw_session_id)
         if shared_session is not None:
             shared_session.session_id = group_session_id
@@ -695,7 +696,7 @@ class CodexHooksAPI:
         if insert_at is None:
             self._append_span(span)
         else:
-            self._hooks_api._assembled_spans.insert(insert_at, span)
+            self._hooks_api._append_span(span, index=insert_at)
         turn.last_llm_span_ref = span
 
     def _apply_turn_context(self, session: CodexSession, record: Dict[str, Any]) -> None:
@@ -1324,6 +1325,7 @@ class CodexHooksAPI:
             ml_app=self._config.ml_app,
             user_handle=self._config.user_handle,
         )
+        self._hooks_api._apply_registered_session_tags(span)
         tool_call_ids = self._normalize_proxy_tool_call_ids(session, span)
         if append:
             self._append_llm_span(turn, span)
@@ -1876,7 +1878,10 @@ class CodexHooksAPI:
         )
 
     def _dispatch(
-        self, session_id: str, record: Dict[str, Any], proxy_session_key: Optional[str] = None
+        self,
+        session_id: str,
+        record: Dict[str, Any],
+        proxy_session_key: Optional[str] = None,
     ) -> List[CompletedTrace]:
         start_ns = _timestamp_to_ns(record.get("timestamp", ""))
         if session_id in self._ignored_session_ids:
@@ -1884,6 +1889,7 @@ class CodexHooksAPI:
         session = self._get_or_create_session(session_id, start_ns=start_ns)
         if proxy_session_key:
             session.proxy_session_keys.add(proxy_session_key)
+            self._hooks_api._register_session_token(proxy_session_key, session_id)
         if session.raw_session_id in self._ignored_session_ids:
             return []
         try:
@@ -1949,7 +1955,9 @@ class CodexHooksAPI:
                 await self._hooks_api._forward_trace_to_backend(
                     completed_session_id, trace_id=completed_trace_id, span_source="Codex"
                 )
-                await self._hooks_api._forward_eval_metrics_to_backend(completed_session_id, trace_id=completed_trace_id)
+                await self._hooks_api._forward_eval_metrics_to_backend(
+                    completed_session_id, trace_id=completed_trace_id
+                )
         return web.json_response({"status": "ok"})
 
     async def handle_raw_events(self, request: Request) -> web.Response:

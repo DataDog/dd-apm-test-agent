@@ -22,10 +22,12 @@ def codex_env_overrides(monkeypatch):
     monkeypatch.setenv("DD_USER_HANDLE", "shared-user")
 
 
-async def _post(agent, session_id, record, *, backfill=False):
+async def _post(agent, session_id, record, *, backfill=False, proxy_session_key=None):
     body = {"session_id": session_id, "record": record}
     if backfill:
         body["backfill"] = True
+    if proxy_session_key:
+        body["proxy_session_key"] = proxy_session_key
     return await agent.post(
         "/codex/hooks",
         headers={"Content-Type": "application/json"},
@@ -177,6 +179,49 @@ async def test_codex_turn_llm_and_tool_spans(agent):
     assert llms[0]["metrics"]["estimated_input_cost"] == 410_000
     assert llms[0]["metrics"]["estimated_output_cost"] == 900_000
     assert llms[0]["metrics"]["estimated_total_cost"] == 1_310_000
+
+
+async def test_codex_session_tags_apply_to_existing_and_future_spans(agent):
+    sid = "codex-custom-tags"
+    session_token = "codex-launch-token"
+    await _post(agent, sid, _session_meta(sid), proxy_session_key=session_token)
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="tag this Codex session"))
+
+    response = await agent.get("/claude/hooks/spans")
+    spans_before_tags = [span for span in _spans(await response.json()) if span.get("session_id") == sid]
+    assert spans_before_tags
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"tags": {"dd_auto_experiment_id": "experiment-id", "iteration": "2"}},
+    )
+    assert response.status == 200, await response.text()
+
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "function_call",
+            name="exec_command",
+            call_id="call-after-tags",
+            arguments='{"cmd": "pwd"}',
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item("function_call_output", call_id="call-after-tags", output="/repo"),
+    )
+    await _post(agent, sid, _event("agent_message", message="done"))
+
+    response = await agent.get("/claude/hooks/spans")
+    session_spans = [span for span in _spans(await response.json()) if span.get("session_id") == sid]
+    assert len(session_spans) > len(spans_before_tags)
+    for span in session_spans:
+        assert "dd_auto_experiment_id:experiment-id" in span["tags"]
+        assert "iteration:2" in span["tags"]
 
 
 async def test_codex_project_metadata_from_session_git(agent):

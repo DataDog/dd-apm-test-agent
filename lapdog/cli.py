@@ -490,7 +490,7 @@ def cmd_claude(
 
 def _post_session_tags(lapdog_url: str, session_token: str, tags: Dict[str, str]) -> Dict[str, Any]:
     request = urllib.request.Request(
-        f"{lapdog_url.rstrip('/')}/claude/hooks/session/tags",
+        f"{lapdog_url.rstrip('/')}/lapdog/session/tags",
         data=json.dumps({"tags": tags}).encode(),
         headers={
             "Content-Type": "application/json",
@@ -673,6 +673,7 @@ def _codex_watcher_matches(
     parent_pid: Optional[int] = None,
     lapdog_url: Optional[str] = None,
     include_all_cwds: Optional[bool] = None,
+    proxy_session_key: Optional[str] = None,
 ) -> bool:
     """Return True when a live process matches the expected watcher metadata."""
     if not _process_exists(pid):
@@ -692,6 +693,8 @@ def _codex_watcher_matches(
         return False
     if include_all_cwds is not None and ("--include-all-cwds" in parts) is not include_all_cwds:
         return False
+    if proxy_session_key is not None and _arg_value(parts, "--proxy-session-key") != proxy_session_key:
+        return False
     return True
 
 
@@ -700,6 +703,7 @@ def _codex_watcher_reusable(
     parent_pid: int,
     lapdog_url: Optional[str] = None,
     include_all_cwds: Optional[bool] = None,
+    proxy_session_key: Optional[str] = None,
 ) -> bool:
     """Return True only when a pid file points at the expected watcher process.
 
@@ -712,6 +716,7 @@ def _codex_watcher_reusable(
         parent_pid=parent_pid,
         lapdog_url=lapdog_url,
         include_all_cwds=include_all_cwds,
+        proxy_session_key=proxy_session_key,
     )
 
 
@@ -854,6 +859,7 @@ def _start_codex_watcher(
             watcher_parent_pid,
             lapdog_url=lapdog_url,
             include_all_cwds=include_all_cwds,
+            proxy_session_key=proxy_session_key,
         ):
             print(
                 f"[lapdog] Codex watcher already running for this app workspace (PID {existing_pid}).",
@@ -918,7 +924,10 @@ def _start_codex_watcher(
 
 
 def _run_codex(
-    args: Optional[List[str]] = None, port: Optional[int] = None, proxy_session_key: Optional[str] = None
+    args: Optional[List[str]] = None,
+    port: Optional[int] = None,
+    proxy_session_key: Optional[str] = None,
+    session_token: Optional[str] = None,
 ) -> None:
     """Exec the codex binary, forwarding arguments. Never returns."""
     if args is None:
@@ -933,6 +942,7 @@ def _run_codex(
         proxy_path = f"/codex/proxy/{proxy_session_key}/v1" if proxy_session_key else "/codex/proxy/v1"
         base_url = f"http://localhost:{port}{proxy_path}"
         env["OPENAI_BASE_URL"] = base_url
+        env["LAPDOG_URL"] = f"http://localhost:{port}"
         if env.get("OPENAI_API_KEY"):
             proxy_args = [
                 "-c",
@@ -948,6 +958,8 @@ def _run_codex(
                 "[lapdog] Codex proxy capture requires OPENAI_API_KEY; continuing with JSONL-only tracing.",
                 file=sys.stderr,
             )
+    if session_token:
+        env["LAPDOG_SESSION_TOKEN"] = session_token
     os.execve(codex_bin, [codex_bin] + proxy_args + args, env)
 
 
@@ -973,7 +985,8 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = Fals
         print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
         sys.exit(1)
     app_mode = codex_args.is_app_command(sub_cmd_args)
-    proxy_session_key = None if app_mode else uuid.uuid4().hex
+    session_token = uuid.uuid4().hex
+    proxy_session_key = None if app_mode else session_token
     parent_pid = os.getpid()
     if app_mode:
         lapdog_pid, _ = _read_pid_file()
@@ -983,7 +996,7 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = Fals
         _stop_legacy_codex_app_watchers(port, parent_pid, codex_args.app_watcher_key(port))
     _start_codex_watcher(
         port,
-        proxy_session_key=proxy_session_key,
+        proxy_session_key=session_token,
         cwd=codex_cwd,
         parent_pid=parent_pid,
         singleton_key=codex_args.app_watcher_key(port) if app_mode else None,
@@ -991,7 +1004,12 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = Fals
     )
 
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
-    _run_codex(args=sub_cmd_args, port=port, proxy_session_key=proxy_session_key)
+    _run_codex(
+        args=sub_cmd_args,
+        port=port,
+        proxy_session_key=proxy_session_key,
+        session_token=session_token,
+    )
 
 
 def cmd_uninstall() -> None:

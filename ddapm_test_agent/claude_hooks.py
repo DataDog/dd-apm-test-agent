@@ -345,14 +345,21 @@ class ClaudeHooksAPI:
         if pending_tags:
             self._set_session_tags(self._get_or_create_session(session_id), pending_tags)
 
-    def _append_span(self, span: Dict[str, Any]) -> None:
-        """Store a span, applying tags configured for its Claude session."""
+    def _apply_registered_session_tags(self, span: Dict[str, Any]) -> None:
         session_id = span.get("session_id")
-        if isinstance(session_id, str):
-            session = self._sessions.get(session_id)
-            if session is not None:
+        if not isinstance(session_id, str):
+            return
+        for raw_session_id, session in self._sessions.items():
+            if raw_session_id == session_id or session.session_id == session_id:
                 self._apply_session_tags(span, session)
-        self._assembled_spans.append(span)
+
+    def _append_span(self, span: Dict[str, Any], index: Optional[int] = None) -> None:
+        """Store a span, applying tags configured for its coding-agent session."""
+        self._apply_registered_session_tags(span)
+        if index is None:
+            self._assembled_spans.append(span)
+        else:
+            self._assembled_spans.insert(index, span)
 
     def _get_or_create_session(self, session_id: str) -> SessionState:
         """Get existing session or create a new one."""
@@ -1874,7 +1881,7 @@ class ClaudeHooksAPI:
         return web.json_response({"spans": self._assembled_spans})
 
     async def handle_session_tags(self, request: Request) -> web.Response:
-        """Add tags to the Claude session identified by its Lapdog launch token."""
+        """Add tags to coding-agent sessions identified by a Lapdog launch token."""
         session_token = request.headers.get("X-Lapdog-Session-Token", "")
         if not session_token:
             return web.json_response({"error": "missing Lapdog session token"}, status=404)
@@ -1965,6 +1972,7 @@ class ClaudeHooksAPI:
         """Return the routes for this API."""
         return [
             web.post("/claude/hooks", with_cors(self.handle_hook)),
+            web.post("/lapdog/session/tags", with_cors(self.handle_session_tags)),
             web.post("/claude/hooks/session/tags", with_cors(self.handle_session_tags)),
             web.post("/claude/hooks/backfill_session", with_cors(self.handle_backfill_session)),
             web.route("*", "/claude/hooks/sessions", with_cors(self.handle_sessions)),
