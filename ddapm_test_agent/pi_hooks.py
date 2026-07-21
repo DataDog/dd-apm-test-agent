@@ -311,7 +311,7 @@ class PiHooksAPI:
         return self._hooks_api._current_parent_id(session)
 
     def _append_span(self, span: Dict[str, Any]) -> None:
-        self._hooks_api._append_span(span)
+        self._hooks_api._assembled_spans.append(span)
 
     def _active_step_parent_id(self, session: SessionState) -> str:
         """Return active step span_id if one exists, else fall back to root/agent parent."""
@@ -1128,7 +1128,7 @@ class PiHooksAPI:
         except Exception as exc:
             log.warning("pi backfill_session failed for %s: %r", session_id, exc)
             return web.json_response({"status": "error", "error": repr(exc)}, status=400)
-        self._hooks_api._extend_spans(spans)
+        self._hooks_api._assembled_spans.extend(spans)
         traces = len({s.get("trace_id") for s in spans})
         return web.json_response({"status": "ok", "spans_created": len(spans), "traces_created": traces})
 

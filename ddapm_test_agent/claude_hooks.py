@@ -78,24 +78,6 @@ def _to_json_str(value: Any) -> str:
         return str(value)
 
 
-def _dd_tags_from_env() -> List[str]:
-    """Parse DD_TAGS atomically, returning no tags when any entry is malformed."""
-    value = os.environ.get("DD_TAGS")
-    if not value:
-        return []
-
-    tags: List[str] = []
-    for entry in value.split(","):
-        parts = entry.split(":")
-        if len(parts) != 2:
-            return []
-        key, tag_value = (part.strip() for part in parts)
-        if not key or not tag_value:
-            return []
-        tags.append(f"{key}:{tag_value}")
-    return tags
-
-
 class PendingToolSpan:
     """Tracks a tool invocation between PreToolUse and PostToolUse."""
 
@@ -164,6 +146,7 @@ class SessionState:
         self.active_agents: Dict[str, Dict[str, Any]] = {}
         self.conversation_title: str = ""
         self.cwd: str = ""
+        self.custom_tags: Dict[str, str] = {}
         self.project_metadata = resolve_project_metadata()
         # Persists across turns so each turn's context_delta reflects growth from
         # the previous turn's final context size.
@@ -324,6 +307,8 @@ class ClaudeHooksAPI:
 
     def __init__(self, link_tracker: Optional[ClaudeLinkTracker] = None) -> None:
         self._sessions: Dict[str, SessionState] = {}
+        self._session_ids_by_token: Dict[str, Set[str]] = {}
+        self._tags_by_token: Dict[str, Dict[str, str]] = {}
         self._assembled_spans: List[Dict[str, Any]] = []
         self._raw_events: List[Dict[str, Any]] = []
         self._link_tracker = link_tracker
@@ -333,24 +318,41 @@ class ClaudeHooksAPI:
         """Set the aiohttp app reference for backend forwarding."""
         self._app = app
 
-    def _append_span(self, span: Dict[str, Any], index: Optional[int] = None) -> None:
-        """Store a span with the DD_TAGS value observed at creation time."""
-        dd_tags = _dd_tags_from_env()
+    def _apply_session_tags(self, span: Dict[str, Any], session: SessionState) -> None:
+        if not session.custom_tags:
+            return
         span_tags = span.get("tags")
         if not isinstance(span_tags, list):
             span_tags = []
-            span["tags"] = span_tags
-        for tag in dd_tags:
-            if tag not in span_tags:
-                span_tags.append(tag)
-        if index is None:
-            self._assembled_spans.append(span)
-        else:
-            self._assembled_spans.insert(index, span)
+        custom_keys = set(session.custom_tags)
+        span_tags = [
+            tag
+            for tag in span_tags
+            if not isinstance(tag, str) or ":" not in tag or tag.split(":", 1)[0] not in custom_keys
+        ]
+        span_tags.extend(f"{key}:{value}" for key, value in session.custom_tags.items())
+        span["tags"] = span_tags
 
-    def _extend_spans(self, spans: List[Dict[str, Any]]) -> None:
-        for span in spans:
-            self._append_span(span)
+    def _set_session_tags(self, session: SessionState, tags: Dict[str, str]) -> None:
+        session.custom_tags.update(tags)
+        for span in self._assembled_spans:
+            if span.get("session_id") == session.session_id:
+                self._apply_session_tags(span, session)
+
+    def _register_session_token(self, session_token: str, session_id: str) -> None:
+        self._session_ids_by_token.setdefault(session_token, set()).add(session_id)
+        pending_tags = self._tags_by_token.get(session_token)
+        if pending_tags:
+            self._set_session_tags(self._get_or_create_session(session_id), pending_tags)
+
+    def _append_span(self, span: Dict[str, Any]) -> None:
+        """Store a span, applying tags configured for its Claude session."""
+        session_id = span.get("session_id")
+        if isinstance(session_id, str):
+            session = self._sessions.get(session_id)
+            if session is not None:
+                self._apply_session_tags(span, session)
+        self._assembled_spans.append(span)
 
     def _get_or_create_session(self, session_id: str) -> SessionState:
         """Get existing session or create a new one."""
@@ -1612,6 +1614,9 @@ class ClaudeHooksAPI:
         if session_id:
             session = self._get_or_create_session(session_id)
             self.update_session_project_metadata(session, body)
+            session_token = body.get("lapdog_session_token")
+            if isinstance(session_token, str) and session_token:
+                self._register_session_token(session_token, session_id)
 
         handlers: Dict[str, Any] = {
             "SessionStart": self._handle_session_start,
@@ -1817,11 +1822,16 @@ class ClaudeHooksAPI:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
 
         session_id = body.get("session_id", "")
         if not session_id:
             return web.json_response({"error": "missing session_id"}, status=400)
 
+        session_token = body.pop("lapdog_session_token", "")
+        if isinstance(session_token, str) and session_token:
+            self._register_session_token(session_token, session_id)
         self._raw_events.append(body)
 
         # wait for the transcript to be fully flushed before dispatching the hook
@@ -1862,6 +1872,44 @@ class ClaudeHooksAPI:
     async def handle_spans(self, request: Request) -> web.Response:
         """Handle GET /claude/hooks/spans — return all assembled spans."""
         return web.json_response({"spans": self._assembled_spans})
+
+    async def handle_session_tags(self, request: Request) -> web.Response:
+        """Add tags to the Claude session identified by its Lapdog launch token."""
+        session_token = request.headers.get("X-Lapdog-Session-Token", "")
+        if not session_token:
+            return web.json_response({"error": "missing Lapdog session token"}, status=404)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+        tags = body.get("tags")
+        if not isinstance(tags, dict) or not tags:
+            return web.json_response({"error": "tags must be a non-empty object"}, status=400)
+
+        normalized: Dict[str, str] = {}
+        for key, value in tags.items():
+            if not isinstance(key, str) or not key.strip() or not isinstance(value, str) or not value.strip():
+                return web.json_response({"error": "tag keys and values must be non-empty strings"}, status=400)
+            normalized[key.strip()] = value.strip()
+
+        token_tags = self._tags_by_token.setdefault(session_token, {})
+        token_tags.update(normalized)
+        session_ids = sorted(self._session_ids_by_token.get(session_token, set()))
+        for session_id in session_ids:
+            session = self._sessions.get(session_id)
+            if session is not None:
+                self._set_session_tags(session, normalized)
+        return web.json_response(
+            {
+                "status": "ok",
+                "session_id": session_ids[-1] if session_ids else "",
+                "session_ids": session_ids,
+                "tags": token_tags,
+            }
+        )
 
     async def handle_raw_events(self, request: Request) -> web.Response:
         """Handle GET /claude/hooks/raw — return all raw received events for debugging."""
@@ -1909,7 +1957,7 @@ class ClaudeHooksAPI:
             # client logs it and moves on.
             log.warning("claude backfill_session failed for %s: %r", session_id, exc)
             return web.json_response({"status": "error", "error": repr(exc)}, status=400)
-        self._extend_spans(spans)
+        self._assembled_spans.extend(spans)
         traces = len({s.get("trace_id") for s in spans})
         return web.json_response({"status": "ok", "spans_created": len(spans), "traces_created": traces})
 
@@ -1917,6 +1965,7 @@ class ClaudeHooksAPI:
         """Return the routes for this API."""
         return [
             web.post("/claude/hooks", with_cors(self.handle_hook)),
+            web.post("/claude/hooks/session/tags", with_cors(self.handle_session_tags)),
             web.post("/claude/hooks/backfill_session", with_cors(self.handle_backfill_session)),
             web.route("*", "/claude/hooks/sessions", with_cors(self.handle_sessions)),
             web.route("*", "/claude/hooks/spans", with_cors(self.handle_spans)),

@@ -194,6 +194,17 @@ lapdog status
 lapdog stop
 ```
 
+Claude can tag its current session by running this command from one of its shell
+tool calls:
+
+```bash
+lapdog tags set dd_auto_experiment_id:c0817213-61d4-43d6-8261-050d7560011a iteration:2
+```
+
+The tags are applied to spans already captured for that Claude session and to
+all spans captured afterward. The command only works inside a Claude process
+started with `lapdog claude`.
+
 Open <https://lapdog.datadoghq.com> while a session is running to see traces,
 sessions, costs, and permission friction in real time. The page reads directly
 from your local agent on `localhost:8126` — no Datadog account or login

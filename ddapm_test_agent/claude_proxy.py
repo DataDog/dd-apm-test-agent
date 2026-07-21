@@ -407,6 +407,7 @@ class ClaudeProxyAPI:
                     existing_tags.append(tag)
             span["tags"] = existing_tags
             apply_project_metadata_to_span(span, session.project_metadata)
+            self._hooks_api._apply_session_tags(span, session)
         log.info("Re-parented %d orphan LLM spans into trace %s", len(self._orphan_spans), session.trace_id)
         self._orphan_spans.clear()
 

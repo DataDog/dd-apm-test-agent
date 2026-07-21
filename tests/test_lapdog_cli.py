@@ -11,6 +11,11 @@ def test_codex_command_is_registered():
     assert "codex" in cli.LAPDOG_USAGE
 
 
+def test_tags_command_is_registered():
+    assert "tags" in cli.LAPDOG_COMMANDS
+    assert "tags" in cli.LAPDOG_USAGE
+
+
 def test_cmd_codex_starts_watcher_and_execs_codex():
     with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126) as ensure:
         with mock.patch("lapdog.cli._start_codex_watcher") as start_watcher:
@@ -595,9 +600,10 @@ def test_cmd_claude_auto_installs_plugin_by_default():
         with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
             with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
                 with mock.patch("lapdog.cli._run_claude") as run_claude:
-                    cli.cmd_claude(["--model", "opus"], forward_data=False, install_plugin=True)
+                    with mock.patch("lapdog.cli.uuid.uuid4", return_value=mock.Mock(hex="launch-token")):
+                        cli.cmd_claude(["--model", "opus"], forward_data=False, install_plugin=True)
     install.assert_called_once_with()
-    run_claude.assert_called_once_with(["--model", "opus"])
+    run_claude.assert_called_once_with(["--model", "opus"], port=8126, session_token="launch-token")
 
 
 def test_cmd_claude_skips_plugin_install_when_opted_out():
@@ -607,6 +613,47 @@ def test_cmd_claude_skips_plugin_install_when_opted_out():
                 with mock.patch("lapdog.cli._run_claude"):
                     cli.cmd_claude([], forward_data=False, install_plugin=False)
     install.assert_not_called()
+
+
+def test_cmd_tags_posts_tags_for_instrumented_session(monkeypatch, capsys):
+    monkeypatch.setenv("LAPDOG_SESSION_TOKEN", "launch-token")
+    monkeypatch.setenv("LAPDOG_URL", "http://localhost:8126")
+
+    with mock.patch(
+        "lapdog.cli._post_session_tags",
+        return_value={"status": "ok", "session_id": "claude-session"},
+    ) as post_tags:
+        cli.cmd_tags(["set", "dd_auto_experiment_id:experiment-id", "iteration:2"])
+
+    post_tags.assert_called_once_with(
+        "http://localhost:8126",
+        "launch-token",
+        {"dd_auto_experiment_id": "experiment-id", "iteration": "2"},
+    )
+    assert "Tagged Claude session claude-session" in capsys.readouterr().out
+
+
+def test_main_routes_tags_command(monkeypatch):
+    monkeypatch.setattr(cli.sys, "argv", ["lapdog", "tags", "set", "iteration:2"])
+    with mock.patch("lapdog.cli.cmd_tags") as cmd_tags:
+        cli.main()
+    cmd_tags.assert_called_once_with(["set", "iteration:2"])
+
+
+def test_run_claude_injects_lapdog_session_context(monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/claude")
+    execve = mock.Mock()
+    monkeypatch.setattr(cli.os, "execve", execve)
+
+    cli._run_claude(["--model", "opus"], port=9126, session_token="launch-token")
+
+    binary, args, env = execve.call_args.args
+    assert binary == "/usr/local/bin/claude"
+    assert args == ["/usr/local/bin/claude", "--model", "opus"]
+    assert env["LAPDOG_URL"] == "http://localhost:9126"
+    assert env["DDAPM_GATEWAY_URL"] == "http://localhost:9126/claude/proxy"
+    assert env["TEST_AGENT_URL"] == "http://localhost:9126/info"
+    assert env["LAPDOG_SESSION_TOKEN"] == "launch-token"
 
 
 def test_run_codex_falls_back_without_openai_api_key(monkeypatch):

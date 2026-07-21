@@ -30,7 +30,7 @@ from lapdog.paths import LAPDOG_DIR
 from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "uninstall"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "tags", "uninstall"]
 # Managed launchers that also exist as external binaries a user might invoke by
 # an explicit path (e.g. ``lapdog ~/.local/bin/claude``)
 _PATH_ROUTABLE_LAUNCHERS = ("claude", "pi", "codex")
@@ -43,6 +43,7 @@ LAPDOG_USAGE = (
     "  claude     Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi         Start lapdog in background if needed, install extension, then launch pi\n"
     "  codex      Start lapdog in background if needed, then launch Codex with tracing\n"
+    "  tags       Add tags to the current instrumented Claude session\n"
     "  uninstall  Stop lapdog and remove all state it wrote (~/.lapdog, Claude hooks, pi extension, Codex watchers)\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
@@ -306,7 +307,9 @@ def _wait_for_lapdog(proc: "subprocess.Popen[bytes]", log_path: Optional[str] = 
     sys.exit(1)
 
 
-def _run_claude(args: Optional[List[str]] = None) -> None:
+def _run_claude(
+    args: Optional[List[str]] = None, port: Optional[int] = None, session_token: Optional[str] = None
+) -> None:
     """Set BUN_OPTIONS with claude_intercept.mjs and exec the claude binary. Never returns."""
     if args is None:
         args = sys.argv[1:]
@@ -320,9 +323,17 @@ def _run_claude(args: Optional[List[str]] = None) -> None:
     if not claude_bin:
         print("[ddapm] 'claude' not found in PATH", file=sys.stderr)
         sys.exit(1)
-    existing = os.environ.get("BUN_OPTIONS", "")
-    os.environ["BUN_OPTIONS"] = f"--preload {mjs_path} {existing}".strip()
-    os.execv(claude_bin, [claude_bin] + args)
+    env = os.environ.copy()
+    existing = env.get("BUN_OPTIONS", "")
+    env["BUN_OPTIONS"] = f"--preload {mjs_path} {existing}".strip()
+    if port is not None:
+        lapdog_url = f"http://localhost:{port}"
+        env["LAPDOG_URL"] = lapdog_url
+        env["DDAPM_GATEWAY_URL"] = f"{lapdog_url}/claude/proxy"
+        env["TEST_AGENT_URL"] = f"{lapdog_url}/info"
+    if session_token:
+        env["LAPDOG_SESSION_TOKEN"] = session_token
+    os.execve(claude_bin, [claude_bin] + args, env)
 
 
 def cmd_start(sub_cmd_args: List[str], forward_data: bool) -> None:
@@ -468,10 +479,74 @@ def cmd_claude(
 
     if install_plugin:
         _ensure_lapdog_claude_code_plugin_installed()
-    _ensure_lapdog_running(forward_data, detached=True)
+    port = _ensure_lapdog_running(forward_data, detached=True)
+    if port is None:
+        print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+        sys.exit(1)
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
 
-    _run_claude(sub_cmd_args)
+    _run_claude(sub_cmd_args, port=port, session_token=uuid.uuid4().hex)
+
+
+def _post_session_tags(lapdog_url: str, session_token: str, tags: Dict[str, str]) -> Dict[str, Any]:
+    request = urllib.request.Request(
+        f"{lapdog_url.rstrip('/')}/claude/hooks/session/tags",
+        data=json.dumps({"tags": tags}).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "X-Lapdog-Session-Token": session_token,
+        },
+        method="POST",
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=2) as response:
+        result = json.loads(response.read())
+    if not isinstance(result, dict):
+        raise ValueError("Lapdog returned an invalid response")
+    return result
+
+
+def cmd_tags(sub_cmd_args: List[str]) -> None:
+    """Add key:value tags to the current instrumented Claude session."""
+    if len(sub_cmd_args) < 2 or sub_cmd_args[0] != "set":
+        print("Usage: lapdog tags set <key:value> [key:value ...]", file=sys.stderr)
+        sys.exit(1)
+
+    tags: Dict[str, str] = {}
+    for raw_tag in sub_cmd_args[1:]:
+        key, separator, value = raw_tag.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if not separator or not key or not value:
+            print(f"[lapdog] Invalid tag {raw_tag!r}; expected key:value.", file=sys.stderr)
+            sys.exit(1)
+        tags[key] = value
+
+    session_token = os.environ.get("LAPDOG_SESSION_TOKEN", "")
+    lapdog_url = os.environ.get("LAPDOG_URL", "")
+    if not session_token or not lapdog_url:
+        print(
+            "[lapdog] No instrumented Claude session found. Run this command from inside 'lapdog claude'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        result = _post_session_tags(lapdog_url, session_token, tags)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace").strip()
+        print(f"[lapdog] Failed to set session tags: HTTP {exc.code}: {detail}", file=sys.stderr)
+        sys.exit(1)
+    except (OSError, ValueError) as exc:
+        print(f"[lapdog] Failed to set session tags: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    formatted_tags = ", ".join(f"{key}:{value}" for key, value in tags.items())
+    session_id = result.get("session_id")
+    if session_id:
+        print(f"[lapdog] Tagged Claude session {session_id}: {formatted_tags}")
+    else:
+        print(f"[lapdog] Queued tags for the current Claude session: {formatted_tags}")
 
 
 # ---------------------------------------------------------------------------
@@ -1120,6 +1195,8 @@ def main() -> None:
             forward_data=lapdog_parsed_args.forward,
             backfill=backfill,
         )
+    elif sub_cmd == "tags":
+        cmd_tags(sub_cmd_args)
     elif sub_cmd == "uninstall":
         cmd_uninstall()
 
