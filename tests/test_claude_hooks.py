@@ -131,9 +131,68 @@ async def test_session_tags_queue_until_hook_registers_launch_token(agent):
     assert spans
     assert all("iteration:2" in span["tags"] for span in spans)
 
+    second_session_id = "sess-after-queued-tags"
+    await _post_hook(
+        agent,
+        {
+            "session_id": second_session_id,
+            "hook_event_name": "SessionStart",
+            "lapdog_session_token": session_token,
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": second_session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "do not reuse consumed queued tags",
+        },
+    )
+    response = await agent.get("/claude/hooks/spans")
+    second_session_spans = [
+        span for span in (await response.json())["spans"] if span.get("session_id") == second_session_id
+    ]
+    assert second_session_spans
+    assert all("iteration:2" not in span["tags"] for span in second_session_spans)
+
     response = await agent.get("/claude/hooks/raw")
     raw_events = (await response.json())["events"]
     assert all("lapdog_session_token" not in event for event in raw_events)
+
+
+async def test_session_tags_reject_ambiguous_launch_token(agent):
+    session_token = "shared-launch-token"
+    session_ids = ["shared-session-a", "shared-session-b"]
+    for session_id in session_ids:
+        await _post_hook(
+            agent,
+            {
+                "session_id": session_id,
+                "hook_event_name": "SessionStart",
+                "lapdog_session_token": session_token,
+            },
+        )
+        await _post_hook(
+            agent,
+            {
+                "session_id": session_id,
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": session_id,
+            },
+        )
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"tags": {"iteration": "2"}},
+    )
+    assert response.status == 409
+    assert (await response.json())["session_ids"] == session_ids
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in (await response.json())["spans"] if span.get("session_id") in session_ids]
+    assert spans
+    assert all("iteration:2" not in span["tags"] for span in spans)
 
 
 async def test_session_tags_require_launch_token(agent):

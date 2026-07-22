@@ -308,7 +308,7 @@ class ClaudeHooksAPI:
     def __init__(self, link_tracker: Optional[ClaudeLinkTracker] = None) -> None:
         self._sessions: Dict[str, SessionState] = {}
         self._session_ids_by_token: Dict[str, Set[str]] = {}
-        self._tags_by_token: Dict[str, Dict[str, str]] = {}
+        self._pending_tags_by_token: Dict[str, Dict[str, str]] = {}
         self._assembled_spans: List[Dict[str, Any]] = []
         self._raw_events: List[Dict[str, Any]] = []
         self._link_tracker = link_tracker
@@ -341,7 +341,7 @@ class ClaudeHooksAPI:
 
     def _register_session_token(self, session_token: str, session_id: str) -> None:
         self._session_ids_by_token.setdefault(session_token, set()).add(session_id)
-        pending_tags = self._tags_by_token.get(session_token)
+        pending_tags = self._pending_tags_by_token.pop(session_token, None)
         if pending_tags:
             self._set_session_tags(self._get_or_create_session(session_id), pending_tags)
 
@@ -1902,19 +1902,42 @@ class ClaudeHooksAPI:
                 return web.json_response({"error": "tag keys and values must be non-empty strings"}, status=400)
             normalized[key.strip()] = value.strip()
 
-        token_tags = self._tags_by_token.setdefault(session_token, {})
-        token_tags.update(normalized)
-        session_ids = sorted(self._session_ids_by_token.get(session_token, set()))
-        for session_id in session_ids:
-            session = self._sessions.get(session_id)
-            if session is not None:
+        requested_session_id = body.get("session_id")
+        if requested_session_id is not None and (
+            not isinstance(requested_session_id, str) or not requested_session_id.strip()
+        ):
+            return web.json_response({"error": "session_id must be a non-empty string"}, status=400)
+
+        if isinstance(requested_session_id, str):
+            session_id = requested_session_id.strip()
+            session = self._get_or_create_session(session_id)
+            self._set_session_tags(session, normalized)
+            session_ids = [session_id]
+            applied_tags = dict(session.custom_tags)
+        else:
+            session_ids = sorted(self._session_ids_by_token.get(session_token, set()))
+            if len(session_ids) > 1:
+                return web.json_response(
+                    {
+                        "error": "launch token matches multiple sessions; provide session_id",
+                        "session_ids": session_ids,
+                    },
+                    status=409,
+                )
+            if session_ids:
+                session = self._get_or_create_session(session_ids[0])
                 self._set_session_tags(session, normalized)
+                applied_tags = dict(session.custom_tags)
+            else:
+                pending_tags = self._pending_tags_by_token.setdefault(session_token, {})
+                pending_tags.update(normalized)
+                applied_tags = dict(pending_tags)
         return web.json_response(
             {
                 "status": "ok",
                 "session_id": session_ids[-1] if session_ids else "",
                 "session_ids": session_ids,
-                "tags": token_tags,
+                "tags": applied_tags,
             }
         )
 

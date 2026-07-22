@@ -80,7 +80,7 @@ def test_cmd_codex_app_starts_watcher_with_app_path_and_lapdog_pid(monkeypatch, 
     stop_legacy.assert_called_once_with(8126, 4242, codex_args.app_watcher_key(8126))
     start_watcher.assert_called_once_with(
         8126,
-        proxy_session_key="app-token",
+        proxy_session_key=None,
         cwd=str(target_cwd),
         parent_pid=4242,
         singleton_key=codex_args.app_watcher_key(8126),
@@ -270,7 +270,7 @@ def test_start_codex_watcher_skips_live_singleton(tmp_path, monkeypatch):
             {
                 "lapdog_url": "http://localhost:8126",
                 "include_all_cwds": True,
-                "proxy_session_key": None,
+                "proxy_session_key": "",
             },
         )
     ]
@@ -329,6 +329,49 @@ def test_start_codex_watcher_terminates_verified_stale_singleton(tmp_path, monke
     assert pid_path.read_text() == "4343\n"
 
 
+def test_start_codex_app_watcher_replaces_legacy_tokenized_watcher(tmp_path, monkeypatch):
+    pid_path = tmp_path / "codex-watcher-app-key.pid"
+    pid_path.write_text("4242\n")
+    kills = []
+    popen_args = []
+
+    def fake_popen(args, **kwargs):
+        popen_args.append(args)
+        ready_path = args[args.index("--ready-file") + 1]
+        with open(ready_path, "w") as f:
+            f.write("ready\n")
+        process = mock.Mock()
+        process.pid = 4343
+        process.poll.return_value = None
+        return process
+
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli, "_process_exists", lambda pid: pid == 4242)
+    monkeypatch.setattr(
+        cli,
+        "_codex_watcher_command",
+        lambda pid: (
+            "python -m lapdog.codex_watcher --lapdog-url http://localhost:8126 "
+            "--parent-pid 5252 --include-all-cwds --proxy-session-key old-token --cwd /repo"
+        ),
+    )
+    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: kills.append((pid, sig)))
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+
+    cli._start_codex_watcher(
+        8126,
+        proxy_session_key=None,
+        cwd=str(tmp_path),
+        parent_pid=5252,
+        singleton_key="app-key",
+        include_all_cwds=True,
+    )
+
+    assert kills == [(4242, cli.signal.SIGTERM)]
+    assert len(popen_args) == 1
+    assert "--proxy-session-key" not in popen_args[0]
+
+
 def test_codex_watcher_reusable_requires_current_parent(monkeypatch):
     def fake_run(args, **kwargs):
         result = mock.Mock()
@@ -353,6 +396,7 @@ def test_codex_watcher_reusable_requires_current_parent(monkeypatch):
     assert not cli._codex_watcher_reusable(4242, 1111, include_all_cwds=True)
     assert cli._codex_watcher_reusable(4242, 1111, proxy_session_key="proxy-key")
     assert not cli._codex_watcher_reusable(4242, 1111, proxy_session_key="other-key")
+    assert not cli._codex_watcher_reusable(4242, 1111, proxy_session_key="")
 
 
 def test_codex_watcher_reusable_checks_windows_command(monkeypatch):
@@ -647,6 +691,7 @@ def test_cmd_claude_skips_plugin_install_when_opted_out():
 def test_cmd_tags_posts_tags_for_instrumented_session(monkeypatch, capsys):
     monkeypatch.setenv("LAPDOG_SESSION_TOKEN", "launch-token")
     monkeypatch.setenv("LAPDOG_URL", "http://localhost:8126")
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
 
     with mock.patch(
         "lapdog.cli._post_session_tags",
@@ -658,8 +703,51 @@ def test_cmd_tags_posts_tags_for_instrumented_session(monkeypatch, capsys):
         "http://localhost:8126",
         "launch-token",
         {"dd_auto_experiment_id": "experiment-id", "iteration": "2"},
+        session_id=None,
     )
-    assert "Tagged Claude session claude-session" in capsys.readouterr().out
+    assert "Tagged coding-agent session claude-session" in capsys.readouterr().out
+
+
+def test_post_session_tags_serializes_target_session_id():
+    opener = mock.MagicMock()
+    response = mock.MagicMock()
+    response.__enter__.return_value.read.return_value = b'{"status": "ok", "session_id": "codex-thread-id"}'
+    opener.open.return_value = response
+
+    with mock.patch("lapdog.cli.urllib.request.build_opener", return_value=opener):
+        result = cli._post_session_tags(
+            "http://localhost:8126",
+            "app-launch-token",
+            {"iteration": "2"},
+            session_id="codex-thread-id",
+        )
+
+    request = opener.open.call_args.args[0]
+    assert json.loads(request.data) == {
+        "session_id": "codex-thread-id",
+        "tags": {"iteration": "2"},
+    }
+    assert result["session_id"] == "codex-thread-id"
+
+
+def test_cmd_tags_targets_current_codex_thread(monkeypatch, capsys):
+    monkeypatch.setenv("LAPDOG_SESSION_TOKEN", "app-launch-token")
+    monkeypatch.setenv("LAPDOG_URL", "http://localhost:8126")
+    monkeypatch.setenv("CODEX_THREAD_ID", "codex-thread-id")
+
+    with mock.patch(
+        "lapdog.cli._post_session_tags",
+        return_value={"status": "ok", "session_id": "codex-thread-id"},
+    ) as post_tags:
+        cli.cmd_tags(["set", "iteration:2"])
+
+    post_tags.assert_called_once_with(
+        "http://localhost:8126",
+        "app-launch-token",
+        {"iteration": "2"},
+        session_id="codex-thread-id",
+    )
+    assert "Tagged coding-agent session codex-thread-id" in capsys.readouterr().out
 
 
 def test_main_routes_tags_command(monkeypatch):

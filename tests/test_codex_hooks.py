@@ -195,7 +195,10 @@ async def test_codex_session_tags_apply_to_existing_and_future_spans(agent):
     response = await agent.post(
         "/lapdog/session/tags",
         headers={"X-Lapdog-Session-Token": session_token},
-        json={"tags": {"dd_auto_experiment_id": "experiment-id", "iteration": "2"}},
+        json={
+            "session_id": sid,
+            "tags": {"dd_auto_experiment_id": "experiment-id", "iteration": "2"},
+        },
     )
     assert response.status == 200, await response.text()
 
@@ -222,6 +225,70 @@ async def test_codex_session_tags_apply_to_existing_and_future_spans(agent):
     for span in session_spans:
         assert "dd_auto_experiment_id:experiment-id" in span["tags"]
         assert "iteration:2" in span["tags"]
+
+
+async def test_codex_session_tags_target_only_requested_thread(agent):
+    session_token = "shared-codex-app-token"
+    targeted_sid = "codex-app-targeted"
+    unrelated_sid = "codex-app-unrelated"
+    for sid in (targeted_sid, unrelated_sid):
+        await _post(agent, sid, _session_meta(sid), proxy_session_key=session_token)
+        await _post(agent, sid, _turn_context(f"{sid}-turn"))
+        await _post(agent, sid, _event("user_message", message=sid))
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"session_id": targeted_sid, "tags": {"iteration": "2"}},
+    )
+    assert response.status == 200, await response.text()
+    assert (await response.json())["session_ids"] == [targeted_sid]
+
+    for sid in (targeted_sid, unrelated_sid):
+        await _post(
+            agent,
+            sid,
+            _response_item(
+                "function_call",
+                name="exec_command",
+                call_id=f"{sid}-call",
+                arguments='{"cmd": "pwd"}',
+            ),
+        )
+        await _post(
+            agent,
+            sid,
+            _response_item("function_call_output", call_id=f"{sid}-call", output="/repo"),
+        )
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = _spans(await response.json())
+    targeted_spans = [span for span in spans if span.get("session_id") == targeted_sid]
+    unrelated_spans = [span for span in spans if span.get("session_id") == unrelated_sid]
+    assert targeted_spans
+    assert unrelated_spans
+    assert all("iteration:2" in span["tags"] for span in targeted_spans)
+    assert all("iteration:2" not in span["tags"] for span in unrelated_spans)
+
+
+async def test_codex_session_tags_can_target_thread_before_watcher_posts(agent):
+    sid = "codex-app-watcher-race"
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": "app-launch-token"},
+        json={"session_id": sid, "tags": {"iteration": "2"}},
+    )
+    assert response.status == 200, await response.text()
+    assert (await response.json())["session_id"] == sid
+
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="watcher arrived"))
+
+    response = await agent.get("/claude/hooks/spans")
+    session_spans = [span for span in _spans(await response.json()) if span.get("session_id") == sid]
+    assert session_spans
+    assert all("iteration:2" in span["tags"] for span in session_spans)
 
 
 async def test_codex_project_metadata_from_session_git(agent):

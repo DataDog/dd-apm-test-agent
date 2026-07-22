@@ -488,10 +488,18 @@ def cmd_claude(
     _run_claude(sub_cmd_args, port=port, session_token=uuid.uuid4().hex)
 
 
-def _post_session_tags(lapdog_url: str, session_token: str, tags: Dict[str, str]) -> Dict[str, Any]:
+def _post_session_tags(
+    lapdog_url: str,
+    session_token: str,
+    tags: Dict[str, str],
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    body: Dict[str, Any] = {"tags": tags}
+    if session_id:
+        body["session_id"] = session_id
     request = urllib.request.Request(
         f"{lapdog_url.rstrip('/')}/lapdog/session/tags",
-        data=json.dumps({"tags": tags}).encode(),
+        data=json.dumps(body).encode(),
         headers={
             "Content-Type": "application/json",
             "X-Lapdog-Session-Token": session_token,
@@ -507,7 +515,7 @@ def _post_session_tags(lapdog_url: str, session_token: str, tags: Dict[str, str]
 
 
 def cmd_tags(sub_cmd_args: List[str]) -> None:
-    """Add key:value tags to the current instrumented Claude session."""
+    """Add key:value tags to the current instrumented coding-agent session."""
     if len(sub_cmd_args) < 2 or sub_cmd_args[0] != "set":
         print("Usage: lapdog tags set <key:value> [key:value ...]", file=sys.stderr)
         sys.exit(1)
@@ -524,15 +532,17 @@ def cmd_tags(sub_cmd_args: List[str]) -> None:
 
     session_token = os.environ.get("LAPDOG_SESSION_TOKEN", "")
     lapdog_url = os.environ.get("LAPDOG_URL", "")
+    target_session_id = os.environ.get("CODEX_THREAD_ID") or None
     if not session_token or not lapdog_url:
         print(
-            "[lapdog] No instrumented Claude session found. Run this command from inside 'lapdog claude'.",
+            "[lapdog] No instrumented coding-agent session found. "
+            "Run this command from inside a session started with 'lapdog claude' or 'lapdog codex'.",
             file=sys.stderr,
         )
         sys.exit(1)
 
     try:
-        result = _post_session_tags(lapdog_url, session_token, tags)
+        result = _post_session_tags(lapdog_url, session_token, tags, session_id=target_session_id)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace").strip()
         print(f"[lapdog] Failed to set session tags: HTTP {exc.code}: {detail}", file=sys.stderr)
@@ -542,11 +552,11 @@ def cmd_tags(sub_cmd_args: List[str]) -> None:
         sys.exit(1)
 
     formatted_tags = ", ".join(f"{key}:{value}" for key, value in tags.items())
-    session_id = result.get("session_id")
-    if session_id:
-        print(f"[lapdog] Tagged Claude session {session_id}: {formatted_tags}")
+    tagged_session_id = result.get("session_id")
+    if tagged_session_id:
+        print(f"[lapdog] Tagged coding-agent session {tagged_session_id}: {formatted_tags}")
     else:
-        print(f"[lapdog] Queued tags for the current Claude session: {formatted_tags}")
+        print(f"[lapdog] Queued tags for the current coding-agent session: {formatted_tags}")
 
 
 # ---------------------------------------------------------------------------
@@ -693,8 +703,13 @@ def _codex_watcher_matches(
         return False
     if include_all_cwds is not None and ("--include-all-cwds" in parts) is not include_all_cwds:
         return False
-    if proxy_session_key is not None and _arg_value(parts, "--proxy-session-key") != proxy_session_key:
-        return False
+    if proxy_session_key is not None:
+        actual_proxy_session_key = _arg_value(parts, "--proxy-session-key")
+        if proxy_session_key:
+            if actual_proxy_session_key != proxy_session_key:
+                return False
+        elif actual_proxy_session_key is not None:
+            return False
     return True
 
 
@@ -851,6 +866,7 @@ def _start_codex_watcher(
     log_dir = os.path.dirname(log_path)
     os.makedirs(log_dir, exist_ok=True)
     lapdog_url = f"http://localhost:{port}"
+    expected_proxy_session_key = "" if include_all_cwds and proxy_session_key is None else proxy_session_key
     if singleton_key:
         pid_path = _codex_watcher_pid_file(log_dir, singleton_key)
         existing_pid, _ = _read_pid_file(path=pid_path)
@@ -859,7 +875,7 @@ def _start_codex_watcher(
             watcher_parent_pid,
             lapdog_url=lapdog_url,
             include_all_cwds=include_all_cwds,
-            proxy_session_key=proxy_session_key,
+            proxy_session_key=expected_proxy_session_key,
         ):
             print(
                 f"[lapdog] Codex watcher already running for this app workspace (PID {existing_pid}).",
@@ -996,7 +1012,7 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = Fals
         _stop_legacy_codex_app_watchers(port, parent_pid, codex_args.app_watcher_key(port))
     _start_codex_watcher(
         port,
-        proxy_session_key=session_token,
+        proxy_session_key=proxy_session_key,
         cwd=codex_cwd,
         parent_pid=parent_pid,
         singleton_key=codex_args.app_watcher_key(port) if app_mode else None,
