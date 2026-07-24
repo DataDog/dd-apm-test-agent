@@ -727,7 +727,8 @@ def test_cmd_tags_missing_session_message_lists_supported_agents(monkeypatch, ca
     assert exc_info.value.code == 1
     error = capsys.readouterr().err
     assert "No instrumented coding-agent session found" in error
-    assert "'lapdog claude', 'lapdog codex', or 'lapdog pi'" in error
+    for launcher in cli._PATH_ROUTABLE_LAUNCHERS:
+        assert f"'lapdog {launcher}'" in error
 
 
 def test_post_session_tags_serializes_target_session_id():

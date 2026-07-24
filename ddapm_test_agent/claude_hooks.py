@@ -104,14 +104,7 @@ def _to_json_str(value: Any) -> str:
 class PendingToolSpan:
     """Tracks a tool invocation between PreToolUse and PostToolUse."""
 
-    def __init__(
-        self,
-        span_id: str,
-        tool_name: str,
-        tool_input: Any,
-        parent_id: str,
-        start_ns: int,
-    ) -> None:
+    def __init__(self, span_id: str, tool_name: str, tool_input: Any, parent_id: str, start_ns: int) -> None:
         self.span_id = span_id
         self.tool_name = tool_name
         self.tool_input = tool_input
@@ -149,9 +142,7 @@ class ActiveStep:
 class SessionState:
     """Tracks the state of a single Claude Code session."""
 
-    def __init__(
-        self, session_id: str, trace_id: str, root_span_id: str, start_ns: int
-    ) -> None:
+    def __init__(self, session_id: str, trace_id: str, root_span_id: str, start_ns: int) -> None:
         self.session_id = session_id
         self.trace_id = trace_id
         self.root_span_id = root_span_id
@@ -363,9 +354,7 @@ class ClaudeHooksAPI:
         span_tags = [
             tag
             for tag in span_tags
-            if not isinstance(tag, str)
-            or ":" not in tag
-            or tag.split(":", 1)[0] not in custom_keys
+            if not isinstance(tag, str) or ":" not in tag or tag.split(":", 1)[0] not in custom_keys
         ]
         span_tags.extend(f"{key}:{value}" for key, value in session.custom_tags.items())
         span["tags"] = span_tags
@@ -375,9 +364,7 @@ class ClaudeHooksAPI:
         for candidate in self._sessions.values():
             if candidate.session_id == session.session_id:
                 candidate.custom_tags.update(tags)
-                candidate.custom_tag_sequences.update(
-                    {key: self._tag_update_sequence for key in tags}
-                )
+                candidate.custom_tag_sequences.update({key: self._tag_update_sequence for key in tags})
         for span in self._assembled_spans:
             if span.get("session_id") == session.session_id:
                 self._apply_session_tags(span, session)
@@ -400,11 +387,7 @@ class ClaudeHooksAPI:
         Claude and Pi sessions do not use this reconciliation path because
         they do not perform Codex-style session grouping.
         """
-        grouped_sessions = [
-            session
-            for session in self._sessions.values()
-            if session.session_id == session_id
-        ]
+        grouped_sessions = [session for session in self._sessions.values() if session.session_id == session_id]
         merged_tags: Dict[str, str] = {}
         merged_sequences: Dict[str, int] = {}
         for session in grouped_sessions:
@@ -427,9 +410,7 @@ class ClaudeHooksAPI:
         self._session_tokens_by_id.setdefault(session_id, set()).add(session_token)
         pending_tags = self._pending_tags_by_token.pop(session_token, None)
         if pending_tags:
-            self._set_session_tags(
-                self._get_or_create_session(session_id), pending_tags
-            )
+            self._set_session_tags(self._get_or_create_session(session_id), pending_tags)
 
     def _apply_registered_session_tags(self, span: Dict[str, Any]) -> None:
         session_id = span.get("session_id")
@@ -503,9 +484,7 @@ class ClaudeHooksAPI:
         """Merge key-value pairs into span['meta']['metadata']['_dd'], preserving existing values."""
         span["meta"].setdefault("metadata", {}).setdefault("_dd", {}).update(kwargs)
 
-    def update_session_project_metadata(
-        self, session: SessionState, body: Dict[str, Any]
-    ) -> None:
+    def update_session_project_metadata(self, session: SessionState, body: Dict[str, Any]) -> None:
         previous_cwd = session.cwd
         cwd = body.get("cwd")
         if isinstance(cwd, str) and cwd.strip():
@@ -517,8 +496,7 @@ class ClaudeHooksAPI:
         if session.cwd or project_name or git_repository_url:
             session.project_metadata = resolve_project_metadata(
                 cwd=session.cwd,
-                project_name=project_name
-                or ("" if cwd_changed else session.project_metadata.project_name),
+                project_name=project_name or ("" if cwd_changed else session.project_metadata.project_name),
                 git_repository_url=git_repository_url
                 or ("" if cwd_changed else session.project_metadata.git_repository_url),
             )
@@ -549,9 +527,7 @@ class ClaudeHooksAPI:
         tags.extend(git_commit_sha_tags(session.cwd))
         return tags
 
-    def _set_permission_wait_critical_evaluation(
-        self, span: Dict[str, Any], estimated_permission_wait_ms: int
-    ) -> None:
+    def _set_permission_wait_critical_evaluation(self, span: Dict[str, Any], estimated_permission_wait_ms: int) -> None:
         """Embed a permission_wait_critical boolean evaluation on a span.
         The evaluation flags whether the permission wait was > 50% of span duration.
         """
@@ -566,17 +542,12 @@ class ClaudeHooksAPI:
             "assessment": assessment,
             "status": "OK",
             "reasoning": (
-                f"Permission wait {'exceeded' if is_critical else 'did not exceed'} "
-                f"50% of span duration"
+                f"Permission wait {'exceeded' if is_critical else 'did not exceed'} " f"50% of span duration"
             ),
         }
         # Also populate legacy fields so the frontend can read them
-        span.setdefault("evaluations", {}).setdefault("custom", {})[
-            "permission_wait_critical"
-        ] = is_critical
-        span.setdefault("evaluation_assessments", {}).setdefault("custom", {})[
-            "permission_wait_critical"
-        ] = assessment
+        span.setdefault("evaluations", {}).setdefault("custom", {})["permission_wait_critical"] = is_critical
+        span.setdefault("evaluation_assessments", {}).setdefault("custom", {})["permission_wait_critical"] = assessment
 
     def _start_step_for_llm(
         self,
@@ -605,9 +576,7 @@ class ClaudeHooksAPI:
         before the proxy finishes creating the LLM span and the children
         got cached with the agent as parent instead of this step.
         """
-        agent_parent_id = session.step_agent_by_span_id.get(
-            agent_parent_id, agent_parent_id
-        )
+        agent_parent_id = session.step_agent_by_span_id.get(agent_parent_id, agent_parent_id)
 
         prior = session.active_steps_by_agent.get(agent_parent_id)
         if prior is not None:
@@ -629,8 +598,7 @@ class ClaudeHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": self.base_tags(session)
-            + ["trajectory.semantic_type:agent_message"],
+            "tags": self.base_tags(session) + ["trajectory.semantic_type:agent_message"],
             "meta": {
                 "span": {"kind": "step"},
                 "input": {},
@@ -707,23 +675,14 @@ class ClaudeHooksAPI:
             if deferred is not None and deferred.get("parent_id") == agent_parent_id:
                 deferred["parent_id"] = step_span_id
                 span_ref = deferred.get("_span_ref")
-                if (
-                    span_ref is not None
-                    and span_ref.get("parent_id") == agent_parent_id
-                ):
+                if span_ref is not None and span_ref.get("parent_id") == agent_parent_id:
                     span_ref["parent_id"] = step_span_id
 
         for entry in session.agent_span_stack:
-            if (
-                entry.get("task_tool_use_id") in tool_use_set
-                and entry.get("parent_id") == agent_parent_id
-            ):
+            if entry.get("task_tool_use_id") in tool_use_set and entry.get("parent_id") == agent_parent_id:
                 entry["parent_id"] = step_span_id
                 span_ref = entry.get("_span_ref")
-                if (
-                    span_ref is not None
-                    and span_ref.get("parent_id") == agent_parent_id
-                ):
+                if span_ref is not None and span_ref.get("parent_id") == agent_parent_id:
                     span_ref["parent_id"] = step_span_id
 
     def _finalize_step(
@@ -764,13 +723,7 @@ class ClaudeHooksAPI:
         """Finalize the open step (if any) for the given agent frame."""
         active = session.active_steps_by_agent.get(agent_span_id)
         if active is not None:
-            self._finalize_step(
-                session,
-                active,
-                end_ns=end_ns,
-                status=status,
-                error_message=error_message,
-            )
+            self._finalize_step(session, active, end_ns=end_ns, status=status, error_message=error_message)
 
     def _update_step_from_llm_response(
         self,
@@ -835,21 +788,13 @@ class ClaudeHooksAPI:
         # Discard any pending permission wait — the turn was interrupted so we don't
         # want it bleeding into the next turn's accumulated total.
         session.pending_permission_at_ns = None
-        root_span_ref: Optional[Dict[str, Any]] = getattr(
-            session, "_root_span_ref", None
-        )
+        root_span_ref: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
         if root_span_ref is not None and root_span_ref["duration"] == -1:
             root_span_ref["duration"] = 0
 
         # Finalize any in-progress step spans before tearing down their agents.
         for active in list(session.active_steps_by_agent.values()):
-            self._finalize_step(
-                session,
-                active,
-                end_ns=now_ns,
-                status="error",
-                error_message="interrupted",
-            )
+            self._finalize_step(session, active, end_ns=now_ns, status="error", error_message="interrupted")
         session.active_steps_by_agent.clear()
         session.step_index_by_agent.clear()
         session.step_agent_by_span_id.clear()
@@ -873,11 +818,7 @@ class ClaudeHooksAPI:
         root_span: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
         if not root_span:
             root_span = next(
-                (
-                    s
-                    for s in self._assembled_spans
-                    if s.get("span_id") == session.root_span_id
-                ),
+                (s for s in self._assembled_spans if s.get("span_id") == session.root_span_id),
                 None,
             )
 
@@ -897,11 +838,7 @@ class ClaudeHooksAPI:
             # rollup + each LLM span's own value).
 
         session.root_span_emitted = True
-        log.info(
-            "Finalized interrupted turn for session %s (trace %s)",
-            session.session_id,
-            session.trace_id,
-        )
+        log.info("Finalized interrupted turn for session %s (trace %s)", session.session_id, session.trace_id)
 
     def _handle_user_prompt_submit(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle UserPromptSubmit hook event — starts a new trace for each user turn.
@@ -913,10 +850,7 @@ class ClaudeHooksAPI:
 
         # If the previous turn was never finalized (Stop never fired, e.g. Ctrl+C),
         # finalize it as interrupted before starting the new turn.
-        if (
-            not session.root_span_emitted
-            and getattr(session, "_root_span_ref", None) is not None
-        ):
+        if not session.root_span_emitted and getattr(session, "_root_span_ref", None) is not None:
             self._finalize_interrupted_turn(session)
 
         # If the previous turn's root span was emitted, start a fresh trace
@@ -958,11 +892,7 @@ class ClaudeHooksAPI:
             "env": "local",
             "session_id": session.session_id,
             "tags": self.base_tags(session)
-            + (
-                [f"topic:{session.conversation_title}"]
-                if session.conversation_title
-                else []
-            ),
+            + ([f"topic:{session.conversation_title}"] if session.conversation_title else []),
             "meta": {
                 "span": {"kind": "agent"},
                 "input": {"value": prompt},
@@ -1024,14 +954,10 @@ class ClaudeHooksAPI:
             start_ns = pending.start_ns
             input_value = _to_json_str(pending.tool_input) if pending.tool_input else ""
             actual_tool_name = pending.tool_name
-            tool_input_dict = (
-                pending.tool_input if isinstance(pending.tool_input, dict) else {}
-            )
+            tool_input_dict = pending.tool_input if isinstance(pending.tool_input, dict) else {}
         else:
             span_id = _format_span_id()
-            parent_id = self._resolve_tool_parent(
-                tool_use_id, self._current_parent_id(session)
-            )
+            parent_id = self._resolve_tool_parent(tool_use_id, self._current_parent_id(session))
             start_ns = now_ns
             input_value = ""
             actual_tool_name = tool_name
@@ -1043,13 +969,9 @@ class ClaudeHooksAPI:
 
         estimated_permission_wait_ms: Optional[int] = None
         if session.pending_permission_at_ns is not None:
-            estimated_permission_wait_ms = (
-                now_ns - session.pending_permission_at_ns
-            ) // 1_000_000
+            estimated_permission_wait_ms = (now_ns - session.pending_permission_at_ns) // 1_000_000
             session.pending_permission_at_ns = None
-            root_span_ref: Optional[Dict[str, Any]] = getattr(
-                session, "_root_span_ref", None
-            )
+            root_span_ref: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
             if root_span_ref is not None and root_span_ref["duration"] == -1:
                 root_span_ref["duration"] = 0
 
@@ -1149,9 +1071,7 @@ class ClaudeHooksAPI:
             "span_links": span_links,
         }
         if estimated_permission_wait_ms is not None:
-            self._set_hidden_metadata(
-                span, estimated_permission_wait_ms=estimated_permission_wait_ms
-            )
+            self._set_hidden_metadata(span, estimated_permission_wait_ms=estimated_permission_wait_ms)
         self._append_span(span)
 
     def _handle_subagent_start(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -1189,9 +1109,7 @@ class ClaudeHooksAPI:
         # from when they were dispatched, not the stack top which may have changed.
         # Re-resolve via the link tracker in case PreToolUse raced ahead of the
         # LLM span's creation and cached a stale agent parent rather than the step.
-        fallback_parent = (
-            task_pending.parent_id if task_pending else self._current_parent_id(session)
-        )
+        fallback_parent = task_pending.parent_id if task_pending else self._current_parent_id(session)
         if task_tool_use_id:
             parent_id = self._resolve_tool_parent(task_tool_use_id, fallback_parent)
         else:
@@ -1256,9 +1174,7 @@ class ClaudeHooksAPI:
         now_ns = monotonic_wall_ns()
 
         if not session.agent_span_stack:
-            log.warning(
-                "SubagentStop with empty agent stack for session %s", session_id
-            )
+            log.warning("SubagentStop with empty agent stack for session %s", session_id)
             return
 
         # Finalize this subagent's active step (if any) before popping the frame.
@@ -1280,16 +1196,11 @@ class ClaudeHooksAPI:
             first_input_tokens=0,
         )
 
-        estimated_perm_wait = self._sum_estimated_permission_wait_ms(
-            parent_id=str(agent_info["span_id"])
-        )
+        estimated_perm_wait = self._sum_estimated_permission_wait_ms(parent_id=str(agent_info["span_id"]))
         # If SubagentStart fired before PreToolUse(Task), retry the match now.
         if not task_tool_use_id:
             for tid, pending in session.pending_tools.items():
-                if (
-                    pending.tool_name == "Task"
-                    and tid not in session.claimed_task_tools
-                ):
+                if pending.tool_name == "Task" and tid not in session.claimed_task_tools:
                     task_tool_use_id = tid
                     task_tool_input = pending.tool_input
                     session.claimed_task_tools.add(tid)
@@ -1304,9 +1215,7 @@ class ClaudeHooksAPI:
             if span_ref:
                 span_ref["duration"] = duration
                 if estimated_perm_wait > 0:
-                    self._set_hidden_metadata(
-                        span_ref, estimated_permission_wait_ms=estimated_perm_wait
-                    )
+                    self._set_hidden_metadata(span_ref, estimated_permission_wait_ms=estimated_perm_wait)
             session.deferred_agent_spans[task_tool_use_id] = {
                 "span_id": agent_info["span_id"],
                 "trace_id": session.trace_id,
@@ -1377,10 +1286,7 @@ class ClaudeHooksAPI:
             "output_tokens": total_output,
             "cache_read_input_tokens": total_cache_read,
             "cache_write_input_tokens": total_cache_write,
-            "total_tokens": total_input
-            + total_output
-            + total_cache_read
-            + total_cache_write,
+            "total_tokens": total_input + total_output + total_cache_read + total_cache_write,
         }
 
     def _aggregate_tool_usage(self, trace_id: str) -> Dict[str, Dict[str, int]]:
@@ -1399,21 +1305,11 @@ class ClaudeHooksAPI:
             tool_name = raw_name.split(" - ")[0]
             entry = result.setdefault(
                 tool_name,
-                {
-                    "call_count": 0,
-                    "total_duration_ns": 0,
-                    "permission_wait_count": 0,
-                    "permission_wait_ms": 0,
-                },
+                {"call_count": 0, "total_duration_ns": 0, "permission_wait_count": 0, "permission_wait_ms": 0},
             )
             entry["call_count"] += 1
             entry["total_duration_ns"] += span.get("duration", 0)
-            perm_wait = (
-                span.get("meta", {})
-                .get("metadata", {})
-                .get("_dd", {})
-                .get("estimated_permission_wait_ms", 0)
-            )
+            perm_wait = span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("estimated_permission_wait_ms", 0)
             if perm_wait:
                 entry["permission_wait_count"] += 1
                 entry["permission_wait_ms"] += perm_wait
@@ -1451,11 +1347,7 @@ class ClaudeHooksAPI:
             key=lambda s: s.get("start_ns", 0),
         )
         last_span = next(
-            (
-                s
-                for s in reversed(llm_spans)
-                if s.get("metrics", {}).get("input_tokens", 0) > 0
-            ),
+            (s for s in reversed(llm_spans) if s.get("metrics", {}).get("input_tokens", 0) > 0),
             None,
         )
         if last_span is None:
@@ -1470,30 +1362,18 @@ class ClaudeHooksAPI:
             None,
         )
         first_breakdown = (
-            first_span.get("meta", {})
-            .get("metadata", {})
-            .get("_dd", {})
-            .get("context_breakdown")
+            first_span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("context_breakdown")
             if first_span
             else None
         )
-        last_breakdown = (
-            last_span.get("meta", {})
-            .get("metadata", {})
-            .get("_dd", {})
-            .get("context_breakdown")
-        )
+        last_breakdown = last_span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("context_breakdown")
         context_delta: Dict[str, Any] = {
             "first_input_tokens": first_input_tokens,
             "last_input_tokens": last_input_tokens,
             "delta_tokens": delta_tokens,
             "context_window_size": window,
-            "first_usage_pct": round(first_input_tokens / window * 100, 1)
-            if window
-            else 0.0,
-            "last_usage_pct": round(last_input_tokens / window * 100, 1)
-            if window
-            else 0.0,
+            "first_usage_pct": round(first_input_tokens / window * 100, 1) if window else 0.0,
+            "last_usage_pct": round(last_input_tokens / window * 100, 1) if window else 0.0,
         }
         if first_breakdown:
             context_delta["first_sections"] = first_breakdown.get("sections", [])
@@ -1538,11 +1418,7 @@ class ClaudeHooksAPI:
         if not root_span:
             # Fallback: search _assembled_spans
             root_span = next(
-                (
-                    s
-                    for s in self._assembled_spans
-                    if s.get("span_id") == session.root_span_id
-                ),
+                (s for s in self._assembled_spans if s.get("span_id") == session.root_span_id),
                 None,
             )
         tool_usage = self._aggregate_tool_usage(session.trace_id)
@@ -1554,18 +1430,14 @@ class ClaudeHooksAPI:
 
         root_span_name = "claude-code-request"
 
-        estimated_permission_wait_ms = self._sum_estimated_permission_wait_ms(
-            trace_id=session.trace_id
-        )
+        estimated_permission_wait_ms = self._sum_estimated_permission_wait_ms(trace_id=session.trace_id)
 
         if root_span:
             root_span["name"] = root_span_name
             if session.conversation_title:
                 topic_tag = f"topic:{session.conversation_title}"
                 # Replace existing topic tag (set from preliminary span) or append
-                root_span["tags"] = [
-                    t for t in root_span["tags"] if not t.startswith("topic:")
-                ] + [topic_tag]
+                root_span["tags"] = [t for t in root_span["tags"] if not t.startswith("topic:")] + [topic_tag]
             root_span["duration"] = duration
             root_span["meta"]["input"]["value"] = input_value
             root_span["meta"]["output"]["value"] = output_value
@@ -1584,9 +1456,7 @@ class ClaudeHooksAPI:
                 dd_fields["context_delta"] = context_delta
             if estimated_permission_wait_ms > 0:
                 dd_fields["estimated_permission_wait_ms"] = estimated_permission_wait_ms
-                self._set_permission_wait_critical_evaluation(
-                    root_span, estimated_permission_wait_ms
-                )
+                self._set_permission_wait_critical_evaluation(root_span, estimated_permission_wait_ms)
             if tool_usage:
                 dd_fields["tool_usage"] = tool_usage
             self._set_hidden_metadata(root_span, **dd_fields)
@@ -1608,11 +1478,7 @@ class ClaudeHooksAPI:
                 "session_id": session.session_id,
                 "tags": self.base_tags(session)
                 + [f"user_name:{_USERNAME}"]
-                + (
-                    [f"topic:{session.conversation_title}"]
-                    if session.conversation_title
-                    else []
-                ),
+                + ([f"topic:{session.conversation_title}"] if session.conversation_title else []),
                 "meta": {
                     "span": {"kind": "agent"},
                     "input": {"value": input_value},
@@ -1631,9 +1497,7 @@ class ClaudeHooksAPI:
                 dd_fields["context_delta"] = context_delta
             if estimated_permission_wait_ms > 0:
                 dd_fields["estimated_permission_wait_ms"] = estimated_permission_wait_ms
-                self._set_permission_wait_critical_evaluation(
-                    root_span, estimated_permission_wait_ms
-                )
+                self._set_permission_wait_critical_evaluation(root_span, estimated_permission_wait_ms)
             if tool_usage:
                 dd_fields["tool_usage"] = tool_usage
             apply_project_metadata_to_span(root_span, session.project_metadata)
@@ -1657,15 +1521,9 @@ class ClaudeHooksAPI:
 
     def _handle_notification(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle Notification hook event — logged but no span emitted."""
-        log.info(
-            "Claude notification for session %s: %s",
-            session_id,
-            body.get("message", ""),
-        )
+        log.info("Claude notification for session %s: %s", session_id, body.get("message", ""))
 
-    def _handle_post_tool_use_failure(
-        self, session_id: str, body: Dict[str, Any]
-    ) -> None:
+    def _handle_post_tool_use_failure(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle PostToolUseFailure hook event — emits a tool span with error status.
 
         Fired when a tool execution fails. The body includes an ``error`` string
@@ -1688,14 +1546,10 @@ class ClaudeHooksAPI:
             start_ns = pending.start_ns
             input_value = _to_json_str(pending.tool_input) if pending.tool_input else ""
             actual_tool_name = pending.tool_name
-            tool_input_dict = (
-                pending.tool_input if isinstance(pending.tool_input, dict) else {}
-            )
+            tool_input_dict = pending.tool_input if isinstance(pending.tool_input, dict) else {}
         else:
             span_id = _format_span_id()
-            parent_id = self._resolve_tool_parent(
-                tool_use_id, self._current_parent_id(session)
-            )
+            parent_id = self._resolve_tool_parent(tool_use_id, self._current_parent_id(session))
             start_ns = now_ns
             input_value = ""
             actual_tool_name = tool_name
@@ -1707,13 +1561,9 @@ class ClaudeHooksAPI:
         # Consume any pending permission wait
         estimated_permission_wait_ms: Optional[int] = None
         if session.pending_permission_at_ns is not None:
-            estimated_permission_wait_ms = (
-                now_ns - session.pending_permission_at_ns
-            ) // 1_000_000
+            estimated_permission_wait_ms = (now_ns - session.pending_permission_at_ns) // 1_000_000
             session.pending_permission_at_ns = None
-            root_span_ref: Optional[Dict[str, Any]] = getattr(
-                session, "_root_span_ref", None
-            )
+            root_span_ref: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
             if root_span_ref is not None and root_span_ref["duration"] == -1:
                 root_span_ref["duration"] = 0
 
@@ -1770,9 +1620,7 @@ class ClaudeHooksAPI:
         if is_interrupt:
             span["meta"]["error"]["type"] = "interrupt"
         if estimated_permission_wait_ms is not None:
-            self._set_hidden_metadata(
-                span, estimated_permission_wait_ms=estimated_permission_wait_ms
-            )
+            self._set_hidden_metadata(span, estimated_permission_wait_ms=estimated_permission_wait_ms)
         self._append_span(span)
 
     def _handle_pre_compact(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -1791,11 +1639,7 @@ class ClaudeHooksAPI:
         log.info("span_ref: %s", span_ref)
         if span_ref is None:
             return
-        dd = (
-            span_ref.setdefault("meta", {})
-            .setdefault("metadata", {})
-            .setdefault("_dd", {})
-        )
+        dd = span_ref.setdefault("meta", {}).setdefault("metadata", {}).setdefault("_dd", {})
         dd.setdefault("compactions", []).append(
             {
                 "trigger": trigger,
@@ -1820,12 +1664,7 @@ class ClaudeHooksAPI:
                 continue
             if parent_id is not None and str(s.get("parent_id")) != str(parent_id):
                 continue
-            total += (
-                s.get("meta", {})
-                .get("metadata", {})
-                .get("_dd", {})
-                .get("estimated_permission_wait_ms", 0)
-            )
+            total += s.get("meta", {}).get("metadata", {}).get("_dd", {}).get("estimated_permission_wait_ms", 0)
         return total
 
     def _handle_permission_request(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -1912,32 +1751,19 @@ class ClaudeHooksAPI:
             url = f"https://{agentless_base_url}.{dd_site}{endpoint}"
             headers["DD-API-KEY"] = dd_api_key
         else:
-            log.debug(
-                "No DD_API_KEY/DD_SITE or agent URL configured — skipping forwarding"
-            )
+            log.debug("No DD_API_KEY/DD_SITE or agent URL configured — skipping forwarding")
             return None
 
-        log.info(
-            "Resolved backend target: %s (mode=%s)",
-            url,
-            "agent" if agent_url else "agentless",
-        )
+        log.info("Resolved backend target: %s (mode=%s)", url, "agent" if agent_url else "agentless")
         return url, headers
 
-    async def _post_to_backend(
-        self, url: str, headers: Dict[str, str], data: bytes, description: str
-    ) -> None:
+    async def _post_to_backend(self, url: str, headers: Dict[str, str], data: bytes, description: str) -> None:
         """POST the given data to the url and log the outcome."""
         try:
             async with ClientSession() as http_session:
                 async with http_session.post(url, headers=headers, data=data) as resp:
                     if not resp.ok:
-                        log.warning(
-                            "Failed to %s: %s %s",
-                            description,
-                            resp.status,
-                            await resp.text(),
-                        )
+                        log.warning("Failed to %s: %s %s", description, resp.status, await resp.text())
                     else:
                         log.info("Successfully %s", description)
         except Exception as e:
@@ -1986,10 +1812,7 @@ class ClaudeHooksAPI:
         await self._post_spans_to_backend(url, headers, spans, f"forward {len(spans)} span updates")
 
     async def _forward_trace_to_backend(
-        self,
-        session_id: str,
-        trace_id: Optional[str] = None,
-        span_source: str = "Claude hooks",
+        self, session_id: str, trace_id: Optional[str] = None, span_source: str = "Claude hooks"
     ) -> None:
         """Forward all assembled spans for a session's trace to the backend via the EVP proxy path."""
         session = self._sessions.get(session_id)
@@ -2010,14 +1833,7 @@ class ClaudeHooksAPI:
         forwarded_spans = []
         for s in spans:
             span = (
-                {
-                    **s,
-                    "metrics": {
-                        k: v
-                        for k, v in s["metrics"].items()
-                        if k not in COST_METRIC_KEYS
-                    },
-                }
+                {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}}
                 if s.get("metrics")
                 else dict(s)
             )
@@ -2033,9 +1849,7 @@ class ClaudeHooksAPI:
             f"forward {len(spans)} {span_source} spans for trace {trace_id}",
         )
 
-    async def _forward_eval_metrics_to_backend(
-        self, session_id: str, trace_id: Optional[str] = None
-    ) -> None:
+    async def _forward_eval_metrics_to_backend(self, session_id: str, trace_id: Optional[str] = None) -> None:
         """Forward evaluation metrics for all spans in a session's trace to the Datadog backend.
 
         Collects evaluation entries from every span in the trace (not just root),
@@ -2092,14 +1906,9 @@ class ClaudeHooksAPI:
         if not metrics:
             return
 
-        payload = {
-            "data": {"type": "evaluation_metric", "attributes": {"metrics": metrics}}
-        }
+        payload = {"data": {"type": "evaluation_metric", "attributes": {"metrics": metrics}}}
         await self._post_to_backend(
-            url,
-            headers,
-            json.dumps(payload).encode(),
-            f"forward {len(metrics)} eval metric(s) for trace {trace_id}",
+            url, headers, json.dumps(payload).encode(), f"forward {len(metrics)} eval metric(s) for trace {trace_id}"
         )
 
     async def handle_hook(self, request: Request) -> web.Response:
@@ -2109,9 +1918,7 @@ class ClaudeHooksAPI:
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
         if not isinstance(body, dict):
-            return web.json_response(
-                {"error": "JSON body must be an object"}, status=400
-            )
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
 
         session_id = body.get("session_id", "")
         if not session_id:
@@ -2165,63 +1972,42 @@ class ClaudeHooksAPI:
         """Add tags to coding-agent sessions identified by a Lapdog launch token."""
         session_token = request.headers.get("X-Lapdog-Session-Token", "")
         if not session_token:
-            return web.json_response(
-                {"error": "missing Lapdog session token"}, status=404
-            )
+            return web.json_response({"error": "missing Lapdog session token"}, status=404)
 
         try:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
         if not isinstance(body, dict):
-            return web.json_response(
-                {"error": "JSON body must be an object"}, status=400
-            )
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
         tags = body.get("tags")
         if not isinstance(tags, dict) or not tags:
-            return web.json_response(
-                {"error": "tags must be a non-empty object"}, status=400
-            )
+            return web.json_response({"error": "tags must be a non-empty object"}, status=400)
 
         normalized: Dict[str, str] = {}
         for key, value in tags.items():
-            if (
-                not isinstance(key, str)
-                or not key.strip()
-                or not isinstance(value, str)
-                or not value.strip()
-            ):
-                return web.json_response(
-                    {"error": "tag keys and values must be non-empty strings"},
-                    status=400,
-                )
+            if not isinstance(key, str) or not key.strip() or not isinstance(value, str) or not value.strip():
+                return web.json_response({"error": "tag keys and values must be non-empty strings"}, status=400)
             normalized[key.strip()] = value.strip()
         reserved_keys = sorted(set(normalized).intersection(_RESERVED_SESSION_TAG_KEYS))
         if reserved_keys:
             return web.json_response(
-                {
-                    "error": f"reserved tag keys cannot be changed: {', '.join(reserved_keys)}"
-                },
+                {"error": f"reserved tag keys cannot be changed: {', '.join(reserved_keys)}"},
                 status=400,
             )
 
         requested_session_id = body.get("session_id")
         if requested_session_id is not None and (
-            not isinstance(requested_session_id, str)
-            or not requested_session_id.strip()
+            not isinstance(requested_session_id, str) or not requested_session_id.strip()
         ):
-            return web.json_response(
-                {"error": "session_id must be a non-empty string"}, status=400
-            )
+            return web.json_response({"error": "session_id must be a non-empty string"}, status=400)
 
         if isinstance(requested_session_id, str):
             session_id = requested_session_id.strip()
             registered_tokens = self._session_tokens_by_id.get(session_id, set())
             if registered_tokens and session_token not in registered_tokens:
                 return web.json_response(
-                    {
-                        "error": "session_id is associated with a different Lapdog launch token"
-                    },
+                    {"error": "session_id is associated with a different Lapdog launch token"},
                     status=409,
                 )
             if not registered_tokens:
@@ -2283,9 +2069,7 @@ class ClaudeHooksAPI:
         entries = body.get("entries") or []
         subagents = body.get("subagents") or []
         if not session_id or not isinstance(entries, list):
-            return web.json_response(
-                {"error": "session_id and entries required"}, status=400
-            )
+            return web.json_response({"error": "session_id and entries required"}, status=400)
 
         if has_backfilled_session(self._assembled_spans, session_id):
             return web.json_response(
@@ -2298,22 +2082,16 @@ class ClaudeHooksAPI:
             )
 
         try:
-            spans = claude_backfill.session_to_spans(
-                session_id, cwd, entries, subagents=subagents
-            )
+            spans = claude_backfill.session_to_spans(session_id, cwd, entries, subagents=subagents)
         except Exception as exc:
             # A single malformed transcript shouldn't propagate as a 500 that
             # closes the connection — return a structured failure so the
             # client logs it and moves on.
             log.warning("claude backfill_session failed for %s: %r", session_id, exc)
-            return web.json_response(
-                {"status": "error", "error": repr(exc)}, status=400
-            )
+            return web.json_response({"status": "error", "error": repr(exc)}, status=400)
         self._assembled_spans.extend(spans)
         traces = len({s.get("trace_id") for s in spans})
-        return web.json_response(
-            {"status": "ok", "spans_created": len(spans), "traces_created": traces}
-        )
+        return web.json_response({"status": "ok", "spans_created": len(spans), "traces_created": traces})
 
     def get_routes(self) -> List[web.RouteDef]:
         """Return the routes for this API."""
@@ -2321,10 +2099,7 @@ class ClaudeHooksAPI:
             web.post("/claude/hooks", with_cors(self.handle_hook)),
             web.post("/lapdog/session/tags", with_cors(self.handle_session_tags)),
             web.post("/claude/hooks/session/tags", with_cors(self.handle_session_tags)),
-            web.post(
-                "/claude/hooks/backfill_session",
-                with_cors(self.handle_backfill_session),
-            ),
+            web.post("/claude/hooks/backfill_session", with_cors(self.handle_backfill_session)),
             web.route("*", "/claude/hooks/sessions", with_cors(self.handle_sessions)),
             web.route("*", "/claude/hooks/spans", with_cors(self.handle_spans)),
             web.route("*", "/claude/hooks/raw", with_cors(self.handle_raw_events)),
