@@ -43,7 +43,7 @@ LAPDOG_USAGE = (
     "  claude     Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi         Start lapdog in background if needed, install extension, then launch pi\n"
     "  codex      Start lapdog in background if needed, then launch Codex with tracing\n"
-    "  tags       Add tags to the current instrumented Claude session\n"
+    "  tags       Add tags to the current instrumented coding-agent session\n"
     "  uninstall  Stop lapdog and remove all state it wrote (~/.lapdog, Claude hooks, pi extension, Codex watchers)\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
@@ -324,6 +324,8 @@ def _run_claude(
         print("[ddapm] 'claude' not found in PATH", file=sys.stderr)
         sys.exit(1)
     env = os.environ.copy()
+    for variable in ("CODEX_THREAD_ID", "PI_SESSION_ID", "LAPDOG_SESSION_TOKEN"):
+        env.pop(variable, None)
     existing = env.get("BUN_OPTIONS", "")
     env["BUN_OPTIONS"] = f"--preload {mjs_path} {existing}".strip()
     if port is not None:
@@ -532,11 +534,11 @@ def cmd_tags(sub_cmd_args: List[str]) -> None:
 
     session_token = os.environ.get("LAPDOG_SESSION_TOKEN", "")
     lapdog_url = os.environ.get("LAPDOG_URL", "")
-    target_session_id = os.environ.get("CODEX_THREAD_ID") or None
+    target_session_id = os.environ.get("CODEX_THREAD_ID") or os.environ.get("PI_SESSION_ID") or None
     if not session_token or not lapdog_url:
         print(
             "[lapdog] No instrumented coding-agent session found. "
-            "Run this command from inside a session started with 'lapdog claude' or 'lapdog codex'.",
+            "Run this command from inside a session started with 'lapdog claude', 'lapdog codex', or 'lapdog pi'.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -572,7 +574,7 @@ def _install_pi_extension() -> None:
     """Copy the bundled lapdog extension into pi's global extensions directory.
 
     If the extension is already installed and identical, skip the copy.
-    LAPDOG_URL is injected at runtime via environment variable when pi is launched.
+    Lapdog URL and session context are injected via environment variables when pi is launched.
     """
     if not os.path.isfile(_PI_EXT_SOURCE):
         print(f"[lapdog] Extension source not found: {_PI_EXT_SOURCE}", file=sys.stderr)
@@ -604,7 +606,11 @@ def _install_pi_extension() -> None:
         print(f"[lapdog] Installed pi extension → {_PI_EXT_DEST}")
 
 
-def _run_pi(args: Optional[List[str]] = None, port: Optional[int] = 8126) -> None:
+def _run_pi(
+    args: Optional[List[str]] = None,
+    port: Optional[int] = 8126,
+    session_token: Optional[str] = None,
+) -> None:
     """Exec the pi binary, forwarding arguments.  Never returns."""
     if args is None:
         args = []
@@ -613,6 +619,10 @@ def _run_pi(args: Optional[List[str]] = None, port: Optional[int] = 8126) -> Non
         print("[lapdog] 'pi' not found in PATH", file=sys.stderr)
         sys.exit(1)
     env = {**os.environ, "LAPDOG_URL": f"http://localhost:{port}"}
+    for variable in ("CODEX_THREAD_ID", "PI_SESSION_ID", "LAPDOG_SESSION_TOKEN"):
+        env.pop(variable, None)
+    if session_token:
+        env["LAPDOG_SESSION_TOKEN"] = session_token
     os.execve(pi_bin, [pi_bin] + args, env)
 
 
@@ -636,7 +646,7 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) 
     _install_pi_extension()
 
     print(build_running_banner(data_type="coding session"))
-    _run_pi(args=sub_cmd_args, port=port)
+    _run_pi(args=sub_cmd_args, port=port, session_token=uuid.uuid4().hex)
 
 
 def _codex_watcher_pid_file(log_dir: str, singleton_key: str) -> str:
@@ -953,6 +963,8 @@ def _run_codex(
         print("[lapdog] 'codex' not found in PATH", file=sys.stderr)
         sys.exit(1)
     env = os.environ.copy()
+    for variable in ("CODEX_THREAD_ID", "PI_SESSION_ID", "LAPDOG_SESSION_TOKEN"):
+        env.pop(variable, None)
     proxy_args: List[str] = []
     if port is not None:
         proxy_path = f"/codex/proxy/{proxy_session_key}/v1" if proxy_session_key else "/codex/proxy/v1"

@@ -195,6 +195,76 @@ async def test_session_tags_reject_ambiguous_launch_token(agent):
     assert all("iteration:2" not in span["tags"] for span in spans)
 
 
+async def test_session_tags_reject_session_registered_to_another_launch_token(agent):
+    session_id = "session-owned-by-another-token"
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "SessionStart",
+            "lapdog_session_token": "owner-token",
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "keep this session isolated",
+        },
+    )
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": "unrelated-token"},
+        json={
+            "session_id": session_id,
+            "tags": {"iteration": "2"},
+        },
+    )
+    assert response.status == 409
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in (await response.json())["spans"] if span.get("session_id") == session_id]
+    assert spans
+    assert all("iteration:2" not in span["tags"] for span in spans)
+
+
+async def test_session_tags_reject_reserved_identity_keys(agent):
+    session_id = "session-reserved-tags"
+    session_token = "reserved-tags-token"
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "SessionStart",
+            "lapdog_session_token": session_token,
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "preserve identity tags",
+        },
+    )
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"tags": {"service": "wrong-service", "session_id": "wrong-session"}},
+    )
+    assert response.status == 400
+    assert "reserved tag keys" in (await response.json())["error"]
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in (await response.json())["spans"] if span.get("session_id") == session_id]
+    assert spans
+    assert all("service:wrong-service" not in span["tags"] for span in spans)
+    assert all("session_id:wrong-session" not in span["tags"] for span in spans)
+
+
 async def test_session_tags_require_launch_token(agent):
     response = await agent.post(
         "/claude/hooks/session/tags",

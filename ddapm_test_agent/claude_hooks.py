@@ -49,6 +49,27 @@ _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 _USER_HANDLE = os.environ.get("DD_USER_HANDLE", "")
 _ML_APP = CLAUDE_CODE_ML_APP
+_RESERVED_SESSION_TAG_KEYS = frozenset(
+    {
+        "env",
+        "git.commit.sha",
+        "git.repository_url",
+        "hostname",
+        "language",
+        "lapdog_forwarded",
+        "ml_app",
+        "project_name",
+        "service",
+        "session_id",
+        "source",
+        "subagent",
+        "tool_name",
+        "topic",
+        "trajectory.semantic_type",
+        "user_handle",
+        "user_name",
+    }
+)
 
 # Models with 1M token context windows (native, no beta header needed).
 # All other models default to 200k.
@@ -147,6 +168,7 @@ class SessionState:
         self.conversation_title: str = ""
         self.cwd: str = ""
         self.custom_tags: Dict[str, str] = {}
+        self.custom_tag_sequences: Dict[str, int] = {}
         self.project_metadata = resolve_project_metadata()
         # Persists across turns so each turn's context_delta reflects growth from
         # the previous turn's final context size.
@@ -308,7 +330,9 @@ class ClaudeHooksAPI:
     def __init__(self, link_tracker: Optional[ClaudeLinkTracker] = None) -> None:
         self._sessions: Dict[str, SessionState] = {}
         self._session_ids_by_token: Dict[str, Set[str]] = {}
+        self._session_tokens_by_id: Dict[str, Set[str]] = {}
         self._pending_tags_by_token: Dict[str, Dict[str, str]] = {}
+        self._tag_update_sequence = 0
         self._assembled_spans: List[Dict[str, Any]] = []
         self._raw_events: List[Dict[str, Any]] = []
         self._link_tracker = link_tracker
@@ -334,13 +358,54 @@ class ClaudeHooksAPI:
         span["tags"] = span_tags
 
     def _set_session_tags(self, session: SessionState, tags: Dict[str, str]) -> None:
-        session.custom_tags.update(tags)
+        self._tag_update_sequence += 1
+        for candidate in self._sessions.values():
+            if candidate.session_id == session.session_id:
+                candidate.custom_tags.update(tags)
+                candidate.custom_tag_sequences.update({key: self._tag_update_sequence for key in tags})
         for span in self._assembled_spans:
             if span.get("session_id") == session.session_id:
                 self._apply_session_tags(span, session)
 
+    def _synchronize_session_tags(self, session_id: str) -> None:
+        """Reconcile custom tags after Codex groups raw sessions together.
+
+        Codex may initially report a parent thread and its child threads as
+        independent sessions. Once their relationship is discovered,
+        ``CodexHooksAPI._set_session_group`` changes those raw SessionState
+        objects to share one visible session ID and calls this method.
+
+        Before grouping, each raw session can receive its own tag updates. We
+        therefore merge tags one key at a time, using ``custom_tag_sequences``
+        to preserve the most recently set value when sessions disagree. The
+        merged result is copied to every grouped SessionState so future spans
+        cannot reintroduce a stale value, then applied to spans already held in
+        memory under the visible session ID.
+
+        Claude and Pi sessions do not use this reconciliation path because
+        they do not perform Codex-style session grouping.
+        """
+        grouped_sessions = [session for session in self._sessions.values() if session.session_id == session_id]
+        merged_tags: Dict[str, str] = {}
+        merged_sequences: Dict[str, int] = {}
+        for session in grouped_sessions:
+            for key, value in session.custom_tags.items():
+                sequence = session.custom_tag_sequences.get(key, 0)
+                if key not in merged_sequences or sequence >= merged_sequences[key]:
+                    merged_tags[key] = value
+                    merged_sequences[key] = sequence
+        if not merged_tags:
+            return
+        for session in grouped_sessions:
+            session.custom_tags.update(merged_tags)
+            session.custom_tag_sequences.update(merged_sequences)
+        for span in self._assembled_spans:
+            if span.get("session_id") == session_id:
+                self._apply_session_tags(span, grouped_sessions[0])
+
     def _register_session_token(self, session_token: str, session_id: str) -> None:
         self._session_ids_by_token.setdefault(session_token, set()).add(session_id)
+        self._session_tokens_by_id.setdefault(session_id, set()).add(session_token)
         pending_tags = self._pending_tags_by_token.pop(session_token, None)
         if pending_tags:
             self._set_session_tags(self._get_or_create_session(session_id), pending_tags)
@@ -1901,6 +1966,12 @@ class ClaudeHooksAPI:
             if not isinstance(key, str) or not key.strip() or not isinstance(value, str) or not value.strip():
                 return web.json_response({"error": "tag keys and values must be non-empty strings"}, status=400)
             normalized[key.strip()] = value.strip()
+        reserved_keys = sorted(set(normalized).intersection(_RESERVED_SESSION_TAG_KEYS))
+        if reserved_keys:
+            return web.json_response(
+                {"error": f"reserved tag keys cannot be changed: {', '.join(reserved_keys)}"},
+                status=400,
+            )
 
         requested_session_id = body.get("session_id")
         if requested_session_id is not None and (
@@ -1910,6 +1981,14 @@ class ClaudeHooksAPI:
 
         if isinstance(requested_session_id, str):
             session_id = requested_session_id.strip()
+            registered_tokens = self._session_tokens_by_id.get(session_id, set())
+            if registered_tokens and session_token not in registered_tokens:
+                return web.json_response(
+                    {"error": "session_id is associated with a different Lapdog launch token"},
+                    status=409,
+                )
+            if not registered_tokens:
+                self._register_session_token(session_token, session_id)
             session = self._get_or_create_session(session_id)
             self._set_session_tags(session, normalized)
             session_ids = [session_id]

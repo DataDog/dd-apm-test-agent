@@ -389,6 +389,7 @@ class CodexHooksAPI:
         shared_session = self._hooks_api._sessions.get(raw_session_id)
         if shared_session is not None:
             shared_session.session_id = group_session_id
+            self._hooks_api._synchronize_session_tags(group_session_id)
 
     def _get_or_create_session(self, session_id: str, start_ns: int) -> CodexSession:
         if session_id not in self._sessions:
@@ -1946,7 +1947,9 @@ class CodexHooksAPI:
         if not session_id:
             return web.json_response({"error": "missing session_id"}, status=400)
 
-        self._raw_events.append(body)
+        raw_body = dict(body)
+        raw_body.pop("proxy_session_key", None)
+        self._raw_events.append(raw_body)
         self._last_session_id = session_id
         is_backfill = body.get("backfill") is True
         completed = self._dispatch(session_id, record, proxy_session_key=proxy_session_key)

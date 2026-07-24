@@ -17,6 +17,7 @@
 import { convertToLlm, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 const LAPDOG_URL = process.env.LAPDOG_URL || "http://localhost:8126";
+const LAPDOG_SESSION_TOKEN = process.env.LAPDOG_SESSION_TOKEN || "";
 const HOOKS_ENDPOINT = `${LAPDOG_URL}/pi/hooks`;
 
 // ---------------------------------------------------------------------------
@@ -45,7 +46,13 @@ function post(event: string, sessionId: string, data: Record<string, unknown>, c
 		fetch(HOOKS_ENDPOINT, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ hook_event_name: event, session_id: sessionId, cwd: getCwd(ctx), ...data }),
+			body: JSON.stringify({
+				hook_event_name: event,
+				session_id: sessionId,
+				lapdog_session_token: LAPDOG_SESSION_TOKEN || undefined,
+				cwd: getCwd(ctx),
+				...data,
+			}),
 			signal: AbortSignal.timeout(2000),
 		}).catch(() => {});
 	} catch {
@@ -109,6 +116,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		sessionId = ctx.sessionManager.getSessionId();
+		process.env.PI_SESSION_ID = sessionId;
 		const model = ctx.model;
 		if (model) {
 			currentModel = model.id;
