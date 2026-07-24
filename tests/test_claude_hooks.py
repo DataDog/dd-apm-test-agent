@@ -1,7 +1,10 @@
+import gzip
 import json
 import os
 import subprocess
 import tempfile
+
+import msgpack
 
 from ddapm_test_agent.claude_hooks import ClaudeHooksAPI
 from ddapm_test_agent.claude_link_tracker import ClaudeLinkTracker
@@ -35,6 +38,60 @@ async def test_hook_missing_session_id(agent):
     assert resp.status == 400
     body = await resp.json()
     assert "session_id" in body["error"]
+
+
+async def test_trace_forwarding_chunks_payloads_at_twenty_spans(monkeypatch):
+    cases = [
+        (20, [20]),
+        (21, [20, 1]),
+        (45, [20, 20, 5]),
+    ]
+    for span_count, expected_chunk_sizes in cases:
+        hooks = ClaudeHooksAPI()
+        session = hooks._get_or_create_session(f"chunk-session-{span_count}")
+        trace_id = f"chunk-trace-{span_count}"
+        session.trace_id = trace_id
+        hooks._assembled_spans = [
+            {
+                "span_id": str(index),
+                "trace_id": trace_id,
+                "tags": [],
+            }
+            for index in range(span_count)
+        ]
+        posted_payloads = []
+        descriptions = []
+
+        monkeypatch.setattr(
+            hooks,
+            "_resolve_backend_target",
+            lambda *args, **kwargs: ("http://backend.example/api/v2/llmobs", {"Content-Type": "application/msgpack"}),
+        )
+
+        async def fake_post_to_backend(url, headers, data, description):
+            assert url == "http://backend.example/api/v2/llmobs"
+            assert headers["Content-Type"] == "application/msgpack"
+            posted_payloads.append(msgpack.unpackb(gzip.decompress(data), raw=False))
+            descriptions.append(description)
+
+        monkeypatch.setattr(hooks, "_post_to_backend", fake_post_to_backend)
+
+        await hooks._forward_trace_to_backend(session.session_id)
+
+        assert [len(payload["spans"]) for payload in posted_payloads] == expected_chunk_sizes
+        assert all(payload["_dd.stage"] == "raw" for payload in posted_payloads)
+        assert all(payload["event_type"] == "span" for payload in posted_payloads)
+        forwarded_spans = [span for payload in posted_payloads for span in payload["spans"]]
+        assert [span["span_id"] for span in forwarded_spans] == [str(index) for index in range(span_count)]
+        assert all("lapdog_forwarded:true" in span["tags"] for span in forwarded_spans)
+        assert all("lapdog_forwarded:true" not in span["tags"] for span in hooks._assembled_spans)
+        if span_count <= 20:
+            assert all("(chunk " not in description for description in descriptions)
+        else:
+            assert all(
+                f"chunk {index + 1}/{len(expected_chunk_sizes)}" in description
+                for index, description in enumerate(descriptions)
+            )
 
 
 async def test_session_tags_apply_to_existing_and_future_spans(agent):

@@ -71,6 +71,7 @@ _RESERVED_SESSION_TAG_KEYS = frozenset(
         "user_name",
     }
 )
+_MAX_SPANS_PER_BACKEND_REQUEST = 20
 
 # Models with 1M token context windows (native, no beta header needed).
 # All other models default to 200k.
@@ -1768,6 +1769,36 @@ class ClaudeHooksAPI:
         except Exception as e:
             log.warning("Error trying to %s: %s", description, e)
 
+    async def _post_spans_to_backend(
+        self,
+        url: str,
+        headers: Dict[str, str],
+        spans: List[Dict[str, Any]],
+        description: str,
+    ) -> None:
+        """POST spans in ordered chunks that stay within the backend request limit."""
+        chunk_count = (len(spans) + _MAX_SPANS_PER_BACKEND_REQUEST - 1) // _MAX_SPANS_PER_BACKEND_REQUEST
+        if chunk_count > 1:
+            log.info(
+                "Splitting %d spans into %d backend requests of at most %d spans",
+                len(spans),
+                chunk_count,
+                _MAX_SPANS_PER_BACKEND_REQUEST,
+            )
+
+        for chunk_index, start in enumerate(range(0, len(spans), _MAX_SPANS_PER_BACKEND_REQUEST), start=1):
+            chunk = spans[start : start + _MAX_SPANS_PER_BACKEND_REQUEST]
+            payload = {
+                "_dd.stage": "raw",
+                "event_type": "span",
+                "spans": chunk,
+            }
+            data = gzip.compress(msgpack.packb(payload))
+            chunk_description = description
+            if chunk_count > 1:
+                chunk_description = f"{description} (chunk {chunk_index}/{chunk_count}, {len(chunk)} spans)"
+            await self._post_to_backend(url, headers, data, chunk_description)
+
     async def _forward_span_update(self, spans: List[Dict[str, Any]]) -> None:
         """Forward span updates to the DD backend via the update endpoint."""
         if not spans:
@@ -1778,13 +1809,7 @@ class ClaudeHooksAPI:
             return
         url, headers = target
 
-        payload = {
-            "_dd.stage": "raw",
-            "event_type": "span",
-            "spans": spans,
-        }
-        data = gzip.compress(msgpack.packb(payload))
-        await self._post_to_backend(url, headers, data, f"forward {len(spans)} span updates")
+        await self._post_spans_to_backend(url, headers, spans, f"forward {len(spans)} span updates")
 
     async def _forward_trace_to_backend(
         self, session_id: str, trace_id: Optional[str] = None, span_source: str = "Claude hooks"
@@ -1817,14 +1842,11 @@ class ClaudeHooksAPI:
                 span["tags"] = tags + ["lapdog_forwarded:true"]
             forwarded_spans.append(span)
 
-        payload = {
-            "_dd.stage": "raw",
-            "event_type": "span",
-            "spans": forwarded_spans,
-        }
-        data = gzip.compress(msgpack.packb(payload))
-        await self._post_to_backend(
-            url, headers, data, f"forward {len(spans)} {span_source} spans for trace {trace_id}"
+        await self._post_spans_to_backend(
+            url,
+            headers,
+            forwarded_spans,
+            f"forward {len(spans)} {span_source} spans for trace {trace_id}",
         )
 
     async def _forward_eval_metrics_to_backend(self, session_id: str, trace_id: Optional[str] = None) -> None:
