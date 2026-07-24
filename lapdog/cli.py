@@ -536,9 +536,10 @@ def cmd_tags(sub_cmd_args: List[str]) -> None:
     lapdog_url = os.environ.get("LAPDOG_URL", "")
     target_session_id = os.environ.get("CODEX_THREAD_ID") or os.environ.get("PI_SESSION_ID") or None
     if not session_token or not lapdog_url:
+        supported_launchers = ", ".join(f"'lapdog {launcher}'" for launcher in _PATH_ROUTABLE_LAUNCHERS)
         print(
             "[lapdog] No instrumented coding-agent session found. "
-            "Run this command from inside a session started with 'lapdog claude', 'lapdog codex', or 'lapdog pi'.",
+            f"Run this command from inside a session started with one of: {supported_launchers}.",
             file=sys.stderr,
         )
         sys.exit(1)
