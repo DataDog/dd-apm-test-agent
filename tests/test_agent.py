@@ -848,6 +848,13 @@ async def test_trace_v1(
     assert result[0][0]["meta"]["_dd.p.tid"] == "0000000000000055"
     assert result[0][0]["service"] == "my-service"
 
+    requests_resp = await agent.get("/test/session/requests")
+    assert requests_resp.status == 200
+    requests = await requests_resp.json()
+    v1_requests = [request for request in requests if request["url"].endswith("/v1.0/traces")]
+    assert len(v1_requests) == 1
+    assert v1_requests[0]["headers"]["X-Datadog-Trace-Count"] == "1"
+
 
 async def test_trace_v1_basic():
     data = msgpack.packb(

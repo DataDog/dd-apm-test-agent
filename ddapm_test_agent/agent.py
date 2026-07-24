@@ -1564,6 +1564,7 @@ class Agent:
                 self.handle_v04_traces,
                 self.handle_v05_traces,
                 self.handle_v07_traces,
+                self.handle_v1_traces,
                 self.handle_v06_tracestats,
                 self.handle_v01_pipelinestats,
                 self.handle_v2_apmtelemetry,
