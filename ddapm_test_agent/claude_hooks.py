@@ -49,6 +49,28 @@ _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 _USER_HANDLE = os.environ.get("DD_USER_HANDLE", "")
 _ML_APP = CLAUDE_CODE_ML_APP
+# Reserved tags may not be modified by the agent via the "lapdog tags set" CLI command.
+_RESERVED_SESSION_TAG_KEYS = frozenset(
+    {
+        "env",
+        "git.commit.sha",
+        "git.repository_url",
+        "hostname",
+        "language",
+        "lapdog_forwarded",
+        "ml_app",
+        "project_name",
+        "service",
+        "session_id",
+        "source",
+        "subagent",
+        "tool_name",
+        "topic",
+        "trajectory.semantic_type",
+        "user_handle",
+        "user_name",
+    }
+)
 
 # Models with 1M token context windows (native, no beta header needed).
 # All other models default to 200k.
@@ -146,6 +168,8 @@ class SessionState:
         self.active_agents: Dict[str, Dict[str, Any]] = {}
         self.conversation_title: str = ""
         self.cwd: str = ""
+        self.custom_tags: Dict[str, str] = {}
+        self.custom_tag_sequences: Dict[str, int] = {}
         self.project_metadata = resolve_project_metadata()
         # Persists across turns so each turn's context_delta reflects growth from
         # the previous turn's final context size.
@@ -306,6 +330,10 @@ class ClaudeHooksAPI:
 
     def __init__(self, link_tracker: Optional[ClaudeLinkTracker] = None) -> None:
         self._sessions: Dict[str, SessionState] = {}
+        self._session_ids_by_token: Dict[str, Set[str]] = {}
+        self._session_tokens_by_id: Dict[str, Set[str]] = {}
+        self._pending_tags_by_token: Dict[str, Dict[str, str]] = {}
+        self._tag_update_sequence = 0
         self._assembled_spans: List[Dict[str, Any]] = []
         self._raw_events: List[Dict[str, Any]] = []
         self._link_tracker = link_tracker
@@ -314,6 +342,90 @@ class ClaudeHooksAPI:
     def set_app(self, app: web.Application) -> None:
         """Set the aiohttp app reference for backend forwarding."""
         self._app = app
+
+    def _apply_session_tags(self, span: Dict[str, Any], session: SessionState) -> None:
+        if not session.custom_tags:
+            return
+        span_tags = span.get("tags")
+        if not isinstance(span_tags, list):
+            span_tags = []
+        custom_keys = set(session.custom_tags)
+        span_tags = [
+            tag
+            for tag in span_tags
+            if not isinstance(tag, str) or ":" not in tag or tag.split(":", 1)[0] not in custom_keys
+        ]
+        span_tags.extend(f"{key}:{value}" for key, value in session.custom_tags.items())
+        span["tags"] = span_tags
+
+    def _set_session_tags(self, session: SessionState, tags: Dict[str, str]) -> None:
+        self._tag_update_sequence += 1
+        for candidate in self._sessions.values():
+            if candidate.session_id == session.session_id:
+                candidate.custom_tags.update(tags)
+                candidate.custom_tag_sequences.update({key: self._tag_update_sequence for key in tags})
+        for span in self._assembled_spans:
+            if span.get("session_id") == session.session_id:
+                self._apply_session_tags(span, session)
+
+    def _synchronize_session_tags(self, session_id: str) -> None:
+        """Reconcile custom tags after Codex groups raw sessions together.
+
+        Codex may initially report a parent thread and its child threads as
+        independent sessions. Once their relationship is discovered,
+        ``CodexHooksAPI._set_session_group`` changes those raw SessionState
+        objects to share one visible session ID and calls this method.
+
+        Before grouping, each raw session can receive its own tag updates. We
+        therefore merge tags one key at a time, using ``custom_tag_sequences``
+        to preserve the most recently set value when sessions disagree. The
+        merged result is copied to every grouped SessionState so future spans
+        cannot reintroduce a stale value, then applied to spans already held in
+        memory under the visible session ID.
+
+        Claude and Pi sessions do not use this reconciliation path because
+        they do not perform Codex-style session grouping.
+        """
+        grouped_sessions = [session for session in self._sessions.values() if session.session_id == session_id]
+        merged_tags: Dict[str, str] = {}
+        merged_sequences: Dict[str, int] = {}
+        for session in grouped_sessions:
+            for key, value in session.custom_tags.items():
+                sequence = session.custom_tag_sequences.get(key, 0)
+                if key not in merged_sequences or sequence >= merged_sequences[key]:
+                    merged_tags[key] = value
+                    merged_sequences[key] = sequence
+        if not merged_tags:
+            return
+        for session in grouped_sessions:
+            session.custom_tags.update(merged_tags)
+            session.custom_tag_sequences.update(merged_sequences)
+        for span in self._assembled_spans:
+            if span.get("session_id") == session_id:
+                self._apply_session_tags(span, grouped_sessions[0])
+
+    def _register_session_token(self, session_token: str, session_id: str) -> None:
+        self._session_ids_by_token.setdefault(session_token, set()).add(session_id)
+        self._session_tokens_by_id.setdefault(session_id, set()).add(session_token)
+        pending_tags = self._pending_tags_by_token.pop(session_token, None)
+        if pending_tags:
+            self._set_session_tags(self._get_or_create_session(session_id), pending_tags)
+
+    def _apply_registered_session_tags(self, span: Dict[str, Any]) -> None:
+        session_id = span.get("session_id")
+        if not isinstance(session_id, str):
+            return
+        for raw_session_id, session in self._sessions.items():
+            if raw_session_id == session_id or session.session_id == session_id:
+                self._apply_session_tags(span, session)
+
+    def _append_span(self, span: Dict[str, Any], index: Optional[int] = None) -> None:
+        """Store a span, applying tags configured for its coding-agent session."""
+        self._apply_registered_session_tags(span)
+        if index is None:
+            self._assembled_spans.append(span)
+        else:
+            self._assembled_spans.insert(index, span)
 
     def _get_or_create_session(self, session_id: str) -> SessionState:
         """Get existing session or create a new one."""
@@ -494,7 +606,7 @@ class ClaudeHooksAPI:
             },
             "metrics": {},
         }
-        self._assembled_spans.append(step_span)
+        self._append_span(step_span)
 
         active = ActiveStep(
             span_id=step_span_id,
@@ -789,7 +901,7 @@ class ClaudeHooksAPI:
             "metrics": {},
         }
         apply_project_metadata_to_span(root_span, session.project_metadata)
-        self._assembled_spans.append(root_span)
+        self._append_span(root_span)
         session._root_span_ref = root_span  # type: ignore[attr-defined]
 
     def _handle_pre_tool_use(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -916,7 +1028,7 @@ class ClaudeHooksAPI:
                 }
                 if context_delta:
                     self._set_hidden_metadata(span, context_delta=context_delta)
-                self._assembled_spans.append(span)
+                self._append_span(span)
             return
 
         # Normal tool span
@@ -959,7 +1071,7 @@ class ClaudeHooksAPI:
         }
         if estimated_permission_wait_ms is not None:
             self._set_hidden_metadata(span, estimated_permission_wait_ms=estimated_permission_wait_ms)
-        self._assembled_spans.append(span)
+        self._append_span(span)
 
     def _handle_subagent_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SubagentStart hook event — pushes a new agent onto the stack.
@@ -1031,7 +1143,7 @@ class ClaudeHooksAPI:
             },
             "metrics": {},
         }
-        self._assembled_spans.append(preliminary_span)
+        self._append_span(preliminary_span)
 
         task_prompt = ""
         if isinstance(task_tool_input, dict):
@@ -1150,7 +1262,7 @@ class ClaudeHooksAPI:
                 }
                 if context_delta:
                     self._set_hidden_metadata(span, context_delta=context_delta)
-                self._assembled_spans.append(span)
+                self._append_span(span)
 
     def _compute_token_usage(self, trace_id: str) -> Dict[str, int]:
         """Sum token metrics from all LLM spans in the given trace."""
@@ -1389,7 +1501,7 @@ class ClaudeHooksAPI:
                 dd_fields["tool_usage"] = tool_usage
             apply_project_metadata_to_span(root_span, session.project_metadata)
             self._set_hidden_metadata(root_span, **dd_fields)
-            self._assembled_spans.append(root_span)
+            self._append_span(root_span)
 
         session.root_span_emitted = True
 
@@ -1508,7 +1620,7 @@ class ClaudeHooksAPI:
             span["meta"]["error"]["type"] = "interrupt"
         if estimated_permission_wait_ms is not None:
             self._set_hidden_metadata(span, estimated_permission_wait_ms=estimated_permission_wait_ms)
-        self._assembled_spans.append(span)
+        self._append_span(span)
 
     def _handle_pre_compact(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle PreCompact hook event — marks the current active span with compaction metadata.
@@ -1575,6 +1687,9 @@ class ClaudeHooksAPI:
         if session_id:
             session = self._get_or_create_session(session_id)
             self.update_session_project_metadata(session, body)
+            session_token = body.get("lapdog_session_token")
+            if isinstance(session_token, str) and session_token:
+                self._register_session_token(session_token, session_id)
 
         handlers: Dict[str, Any] = {
             "SessionStart": self._handle_session_start,
@@ -1780,11 +1895,16 @@ class ClaudeHooksAPI:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
 
         session_id = body.get("session_id", "")
         if not session_id:
             return web.json_response({"error": "missing session_id"}, status=400)
 
+        session_token = body.pop("lapdog_session_token", "")
+        if isinstance(session_token, str) and session_token:
+            self._register_session_token(session_token, session_id)
         self._raw_events.append(body)
 
         # wait for the transcript to be fully flushed before dispatching the hook
@@ -1825,6 +1945,81 @@ class ClaudeHooksAPI:
     async def handle_spans(self, request: Request) -> web.Response:
         """Handle GET /claude/hooks/spans — return all assembled spans."""
         return web.json_response({"spans": self._assembled_spans})
+
+    async def handle_session_tags(self, request: Request) -> web.Response:
+        """Add tags to coding-agent sessions identified by a Lapdog launch token."""
+        session_token = request.headers.get("X-Lapdog-Session-Token", "")
+        if not session_token:
+            return web.json_response({"error": "missing Lapdog session token"}, status=404)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+        tags = body.get("tags")
+        if not isinstance(tags, dict) or not tags:
+            return web.json_response({"error": "tags must be a non-empty object"}, status=400)
+
+        normalized: Dict[str, str] = {}
+        for key, value in tags.items():
+            if not isinstance(key, str) or not key.strip() or not isinstance(value, str) or not value.strip():
+                return web.json_response({"error": "tag keys and values must be non-empty strings"}, status=400)
+            normalized[key.strip()] = value.strip()
+        reserved_keys = sorted(set(normalized).intersection(_RESERVED_SESSION_TAG_KEYS))
+        if reserved_keys:
+            return web.json_response(
+                {"error": f"reserved tag keys cannot be changed: {', '.join(reserved_keys)}"},
+                status=400,
+            )
+
+        requested_session_id = body.get("session_id")
+        if requested_session_id is not None and (
+            not isinstance(requested_session_id, str) or not requested_session_id.strip()
+        ):
+            return web.json_response({"error": "session_id must be a non-empty string"}, status=400)
+
+        if isinstance(requested_session_id, str):
+            session_id = requested_session_id.strip()
+            registered_tokens = self._session_tokens_by_id.get(session_id, set())
+            if registered_tokens and session_token not in registered_tokens:
+                return web.json_response(
+                    {"error": "session_id is associated with a different Lapdog launch token"},
+                    status=409,
+                )
+            if not registered_tokens:
+                self._register_session_token(session_token, session_id)
+            session = self._get_or_create_session(session_id)
+            self._set_session_tags(session, normalized)
+            session_ids = [session_id]
+            applied_tags = dict(session.custom_tags)
+        else:
+            session_ids = sorted(self._session_ids_by_token.get(session_token, set()))
+            if len(session_ids) > 1:
+                return web.json_response(
+                    {
+                        "error": "launch token matches multiple sessions; provide session_id",
+                        "session_ids": session_ids,
+                    },
+                    status=409,
+                )
+            if session_ids:
+                session = self._get_or_create_session(session_ids[0])
+                self._set_session_tags(session, normalized)
+                applied_tags = dict(session.custom_tags)
+            else:
+                pending_tags = self._pending_tags_by_token.setdefault(session_token, {})
+                pending_tags.update(normalized)
+                applied_tags = dict(pending_tags)
+        return web.json_response(
+            {
+                "status": "ok",
+                "session_id": session_ids[-1] if session_ids else "",
+                "session_ids": session_ids,
+                "tags": applied_tags,
+            }
+        )
 
     async def handle_raw_events(self, request: Request) -> web.Response:
         """Handle GET /claude/hooks/raw — return all raw received events for debugging."""
@@ -1880,6 +2075,8 @@ class ClaudeHooksAPI:
         """Return the routes for this API."""
         return [
             web.post("/claude/hooks", with_cors(self.handle_hook)),
+            web.post("/lapdog/session/tags", with_cors(self.handle_session_tags)),
+            web.post("/claude/hooks/session/tags", with_cors(self.handle_session_tags)),
             web.post("/claude/hooks/backfill_session", with_cors(self.handle_backfill_session)),
             web.route("*", "/claude/hooks/sessions", with_cors(self.handle_sessions)),
             web.route("*", "/claude/hooks/spans", with_cors(self.handle_spans)),

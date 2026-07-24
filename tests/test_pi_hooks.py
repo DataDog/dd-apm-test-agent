@@ -202,6 +202,80 @@ def _session_shutdown(session_id=SESSION):
 # ------------------------------------------------------------------
 
 
+async def test_pi_session_tags_apply_to_existing_and_future_spans(agent):
+    sid = "pi-custom-tags"
+    session_token = "pi-launch-token"
+    await _post(
+        agent,
+        {
+            **_session_start(sid),
+            "lapdog_session_token": session_token,
+        },
+    )
+    await _post(agent, _agent_start(sid))
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"tags": {"dd_auto_experiment_id": "experiment-id", "iteration": "2"}},
+    )
+    assert response.status == 200, await response.text()
+    assert (await response.json())["session_id"] == sid
+
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in _spans(await response.json()) if span.get("session_id") == sid]
+    assert spans
+    assert all("dd_auto_experiment_id:experiment-id" in span["tags"] for span in spans)
+    assert all("iteration:2" in span["tags"] for span in spans)
+
+    response = await agent.get("/pi/hooks/raw")
+    raw_events = (await response.json())["events"]
+    assert all("lapdog_session_token" not in event for event in raw_events)
+
+
+async def test_pi_session_tags_do_not_leak_between_sessions_from_one_launch(agent):
+    session_token = "shared-pi-launch-token"
+    target_session_id = "pi-target-session"
+    other_session_id = "pi-other-session"
+    for session_id in (target_session_id, other_session_id):
+        await _post(
+            agent,
+            {
+                **_session_start(session_id),
+                "lapdog_session_token": session_token,
+            },
+        )
+        await _post(agent, _agent_start(session_id))
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={
+            "session_id": target_session_id,
+            "tags": {"iteration": "2"},
+        },
+    )
+    assert response.status == 200, await response.text()
+
+    for session_id in (target_session_id, other_session_id):
+        await _post(agent, _turn_start(session_id))
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = _spans(await response.json())
+    target_spans = [span for span in spans if span.get("session_id") == target_session_id]
+    other_spans = [span for span in spans if span.get("session_id") == other_session_id]
+    assert target_spans
+    assert other_spans
+    assert all("iteration:2" in span["tags"] for span in target_spans)
+    assert all("iteration:2" not in span["tags"] for span in other_spans)
+
+
 async def test_single_step_with_llm_no_tools(agent):
     """One turn_start/turn_end cycle produces: agent → step → llm."""
     sid = "pi-single-step"

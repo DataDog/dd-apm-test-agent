@@ -10,13 +10,17 @@
  * Environment variables:
  *   DDAPM_GATEWAY_URL       - Gateway URL (default: http://localhost:8126/claude/proxy)
  *   DDAPM_INTERCEPT_DEBUG   - "true" to enable stderr log messages
+ *   LAPDOG_SESSION_TOKEN    - Correlates hook events with this instrumented Claude process
  */
 
 const proc = typeof process !== 'undefined' ? process : undefined;
 const GATEWAY_URL = (proc?.env?.DDAPM_GATEWAY_URL) || 'http://localhost:8126/claude/proxy';
 const TEST_AGENT_URL = (proc?.env?.TEST_AGENT_URL) || 'http://localhost:8126/info';
+const LAPDOG_URL = (proc?.env?.LAPDOG_URL) || 'http://localhost:8126';
+const DEFAULT_HOOK_URL = 'http://localhost:8126/claude/hooks';
 const TEST_AGENT_CHECK_MS = 500; // low timeout since it should all be local
 const DEBUG = ((proc?.env?.DDAPM_INTERCEPT_DEBUG) || '').toLowerCase() === 'true';
+const LAPDOG_SESSION_TOKEN = (proc?.env?.LAPDOG_SESSION_TOKEN) || '';
 
 // Match URLs that look like Anthropic API calls (Messages API, token counting, etc.)
 // This catches api.anthropic.com, ai-gateway.*.ddbuild.io, and custom ANTHROPIC_BASE_URL hosts.
@@ -93,13 +97,22 @@ if (!child_process.spawn?.[CP_SPAWN_PATCH_MARKER]) {
   const origSpawn = child_process.spawn;
 
   function patchedSpawn (cmd, args, opts) {
+    if (Array.isArray(args)) {
+      const hookUrl = `${LAPDOG_URL.replace(/\/$/, '')}/claude/hooks`;
+      args = args.map(arg => typeof arg === 'string' ? arg.replace(DEFAULT_HOOK_URL, hookUrl) : arg);
+    }
     const child = origSpawn(cmd, args, opts);
     const origWrite = child.stdin.write.bind(child.stdin);
     child.stdin.write = function(data, ...rest) {
       try {
         const parsed = JSON.parse(typeof data === 'string' ? data.trim() : data);
-        if (parsed?.hook_event_name === 'SessionStart') {
-          parsed.lapdog_instrumented = true;
+        if (parsed?.hook_event_name) {
+          if (parsed.hook_event_name === 'SessionStart') {
+            parsed.lapdog_instrumented = true;
+          }
+          if (LAPDOG_SESSION_TOKEN) {
+            parsed.lapdog_session_token = LAPDOG_SESSION_TOKEN;
+          }
           data = JSON.stringify(parsed);
         }
       } catch {}

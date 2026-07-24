@@ -22,10 +22,12 @@ def codex_env_overrides(monkeypatch):
     monkeypatch.setenv("DD_USER_HANDLE", "shared-user")
 
 
-async def _post(agent, session_id, record, *, backfill=False):
+async def _post(agent, session_id, record, *, backfill=False, proxy_session_key=None):
     body = {"session_id": session_id, "record": record}
     if backfill:
         body["backfill"] = True
+    if proxy_session_key:
+        body["proxy_session_key"] = proxy_session_key
     return await agent.post(
         "/codex/hooks",
         headers={"Content-Type": "application/json"},
@@ -177,6 +179,133 @@ async def test_codex_turn_llm_and_tool_spans(agent):
     assert llms[0]["metrics"]["estimated_input_cost"] == 410_000
     assert llms[0]["metrics"]["estimated_output_cost"] == 900_000
     assert llms[0]["metrics"]["estimated_total_cost"] == 1_310_000
+
+
+async def test_codex_session_tags_apply_to_existing_and_future_spans(agent):
+    sid = "codex-custom-tags"
+    session_token = "codex-launch-token"
+    await _post(agent, sid, _session_meta(sid), proxy_session_key=session_token)
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="tag this Codex session"))
+
+    response = await agent.get("/claude/hooks/spans")
+    spans_before_tags = [span for span in _spans(await response.json()) if span.get("session_id") == sid]
+    assert spans_before_tags
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={
+            "session_id": sid,
+            "tags": {"dd_auto_experiment_id": "experiment-id", "iteration": "2"},
+        },
+    )
+    assert response.status == 200, await response.text()
+
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "function_call",
+            name="exec_command",
+            call_id="call-after-tags",
+            arguments='{"cmd": "pwd"}',
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item("function_call_output", call_id="call-after-tags", output="/repo"),
+    )
+    await _post(agent, sid, _event("agent_message", message="done"))
+
+    response = await agent.get("/claude/hooks/spans")
+    session_spans = [span for span in _spans(await response.json()) if span.get("session_id") == sid]
+    assert len(session_spans) > len(spans_before_tags)
+    for span in session_spans:
+        assert "dd_auto_experiment_id:experiment-id" in span["tags"]
+        assert "iteration:2" in span["tags"]
+
+
+async def test_codex_raw_events_redact_launch_token(agent):
+    session_id = "codex-redacted-launch-token"
+    await _post(
+        agent,
+        session_id,
+        _session_meta(session_id),
+        proxy_session_key="codex-secret-launch-token",
+    )
+
+    response = await agent.get("/codex/hooks/raw")
+    assert response.status == 200
+    raw_events = (await response.json())["events"]
+    assert raw_events
+    assert all("proxy_session_key" not in event for event in raw_events)
+    assert "codex-secret-launch-token" not in json.dumps(raw_events)
+
+
+async def test_codex_session_tags_target_only_requested_thread(agent):
+    session_token = "shared-codex-app-token"
+    targeted_sid = "codex-app-targeted"
+    unrelated_sid = "codex-app-unrelated"
+    for sid in (targeted_sid, unrelated_sid):
+        await _post(agent, sid, _session_meta(sid), proxy_session_key=session_token)
+        await _post(agent, sid, _turn_context(f"{sid}-turn"))
+        await _post(agent, sid, _event("user_message", message=sid))
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"session_id": targeted_sid, "tags": {"iteration": "2"}},
+    )
+    assert response.status == 200, await response.text()
+    assert (await response.json())["session_ids"] == [targeted_sid]
+
+    for sid in (targeted_sid, unrelated_sid):
+        await _post(
+            agent,
+            sid,
+            _response_item(
+                "function_call",
+                name="exec_command",
+                call_id=f"{sid}-call",
+                arguments='{"cmd": "pwd"}',
+            ),
+        )
+        await _post(
+            agent,
+            sid,
+            _response_item("function_call_output", call_id=f"{sid}-call", output="/repo"),
+        )
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = _spans(await response.json())
+    targeted_spans = [span for span in spans if span.get("session_id") == targeted_sid]
+    unrelated_spans = [span for span in spans if span.get("session_id") == unrelated_sid]
+    assert targeted_spans
+    assert unrelated_spans
+    assert all("iteration:2" in span["tags"] for span in targeted_spans)
+    assert all("iteration:2" not in span["tags"] for span in unrelated_spans)
+
+
+async def test_codex_session_tags_can_target_thread_before_watcher_posts(agent):
+    sid = "codex-app-watcher-race"
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": "app-launch-token"},
+        json={"session_id": sid, "tags": {"iteration": "2"}},
+    )
+    assert response.status == 200, await response.text()
+    assert (await response.json())["session_id"] == sid
+
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="watcher arrived"))
+
+    response = await agent.get("/claude/hooks/spans")
+    session_spans = [span for span in _spans(await response.json()) if span.get("session_id") == sid]
+    assert session_spans
+    assert all("iteration:2" in span["tags"] for span in session_spans)
 
 
 async def test_codex_project_metadata_from_session_git(agent):
@@ -1521,6 +1650,100 @@ async def test_codex_child_thread_spans_are_grouped_with_parent_session(agent):
     assert f"session_id:{sid}" in child_turn["tags"]
     assert f"session_id:{child_sid}" not in child_turn["tags"]
     assert [s for s in spans if s.get("session_id") == child_sid] == []
+
+
+async def test_codex_grouped_sessions_keep_latest_tags_on_future_child_spans(agent):
+    parent_sid = "codex-tagged-parent"
+    child_sid = "codex-tagged-child"
+    session_token = "codex-grouped-token"
+    await _post(agent, parent_sid, _session_meta(parent_sid), proxy_session_key=session_token)
+    await _post(agent, parent_sid, _turn_context())
+    await _post(agent, parent_sid, _event("user_message", message="delegate"))
+    await _post(
+        agent,
+        parent_sid,
+        _event(
+            "collab_agent_spawn_begin",
+            timestamp="2026-05-11T17:00:02.500Z",
+            call_id="spawn-tagged-child",
+            sender_thread_id=parent_sid,
+            prompt="do the thing",
+        ),
+    )
+
+    await _post(agent, child_sid, _session_meta(child_sid), proxy_session_key=session_token)
+    await _post(agent, child_sid, _turn_context("child-turn"))
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"session_id": child_sid, "tags": {"iteration": "child"}},
+    )
+    assert response.status == 200, await response.text()
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"session_id": parent_sid, "tags": {"iteration": "parent"}},
+    )
+    assert response.status == 200, await response.text()
+
+    await _post(
+        agent,
+        parent_sid,
+        _event(
+            "collab_agent_spawn_end",
+            timestamp="2026-05-11T17:00:04.000Z",
+            call_id="spawn-tagged-child",
+            new_thread_id=child_sid,
+            new_agent_nickname="researcher",
+            status="ok",
+        ),
+    )
+
+    await _post(
+        agent,
+        child_sid,
+        _event(
+            "user_message",
+            timestamp="2026-05-11T17:00:05.000Z",
+            message="child work after parent tag update",
+        ),
+    )
+    await _post(
+        agent,
+        child_sid,
+        _response_item(
+            "function_call",
+            timestamp="2026-05-11T17:00:06.000Z",
+            name="exec_command",
+            call_id="child-call-after-tag-update",
+            arguments='{"cmd": "pwd"}',
+        ),
+    )
+    await _post(
+        agent,
+        child_sid,
+        _response_item(
+            "function_call_output",
+            timestamp="2026-05-11T17:00:07.000Z",
+            call_id="child-call-after-tag-update",
+            output="/tmp/project",
+        ),
+    )
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = _spans(await response.json())
+    child_turn = next(span for span in spans if span.get("meta", {}).get("metadata", {}).get("turn_id") == "child-turn")
+    child_tool = next(
+        span
+        for span in _by_kind(spans, "tool")
+        if span.get("meta", {}).get("metadata", {}).get("tool_id") == "child-call-after-tag-update"
+    )
+    assert child_turn["session_id"] == parent_sid
+    assert "iteration:parent" in child_turn["tags"]
+    assert "iteration:child" not in child_turn["tags"]
+    assert "iteration:parent" in child_tool["tags"]
+    assert "iteration:child" not in child_tool["tags"]
 
 
 async def test_codex_compaction_event_msg_annotates_active_span(agent):
