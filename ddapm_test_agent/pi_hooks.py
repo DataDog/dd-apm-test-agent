@@ -311,7 +311,7 @@ class PiHooksAPI:
         return self._hooks_api._current_parent_id(session)
 
     def _append_span(self, span: Dict[str, Any]) -> None:
-        self._hooks_api._assembled_spans.append(span)
+        self._hooks_api._append_span(span)
 
     def _active_step_parent_id(self, session: SessionState) -> str:
         """Return active step span_id if one exists, else fall back to root/agent parent."""
@@ -1069,11 +1069,16 @@ class PiHooksAPI:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
 
         session_id = body.get("session_id", "")
         if not session_id:
             return web.json_response({"error": "missing session_id"}, status=400)
 
+        session_token = body.pop("lapdog_session_token", "")
+        if isinstance(session_token, str) and session_token:
+            self._hooks_api._register_session_token(session_token, session_id)
         self._raw_events.append(body)
         self._dispatch(body)
 

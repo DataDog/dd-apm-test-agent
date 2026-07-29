@@ -194,6 +194,19 @@ lapdog status
 lapdog stop
 ```
 
+Claude, Codex, or Pi can tag its current session by running this command from
+one of its shell tool calls:
+
+```bash
+lapdog tags set dd_auto_experiment_id:c0817213-61d4-43d6-8261-050d7560011a iteration:2
+```
+
+The tags are applied to spans still retained by the local agent for that
+coding-agent session and to all spans captured afterward. Spans already
+forwarded to Datadog are not resent. The command only works inside a process
+started with `lapdog claude`, `lapdog codex`, or `lapdog pi`. Intrinsic identity
+tags such as `session_id`, `service`, and `env` cannot be overridden.
+
 Open <https://lapdog.datadoghq.com> while a session is running to see traces,
 sessions, costs, and permission friction in real time. The page reads directly
 from your local agent on `localhost:8126` — no Datadog account or login

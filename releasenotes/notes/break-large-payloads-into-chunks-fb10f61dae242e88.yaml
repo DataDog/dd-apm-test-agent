@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    When forwarding payloads to the Datadog backend, send them in chunks
+    of at most 20 spans each to get around payload size limits on the backend.

@@ -1,7 +1,10 @@
+import gzip
 import json
 import os
 import subprocess
 import tempfile
+
+import msgpack
 
 from ddapm_test_agent.claude_hooks import ClaudeHooksAPI
 from ddapm_test_agent.claude_link_tracker import ClaudeLinkTracker
@@ -35,6 +38,296 @@ async def test_hook_missing_session_id(agent):
     assert resp.status == 400
     body = await resp.json()
     assert "session_id" in body["error"]
+
+
+async def test_trace_forwarding_chunks_payloads_at_twenty_spans(monkeypatch):
+    cases = [
+        (20, [20]),
+        (21, [20, 1]),
+        (45, [20, 20, 5]),
+    ]
+    for span_count, expected_chunk_sizes in cases:
+        hooks = ClaudeHooksAPI()
+        session = hooks._get_or_create_session(f"chunk-session-{span_count}")
+        trace_id = f"chunk-trace-{span_count}"
+        session.trace_id = trace_id
+        hooks._assembled_spans = [
+            {
+                "span_id": str(index),
+                "trace_id": trace_id,
+                "tags": [],
+            }
+            for index in range(span_count)
+        ]
+        posted_payloads = []
+        descriptions = []
+
+        monkeypatch.setattr(
+            hooks,
+            "_resolve_backend_target",
+            lambda *args, **kwargs: ("http://backend.example/api/v2/llmobs", {"Content-Type": "application/msgpack"}),
+        )
+
+        async def fake_post_to_backend(url, headers, data, description):
+            assert url == "http://backend.example/api/v2/llmobs"
+            assert headers["Content-Type"] == "application/msgpack"
+            posted_payloads.append(msgpack.unpackb(gzip.decompress(data), raw=False))
+            descriptions.append(description)
+
+        monkeypatch.setattr(hooks, "_post_to_backend", fake_post_to_backend)
+
+        await hooks._forward_trace_to_backend(session.session_id)
+
+        assert [len(payload["spans"]) for payload in posted_payloads] == expected_chunk_sizes
+        assert all(payload["_dd.stage"] == "raw" for payload in posted_payloads)
+        assert all(payload["event_type"] == "span" for payload in posted_payloads)
+        forwarded_spans = [span for payload in posted_payloads for span in payload["spans"]]
+        assert [span["span_id"] for span in forwarded_spans] == [str(index) for index in range(span_count)]
+        assert all("lapdog_forwarded:true" in span["tags"] for span in forwarded_spans)
+        assert all("lapdog_forwarded:true" not in span["tags"] for span in hooks._assembled_spans)
+        if span_count <= 20:
+            assert all("(chunk " not in description for description in descriptions)
+        else:
+            assert all(
+                f"chunk {index + 1}/{len(expected_chunk_sizes)}" in description
+                for index, description in enumerate(descriptions)
+            )
+
+
+async def test_session_tags_apply_to_existing_and_future_spans(agent):
+    session_id = "sess-custom-tags"
+    session_token = "launch-token"
+    custom_tags = {
+        "dd_auto_experiment_id": "c0817213-61d4-43d6-8261-050d7560011a",
+        "iteration": "2",
+    }
+
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "SessionStart",
+            "lapdog_session_token": session_token,
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "tag this session",
+        },
+    )
+
+    response = await agent.post(
+        "/claude/hooks/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"tags": custom_tags},
+    )
+    assert response.status == 200, await response.text()
+
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-after-tags",
+            "tool_input": {"command": "pwd"},
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-after-tags",
+            "tool_response": "/tmp",
+        },
+    )
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in (await response.json())["spans"] if span.get("session_id") == session_id]
+    assert len(spans) >= 2
+    for span in spans:
+        assert "dd_auto_experiment_id:c0817213-61d4-43d6-8261-050d7560011a" in span["tags"]
+        assert "iteration:2" in span["tags"]
+
+
+async def test_session_tags_queue_until_hook_registers_launch_token(agent):
+    session_id = "sess-queued-tags"
+    session_token = "queued-launch-token"
+    response = await agent.post(
+        "/claude/hooks/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"tags": {"iteration": "2"}},
+    )
+    assert response.status == 200
+    assert (await response.json())["session_ids"] == []
+
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "SessionStart",
+            "lapdog_session_token": session_token,
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "use queued tags",
+        },
+    )
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in (await response.json())["spans"] if span.get("session_id") == session_id]
+    assert spans
+    assert all("iteration:2" in span["tags"] for span in spans)
+
+    second_session_id = "sess-after-queued-tags"
+    await _post_hook(
+        agent,
+        {
+            "session_id": second_session_id,
+            "hook_event_name": "SessionStart",
+            "lapdog_session_token": session_token,
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": second_session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "do not reuse consumed queued tags",
+        },
+    )
+    response = await agent.get("/claude/hooks/spans")
+    second_session_spans = [
+        span for span in (await response.json())["spans"] if span.get("session_id") == second_session_id
+    ]
+    assert second_session_spans
+    assert all("iteration:2" not in span["tags"] for span in second_session_spans)
+
+    response = await agent.get("/claude/hooks/raw")
+    raw_events = (await response.json())["events"]
+    assert all("lapdog_session_token" not in event for event in raw_events)
+
+
+async def test_session_tags_reject_ambiguous_launch_token(agent):
+    session_token = "shared-launch-token"
+    session_ids = ["shared-session-a", "shared-session-b"]
+    for session_id in session_ids:
+        await _post_hook(
+            agent,
+            {
+                "session_id": session_id,
+                "hook_event_name": "SessionStart",
+                "lapdog_session_token": session_token,
+            },
+        )
+        await _post_hook(
+            agent,
+            {
+                "session_id": session_id,
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": session_id,
+            },
+        )
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"tags": {"iteration": "2"}},
+    )
+    assert response.status == 409
+    assert (await response.json())["session_ids"] == session_ids
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in (await response.json())["spans"] if span.get("session_id") in session_ids]
+    assert spans
+    assert all("iteration:2" not in span["tags"] for span in spans)
+
+
+async def test_session_tags_reject_session_registered_to_another_launch_token(agent):
+    session_id = "session-owned-by-another-token"
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "SessionStart",
+            "lapdog_session_token": "owner-token",
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "keep this session isolated",
+        },
+    )
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": "unrelated-token"},
+        json={
+            "session_id": session_id,
+            "tags": {"iteration": "2"},
+        },
+    )
+    assert response.status == 409
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in (await response.json())["spans"] if span.get("session_id") == session_id]
+    assert spans
+    assert all("iteration:2" not in span["tags"] for span in spans)
+
+
+async def test_session_tags_reject_reserved_identity_keys(agent):
+    session_id = "session-reserved-tags"
+    session_token = "reserved-tags-token"
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "SessionStart",
+            "lapdog_session_token": session_token,
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "preserve identity tags",
+        },
+    )
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"tags": {"service": "wrong-service", "session_id": "wrong-session"}},
+    )
+    assert response.status == 400
+    assert "reserved tag keys" in (await response.json())["error"]
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in (await response.json())["spans"] if span.get("session_id") == session_id]
+    assert spans
+    assert all("service:wrong-service" not in span["tags"] for span in spans)
+    assert all("session_id:wrong-session" not in span["tags"] for span in spans)
+
+
+async def test_session_tags_require_launch_token(agent):
+    response = await agent.post(
+        "/claude/hooks/session/tags",
+        json={"tags": {"iteration": "2"}},
+    )
+    assert response.status == 404
 
 
 async def test_hook_session_creates_agent_span(agent):
