@@ -11,7 +11,7 @@ and the metric keys expected by the web-ui LLM observability span detail view:
     estimated_cache_write_input_cost
     estimated_cache_read_input_cost
 
-Pricing data last updated 2025-11 based on:
+Pricing data last updated 2026-08 based on:
   * Anthropic public pricing: https://www.anthropic.com/pricing#api
   * pi-ai models.generated.js (the data Claude Code itself uses to compute
     the self-reported per-turn cost shown in its UI):
@@ -22,6 +22,12 @@ Note: Anthropic significantly reduced Opus prices starting with Opus 4.5
 (Nov 2025).  Opus 4.5 / 4.6 / 4.7 / 4.8 cost $5 / $25 / $0.50 / $6.25 per Mtok,
 whereas Opus 4 / 4.1 / 3 still cost $15 / $75 / $1.50 / $18.75 per Mtok.
 Using the old Opus rates for 4.5+ overcharges by exactly 3x.
+
+The Claude 5 family adds Sonnet 5 ($3 / $15 per Mtok, same tier as Sonnet 4.6)
+and Fable 5 / Mythos 5 ($10 / $50 per Mtok — the most capable tier).  Sonnet 5
+carries an introductory rate of $2 / $10 per Mtok through 2026-08-31; because
+these values are only estimates, the table uses the higher ongoing list price
+($3 / $15) as a conservative upper bound rather than the temporary intro rate.
 
 Only the popular models used with Claude Code are included.
 """
@@ -81,6 +87,17 @@ COST_METRIC_KEYS: FrozenSet[str] = frozenset(
 _ONE_TIER = 0  # sentinel: no upper bound on a single tier
 
 _PRICING: List[Tuple[str, List[_PriceTier]]] = [
+    # ---- Fable 5 / Mythos 5 (most capable tier, Claude 5 family) -------------
+    # $10 / $50 / $1.00 cache-read / $12.50 cache-write per Mtok.
+    # Mythos 5 is Project-Glasswing-only but shares Fable 5's pricing.
+    (
+        "claude-fable-5",
+        [_PriceTier(0, _ONE_TIER, 10_000, 12_500, 1_000, 50_000)],
+    ),
+    (
+        "claude-mythos-5",
+        [_PriceTier(0, _ONE_TIER, 10_000, 12_500, 1_000, 50_000)],
+    ),
     # ---- Opus 4.5+ (reduced pricing, Nov 2025) ------------------------------
     # $5 / $25 / $0.50 cache-read / $6.25 cache-write per Mtok.
     # Source: Anthropic pricing page; pi-ai models.generated.js entries
@@ -128,7 +145,14 @@ _PRICING: List[Tuple[str, List[_PriceTier]]] = [
         [_PriceTier(0, _ONE_TIER, 15_000, 18_750, 1_500, 75_000)],
     ),
     # ---- Sonnet -------------------------------------------------------------
-    # claude-sonnet-4-6 / claude-sonnet-4.6  (latest)
+    # claude-sonnet-5  (Claude 5 family; latest)
+    # $3 / $15 list per Mtok — conservative upper bound; the $2 / $10 intro rate
+    # (through 2026-08-31) is lower, so the ongoing list price is used instead.
+    (
+        "claude-sonnet-5",
+        [_PriceTier(0, _ONE_TIER, 3_000, 3_750, 300, 15_000)],
+    ),
+    # claude-sonnet-4-6 / claude-sonnet-4.6
     (
         "claude-sonnet-4-6",
         [_PriceTier(0, _ONE_TIER, 3_000, 3_750, 300, 15_000)],
@@ -214,6 +238,7 @@ def cost_from_provider_usage(
 
     Returns a dict with the same metric keys as ``compute_cost_metrics``.
     """
+
     def _to_nano(v: float) -> int:
         return int(round(v * _NANODOLLARS_PER_DOLLAR))
 
