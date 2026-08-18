@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    lapdog: Fixes an issue where coding agent sessions would not properly start on Windows when run with ``lapdog``.

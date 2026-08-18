@@ -56,6 +56,33 @@ LAPDOG_PLUGIN_NAME = "lapdog@lapdog"
 LAPDOG_MARKETPLACE_SOURCE = "DataDog/dd-apm-test-agent"
 
 
+def _run(
+    bin_path: str,
+    argv: List[str],
+    env: Optional[Dict[str, str]] = None,
+    search_path: bool = False,
+) -> None:
+    """Run the command, platform-dependant"""
+    run_env = env if env is not None else os.environ
+
+    if sys.platform == "win32":
+        kwargs = {
+            "env": run_env,
+            "stdin": None,
+            "stdout": None,
+            "stderr": None,
+        }
+
+        if not search_path:
+            kwargs["executable"] = bin_path
+
+        proc = subprocess.Popen(argv, **kwargs)
+        sys.exit(proc.wait())
+    else:
+        os_exec = os.execvpe if search_path else os.execve
+        os_exec(bin_path, argv, run_env)
+
+
 def _lapdog_claude_code_plugin_installed() -> bool:
     """Return True if the lapdog Claude Code plugin is installed for this user."""
     installed_path = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
@@ -314,15 +341,18 @@ def _run_claude(
     if args is None:
         args = sys.argv[1:]
     mjs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude_intercept.mjs")
+
     # BUN_OPTIONS is re-parsed by Bun as a shell-like arg string, so backslashes
     # in the path get treated as escape characters and stripped. Bun accepts
     # forward slashes on Windows, which is the most reliable fix.
     if sys.platform == "win32":
         mjs_path = mjs_path.replace("\\", "/")
+
     claude_bin = shutil.which("claude")
     if not claude_bin:
         print("[ddapm] 'claude' not found in PATH", file=sys.stderr)
         sys.exit(1)
+
     env = os.environ.copy()
     for variable in ("CODEX_THREAD_ID", "PI_SESSION_ID", "LAPDOG_SESSION_TOKEN"):
         env.pop(variable, None)
@@ -335,7 +365,7 @@ def _run_claude(
         env["TEST_AGENT_URL"] = f"{lapdog_url}/info"
     if session_token:
         env["LAPDOG_SESSION_TOKEN"] = session_token
-    os.execve(claude_bin, [claude_bin] + args, env)
+    _run(bin_path=claude_bin, argv=([claude_bin] + args), env=env)
 
 
 def cmd_start(sub_cmd_args: List[str], forward_data: bool) -> None:
@@ -455,7 +485,7 @@ def cmd_exec(app_cmd: List[str], forward_data: bool) -> None:
         sys.exit(1)
 
     env = tracer_inject.build_instrumented_env(port=port)
-    os.execvpe(resolved, app_cmd, env)
+    _run(bin_path=resolved, argv=app_cmd, env=env, search_path=True)
 
 
 def cmd_claude(
@@ -624,7 +654,7 @@ def _run_pi(
         env.pop(variable, None)
     if session_token:
         env["LAPDOG_SESSION_TOKEN"] = session_token
-    os.execve(pi_bin, [pi_bin] + args, env)
+    _run(bin_path=pi_bin, argv=([pi_bin] + args), env=env)
 
 
 def cmd_pi(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) -> None:
@@ -930,13 +960,18 @@ def _start_codex_watcher(
     if include_all_cwds:
         args += ["--include-all-cwds", "--cursor-path", CODEX_APP_CURSOR_FILE]
     with open(log_path, "a") as log_file:
-        process = subprocess.Popen(
-            args,
-            stdin=subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+        popen_kwargs: Dict[str, Any] = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": log_file,
+            "stderr": subprocess.STDOUT
+        }
+
+        if sys.platform == "win32":
+            popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+
+        process = subprocess.Popen(args, **popen_kwargs)
     if pid_path:
         with open(pid_path, "w") as f:
             f.write(f"{process.pid}\n")
@@ -989,7 +1024,7 @@ def _run_codex(
             )
     if session_token:
         env["LAPDOG_SESSION_TOKEN"] = session_token
-    os.execve(codex_bin, [codex_bin] + proxy_args + args, env)
+    _run(bin_path=codex_bin, argv=([codex_bin] + proxy_args + args), env=env)
 
 
 def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) -> None:

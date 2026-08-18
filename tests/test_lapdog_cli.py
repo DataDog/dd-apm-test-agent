@@ -8,6 +8,42 @@ from lapdog import codex_args
 from lapdog import cli
 
 
+@pytest.mark.parametrize(
+    ("search_path", "expected_executable"),
+    [
+        (False, "C:\\tools\\codex.exe"),
+        (True, None),
+    ],
+)
+def test_run_uses_popen_on_windows(monkeypatch, search_path, expected_executable):
+    process = mock.Mock()
+    process.wait.return_value = 23
+    popen = mock.Mock(return_value=process)
+    env = {"LAPDOG_URL": "http://localhost:8126"}
+
+    monkeypatch.setattr(cli.sys, "platform", "win32")
+    monkeypatch.setattr(cli.subprocess, "Popen", popen)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli._run(
+            bin_path="C:\\tools\\codex.exe",
+            argv=["codex", "exec", "hello"],
+            env=env,
+            search_path=search_path,
+        )
+
+    assert exc_info.value.code == 23
+    expected_kwargs = {
+        "env": env,
+        "stdin": None,
+        "stdout": None,
+        "stderr": None,
+    }
+    if expected_executable is not None:
+        expected_kwargs["executable"] = expected_executable
+    popen.assert_called_once_with(["codex", "exec", "hello"], **expected_kwargs)
+
+
 def test_codex_command_is_registered():
     assert "codex" in cli.LAPDOG_COMMANDS
     assert "codex" in cli.LAPDOG_USAGE
@@ -566,7 +602,7 @@ def test_start_codex_watcher_writes_singleton_pid(tmp_path, monkeypatch):
 
 
 def test_run_codex_injects_lapdog_provider(monkeypatch):
-    exec_call = {}
+    run_call = {}
 
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/codex")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
@@ -574,31 +610,27 @@ def test_run_codex_injects_lapdog_provider(monkeypatch):
     monkeypatch.setenv("PI_SESSION_ID", "outer-pi-session")
     monkeypatch.setenv("LAPDOG_SESSION_TOKEN", "outer-launch-token")
 
-    def fake_execve(binary, argv, env):
-        exec_call["binary"] = binary
-        exec_call["argv"] = argv
-        exec_call["env"] = env
-        raise SystemExit(0)
+    def fake_run(bin_path, argv, env):
+        run_call["binary"] = bin_path
+        run_call["argv"] = argv
+        run_call["env"] = env
 
-    monkeypatch.setattr(cli.os, "execve", fake_execve)
+    monkeypatch.setattr(cli, "_run", fake_run)
 
-    try:
-        cli._run_codex(
-            args=["exec", "hello"],
-            port=8126,
-            proxy_session_key="proxy-key",
-            session_token="session-token",
-        )
-    except SystemExit:
-        pass
+    cli._run_codex(
+        args=["exec", "hello"],
+        port=8126,
+        proxy_session_key="proxy-key",
+        session_token="session-token",
+    )
 
-    assert exec_call["binary"] == "/usr/local/bin/codex"
-    assert exec_call["env"]["OPENAI_BASE_URL"] == "http://localhost:8126/codex/proxy/proxy-key/v1"
-    assert exec_call["env"]["LAPDOG_URL"] == "http://localhost:8126"
-    assert exec_call["env"]["LAPDOG_SESSION_TOKEN"] == "session-token"
-    assert "CODEX_THREAD_ID" not in exec_call["env"]
-    assert "PI_SESSION_ID" not in exec_call["env"]
-    assert exec_call["argv"][:5] == [
+    assert run_call["binary"] == "/usr/local/bin/codex"
+    assert run_call["env"]["OPENAI_BASE_URL"] == "http://localhost:8126/codex/proxy/proxy-key/v1"
+    assert run_call["env"]["LAPDOG_URL"] == "http://localhost:8126"
+    assert run_call["env"]["LAPDOG_SESSION_TOKEN"] == "session-token"
+    assert "CODEX_THREAD_ID" not in run_call["env"]
+    assert "PI_SESSION_ID" not in run_call["env"]
+    assert run_call["argv"][:5] == [
         "/usr/local/bin/codex",
         "-c",
         'model_provider="openai-lapdog"',
@@ -609,7 +641,7 @@ def test_run_codex_injects_lapdog_provider(monkeypatch):
             ' wire_api="responses"}'
         ),
     ]
-    assert exec_call["argv"][5:] == ["exec", "hello"]
+    assert run_call["argv"][5:] == ["exec", "hello"]
 
 
 def _write_installed_plugins(home, plugins):
@@ -807,12 +839,14 @@ def test_run_claude_injects_lapdog_session_context(monkeypatch):
     monkeypatch.setenv("CODEX_THREAD_ID", "outer-codex-thread")
     monkeypatch.setenv("PI_SESSION_ID", "outer-pi-session")
     monkeypatch.setenv("LAPDOG_SESSION_TOKEN", "outer-launch-token")
-    execve = mock.Mock()
-    monkeypatch.setattr(cli.os, "execve", execve)
+    run = mock.Mock()
+    monkeypatch.setattr(cli, "_run", run)
 
     cli._run_claude(["--model", "opus"], port=9126, session_token="launch-token")
 
-    binary, args, env = execve.call_args.args
+    binary = run.call_args.kwargs["bin_path"]
+    args = run.call_args.kwargs["argv"]
+    env = run.call_args.kwargs["env"]
     assert binary == "/usr/local/bin/claude"
     assert args == ["/usr/local/bin/claude", "--model", "opus"]
     assert env["LAPDOG_URL"] == "http://localhost:9126"
@@ -828,12 +862,14 @@ def test_run_pi_injects_lapdog_session_context(monkeypatch):
     monkeypatch.setenv("CODEX_THREAD_ID", "outer-codex-thread")
     monkeypatch.setenv("PI_SESSION_ID", "outer-pi-session")
     monkeypatch.setenv("LAPDOG_SESSION_TOKEN", "outer-launch-token")
-    execve = mock.Mock()
-    monkeypatch.setattr(cli.os, "execve", execve)
+    run = mock.Mock()
+    monkeypatch.setattr(cli, "_run", run)
 
     cli._run_pi(["--model", "anthropic/claude-opus-4-1"], port=9126, session_token="pi-launch-token")
 
-    binary, args, env = execve.call_args.args
+    binary = run.call_args.kwargs["bin_path"]
+    args = run.call_args.kwargs["argv"]
+    env = run.call_args.kwargs["env"]
     assert binary == "/usr/local/bin/pi"
     assert args == ["/usr/local/bin/pi", "--model", "anthropic/claude-opus-4-1"]
     assert env["LAPDOG_URL"] == "http://localhost:9126"
@@ -860,25 +896,21 @@ def test_cmd_pi_injects_unique_session_token():
 
 
 def test_run_codex_falls_back_without_openai_api_key(monkeypatch):
-    exec_call = {}
+    run_call = {}
 
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/codex")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-    def fake_execve(binary, argv, env):
-        exec_call["argv"] = argv
-        exec_call["env"] = env
-        raise SystemExit(0)
+    def fake_run(bin_path, argv, env):
+        run_call["argv"] = argv
+        run_call["env"] = env
 
-    monkeypatch.setattr(cli.os, "execve", fake_execve)
+    monkeypatch.setattr(cli, "_run", fake_run)
 
-    try:
-        cli._run_codex(args=["exec", "hello"], port=8126)
-    except SystemExit:
-        pass
+    cli._run_codex(args=["exec", "hello"], port=8126)
 
-    assert exec_call["env"]["OPENAI_BASE_URL"] == "http://localhost:8126/codex/proxy/v1"
-    assert exec_call["argv"] == ["/usr/local/bin/codex", "exec", "hello"]
+    assert run_call["env"]["OPENAI_BASE_URL"] == "http://localhost:8126/codex/proxy/v1"
+    assert run_call["argv"] == ["/usr/local/bin/codex", "exec", "hello"]
 
 
 def test_backfill_flag_parses():
