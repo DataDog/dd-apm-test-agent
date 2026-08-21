@@ -13,7 +13,6 @@ import os
 import platform
 import pprint
 import re
-import requests
 import socket
 import sys
 import threading
@@ -49,6 +48,7 @@ from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportM
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import add_MetricsServiceServicer_to_server
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import add_TraceServiceServicer_to_server
+import requests
 from yarl import URL
 
 from . import _get_version
@@ -62,7 +62,6 @@ from .checks import start_trace
 from .claude_hooks import ClaudeHooksAPI
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_proxy import ClaudeProxyAPI
-from .pi_hooks import PiHooksAPI
 from .codex_hooks import CodexHooksAPI
 from .codex_proxy import CodexProxyAPI
 from .integration import Integration
@@ -75,6 +74,7 @@ from .logs import decode_logs_request
 from .metrics import METRICS_ENDPOINT
 from .metrics import OTLPMetricsGRPCServicer
 from .metrics import decode_metrics_request
+from .pi_hooks import PiHooksAPI
 from .remoteconfig import RemoteConfigServer
 from .trace import Span
 from .trace import Trace
@@ -92,6 +92,7 @@ from .trace_checks import CheckTraceCountHeader
 from .trace_checks import CheckTraceDDService
 from .trace_checks import CheckTracePeerService
 from .trace_checks import CheckTraceStallAsync
+from .trace_forwarding import forward_traces_to_v2_intake
 from .tracerflare import TracerFlareEvent
 from .tracerflare import v1_decode as v1_tracerflare_decode
 from .traces_otlp import OTLPTracesGRPCServicer
@@ -294,9 +295,7 @@ def default_value_trace_results_summary():
 def _is_valid_api_key_and_site_combination(dd_api_key: str, dd_site: str) -> bool:
     """Check if the api key + site is a valid DD auth combo"""
     url = f"https://api.{dd_site}/api/v1/validate"
-    headers = {
-        "DD-API-KEY": dd_api_key
-    }
+    headers = {"DD-API-KEY": dd_api_key}
 
     response = requests.get(url=url, headers=headers)
     result = cast(Dict[str, bool], response.json())
@@ -797,9 +796,7 @@ class Agent:
             return
 
         existing_keys = self._stored_llmobs_evp_span_keys()
-        new_envelopes = [
-            envelope for envelope in envelopes if _evp_span_key(envelope["spans"][0]) not in existing_keys
-        ]
+        new_envelopes = [envelope for envelope in envelopes if _evp_span_key(envelope["spans"][0]) not in existing_keys]
         if not new_envelopes:
             return
 
@@ -1003,6 +1000,8 @@ class Agent:
     async def handle_evp_proxy_v2_api_v2_llmobs(self, request: Request) -> web.Response:
         if request.app["disable_llmobs_data_forwarding"]:
             return web.HTTPOk()
+        if request.get("_forwarded_to_agent", False):
+            return web.HTTPOk()
 
         dd_site = request.app["dd_site"]
         dd_api_key = request.app["dd_api_key"]
@@ -1088,6 +1087,8 @@ class Agent:
 
     async def handle_evp_proxy_v4_api_v2_llmobs(self, request: Request) -> web.Response:
         if request.app["disable_llmobs_data_forwarding"]:
+            return web.HTTPOk()
+        if request.get("_forwarded_to_agent", False):
             return web.HTTPOk()
 
         dd_site = request.app["dd_site"]
@@ -1241,10 +1242,7 @@ class Agent:
             dd_api_key = data.get("dd_api_key", request.app["dd_api_key"])
             dd_site = data.get("dd_site", request.app["dd_site"])
 
-            is_valid = _is_valid_api_key_and_site_combination(
-                dd_api_key=dd_api_key,
-                dd_site=dd_site
-            )
+            is_valid = _is_valid_api_key_and_site_combination(dd_api_key=dd_api_key, dd_site=dd_site)
 
             if not is_valid:
                 return web.HTTPUnprocessableEntity(
@@ -1297,7 +1295,10 @@ class Agent:
             # Just a random selection of some peer_tags to aggregate on for testing, not exhaustive
             "peer_tags": ["db.name", "mongodb.db", "messaging.system"],
             "span_events": True,  # Advertise support for the top-level Span field for Span Events
+            "data_forwarding": not request.app["disable_data_forwarding"],
             "llmobs_data_forwarding": not request.app["disable_llmobs_data_forwarding"],
+            "trace_v2_forwarding": request.app["forward_traces_to_v2_intake"],
+            "trace_forwarding_tags": request.app["forward_trace_tags"],
             "authenticated": request.app.get("authenticated", False),
         }
 
@@ -1338,6 +1339,17 @@ class Agent:
                     traces = self._decode_v07_traces(request)
                 elif version == "v1":
                     traces = self._decode_v1_traces(request)
+                if request.app["forward_traces_to_v2_intake"]:
+                    try:
+                        await forward_traces_to_v2_intake(
+                            traces,
+                            request.headers,
+                            request.app["dd_site"],
+                            request.app["dd_api_key"],
+                            request.app["forward_trace_tags"],
+                        )
+                    except Exception as exc:
+                        log.warning("Failed to forward traces to the v2 intake: %s", exc)
                 log.info(
                     "received trace for token %r payload with %r trace chunks",
                     token,
@@ -1699,12 +1711,9 @@ class Agent:
             log.info("Found port in headers, new trace agent URL is: {}".format(request.app["agent_url"]))
 
         request["_headers"] = headers
-        if request.path in self._forward_endpoints:
-            # forward the request then call the handler
-            return await self._forward_request_to_agent(request, handler)
-        else:
-            # Call the original handler and do nothing
+        if request.path not in self._forward_endpoints or request.app["disable_data_forwarding"]:
             return await handler(request)
+        return await self._forward_request_to_agent(request, handler)
 
     async def _forward_request_to_agent(self, request: Request, handler: _Handler) -> web.Response:
         """Forward all requests to the agent_url if set."""
@@ -1718,6 +1727,7 @@ class Agent:
 
         if agent_url and proxy_to_agent:
             agent_response = await _prepare_and_send_request(data, request, headers)
+            request["_forwarded_to_agent"] = True
 
         endpoint_response = await handler(request)
 
@@ -2001,9 +2011,7 @@ def make_otlp_http_app(agent: Agent) -> web.Application:
     return app
 
 
-async def make_otlp_grpc_server_async(
-    agent: Agent, http_port: int, grpc_port: int, host: str = "127.0.0.1"
-) -> Any:
+async def make_otlp_grpc_server_async(agent: Agent, http_port: int, grpc_port: int, host: str = "127.0.0.1") -> Any:
     """Create and start a separate GRPC server for OTLP endpoints that forwards to HTTP server."""
     # Define the servicer class only when GRPC is available
     server = grpc_aio.server()
@@ -2057,6 +2065,7 @@ def make_app(
     dd_site: str,
     dd_api_key: Optional[str],
     disable_llmobs_data_forwarding: bool,
+    forward_trace_tags: Optional[Mapping[str, str]] = None,
     lapdog_mode: bool = False,
     org_prop_marker: str = "",
     enable_web_ui: bool = False,
@@ -2209,15 +2218,24 @@ def make_app(
     app["vcr_body_regex_normalizers"] = vcr_body_regex_normalizers
     app["dd_site"] = dd_site
     app["dd_api_key"] = dd_api_key
+    app["forward_trace_tags"] = dict(forward_trace_tags or {})
     app["org_prop_marker"] = org_prop_marker
 
-    valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site) if dd_api_key and dd_site else False
+    if not disable_llmobs_data_forwarding and not agent_url and dd_api_key and dd_site:
+        valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site)
+    else:
+        valid_auth = False
     app["authenticated"] = valid_auth
-    if not disable_llmobs_data_forwarding and not valid_auth:
-        log.warning("Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding.")
-        disable_llmobs_data_forwarding = True
+    forwarding_enabled = not disable_llmobs_data_forwarding and (bool(agent_url) or valid_auth)
+    if not disable_llmobs_data_forwarding and not agent_url and not valid_auth:
+        log.warning("Cannot forward data with an invalid DD_API_KEY and DD_SITE, disabling data forwarding.")
 
-    app["disable_llmobs_data_forwarding"] = disable_llmobs_data_forwarding
+    # Keep the LLMObs-specific key for API compatibility. It now represents the
+    # shared LLMObs/APM forwarding state.
+    data_forwarding_disabled = not forwarding_enabled
+    app["disable_llmobs_data_forwarding"] = data_forwarding_disabled
+    app["disable_data_forwarding"] = data_forwarding_disabled
+    app["forward_traces_to_v2_intake"] = forwarding_enabled and not agent_url
     app["lapdog_mode"] = lapdog_mode
 
     return app
@@ -2564,10 +2582,22 @@ def main(args: Optional[List[str]] = None) -> None:
         help="Organization property marker advertised in the /info endpoint response.",
     )
     parser.add_argument(
+        "--disable-data-forwarding",
         "--disable-llmobs-data-forwarding",
+        dest="disable_data_forwarding",
         action="store_true",
-        default=os.environ.get("DISABLE_LLMOBS_DATA_FORWARDING", "").lower() in ("true", "1", "yes"),
-        help="Disable data forwarding to Datadog.",
+        default=(
+            os.environ.get("DISABLE_DATA_FORWARDING", "").lower() in ("true", "1", "yes")
+            or os.environ.get("DISABLE_LLMOBS_DATA_FORWARDING", "").lower() in ("true", "1", "yes")
+        ),
+        help="Disable LLM Observability and APM trace forwarding to Datadog.",
+    )
+    parser.add_argument(
+        "--forward-trace-tags",
+        type=_parse_map,
+        default=_parse_map(os.environ.get("FORWARD_TRACE_TAGS", "")),
+        metavar="KEY:VALUE,...",
+        help="Tags to add to every span forwarded to Datadog's agentless trace intake.",
     )
     parser.add_argument(
         "--lapdog-mode",
@@ -2631,7 +2661,8 @@ def main(args: Optional[List[str]] = None) -> None:
         vcr_body_regex_normalizers=parsed_args.vcr_body_regex_normalizers,
         dd_site=parsed_args.dd_site,
         dd_api_key=parsed_args.dd_api_key,
-        disable_llmobs_data_forwarding=parsed_args.disable_llmobs_data_forwarding,
+        disable_llmobs_data_forwarding=parsed_args.disable_data_forwarding,
+        forward_trace_tags=parsed_args.forward_trace_tags,
         lapdog_mode=parsed_args.lapdog_mode,
         org_prop_marker=parsed_args.org_prop_marker,
         enable_web_ui=parsed_args.web_ui_port > 0,

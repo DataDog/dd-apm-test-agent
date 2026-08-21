@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    Forward decoded traces directly to Datadog's agentless JSON trace intake whenever data
+    forwarding is enabled, matching LLM Observability forwarding. ``--forward-trace-tags``
+    and ``FORWARD_TRACE_TAGS`` configure tags copied onto every forwarded span.

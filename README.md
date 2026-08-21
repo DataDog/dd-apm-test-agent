@@ -96,6 +96,18 @@ When proxying is enabled, the response from the Datadog agent will be returned i
 At the trace-level, proxying can also be disabled by including the `X-Datadog-Agent-Proxy-Disabled` header with a value of `true`. This will disable proxying after a trace
 is handled, regardless of whether an agent URL is set.
 
+Without an Agent URL, data forwarding uses `DD_SITE` and `DD_API_KEY`. LLM Observability
+events are sent to their agentless intake and decoded traces are sent directly to the
+agentless `/api/v2/spans` intake. Trace forwarding preserves all JSON-intake-supported
+span fields and adds only the backend stats, trace-root, and top-level markers normally
+supplied by an Agent. Any existing `_dd.origin` tag is preserved; the test agent does not
+synthesize one. Direct forwarding is best-effort and does not change the response returned
+to the tracer.
+
+Use `--forward-trace-tags=key:value,other:value` or
+`FORWARD_TRACE_TAGS=key:value,other:value` to add configured tags to every forwarded span.
+Configured values replace same-named span tags in the forwarded copy only.
+
 
 ### LLM Observability Proxy
 
@@ -104,7 +116,9 @@ If using the Datadog agent, set the `DD_AGENT_URL` environment variable or `--ag
 
 If not running a Datadog agent, set the `DD_SITE` environment variable or `--dd-site` command-line argument to the site of the Datadog instance to forward events to. Additionally, set the `DD_API_KEY` environment variable or `--dd-api-key` command-line argument to the API key to use for the Datadog instance.
 
-To disable LLM Observability event forwarding, set the `DISABLE_LLMOBS_DATA_FORWARDING` environment variable or `--disable-llmobs-data-forwarding` command-line argument to `true`.
+To disable both LLM Observability and trace forwarding, set `DISABLE_DATA_FORWARDING=true`
+or pass `--disable-data-forwarding`. `DISABLE_LLMOBS_DATA_FORWARDING` and
+`--disable-llmobs-data-forwarding` remain supported as backward-compatible aliases.
 
 
 ### Claude Code Hooks
@@ -320,6 +334,12 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
   attributes to ignore when comparing spans in snapshots.
 
 - `DD_AGENT_URL` [`""`]: URL to a Datadog agent. When provided requests will be proxied to the agent.
+
+- `DISABLE_DATA_FORWARDING` [`false`]: Set to `true` to disable LLM Observability and APM trace forwarding.
+  `DISABLE_LLMOBS_DATA_FORWARDING` is retained as a backward-compatible alias.
+
+- `FORWARD_TRACE_TAGS` [`""`]: Comma-separated `key:value` tags to add to every span sent to the
+  agentless `/api/v2/spans` intake.
 
 - `DD_APM_RECEIVER_SOCKET` [`""`]: When provided, the test agent will listen for traces on a socket at the path provided (e.g., `/var/run/datadog/apm.socket`)
 
