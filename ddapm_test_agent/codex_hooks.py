@@ -22,6 +22,10 @@ from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
 from .codex_cost_tracker import compute_openai_cost_metrics
+from .coding_agent_metadata import apply_project_metadata_to_span
+from .coding_agent_metadata import extract_agent_project_name
+from .coding_agent_metadata import extract_git_repository_url
+from .coding_agent_metadata import resolve_project_metadata
 from .llmobs_event_platform import with_cors
 
 log = logging.getLogger(__name__)
@@ -306,6 +310,7 @@ class CodexSession:
         self.model_provider = "openai"
         self.model = ""
         self.effort = ""
+        self.project_metadata = resolve_project_metadata()
         self.user_prompts: List[str] = []
         self.tools_used: Set[str] = set()
         self.pending_tools: Dict[str, PendingToolSpan] = {}
@@ -357,7 +362,7 @@ class CodexHooksAPI:
         self._ignored_session_ids: Set[str] = set()
 
     def _append_span(self, span: Dict[str, Any]) -> None:
-        self._hooks_api._assembled_spans.append(span)
+        self._hooks_api._append_span(span)
 
     def _replace_session_id_tag(self, span: Dict[str, Any], old_session_id: str, new_session_id: str) -> None:
         tags = span.get("tags", [])
@@ -380,9 +385,11 @@ class CodexHooksAPI:
                     continue
                 span["session_id"] = group_session_id
                 self._replace_session_id_tag(span, old_session_id, group_session_id)
+                self._hooks_api._apply_registered_session_tags(span)
         shared_session = self._hooks_api._sessions.get(raw_session_id)
         if shared_session is not None:
             shared_session.session_id = group_session_id
+            self._hooks_api._synchronize_session_tags(group_session_id)
 
     def _get_or_create_session(self, session_id: str, start_ns: int) -> CodexSession:
         if session_id not in self._sessions:
@@ -399,19 +406,21 @@ class CodexHooksAPI:
             self._set_session_group(session_id, self._child_session_ids[session_id])
         return self._sessions[session_id]
 
-    def _base_tags(self, session: CodexSession, source: str = "codex-jsonl") -> List[str]:
-        tags = [
-            f"ml_app:{self._config.ml_app}",
-            f"session_id:{session.session_id}",
-            f"service:{self._config.service}",
-            f"env:{self._config.env}",
-            f"source:{source}",
-            "language:python",
-            f"hostname:{self._config.hostname}",
-        ]
-        if self._config.user_handle:
-            tags.append(f"user_handle:{self._config.user_handle}")
-        return tags
+    def _update_project_metadata(
+        self,
+        session: CodexSession,
+        payload: Dict[str, Any],
+        record: Dict[str, Any],
+        cwd_changed: bool = False,
+    ) -> None:
+        project_name = extract_agent_project_name(payload) or extract_agent_project_name(record)
+        git_repository_url = extract_git_repository_url(record) or extract_git_repository_url(payload)
+        session.project_metadata = resolve_project_metadata(
+            cwd=session.cwd,
+            project_name=project_name or ("" if cwd_changed else session.project_metadata.project_name),
+            git_repository_url=git_repository_url
+            or ("" if cwd_changed else session.project_metadata.git_repository_url),
+        )
 
     def _agent_manifest(self, session: CodexSession) -> Dict[str, Any]:
         model_settings: Dict[str, Any] = {}
@@ -583,12 +592,7 @@ class CodexHooksAPI:
         turn = session.active_turn
         if turn is None or turn.root_span_ref is None:
             return
-        approvals = (
-            turn.root_span_ref.get("meta", {})
-            .get("metadata", {})
-            .get("_dd", {})
-            .get("codex_approvals", [])
-        )
+        approvals = turn.root_span_ref.get("meta", {}).get("metadata", {}).get("_dd", {}).get("codex_approvals", [])
         if not isinstance(approvals, list):
             return
         for approval in approvals:
@@ -693,12 +697,16 @@ class CodexHooksAPI:
         if insert_at is None:
             self._append_span(span)
         else:
-            self._hooks_api._assembled_spans.insert(insert_at, span)
+            self._hooks_api._append_span(span, index=insert_at)
         turn.last_llm_span_ref = span
 
     def _apply_turn_context(self, session: CodexSession, record: Dict[str, Any]) -> None:
         payload = record.get("payload", {})
+        previous_cwd = session.cwd
         session.cwd = payload.get("cwd", session.cwd)
+        self._update_project_metadata(
+            session, payload, record, cwd_changed=bool(session.cwd and session.cwd != previous_cwd)
+        )
         session.model = payload.get("model", session.model)
         session.effort = payload.get("effort", session.effort)
         turn = session.active_turn
@@ -707,6 +715,7 @@ class CodexHooksAPI:
         turn.root_span_ref["meta"]["model_name"] = session.model
         metadata = turn.root_span_ref["meta"]["metadata"]
         metadata["cwd"] = session.cwd
+        apply_project_metadata_to_span(turn.root_span_ref, session.project_metadata)
         metadata["reasoning_effort"] = session.effort
         self._update_agent_manifest(session)
 
@@ -737,7 +746,11 @@ class CodexHooksAPI:
         payload = record.get("payload", {})
         timestamp_ns = _timestamp_to_ns(record.get("timestamp", ""))
         turn_id = payload.get("turn_id") or payload.get("id") or _format_span_id()
+        previous_cwd = session.cwd
         session.cwd = payload.get("cwd", session.cwd)
+        self._update_project_metadata(
+            session, payload, record, cwd_changed=bool(session.cwd and session.cwd != previous_cwd)
+        )
         session.model = payload.get("model", session.model)
         session.effort = payload.get("effort", session.effort)
         trace_id = _format_trace_id()
@@ -766,7 +779,12 @@ class CodexHooksAPI:
         session.agent_span_stack = []
         session.pending_subagents = {}
 
-        root_tags = self._base_tags(session) + ["trajectory.semantic_type:turn"]
+        root_tags = self._hooks_api.base_tags(
+            session,
+            source="codex-jsonl",
+            ml_app=self._config.ml_app,
+            user_handle=self._config.user_handle,
+        ) + ["trajectory.semantic_type:turn"]
         root_span: Dict[str, Any] = {
             "span_id": root_span_id,
             "trace_id": trace_id,
@@ -796,6 +814,7 @@ class CodexHooksAPI:
             },
             "metrics": {},
         }
+        apply_project_metadata_to_span(root_span, session.project_metadata)
         self._append_span(root_span)
         turn.root_span_ref = root_span
         self._adopt_orphan_proxy_llm_spans(session, turn)
@@ -810,7 +829,12 @@ class CodexHooksAPI:
         turn.current_step_start_ns = start_ns
         turn.current_step_last_ns = start_ns
         turn.current_step_has_llm = False
-        step_tags = self._base_tags(session) + ["trajectory.semantic_type:agent_message"]
+        step_tags = self._hooks_api.base_tags(
+            session,
+            source="codex-jsonl",
+            ml_app=self._config.ml_app,
+            user_handle=self._config.user_handle,
+        ) + ["trajectory.semantic_type:agent_message"]
         step_span: Dict[str, Any] = {
             "span_id": step_span_id,
             "trace_id": turn.trace_id,
@@ -936,10 +960,14 @@ class CodexHooksAPI:
 
     def _handle_session_meta(self, session: CodexSession, record: Dict[str, Any]) -> None:
         payload = record.get("payload", {})
+        previous_cwd = session.cwd
         session.cwd = payload.get("cwd", session.cwd)
         session.originator = payload.get("originator", session.originator)
         session.cli_version = payload.get("cli_version", session.cli_version)
         session.model_provider = payload.get("model_provider", session.model_provider) or "openai"
+        self._update_project_metadata(
+            session, payload, record, cwd_changed=bool(session.cwd and session.cwd != previous_cwd)
+        )
 
     def _handle_event_msg(self, session: CodexSession, record: Dict[str, Any]) -> List[CompletedTrace]:
         event = record.get("payload", {})
@@ -1151,7 +1179,12 @@ class CodexHooksAPI:
             "service": self._config.service,
             "env": self._config.env,
             "session_id": session.session_id,
-            "tags": self._base_tags(session),
+            "tags": self._hooks_api.base_tags(
+                session,
+                source="codex-jsonl",
+                ml_app=self._config.ml_app,
+                user_handle=self._config.user_handle,
+            ),
             "meta": {
                 "span": {"kind": "llm"},
                 "model_name": session.model,
@@ -1287,7 +1320,13 @@ class CodexHooksAPI:
         span["ml_app"] = self._config.ml_app
         span["service"] = self._config.service
         span["env"] = self._config.env
-        span["tags"] = self._base_tags(session, source="codex-proxy")
+        span["tags"] = self._hooks_api.base_tags(
+            session,
+            source="codex-proxy",
+            ml_app=self._config.ml_app,
+            user_handle=self._config.user_handle,
+        )
+        self._hooks_api._apply_registered_session_tags(span)
         tool_call_ids = self._normalize_proxy_tool_call_ids(session, span)
         if append:
             self._append_llm_span(turn, span)
@@ -1418,7 +1457,13 @@ class CodexHooksAPI:
             "service": self._config.service,
             "env": self._config.env,
             "session_id": session.session_id,
-            "tags": self._base_tags(session) + ["subagent:true"],
+            "tags": self._hooks_api.base_tags(
+                session,
+                source="codex-jsonl",
+                ml_app=self._config.ml_app,
+                user_handle=self._config.user_handle,
+            )
+            + ["subagent:true"],
             "meta": {
                 "span": {"kind": "agent"},
                 "input": {"value": prompt if isinstance(prompt, str) else _to_json_str(prompt)},
@@ -1667,7 +1712,13 @@ class CodexHooksAPI:
             "service": self._config.service,
             "env": self._config.env,
             "session_id": session.session_id,
-            "tags": self._base_tags(session) + [f"tool_name:{pending.tool_name}"],
+            "tags": self._hooks_api.base_tags(
+                session,
+                source="codex-jsonl",
+                ml_app=self._config.ml_app,
+                user_handle=self._config.user_handle,
+            )
+            + [f"tool_name:{pending.tool_name}"],
             "meta": {
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},
@@ -1828,7 +1879,10 @@ class CodexHooksAPI:
         )
 
     def _dispatch(
-        self, session_id: str, record: Dict[str, Any], proxy_session_key: Optional[str] = None
+        self,
+        session_id: str,
+        record: Dict[str, Any],
+        proxy_session_key: Optional[str] = None,
     ) -> List[CompletedTrace]:
         start_ns = _timestamp_to_ns(record.get("timestamp", ""))
         if session_id in self._ignored_session_ids:
@@ -1836,6 +1890,7 @@ class CodexHooksAPI:
         session = self._get_or_create_session(session_id, start_ns=start_ns)
         if proxy_session_key:
             session.proxy_session_keys.add(proxy_session_key)
+            self._hooks_api._register_session_token(proxy_session_key, session_id)
         if session.raw_session_id in self._ignored_session_ids:
             return []
         try:
@@ -1892,14 +1947,20 @@ class CodexHooksAPI:
         if not session_id:
             return web.json_response({"error": "missing session_id"}, status=400)
 
-        self._raw_events.append(body)
+        raw_body = dict(body)
+        raw_body.pop("proxy_session_key", None)
+        self._raw_events.append(raw_body)
         self._last_session_id = session_id
+        is_backfill = body.get("backfill") is True
         completed = self._dispatch(session_id, record, proxy_session_key=proxy_session_key)
-        for completed_session_id, completed_trace_id in completed:
-            await self._hooks_api._forward_trace_to_backend(
-                completed_session_id, trace_id=completed_trace_id, span_source="Codex"
-            )
-            await self._hooks_api._forward_eval_metrics_to_backend(completed_session_id, trace_id=completed_trace_id)
+        if not is_backfill:
+            for completed_session_id, completed_trace_id in completed:
+                await self._hooks_api._forward_trace_to_backend(
+                    completed_session_id, trace_id=completed_trace_id, span_source="Codex"
+                )
+                await self._hooks_api._forward_eval_metrics_to_backend(
+                    completed_session_id, trace_id=completed_trace_id
+                )
         return web.json_response({"status": "ok"})
 
     async def handle_raw_events(self, request: Request) -> web.Response:

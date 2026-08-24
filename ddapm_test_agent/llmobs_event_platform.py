@@ -179,6 +179,20 @@ def _otel_ns(value: Any) -> int:
         return 0
 
 
+def _metric_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _metric_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _is_copilot_otlp(resource_attrs: Dict[str, Any], span_attrs: Dict[str, Any]) -> bool:
     return (
         resource_attrs.get("service.name") == "github-copilot-cli"
@@ -187,13 +201,12 @@ def _is_copilot_otlp(resource_attrs: Dict[str, Any], span_attrs: Dict[str, Any])
     )
 
 
-def _copilot_session_id(trace_id: str, span_attrs: Dict[str, Any]) -> str:
-    conversation_id = str(span_attrs.get("gen_ai.conversation.id") or "")
-    if conversation_id:
-        return conversation_id
-    interaction_id = str(span_attrs.get("github.copilot.interaction_id") or "")
-    if interaction_id:
-        return interaction_id
+def _copilot_trace_session_id(trace_id: str, span_attributes: List[Dict[str, Any]]) -> str:
+    for key in ("gen_ai.conversation.id", "github.copilot.interaction_id"):
+        for attributes in span_attributes:
+            value = str(attributes.get(key) or "")
+            if value:
+                return value
     return trace_id
 
 
@@ -211,20 +224,45 @@ def _copilot_child_span(
     end_ns = _otel_ns(_first_present(otel_span, "endTimeUnixNano", "end_time_unix_nano"))
     model = str(span_attrs.get("gen_ai.response.model") or span_attrs.get("gen_ai.request.model") or "copilot")
     provider = str(span_attrs.get("gen_ai.provider.name") or "github")
-    input_tokens = int(span_attrs.get("gen_ai.usage.input_tokens") or 0)
-    output_tokens = int(span_attrs.get("gen_ai.usage.output_tokens") or 0)
-    cache_write = int(span_attrs.get("gen_ai.usage.cache_creation.input_tokens") or 0)
-    cache_read = int(span_attrs.get("gen_ai.usage.cache_read.input_tokens") or 0)
-    cost = float(span_attrs.get("github.copilot.cost") or 0)
+    input_tokens = _metric_int(span_attrs.get("gen_ai.usage.input_tokens"))
+    output_tokens = _metric_int(span_attrs.get("gen_ai.usage.output_tokens"))
+    cache_write_key = "gen_ai.usage.cache_write.input_tokens"
+    if cache_write_key in span_attrs:
+        cache_write = _metric_int(span_attrs[cache_write_key])
+    else:
+        cache_write = _metric_int(span_attrs.get("gen_ai.usage.cache_creation.input_tokens"))
+    cache_read = _metric_int(span_attrs.get("gen_ai.usage.cache_read.input_tokens"))
+    cost = _metric_float(span_attrs.get("github.copilot.cost"))
     hostname = str(resource_attrs.get("host.name") or "")
     service = str(resource_attrs.get("service.name") or "github-copilot-cli")
+    otel_status = _first_present(otel_span, "status") or {}
+    status_code = _first_present(otel_status, "code") if isinstance(otel_status, dict) else None
+    is_error = status_code in (2, "2", "ERROR", "STATUS_CODE_ERROR")
+    error_message = str(_first_present(otel_status, "message") or "") if isinstance(otel_status, dict) else ""
+    meta = {
+        "span": {"kind": "llm"},
+        "model_name": model,
+        "model_provider": provider,
+        "input": {"messages": []},
+        "output": {"messages": []},
+        "metadata": {
+            "operation_name": span_attrs.get("gen_ai.operation.name"),
+            "finish_reasons": span_attrs.get("gen_ai.response.finish_reasons"),
+            "response_id": span_attrs.get("gen_ai.response.id"),
+            "server_duration": span_attrs.get("github.copilot.server_duration"),
+            "turn_id": span_attrs.get("github.copilot.turn_id"),
+            "interaction_id": span_attrs.get("github.copilot.interaction_id"),
+        },
+    }
+    if is_error:
+        meta["error"] = {"message": error_message}
 
     return {
         "span_id": span_id,
         "trace_id": trace_id,
         "parent_id": parent_id,
         "name": str(_first_present(otel_span, "name") or model),
-        "status": "ok",
+        "status": "error" if is_error else "ok",
         "start_ns": start_ns,
         "duration": max(0, end_ns - start_ns),
         "ml_app": "github-copilot-cli",
@@ -242,21 +280,7 @@ def _copilot_child_span(
             "agent.framework:github-copilot",
             "agent.runtime:cli",
         ],
-        "meta": {
-            "span": {"kind": "llm"},
-            "model_name": model,
-            "model_provider": provider,
-            "input": {"messages": []},
-            "output": {"messages": []},
-            "metadata": {
-                "operation_name": span_attrs.get("gen_ai.operation.name"),
-                "finish_reasons": span_attrs.get("gen_ai.response.finish_reasons"),
-                "response_id": span_attrs.get("gen_ai.response.id"),
-                "server_duration": span_attrs.get("github.copilot.server_duration"),
-                "turn_id": span_attrs.get("github.copilot.turn_id"),
-                "interaction_id": span_attrs.get("github.copilot.interaction_id"),
-            },
-        },
+        "meta": meta,
         "metrics": {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
@@ -280,7 +304,7 @@ def _copilot_root_span(session_id: str, trace_id: str, spans: List[Dict[str, Any
         "trace_id": trace_id,
         "parent_id": "undefined",
         "name": "GitHub Copilot CLI session",
-        "status": "ok",
+        "status": "error" if any(span.get("status") == "error" for span in spans) else "ok",
         "start_ns": start_ns,
         "duration": max(0, end_ns - start_ns),
         "ml_app": "github-copilot-cli",
@@ -308,9 +332,31 @@ def _copilot_root_span(session_id: str, trace_id: str, spans: List[Dict[str, Any
 
 
 def _dedupe_copilot_parent_metrics(spans: List[Dict[str, Any]]) -> None:
-    by_parent_id: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for span in spans:
-        by_parent_id[str(span.get("parent_id") or "")].append(span)
+    spans_by_id = {str(span.get("span_id") or ""): span for span in spans}
+    children_by_id: Dict[str, List[str]] = defaultdict(list)
+    metrics_by_span_id: Dict[str, Dict[str, Any]] = {}
+    for span_id, span in spans_by_id.items():
+        parent_id = str(span.get("parent_id") or "")
+        if parent_id in spans_by_id:
+            children_by_id[parent_id].append(span_id)
+        metrics_by_span_id[span_id] = dict(span.get("metrics", {}))
+
+    visited = set()
+    visiting = set()
+
+    def has_cycle(span_id: str) -> bool:
+        if span_id in visiting:
+            return True
+        if span_id in visited:
+            return False
+        visiting.add(span_id)
+        cyclic = any(has_cycle(child_id) for child_id in children_by_id.get(span_id, []))
+        visiting.remove(span_id)
+        visited.add(span_id)
+        return cyclic
+
+    if any(has_cycle(span_id) for span_id in spans_by_id):
+        return
 
     metric_keys = (
         "input_tokens",
@@ -320,23 +366,34 @@ def _dedupe_copilot_parent_metrics(spans: List[Dict[str, Any]]) -> None:
         "cache_write_input_tokens",
         "estimated_total_cost",
     )
-    for span in spans:
-        metrics = span.get("metrics", {})
-        if not any(metrics.get(key, 0) for key in metric_keys):
-            continue
+    keys_to_clear: Dict[str, List[str]] = defaultdict(list)
+    for key in metric_keys:
+        subtree_totals: Dict[str, Any] = {}
 
-        children = by_parent_id.get(str(span.get("span_id") or ""), [])
-        if not children:
-            continue
+        def subtree_total(span_id: str) -> Any:
+            if span_id in subtree_totals:
+                return subtree_totals[span_id]
+            own_value = metrics_by_span_id.get(span_id, {}).get(key, 0)
+            descendant_total = sum(subtree_total(child_id) for child_id in children_by_id.get(span_id, []))
+            if own_value and own_value == descendant_total:
+                keys_to_clear[span_id].append(key)
+                total = descendant_total
+            else:
+                total = own_value + descendant_total
+            subtree_totals[span_id] = total
+            return total
 
-        child_totals = {key: sum(child.get("metrics", {}).get(key, 0) for child in children) for key in metric_keys}
-        if all(metrics.get(key, 0) == child_totals[key] for key in metric_keys):
-            span["metrics"] = {key: 0 for key in metric_keys}
+        for span_id in spans_by_id:
+            subtree_total(span_id)
+
+    for span_id, keys in keys_to_clear.items():
+        for key in keys:
+            spans_by_id[span_id].get("metrics", {})[key] = 0
 
 
 def extract_copilot_spans_from_otlp_traces(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Convert GitHub Copilot OTLP GenAI spans into LLMObs UI spans."""
-    by_session_trace: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+    raw_spans_by_trace: Dict[str, Dict[str, Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]]] = defaultdict(dict)
     resource_spans = _first_present(payload, "resourceSpans", "resource_spans") or []
     for resource_span in resource_spans:
         resource = _first_present(resource_span, "resource") or {}
@@ -348,16 +405,20 @@ def extract_copilot_spans_from_otlp_traces(payload: Dict[str, Any]) -> List[Dict
                 if not _is_copilot_otlp(resource_attrs, span_attrs):
                     continue
                 trace_id = str(_first_present(otel_span, "traceId", "trace_id") or "")
-                if not trace_id:
+                span_id = str(_first_present(otel_span, "spanId", "span_id") or "")
+                if not trace_id or not span_id:
                     continue
-                session_id = _copilot_session_id(trace_id, span_attrs)
-                root_span_id = f"copilot-session-{trace_id}"
-                by_session_trace[(session_id, trace_id)].append(
-                    _copilot_child_span(otel_span, resource_attrs, span_attrs, session_id, root_span_id)
-                )
+                raw_spans_by_trace[trace_id][span_id] = (otel_span, resource_attrs, span_attrs)
 
     spans: List[Dict[str, Any]] = []
-    for (session_id, trace_id), child_spans in by_session_trace.items():
+    for trace_id, raw_spans_by_id in raw_spans_by_trace.items():
+        raw_spans = list(raw_spans_by_id.values())
+        session_id = _copilot_trace_session_id(trace_id, [item[2] for item in raw_spans])
+        root_span_id = f"copilot-session-{trace_id}"
+        child_spans = [
+            _copilot_child_span(otel_span, resource_attrs, span_attrs, session_id, root_span_id)
+            for otel_span, resource_attrs, span_attrs in raw_spans
+        ]
         _dedupe_copilot_parent_metrics(child_spans)
         root_span = _copilot_root_span(session_id, trace_id, child_spans)
         root_id = root_span["span_id"]
@@ -764,6 +825,7 @@ def _build_trace_aggregates(
 
     result: Dict[str, Dict[str, Any]] = {}
     for tid, trace_spans in by_trace.items():
+        llm_spans = [span for span in trace_spans if span.get("meta", {}).get("span", {}).get("kind") == "llm"]
         num_evaluations_failed = sum(
             sum(
                 1
@@ -776,10 +838,10 @@ def _build_trace_aggregates(
         result[tid] = {
             "num_evaluations_failed": num_evaluations_failed,
             "number_of_errors": number_of_errors,
-            "input_tokens": sum(span.get("metrics", {}).get("input_tokens", 0) for span in trace_spans),
-            "output_tokens": sum(span.get("metrics", {}).get("output_tokens", 0) for span in trace_spans),
-            "total_tokens": sum(span.get("metrics", {}).get("total_tokens", 0) for span in trace_spans),
-            "estimated_total_cost": sum(span.get("metrics", {}).get("estimated_total_cost", 0) for span in trace_spans),
+            "input_tokens": sum(span.get("metrics", {}).get("input_tokens", 0) for span in llm_spans),
+            "output_tokens": sum(span.get("metrics", {}).get("output_tokens", 0) for span in llm_spans),
+            "total_tokens": sum(span.get("metrics", {}).get("total_tokens", 0) for span in llm_spans),
+            "estimated_total_cost": sum(span.get("metrics", {}).get("estimated_total_cost", 0) for span in llm_spans),
         }
     return result
 
@@ -1308,6 +1370,7 @@ class LLMObsEventPlatformAPI:
         """Get all LLMObs spans from stored requests."""
         requests = self.agent._requests_by_session(token) if token else self.agent._requests
         all_spans = []
+        copilot_resource_spans: List[Dict[str, Any]] = []
 
         for req in requests:
             if req.path in ("/evp_proxy/v2/api/v2/llmobs", "/evp_proxy/v4/api/v2/llmobs"):
@@ -1327,9 +1390,12 @@ class LLMObsEventPlatformAPI:
             elif req.path == "/v1/traces":
                 try:
                     traces_data = self.agent._decode_v1_traces_otlp(req)
-                    all_spans.extend(extract_copilot_spans_from_otlp_traces(traces_data))
+                    copilot_resource_spans.extend(_first_present(traces_data, "resourceSpans", "resource_spans") or [])
                 except Exception as e:
                     log.warning(f"Failed to extract Copilot spans from OTLP request: {e}")
+
+        if copilot_resource_spans:
+            all_spans.extend(extract_copilot_spans_from_otlp_traces({"resourceSpans": copilot_resource_spans}))
 
         if self._claude_hooks_api:
             all_spans.extend(self._claude_hooks_api._assembled_spans)
@@ -1377,7 +1443,6 @@ class LLMObsEventPlatformAPI:
             query_str = list_params.get("search", {}).get("query", "")
 
             all_spans = self.get_llmobs_spans()
-            trace_aggregates = _build_trace_aggregates(all_spans)
             spans = all_spans
             if query_str:
                 spans = apply_filters(spans, parse_filter_query(query_str))
@@ -1486,7 +1551,13 @@ class LLMObsEventPlatformAPI:
                             metrics[output] = "" if _val is None else str(_val)
                         elif aggregation in ("min", "max", "sum", "avg"):
                             numeric_values = []
-                            for s in group_spans:
+                            value_spans = group_spans
+                            if metric_field.startswith("trace."):
+                                unique_traces: Dict[str, Dict[str, Any]] = {}
+                                for span in group_spans:
+                                    unique_traces.setdefault(str(span.get("trace_id") or ""), span)
+                                value_spans = list(unique_traces.values())
+                            for s in value_spans:
                                 v = _resolve_field_value(s, metric_field, trace_aggregates)
                                 try:
                                     if v is None or v == "":
@@ -1516,8 +1587,7 @@ class LLMObsEventPlatformAPI:
                         rows = []
                         for s in sorted_spans:
                             row = [
-                                str(_resolve_field_value(s, col.lstrip("@"), trace_aggregates) or "")
-                                for col in columns
+                                str(_resolve_field_value(s, col.lstrip("@"), trace_aggregates) or "") for col in columns
                             ]
                             rows.append(row)
                         metrics[output] = rows

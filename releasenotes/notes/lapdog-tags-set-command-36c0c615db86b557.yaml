@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Add a ``lapdog tags set`` command to allow agents to add custom tags
+    to their own Lapdog spans.

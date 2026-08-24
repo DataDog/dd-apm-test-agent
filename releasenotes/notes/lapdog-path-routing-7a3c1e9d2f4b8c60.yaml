@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    lapdog: Route path-form launcher invocations (e.g.
+    ``lapdog ~/.local/bin/claude``) to the dedicated launcher instead of the
+    generic ``exec`` wrapper, which previously broke Python subprocesses with
+    ``[lapdog] ddtrace is not installed``.

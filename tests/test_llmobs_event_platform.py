@@ -5,6 +5,7 @@ import msgpack
 import pytest
 
 from ddapm_test_agent.llmobs_event_platform import _build_trace_aggregates
+from ddapm_test_agent.llmobs_event_platform import _dedupe_copilot_parent_metrics
 from ddapm_test_agent.llmobs_event_platform import extract_copilot_spans_from_otlp_traces
 
 
@@ -360,10 +361,10 @@ async def test_query_scalar_multi_request(agent, llmobs_payload):
 
 
 async def test_query_scalar_trace_rollup_metric(agent, llmobs_payload):
-    # Fixture has 2 spans on the same trace with token counts 30 and 15.
-    # @trace.total_tokens rolls up per-trace: sum across spans = 45, but
+    # Fixture has 2 spans on the same trace; only the LLM token count contributes to @trace totals.
+    # @trace.total_tokens rolls up per-trace from LLM spans = 15, and
     # because both spans share trace-123, sum(@trace.total_tokens) over all
-    # spans must dedupe to 45 (not 90).
+    # spans must dedupe to 15 (not 30).
     await _submit_llmobs_payload(agent, llmobs_payload)
     resp = await agent.post(
         "/api/ui/query/scalar",
@@ -380,7 +381,7 @@ async def test_query_scalar_trace_rollup_metric(agent, llmobs_payload):
     )
     data = await resp.json()
     cols = data["data"][0]["attributes"]["columns"]
-    assert cols[0]["values"] == [45.0]
+    assert cols[0]["values"] == [15.0]
 
 
 async def test_query_scalar_formulas_reference_query(agent, llmobs_payload):
@@ -449,6 +450,109 @@ async def test_llmobs_list_returns_spans_v4(agent, llmobs_payload):
     assert data["hitCount"] == 2
 
 
+_V04_TRACE_HEADERS = {
+    "Content-Type": "application/msgpack",
+    "X-Datadog-Trace-Count": "1",
+    "Datadog-Meta-Tracer-Version": "v0.1",
+    "datadog-meta-lang": "python",
+}
+
+
+def _v04_trace_with_llmobs_for_list_tests(span_id=1234, trace_id=4321, llmobs_overrides=None):
+    llmobs = {
+        "trace_id": "11111111111111111111111111111111",
+        "parent_id": "undefined",
+        "name": "openai.chat.completion",
+        "meta": {"span": {"kind": "llm"}, "input": {"value": "hi"}, "output": {"value": "hello"}},
+        "metrics": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12},
+        "tags": {"env": "test", "ml_app": "my-app"},
+    }
+    if llmobs_overrides:
+        llmobs.update(llmobs_overrides)
+    return msgpack.packb(
+        [
+            [
+                {
+                    "name": "openai.request",
+                    "span_id": span_id,
+                    "trace_id": trace_id,
+                    "start": 1_700_000_000_000_000_000,
+                    "duration": 250_000_000,
+                    "meta": {},
+                    "meta_struct": {"_llmobs": msgpack.packb(llmobs)},
+                }
+            ]
+        ]
+    )
+
+
+async def _list_llmobs(agent):
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    assert resp.status == 200
+    return await resp.json()
+
+
+async def test_llmobs_list_returns_spans_from_v04_meta_struct(agent):
+    resp = await agent.put("/v0.4/traces", headers=_V04_TRACE_HEADERS, data=_v04_trace_with_llmobs_for_list_tests())
+    assert resp.status == 200, await resp.text()
+
+    data = await _list_llmobs(agent)
+    assert data["hitCount"] == 1
+    event = data["result"]["events"][0]["event"]["custom"]
+    assert event["span_id"] == "1234"
+    assert event["trace_id"] == "11111111111111111111111111111111"
+    assert event["meta"]["span"]["kind"] == "llm"
+
+
+async def test_llmobs_list_merges_evp_and_meta_struct_spans(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)  # 2 EVP spans
+    resp = await agent.put(
+        "/v0.4/traces",
+        headers=_V04_TRACE_HEADERS,
+        data=_v04_trace_with_llmobs_for_list_tests(span_id=9999, trace_id=8888),
+    )
+    assert resp.status == 200, await resp.text()
+    assert (await _list_llmobs(agent))["hitCount"] == 3
+
+
+async def test_llmobs_list_dedupes_evp_post_against_meta_struct(agent):
+    same_trace_id = "22222222222222222222222222222222"
+    evp_envelope = {
+        "spans": [
+            {
+                "name": "openai.chat.completion",
+                "span_id": "1234",
+                "trace_id": same_trace_id,
+                "parent_id": "undefined",
+                "status": "ok",
+                "duration": 1,
+                "start_ns": 1,
+                "meta": {"span": {"kind": "llm"}},
+                "metrics": {},
+                "tags": [],
+            }
+        ],
+    }
+    resp = await agent.post(
+        "/evp_proxy/v2/api/v2/llmobs",
+        headers={"Content-Type": "application/msgpack", "Content-Encoding": "gzip"},
+        data=gzip.compress(msgpack.packb(evp_envelope)),
+    )
+    assert resp.status == 200, await resp.text()
+
+    resp = await agent.put(
+        "/v0.4/traces",
+        headers=_V04_TRACE_HEADERS,
+        data=_v04_trace_with_llmobs_for_list_tests(llmobs_overrides={"trace_id": same_trace_id}),
+    )
+    assert resp.status == 200, await resp.text()
+
+    assert (await _list_llmobs(agent))["hitCount"] == 1
+
+
 async def test_llmobs_list_filter_by_span_kind(agent, llmobs_payload):
     await _submit_llmobs_payload(agent, llmobs_payload)
     resp = await agent.post(
@@ -514,6 +618,31 @@ async def test_llmobs_aggregate(agent, llmobs_payload):
     assert resp.status == 200
     data = await resp.json()
     assert data["status"] == "done"
+
+
+async def test_llmobs_aggregate_trace_rollup_metric_counts_each_trace_once(agent, llmobs_payload):
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/aggregate?type=llmobs",
+        json={
+            "aggregate": {
+                "compute": [
+                    {
+                        "total": {
+                            "metric": "@trace.total_tokens",
+                            "output": "@trace.total_tokens:sum",
+                            "aggregation": "sum",
+                        }
+                    }
+                ],
+                "indexes": ["llmobs"],
+            }
+        },
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    values = data["result"]["values"]
+    assert values[0]["metrics"]["@trace.total_tokens:sum"] == 15
 
 
 async def test_llmobs_aggregate_group_by_session_id(agent):
@@ -718,7 +847,7 @@ async def test_llmobs_aggregate_includes_copilot_otlp_session(testagent, testage
                                         "value": {"stringValue": "interaction-123"},
                                     },
                                 ],
-                            }
+                            },
                         ],
                     }
                 ],
@@ -743,7 +872,13 @@ async def test_llmobs_aggregate_includes_copilot_otlp_session(testagent, testage
             "compute": [
                 {"total": {"metric": "count", "output": "count:count", "aggregation": "count"}},
                 {"total": {"metric": "@trace.input_tokens", "output": "@trace.input_tokens:sum", "aggregation": "sum"}},
-                {"total": {"metric": "@trace.output_tokens", "output": "@trace.output_tokens:sum", "aggregation": "sum"}},
+                {
+                    "total": {
+                        "metric": "@trace.output_tokens",
+                        "output": "@trace.output_tokens:sum",
+                        "aggregation": "sum",
+                    }
+                },
                 {"total": {"metric": "@trace.total_tokens", "output": "@trace.total_tokens:sum", "aggregation": "sum"}},
                 {
                     "total": {
@@ -777,9 +912,7 @@ def test_copilot_otlp_session_with_multiple_trace_ids_rolls_up_each_trace():
     payload = {
         "resourceSpans": [
             {
-                "resource": {
-                    "attributes": [{"key": "service.name", "value": {"stringValue": "github-copilot-cli"}}]
-                },
+                "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "github-copilot-cli"}}]},
                 "scopeSpans": [
                     {
                         "spans": [
@@ -821,6 +954,201 @@ def test_copilot_otlp_session_with_multiple_trace_ids_rolls_up_each_trace():
     assert {span["parent_id"] for span in spans if span["span_id"] == "span-a"} == {"copilot-session-trace-a"}
     assert {span["parent_id"] for span in spans if span["span_id"] == "span-b"} == {"copilot-session-trace-b"}
     assert sum(trace_aggregates[root["trace_id"]]["input_tokens"] for root in roots) == 30
+
+
+def _single_copilot_span_payload(
+    attributes,
+    status=None,
+    trace_id="trace-current",
+    span_id="span-current",
+    parent_span_id=None,
+):
+    span = {
+        "traceId": trace_id,
+        "spanId": span_id,
+        "name": "chat current-model",
+        "startTimeUnixNano": "100",
+        "endTimeUnixNano": "200",
+        "attributes": attributes,
+    }
+    if parent_span_id is not None:
+        span["parentSpanId"] = parent_span_id
+    if status is not None:
+        span["status"] = status
+    return {
+        "resourceSpans": [
+            {
+                "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "github-copilot-cli"}}]},
+                "scopeSpans": [{"spans": [span]}],
+            }
+        ]
+    }
+
+
+def test_copilot_otlp_uses_current_cache_write_attribute():
+    payload = _single_copilot_span_payload(
+        [
+            {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "25"}},
+            {"key": "gen_ai.usage.cache_write.input_tokens", "value": {"intValue": "20"}},
+        ]
+    )
+
+    spans = extract_copilot_spans_from_otlp_traces(payload)
+    child = next(span for span in spans if span["span_id"] == "span-current")
+
+    assert child["metrics"]["cache_write_input_tokens"] == 20
+
+
+def test_copilot_otlp_prefers_explicit_current_cache_write_zero():
+    payload = _single_copilot_span_payload(
+        [
+            {"key": "gen_ai.usage.cache_write.input_tokens", "value": {"intValue": "0"}},
+            {"key": "gen_ai.usage.cache_creation.input_tokens", "value": {"intValue": "9"}},
+        ]
+    )
+
+    spans = extract_copilot_spans_from_otlp_traces(payload)
+    child = next(span for span in spans if span["span_id"] == "span-current")
+
+    assert child["metrics"]["cache_write_input_tokens"] == 0
+
+
+def test_copilot_otlp_malformed_metrics_do_not_drop_the_trace():
+    payload = _single_copilot_span_payload(
+        [
+            {"key": "gen_ai.usage.input_tokens", "value": {"stringValue": "not-an-int"}},
+            {"key": "github.copilot.cost", "value": {"stringValue": "not-a-float"}},
+        ]
+    )
+
+    spans = extract_copilot_spans_from_otlp_traces(payload)
+    child = next(span for span in spans if span["span_id"] == "span-current")
+
+    assert child["metrics"]["input_tokens"] == 0
+    assert child["metrics"]["estimated_total_cost"] == 0
+
+
+def test_copilot_otlp_maps_error_status():
+    payload = _single_copilot_span_payload([], status={"code": 2, "message": "provider failed"})
+
+    spans = extract_copilot_spans_from_otlp_traces(payload)
+    child = next(span for span in spans if span["span_id"] == "span-current")
+
+    assert child["status"] == "error"
+    assert child["meta"]["error"]["message"] == "provider failed"
+
+
+def test_copilot_otlp_marks_root_error_when_child_errors():
+    payload = _single_copilot_span_payload([], status={"code": 2, "message": "provider failed"})
+
+    spans = extract_copilot_spans_from_otlp_traces(payload)
+    root = next(span for span in spans if span["parent_id"] == "undefined")
+
+    assert root["status"] == "error"
+
+
+def test_copilot_otlp_deduplicates_each_metric_independently():
+    payload = _single_copilot_span_payload(
+        [{"key": "gen_ai.usage.input_tokens", "value": {"intValue": "10"}}],
+        span_id="parent",
+    )
+    payload["resourceSpans"][0]["scopeSpans"][0]["spans"].append(
+        _single_copilot_span_payload(
+            [
+                {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "10"}},
+                {"key": "github.copilot.cost", "value": {"doubleValue": 1.0}},
+            ],
+            span_id="child",
+            parent_span_id="parent",
+        )["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    )
+
+    spans = extract_copilot_spans_from_otlp_traces(payload)
+    parent = next(span for span in spans if span["span_id"] == "parent")
+    child = next(span for span in spans if span["span_id"] == "child")
+
+    assert parent["metrics"]["input_tokens"] == 0
+    assert child["metrics"]["input_tokens"] == 10
+    assert child["metrics"]["estimated_total_cost"] == 1.0
+
+
+def test_copilot_otlp_nested_metric_deduplication_is_order_independent():
+    def span(span_id, parent_id, tokens=10):
+        return {
+            "span_id": span_id,
+            "parent_id": parent_id,
+            "metrics": {
+                "input_tokens": tokens,
+                "output_tokens": 0,
+                "total_tokens": tokens,
+                "cache_read_input_tokens": 0,
+                "cache_write_input_tokens": 0,
+                "estimated_total_cost": 0,
+            },
+        }
+
+    trees = (
+        [span("grand", "root"), span("parent", "grand"), span("child", "parent")],
+        [span("child", "parent"), span("parent", "grand"), span("grand", "root")],
+        [span("grand", "root"), span("parent", "grand", 0), span("child", "parent")],
+        [span("child", "parent"), span("parent", "grand", 0), span("grand", "root")],
+    )
+    for spans in trees:
+        _dedupe_copilot_parent_metrics(spans)
+        assert sum(item["metrics"]["input_tokens"] for item in spans) == 10
+
+
+def test_copilot_otlp_uses_one_session_for_all_spans_in_a_trace():
+    payload = _single_copilot_span_payload(
+        [{"key": "gen_ai.conversation.id", "value": {"stringValue": "conversation-current"}}],
+        span_id="parent",
+    )
+    payload["resourceSpans"][0]["scopeSpans"][0]["spans"].append(
+        _single_copilot_span_payload([], span_id="child", parent_span_id="parent")["resourceSpans"][0]["scopeSpans"][0][
+            "spans"
+        ][0]
+    )
+
+    spans = extract_copilot_spans_from_otlp_traces(payload)
+    roots = [span for span in spans if span["parent_id"] == "undefined"]
+    child = next(span for span in spans if span["span_id"] == "child")
+
+    assert len(roots) == 1
+    assert {span["session_id"] for span in spans} == {"conversation-current"}
+    assert child["parent_id"] == "parent"
+
+
+def test_copilot_otlp_deduplicates_retried_span_ids():
+    payload = _single_copilot_span_payload([{"key": "gen_ai.usage.input_tokens", "value": {"intValue": "10"}}])
+    duplicate = dict(payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0])
+    payload["resourceSpans"][0]["scopeSpans"][0]["spans"].append(duplicate)
+
+    spans = extract_copilot_spans_from_otlp_traces(payload)
+
+    assert [span["span_id"] for span in spans].count("span-current") == 1
+
+
+async def test_copilot_otlp_spans_split_across_requests_share_one_tree(testagent, testagent_url, otlp_http_url):
+    conversation = [{"key": "gen_ai.conversation.id", "value": {"stringValue": "conversation-current"}}]
+    parent_payload = _single_copilot_span_payload(conversation, span_id="parent")
+    child_payload = _single_copilot_span_payload(conversation, span_id="child", parent_span_id="parent")
+
+    parent_response = await testagent.post(f"{otlp_http_url}/v1/traces", json=parent_payload)
+    child_response = await testagent.post(f"{otlp_http_url}/v1/traces", json=child_payload)
+    assert parent_response.status == 200
+    assert child_response.status == 200
+
+    response = await testagent.post(
+        f"{testagent_url}/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"search": {"query": ""}, "limit": 50}},
+    )
+    assert response.status == 200
+    events = [item["event"]["custom"] for item in (await response.json())["result"]["events"]]
+    roots = [event for event in events if event["parent_id"] == "undefined"]
+    child = next(event for event in events if event["span_id"] == "child")
+
+    assert len(roots) == 1, [(event.get("span_id"), event.get("name"), event.get("parent_id")) for event in events]
+    assert child["parent_id"] == "parent"
 
 
 async def test_llmobs_cors_headers(agent):
@@ -939,12 +1267,14 @@ async def test_span_cost_metrics_surfaced_in_list(agent):
 
 
 async def test_trace_estimated_total_cost_aggregated_across_spans(agent):
-    """@trace.estimated_total_cost is the sum of estimated_total_cost across all spans in the trace."""
+    """@trace.estimated_total_cost is the sum of estimated_total_cost across LLM spans in the trace."""
     span_a = _create_span_for_facet_test(1, 300)
     span_a["metrics"]["estimated_total_cost"] = 10_000_000
     span_b = _create_span_for_facet_test(2, 300)
     span_b["metrics"]["estimated_total_cost"] = 5_000_000
-    await _submit_spans_for_facet_test(agent, [span_a, span_b])
+    agent_rollup = _create_span_for_facet_test(3, 300, span_kind="agent")
+    agent_rollup["metrics"]["estimated_total_cost"] = 15_000_000
+    await _submit_spans_for_facet_test(agent, [span_a, span_b, agent_rollup])
 
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
@@ -953,18 +1283,20 @@ async def test_trace_estimated_total_cost_aggregated_across_spans(agent):
     assert resp.status == 200
     data = await resp.json()
 
-    # Both spans share trace 300; each should report the aggregated trace total
+    # All spans share trace 300, but the agent rollup should not be counted again.
     for event in data["result"]["events"]:
         assert event["event"]["custom"]["trace"]["estimated_total_cost"] == 15_000_000
 
 
 async def test_trace_token_metrics_aggregated_across_spans(agent):
-    """@trace.input_tokens, output_tokens, and total_tokens are summed across all spans in the trace."""
+    """@trace.input_tokens, output_tokens, and total_tokens are summed across LLM spans in the trace."""
     span_a = _create_span_for_facet_test(1, 400)
     span_a["metrics"] = {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}
     span_b = _create_span_for_facet_test(2, 400)
     span_b["metrics"] = {"input_tokens": 5, "output_tokens": 10, "total_tokens": 15}
-    await _submit_spans_for_facet_test(agent, [span_a, span_b])
+    agent_rollup = _create_span_for_facet_test(3, 400, span_kind="agent")
+    agent_rollup["metrics"] = {"input_tokens": 15, "output_tokens": 30, "total_tokens": 45}
+    await _submit_spans_for_facet_test(agent, [span_a, span_b, agent_rollup])
 
     resp = await agent.post(
         "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
@@ -981,7 +1313,7 @@ async def test_trace_token_metrics_aggregated_across_spans(agent):
 
 
 async def test_trace_level_fields_populated_for_session_query(agent):
-    """Trace-level token and cost fields are present for session-id-filtered queries (non-static app path)."""
+    """Trace-level token and cost fields ignore root agent metric rollups for session-id-filtered queries."""
     now = int(time.time() * 1_000_000_000)
     root_span = {
         "span_id": "span-sess-root",
@@ -1030,10 +1362,10 @@ async def test_trace_level_fields_populated_for_session_query(agent):
     assert data["hitCount"] == 1
 
     trace = data["result"]["events"][0]["event"]["custom"]["trace"]
-    assert trace["input_tokens"] == 12
-    assert trace["output_tokens"] == 18
-    assert trace["total_tokens"] == 30
-    assert trace["estimated_total_cost"] == 10_000_000
+    assert trace["input_tokens"] == 4
+    assert trace["output_tokens"] == 6
+    assert trace["total_tokens"] == 10
+    assert trace["estimated_total_cost"] == 3_000_000
 
 
 async def test_facet_range_info_with_filter_query(agent):

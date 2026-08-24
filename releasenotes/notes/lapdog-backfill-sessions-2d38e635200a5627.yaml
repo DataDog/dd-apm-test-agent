@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    Adds ``lapdog --backfill claude``, ``lapdog --backfill codex``, and
+    ``lapdog --backfill pi`` for one-shot ingestion of historical agent
+    sessions from disk.

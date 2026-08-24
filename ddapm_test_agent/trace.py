@@ -47,6 +47,7 @@ SPAN_REQUIRED_ATTRS = [
 ]
 
 MetricType = Union[int, float]
+SpanEventAttributeValue = Union[str, bool, int, float, List[Union[str, bool, int, float]]]
 
 
 class SpanLink(TypedDict):
@@ -582,7 +583,7 @@ def add_span_event(
     s: Span,
     time_unix_nano: int = 1730405656000000000,
     name: str = "event",
-    attributes: Optional[Dict[str, Dict[str, Any]]] = None,
+    attributes: Optional[Dict[str, SpanEventAttributeValue]] = None,
 ) -> Span:
     if "span_events" not in s:
         s["span_events"] = []
@@ -784,6 +785,8 @@ def _convert_v1_payload(data: Any) -> v04TracePayload:
     string_table: List[str] = [""]  # 0 is reserved for empty string
 
     v04Payload: List[List[Span]] = []
+    payload_meta: Dict[str, str] = {}
+    payload_metrics: Dict[str, MetricType] = {}
 
     for k, v in data.items():
         if k == 1:
@@ -792,6 +795,12 @@ def _convert_v1_payload(data: Any) -> v04TracePayload:
             # TODO: In the future we can assert on these keys
             if isinstance(v, str):
                 string_table.append(v)
+        elif k == 10:
+            # Payload-level attributes (e.g. `_dd.apm_mode`, `_dd.git.commit.sha`) — flat
+            # triplet array, same encoding as chunk/span attributes.
+            if not isinstance(v, list):
+                raise TypeError("Trace payload 'attributes' (10) must be a list, got type %r." % type(v))
+            _convert_v1_attributes(v, payload_meta, payload_metrics, string_table)
         elif k == 11:
             if not isinstance(v, list):
                 raise TypeError("Trace payload 'chunks' (11) must be a list.")
@@ -799,6 +808,14 @@ def _convert_v1_payload(data: Any) -> v04TracePayload:
                 v04Payload.append(_convert_v1_chunk(chunk, string_table))
         else:
             raise TypeError("Unknown key %r in v1 trace payload" % k)
+
+    if payload_meta or payload_metrics:
+        for chunk_spans in v04Payload:
+            for span in chunk_spans:
+                for meta_key, meta_value in payload_meta.items():
+                    span["meta"].setdefault(meta_key, meta_value)
+                for metric_key, metric_value in payload_metrics.items():
+                    span["metrics"].setdefault(metric_key, metric_value)
     return cast(v04TracePayload, v04Payload)
 
 
@@ -839,14 +856,15 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
         else:
             raise TypeError("Unknown key %r in v1 trace chunk" % k)
 
-    for span in spans:
+    for i, span in enumerate(spans):
         if "metrics" not in span:
             span["metrics"] = {}
         if "meta" not in span:
             span["meta"] = {}
         span["trace_id"] = trace_id
-        span["meta"]["_dd.p.tid"] = hex(trace_id_high)
-        if sampling_mechanism is not None:
+        if trace_id_high != 0:
+            span["meta"]["_dd.p.tid"] = format(trace_id_high, "016x")
+        if i == 0 and sampling_mechanism is not None and sampling_mechanism != 0:
             span["meta"]["_dd.p.dm"] = "-" + str(sampling_mechanism)
         if origin != "":
             span["meta"]["_dd.origin"] = origin
@@ -921,7 +939,10 @@ def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
         elif k == V1SpanKeys.SPAN_KIND:
             if not isinstance(v, int):
                 raise TypeError("Span kind must be an integer, got type %r." % type(v))
-            if v == 1:
+            if v == 0:
+                # OTEL span kind 0 is "unspecified"; keep the v0.4-like output tag absent.
+                spanKind = ""
+            elif v == 1:
                 spanKind = "internal"
             elif v == 2:
                 spanKind = "server"
@@ -1032,6 +1053,26 @@ def _convert_v1_span_link_attributes(attr: Any, string_table: List[str]) -> Dict
     return v4_attributes
 
 
+def _convert_v1_scalar_any_value(value_type: Any, value: Any, string_table: List[str]) -> Optional[Dict[str, Any]]:
+    """Map a v1 scalar AnyValue to its v0.4 typed-scalar representation ``{"type": <int>,
+    "<kind>_value": <value>}``, or return ``None`` for non-scalar value types
+    (ARRAY/BYTES/KEY_VALUE_LIST) so the caller can handle them.
+
+    Shared by span-event attribute decoding and array-element decoding to keep the
+    STRING/BOOL/INT/DOUBLE mapping in one place. Note the v0.4 ``type`` codes differ from the v1
+    wire codes (e.g. INT is 4 on the wire but 2 in v0.4).
+    """
+    if value_type == V1AnyValueKeys.STRING:
+        return {"type": 0, "string_value": _get_and_add_string(string_table, value)}
+    elif value_type == V1AnyValueKeys.BOOL:
+        return {"type": 1, "bool_value": value}
+    elif value_type == V1AnyValueKeys.INT:
+        return {"type": 2, "int_value": value}
+    elif value_type == V1AnyValueKeys.DOUBLE:
+        return {"type": 3, "double_value": value}
+    return None
+
+
 def _convert_v1_span_event_attributes(attr: Any, string_table: List[str]) -> Dict[str, Dict[str, Any]]:
     """
     Convert a v1 span event attributes to a v4 span event attributes. Unfortunately we need multiple implementations that
@@ -1043,32 +1084,50 @@ def _convert_v1_span_event_attributes(attr: Any, string_table: List[str]) -> Dic
         raise TypeError("Attribute list must have a multiple of 3 elements, got %r." % len(attr))
     attributes: Dict[str, Dict[str, Any]] = {}
     for i in range(0, len(attr), 3):
-        v4_attr_value: Dict[str, Any] = {}
         key = _get_and_add_string(string_table, attr[i])
         value_type = attr[i + 1]
         value = attr[i + 2]
-        if value_type == V1AnyValueKeys.STRING:
-            v4_attr_value["type"] = 0
-            v4_attr_value["string_value"] = _get_and_add_string(string_table, value)
-        elif value_type == V1AnyValueKeys.BOOL:
-            v4_attr_value["type"] = 1
-            v4_attr_value["bool_value"] = value
-        elif value_type == V1AnyValueKeys.DOUBLE:
-            v4_attr_value["type"] = 3
-            v4_attr_value["double_value"] = value
-        elif value_type == V1AnyValueKeys.INT:
-            v4_attr_value["type"] = 2  # Yes the constants are different here
-            v4_attr_value["int_value"] = value
+        scalar = _convert_v1_scalar_any_value(value_type, value, string_table)
+        if scalar is not None:
+            attributes[key] = scalar
+        elif value_type == V1AnyValueKeys.ARRAY:
+            attributes[key] = {"type": 4, "array_value": _convert_v1_array_value(value, string_table)}
         elif value_type == V1AnyValueKeys.BYTES:
             raise NotImplementedError("Bytes values are not supported yet.")
-        elif value_type == V1AnyValueKeys.ARRAY:
-            raise NotImplementedError("Array of strings values are not supported yet.")
         elif value_type == V1AnyValueKeys.KEY_VALUE_LIST:
             raise NotImplementedError("Key value list values are not supported yet.")
         else:
             raise TypeError("Unknown attribute value type %r." % value_type)
-        attributes[key] = v4_attr_value
     return attributes
+
+
+def _convert_v1_array_value(value: Any, string_table: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """Convert a v1 wire array attribute value into the v0.4 ``array_value`` representation.
+
+    The v1 wire format encodes an array attribute value as a flat list alternating item type and
+    item value: ``[item_type_0, item_value_0, item_type_1, item_value_1, ...]``.
+    Each item is converted to the same typed-scalar shape used elsewhere for v0.4 span event
+    attributes (``{"type": <int>, "<kind>_value": <value>}``).
+
+    Heterogeneous arrays are accepted on purpose: v1 attribute values derive from OTLP ``ArrayValue``
+    and the tracer (e.g. dd-trace-java's TraceMapperV1) emits mixed-type arrays. This is deliberately
+    more permissive than the v0.4 ``verify_span`` check that requires a single element type — that
+    check guards the raw v0.4/v0.7 verification path, which v1 decoding does not go through.
+    """
+    if not isinstance(value, list):
+        raise TypeError("Array value must be a list, got type %r." % type(value))
+    if len(value) % 2 != 0:
+        raise TypeError("Array value list must have a multiple of 2 elements, got %r." % len(value))
+    values: List[Dict[str, Any]] = []
+    for i in range(0, len(value), 2):
+        item_type = value[i]
+        item_value = value[i + 1]
+        v4_item = _convert_v1_scalar_any_value(item_type, item_value, string_table)
+        if v4_item is None:
+            # TraceMapperV1 only emits scalar array items (no nested arrays/bytes/key-value lists).
+            raise TypeError("Unsupported v1 array item value type %r." % item_type)
+        values.append(v4_item)
+    return {"values": values}
 
 
 def _convert_v1_attributes(

@@ -36,7 +36,7 @@ want to know what `lapdog start` actually does).
   bundles its own interpreter, so the system Python version does not matter.
 - Port **8126** free on `localhost`. If the port is taken, set `PORT=<other>`
   before running `lapdog start` and open the dashboard at
-  `http://localhost:<port>/leash/`.
+  `https://lapdog.datadoghq.com`.
 - For `lapdog claude` / `lapdog pi` / `lapdog codex` / `lapdog copilot`: the
   `claude` / `pi` / `codex` / `copilot` binary already on `PATH`.
 
@@ -93,11 +93,11 @@ docker run --rm \
     -p 4318:4318 \
     -p 4317:4317 \
     ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest \
-    ddapm-test-agent --enable-claude-code-hooks --lapdog-mode
+    ddapm-test-agent --lapdog-mode
 ```
 
 Then point your application at the host: `DD_TRACE_AGENT_URL=http://localhost:8126`.
-Open the dashboard at <http://localhost:8126/leash/>.
+Open the dashboard at <https://lapdog.datadoghq.com>.
 
 To persist sessions across container restarts, mount a host directory at
 `/snapshots`:
@@ -107,7 +107,7 @@ docker run --rm \
     -p 8126:8126 \
     -v "$PWD/.lapdog-data:/snapshots" \
     ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest \
-    ddapm-test-agent --enable-claude-code-hooks --lapdog-mode
+    ddapm-test-agent --lapdog-mode
 ```
 
 If you want the `lapdog claude` or `lapdog codex` workflow, the CLI must run
@@ -198,8 +198,23 @@ lapdog status
 lapdog stop
 ```
 
-Open <http://localhost:8126/leash/> while a session is running to see traces,
-sessions, costs, and permission friction in real time.
+Claude, Codex, or Pi can tag its current session by running this command from
+one of its shell tool calls:
+
+```bash
+lapdog tags set dd_auto_experiment_id:c0817213-61d4-43d6-8261-050d7560011a iteration:2
+```
+
+The tags are applied to spans still retained by the local agent for that
+coding-agent session and to all spans captured afterward. Spans already
+forwarded to Datadog are not resent. The command only works inside a process
+started with `lapdog claude`, `lapdog codex`, or `lapdog pi`. Intrinsic identity
+tags such as `session_id`, `service`, and `env` cannot be overridden.
+
+Open <https://lapdog.datadoghq.com> while a session is running to see traces,
+sessions, costs, and permission friction in real time. The page reads directly
+from your local agent on `localhost:8126` — no Datadog account or login
+required.
 
 Important: `lapdog claude` and `lapdog codex` are proxy-backed workflows.
 They put the local Lapdog agent in the live model-request path. Keep Lapdog
@@ -231,6 +246,16 @@ Useful flags:
   Code plugin.
 - `-p <port>` / `--port <port>` — bind to a different port (default `8126`).
 
+### Git commit tagging
+
+Captured coding-agent spans are tagged with `git.commit.sha` — the commit that
+is HEAD of the session's repository at the moment each span starts. The repo is
+the same one the existing `git.repository_url` tag is derived from (resolved
+from the coding agent's working directory), so the two tags always describe the
+same repository. Because the tagged SHA flips the instant a commit lands, you
+can see *when* commits happen during a session and filter/group traces by
+commit. If the working directory is not a git repository, the tag is omitted.
+
 ---
 
 ## What lapdog touches on your machine
@@ -251,41 +276,22 @@ No other state is created. There is no daemon installed at the OS level
 
 ## Uninstallation
 
-### 1. Stop the running agent
+### 1. Run the uninstall command
 
 ```bash
-lapdog stop
+lapdog uninstall
 ```
 
-If `lapdog stop` reports no PID file but you still see something on port 8126,
-find and kill it manually:
-
+This will:
+1. Stop the lapdog server. **Note**: If you still notice something running on port 8126, kill it manually:
 ```bash
 lsof -ti tcp:8126 | xargs kill
 ```
+2. Remove the Claude Code plugin (if installed)
+3. Remove the Pi extension (only if you used `lapdog pi`)
+4. Removes Lapdog's working directory (at `~/.lapdog`)
 
-### 2. Remove the Claude Code plugin (if installed)
-
-If you installed the plugin from the marketplace:
-
-```bash
-claude plugin uninstall lapdog@lapdog
-claude plugin marketplace remove lapdog
-```
-
-### 3. Remove the Pi extension (only if you used `lapdog pi`)
-
-```bash
-rm -f ~/.pi/agent/extensions/lapdog.ts
-```
-
-### 4. Remove lapdog's working directory
-
-```bash
-rm -rf ~/.lapdog
-```
-
-### 5. Uninstall the package
+### 2. Uninstall the package
 
 Match the install method you used:
 

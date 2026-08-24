@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Lapdog: Backfilling Claude Code sessions now nests subagents (e.g.
+    ``Explore`` / ``Task``) under the step span that launched them, in the
+    same trace and session. Previously each subagent session was
+    backfilled as its own standalone session.

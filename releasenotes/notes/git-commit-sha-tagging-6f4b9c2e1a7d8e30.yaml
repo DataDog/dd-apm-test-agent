@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Lapdog: Support tagging coding agent spans with commit hashes (using the
+    ``git.commit.sha`` tag).

@@ -37,11 +37,10 @@ from ddapm_test_agent.apmtelemetry import TelemetryEvent
 from ddapm_test_agent.client import TestOTLPClient
 from ddapm_test_agent.logs import LOGS_ENDPOINT
 from ddapm_test_agent.metrics import METRICS_ENDPOINT
-from ddapm_test_agent.traces_otlp import TRACES_ENDPOINT
 from ddapm_test_agent.trace import Span
 from ddapm_test_agent.trace import Trace
 from ddapm_test_agent.trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
-
+from ddapm_test_agent.traces_otlp import TRACES_ENDPOINT
 
 # Fix the service name to make tests consistently pass local and in CI.
 config.service = ""
@@ -142,6 +141,11 @@ def vcr_json_body_normalizers() -> Generator[str, None, None]:
 
 
 @pytest.fixture
+def vcr_body_regex_normalizers() -> Generator[str, None, None]:
+    yield ""
+
+
+@pytest.fixture
 def dd_site() -> Generator[str, None, None]:
     yield "datadoghq.com"
 
@@ -176,6 +180,7 @@ async def agent_app(
     vcr_provider_map,
     vcr_ignore_headers,
     vcr_json_body_normalizers,
+    vcr_body_regex_normalizers,
     dd_site,
     dd_api_key,
     disable_llmobs_data_forwarding,
@@ -199,6 +204,7 @@ async def agent_app(
             vcr_provider_map=vcr_provider_map,
             vcr_ignore_headers=vcr_ignore_headers,
             vcr_json_body_normalizers=vcr_json_body_normalizers,
+            vcr_body_regex_normalizers=vcr_body_regex_normalizers,
             dd_site=dd_site,
             dd_api_key=dd_api_key,
             disable_llmobs_data_forwarding=disable_llmobs_data_forwarding,
@@ -899,7 +905,9 @@ async def grpc_client_with_failure_type(agent_app, available_port, aiohttp_serve
     if service_type not in ["logs", "metrics", "traces"]:
         raise ValueError(f"service_type must be 'logs', 'metrics', or 'traces', got: {service_type}")
 
-    endpoint = LOGS_ENDPOINT if service_type == "logs" else METRICS_ENDPOINT if service_type == "metrics" else TRACES_ENDPOINT
+    endpoint = (
+        LOGS_ENDPOINT if service_type == "logs" else METRICS_ENDPOINT if service_type == "metrics" else TRACES_ENDPOINT
+    )
 
     http_handlers = {
         "http_400": lambda _: web.HTTPBadRequest(text="invalid"),

@@ -3,6 +3,10 @@ FROM python:3.13-slim
 WORKDIR /src
 EXPOSE 8126
 
+# The agent binds to loopback by default. In a container the published port
+# (EXPOSE 8126 / -p 8126:8126) is only reachable if the agent binds all
+# interfaces, so opt in explicitly here.
+ENV HOST=0.0.0.0
 ENV SNAPSHOT_CI=1
 ENV LOG_LEVEL=INFO
 ENV SNAPSHOT_DIR=/snapshots

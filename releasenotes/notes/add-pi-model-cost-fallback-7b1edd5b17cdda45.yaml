@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Add fallback cost estimation for pi based on model name.

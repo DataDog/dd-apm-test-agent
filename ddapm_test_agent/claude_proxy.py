@@ -34,6 +34,7 @@ from .claude_hooks import _format_trace_id
 from .claude_hooks import _get_context_limit
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_link_tracker import SpanLink
+from .coding_agent_metadata import apply_project_metadata_to_span
 from .llmobs_event_platform import with_cors
 
 log = logging.getLogger(__name__)
@@ -386,12 +387,27 @@ class ClaudeProxyAPI:
         return all_sessions[-1]
 
     def _adopt_orphan_spans(self, session: SessionState) -> None:
-        """Re-parent buffered orphan spans into the given session's trace."""
+        """Re-parent buffered orphan spans into the given session's trace.
+
+        Preserves span-specific tags (model, etc.) and only appends the
+        session-scoped tags that orphans were missing (session_id, user_handle,
+        and the project-metadata tags resolved once the session is known).
+        """
         if not self._orphan_spans:
             return
+        session_scoped_tags = self._hooks_api.base_tags(session, source="claude-code-proxy")
         for span in self._orphan_spans:
             span["trace_id"] = session.trace_id
             span["parent_id"] = session.root_span_id
+            span["session_id"] = session.session_id
+            existing_tags = list(span.get("tags") or [])
+            existing_keys = {t.split(":", 1)[0] for t in existing_tags if ":" in t}
+            for tag in session_scoped_tags:
+                if tag.split(":", 1)[0] not in existing_keys:
+                    existing_tags.append(tag)
+            span["tags"] = existing_tags
+            apply_project_metadata_to_span(span, session.project_metadata)
+            self._hooks_api._apply_session_tags(span, session)
         log.info("Re-parented %d orphan LLM spans into trace %s", len(self._orphan_spans), session.trace_id)
         self._orphan_spans.clear()
 
@@ -478,6 +494,9 @@ class ClaudeProxyAPI:
             session = self._get_active_session()
 
         if session:
+            # Keep session model in sync with the actual API response — same source as cost.
+            if model != "unknown":
+                session.model = model
             trace_id = session.trace_id
             # Default parent: use the agent stack (works for sequential execution)
             parent_id = self._hooks_api._current_parent_id(session)
@@ -570,6 +589,18 @@ class ClaudeProxyAPI:
             total_input_tokens,
             model,
         )
+        if session:
+            tags = self._hooks_api.base_tags(session, source="claude-code-proxy") + [f"user_name:{_USERNAME}"]
+        else:
+            tags = [
+                f"ml_app:{_ML_APP}",
+                f"service:{_ML_APP}",
+                "env:local",
+                "source:claude-code-proxy",
+                "language:python",
+                f"hostname:{_HOSTNAME}",
+                f"user_name:{_USERNAME}",
+            ]
         span: Dict[str, Any] = {
             "span_id": span_id,
             "trace_id": trace_id,
@@ -582,16 +613,7 @@ class ClaudeProxyAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:claude-code-proxy",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-                f"user_name:{_USERNAME}",
-            ]
-            + ([f"session_id:{session_id}"] if session_id else []),
+            "tags": tags,
             "meta": {
                 "span": {"kind": "llm"},
                 "model_name": model,
@@ -707,10 +729,10 @@ class ClaudeProxyAPI:
                 if span.get("parent_id") == "undefined":
                     # No session yet — buffer for later re-parenting
                     self._orphan_spans.append(span)
-                    self._hooks_api._assembled_spans.append(span)
+                    self._hooks_api._append_span(span)
                     log.info("Buffered orphan LLM span %s (no session yet)", span["span_id"])
                 else:
-                    self._hooks_api._assembled_spans.append(span)
+                    self._hooks_api._append_span(span)
                 log.info(
                     "LLM span %s: model=%s tokens=%d+%d duration=%.1fs",
                     span["span_id"],
@@ -742,10 +764,10 @@ class ClaudeProxyAPI:
                 span = self._create_llm_span(session, request_body, response_data, start_ns, duration_ns)
                 if span.get("parent_id") == "undefined":
                     self._orphan_spans.append(span)
-                    self._hooks_api._assembled_spans.append(span)
+                    self._hooks_api._append_span(span)
                     log.info("Buffered orphan LLM span %s (no session yet)", span["span_id"])
                 else:
-                    self._hooks_api._assembled_spans.append(span)
+                    self._hooks_api._append_span(span)
                 log.info(
                     "LLM span %s: model=%s tokens=%d+%d duration=%.1fs",
                     span["span_id"],

@@ -221,6 +221,28 @@ def test_drain_file_drops_non_matching_cwd(monkeypatch, tmp_path):
     assert posts == []
 
 
+def test_drain_file_include_all_cwds_posts_non_matching_cwd(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    outside = tmp_path.parent / (tmp_path.name + "-other")
+    _append(
+        session_file,
+        {
+            "type": "session_meta",
+            "payload": {
+                "id": "sess-app",
+                "cwd": str(outside),
+            },
+        },
+    )
+    _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "hello"}})
+
+    _drain_file(session_file, FileState(), "http://localhost:8126", str(tmp_path), include_all_cwds=True)
+
+    assert [post["session_id"] for post in posts] == ["sess-app", "sess-app"]
+
+
 def test_drain_file_does_not_advance_durable_offset_past_buffered_records(monkeypatch, tmp_path):
     """When cwd is undetermined, buffered records stay un-acknowledged so a
     mid-drain crash safely resumes from the same offset.
@@ -266,7 +288,11 @@ def test_drain_file_flushes_buffer_after_late_session_meta(monkeypatch, tmp_path
 
     # All five records delivered in order.
     assert [post["record"]["type"] for post in posts] == [
-        "event_msg", "event_msg", "event_msg", "session_meta", "event_msg",
+        "event_msg",
+        "event_msg",
+        "event_msg",
+        "session_meta",
+        "event_msg",
     ]
     assert all(post["session_id"] == "sess-late" for post in posts)
     # Durable cursor caught up to end-of-file once buffer was flushed.
@@ -694,6 +720,34 @@ def test_proxy_watch_codex_sessions_resumes_initial_file_when_cursor_exists(monk
 
     posted_types = [post["record"]["payload"]["type"] for post in posts if post["record"]["type"] == "event_msg"]
     assert posted_types == ["user_message", "shutdown_complete"]
+
+
+def test_app_watch_codex_sessions_replays_recent_nonmatching_file(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout-app.jsonl"
+    outside = tmp_path.parent / (tmp_path.name + "-app-workspace")
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-app-recent", "cwd": str(outside)}})
+    _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "hello world"}})
+
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=999999,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        ready_file=None,
+        cursor_path=tmp_path / "codex-app-cursor.json",
+        include_all_cwds=True,
+    )
+
+    posted_messages = [
+        post["record"]["payload"]["message"]
+        for post in posts
+        if post["record"]["type"] == "event_msg" and post["record"]["payload"].get("type") == "user_message"
+    ]
+    assert posted_messages == ["hello world"]
 
 
 def test_watch_codex_sessions_exits_when_parent_start_time_stale(monkeypatch, tmp_path):

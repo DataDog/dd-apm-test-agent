@@ -186,7 +186,11 @@ def _apply_json_path_normalizer(body_dict: Dict[str, Any], path: str, placeholde
         obj[parts[-1]] = placeholder
 
 
-def _normalize_body(body: bytes, vcr_json_body_normalizers: Optional[List[str]] = None) -> str:
+def _normalize_body(
+    body: bytes,
+    vcr_json_body_normalizers: Optional[List[str]] = None,
+    vcr_body_regex_normalizers: Optional[List[str]] = None,
+) -> str:
     if not body:
         return ""
 
@@ -201,6 +205,10 @@ def _normalize_body(body: bytes, vcr_json_body_normalizers: Optional[List[str]] 
 
     for pattern, replacement in NORMALIZERS:
         body_str = re.sub(pattern, replacement, body_str)
+
+    if vcr_body_regex_normalizers:
+        for pattern in vcr_body_regex_normalizers:
+            body_str = re.sub(pattern, "<normalized>", body_str)
 
     if vcr_json_body_normalizers:
         try:
@@ -269,8 +277,9 @@ def _generate_cassette_name(
     body: bytes,
     vcr_cassette_prefix: Optional[str],
     vcr_json_body_normalizers: Optional[List[str]] = None,
+    vcr_body_regex_normalizers: Optional[List[str]] = None,
 ) -> str:
-    decoded_body = _normalize_body(body, vcr_json_body_normalizers) if body else ""
+    decoded_body = _normalize_body(body, vcr_json_body_normalizers, vcr_body_regex_normalizers) if body else ""
     try:
         parsed_body = json.loads(decoded_body) if decoded_body else {}
     except json.JSONDecodeError:
@@ -468,6 +477,7 @@ async def proxy_request(
     vcr_provider_map: str = request.app["vcr_provider_map"]
     vcr_ignore_headers: str = request.app["vcr_ignore_headers"]
     vcr_json_body_normalizers: str = request.app["vcr_json_body_normalizers"]
+    vcr_body_regex_normalizers: str = request.app["vcr_body_regex_normalizers"]
 
     provider_base_urls = PROVIDER_BASE_URLS.copy()
     provider_base_urls.update(_get_custom_vcr_providers(vcr_provider_map))
@@ -493,6 +503,7 @@ async def proxy_request(
         body_bytes,
         vcr_cassette_prefix,
         _get_vcr_normalizers(vcr_json_body_normalizers),
+        _get_vcr_normalizers(vcr_body_regex_normalizers),
     )
     cassette_file_path = os.path.join(vcr_cassettes_directory, provider, cassette_name)
     cassette_exists = len(glob(f"{cassette_file_path}.*")) > 0

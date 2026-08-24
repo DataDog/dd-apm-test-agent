@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    Normalize LLM Observability data sent via APM (``meta_struct["_llmobs"]`` on
+    v0.4 traces) to look identical to LLM Observability sent via the EVP proxy
+    (``/evp_proxy/v4/api/v2/llmobs``), so tests can assert on a single format
+    regardless of how the tracer delivered the spans.

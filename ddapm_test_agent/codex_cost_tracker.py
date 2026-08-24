@@ -3,8 +3,17 @@
 Pricing is in nanodollars per token (1 nanodollar = 1e-9 USD), matching the
 metric keys expected by the web-ui LLM observability span detail view.
 
-Pricing data last updated 2026-05 from OpenAI API pricing pages. GPT-5.5
-standard rates are documented for context lengths under 270K tokens.
+Pricing data last updated 2026-08 from OpenAI API pricing pages. Standard
+rates are documented for context lengths under 270K tokens.
+
+Latest models added 2026-08:
+  * gpt-5.6 family (Sol $5 / $30, Terra $2 / $12 per Mtok, 90% cached-input
+    discount). The nano-tier "Luna" variant is deliberately left out so it
+    resolves to the higher "gpt-5.6" (Sol) rate via prefix match — a
+    conservative upper bound, since its own rate was inconsistent across
+    sources.
+  * gpt-5.3-codex — the current Codex CLI default ($1.75 / $14 per Mtok),
+    superseding gpt-5.2-codex at the same rates.
 """
 
 from dataclasses import dataclass
@@ -23,9 +32,13 @@ class _OpenAIPrice:
 
 
 _PRICING: List[_OpenAIPrice] = [
+    # gpt-5.6 family (Terra listed before the Sol catch-all so it isn't shadowed).
+    _OpenAIPrice("gpt-5.6-terra", input_price=2_000, cached_input=200, output=12_000),
+    _OpenAIPrice("gpt-5.6", input_price=5_000, cached_input=500, output=30_000),
     _OpenAIPrice("gpt-5.5", input_price=5_000, cached_input=500, output=30_000),
     _OpenAIPrice("gpt-5.4-mini", input_price=750, cached_input=75, output=4_500),
     _OpenAIPrice("gpt-5.4", input_price=2_500, cached_input=250, output=15_000),
+    _OpenAIPrice("gpt-5.3-codex", input_price=1_750, cached_input=175, output=14_000),
     _OpenAIPrice("gpt-5.2-codex", input_price=1_750, cached_input=175, output=14_000),
     _OpenAIPrice("gpt-5.2", input_price=1_750, cached_input=175, output=14_000),
     _OpenAIPrice("gpt-5.1-codex-max", input_price=1_250, cached_input=125, output=10_000),

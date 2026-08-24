@@ -1,6 +1,14 @@
+import gzip
 import json
 import os
+import subprocess
 import tempfile
+
+import msgpack
+
+from ddapm_test_agent.claude_hooks import ClaudeHooksAPI
+from ddapm_test_agent.claude_link_tracker import ClaudeLinkTracker
+from ddapm_test_agent.claude_proxy import ClaudeProxyAPI
 
 
 async def _post_hook(agent, event):
@@ -30,6 +38,296 @@ async def test_hook_missing_session_id(agent):
     assert resp.status == 400
     body = await resp.json()
     assert "session_id" in body["error"]
+
+
+async def test_trace_forwarding_chunks_payloads_at_twenty_spans(monkeypatch):
+    cases = [
+        (20, [20]),
+        (21, [20, 1]),
+        (45, [20, 20, 5]),
+    ]
+    for span_count, expected_chunk_sizes in cases:
+        hooks = ClaudeHooksAPI()
+        session = hooks._get_or_create_session(f"chunk-session-{span_count}")
+        trace_id = f"chunk-trace-{span_count}"
+        session.trace_id = trace_id
+        hooks._assembled_spans = [
+            {
+                "span_id": str(index),
+                "trace_id": trace_id,
+                "tags": [],
+            }
+            for index in range(span_count)
+        ]
+        posted_payloads = []
+        descriptions = []
+
+        monkeypatch.setattr(
+            hooks,
+            "_resolve_backend_target",
+            lambda *args, **kwargs: ("http://backend.example/api/v2/llmobs", {"Content-Type": "application/msgpack"}),
+        )
+
+        async def fake_post_to_backend(url, headers, data, description):
+            assert url == "http://backend.example/api/v2/llmobs"
+            assert headers["Content-Type"] == "application/msgpack"
+            posted_payloads.append(msgpack.unpackb(gzip.decompress(data), raw=False))
+            descriptions.append(description)
+
+        monkeypatch.setattr(hooks, "_post_to_backend", fake_post_to_backend)
+
+        await hooks._forward_trace_to_backend(session.session_id)
+
+        assert [len(payload["spans"]) for payload in posted_payloads] == expected_chunk_sizes
+        assert all(payload["_dd.stage"] == "raw" for payload in posted_payloads)
+        assert all(payload["event_type"] == "span" for payload in posted_payloads)
+        forwarded_spans = [span for payload in posted_payloads for span in payload["spans"]]
+        assert [span["span_id"] for span in forwarded_spans] == [str(index) for index in range(span_count)]
+        assert all("lapdog_forwarded:true" in span["tags"] for span in forwarded_spans)
+        assert all("lapdog_forwarded:true" not in span["tags"] for span in hooks._assembled_spans)
+        if span_count <= 20:
+            assert all("(chunk " not in description for description in descriptions)
+        else:
+            assert all(
+                f"chunk {index + 1}/{len(expected_chunk_sizes)}" in description
+                for index, description in enumerate(descriptions)
+            )
+
+
+async def test_session_tags_apply_to_existing_and_future_spans(agent):
+    session_id = "sess-custom-tags"
+    session_token = "launch-token"
+    custom_tags = {
+        "dd_auto_experiment_id": "c0817213-61d4-43d6-8261-050d7560011a",
+        "iteration": "2",
+    }
+
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "SessionStart",
+            "lapdog_session_token": session_token,
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "tag this session",
+        },
+    )
+
+    response = await agent.post(
+        "/claude/hooks/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"tags": custom_tags},
+    )
+    assert response.status == 200, await response.text()
+
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-after-tags",
+            "tool_input": {"command": "pwd"},
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-after-tags",
+            "tool_response": "/tmp",
+        },
+    )
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in (await response.json())["spans"] if span.get("session_id") == session_id]
+    assert len(spans) >= 2
+    for span in spans:
+        assert "dd_auto_experiment_id:c0817213-61d4-43d6-8261-050d7560011a" in span["tags"]
+        assert "iteration:2" in span["tags"]
+
+
+async def test_session_tags_queue_until_hook_registers_launch_token(agent):
+    session_id = "sess-queued-tags"
+    session_token = "queued-launch-token"
+    response = await agent.post(
+        "/claude/hooks/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"tags": {"iteration": "2"}},
+    )
+    assert response.status == 200
+    assert (await response.json())["session_ids"] == []
+
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "SessionStart",
+            "lapdog_session_token": session_token,
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "use queued tags",
+        },
+    )
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in (await response.json())["spans"] if span.get("session_id") == session_id]
+    assert spans
+    assert all("iteration:2" in span["tags"] for span in spans)
+
+    second_session_id = "sess-after-queued-tags"
+    await _post_hook(
+        agent,
+        {
+            "session_id": second_session_id,
+            "hook_event_name": "SessionStart",
+            "lapdog_session_token": session_token,
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": second_session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "do not reuse consumed queued tags",
+        },
+    )
+    response = await agent.get("/claude/hooks/spans")
+    second_session_spans = [
+        span for span in (await response.json())["spans"] if span.get("session_id") == second_session_id
+    ]
+    assert second_session_spans
+    assert all("iteration:2" not in span["tags"] for span in second_session_spans)
+
+    response = await agent.get("/claude/hooks/raw")
+    raw_events = (await response.json())["events"]
+    assert all("lapdog_session_token" not in event for event in raw_events)
+
+
+async def test_session_tags_reject_ambiguous_launch_token(agent):
+    session_token = "shared-launch-token"
+    session_ids = ["shared-session-a", "shared-session-b"]
+    for session_id in session_ids:
+        await _post_hook(
+            agent,
+            {
+                "session_id": session_id,
+                "hook_event_name": "SessionStart",
+                "lapdog_session_token": session_token,
+            },
+        )
+        await _post_hook(
+            agent,
+            {
+                "session_id": session_id,
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": session_id,
+            },
+        )
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"tags": {"iteration": "2"}},
+    )
+    assert response.status == 409
+    assert (await response.json())["session_ids"] == session_ids
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in (await response.json())["spans"] if span.get("session_id") in session_ids]
+    assert spans
+    assert all("iteration:2" not in span["tags"] for span in spans)
+
+
+async def test_session_tags_reject_session_registered_to_another_launch_token(agent):
+    session_id = "session-owned-by-another-token"
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "SessionStart",
+            "lapdog_session_token": "owner-token",
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "keep this session isolated",
+        },
+    )
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": "unrelated-token"},
+        json={
+            "session_id": session_id,
+            "tags": {"iteration": "2"},
+        },
+    )
+    assert response.status == 409
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in (await response.json())["spans"] if span.get("session_id") == session_id]
+    assert spans
+    assert all("iteration:2" not in span["tags"] for span in spans)
+
+
+async def test_session_tags_reject_reserved_identity_keys(agent):
+    session_id = "session-reserved-tags"
+    session_token = "reserved-tags-token"
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "SessionStart",
+            "lapdog_session_token": session_token,
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            "session_id": session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "preserve identity tags",
+        },
+    )
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"tags": {"service": "wrong-service", "session_id": "wrong-session"}},
+    )
+    assert response.status == 400
+    assert "reserved tag keys" in (await response.json())["error"]
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in (await response.json())["spans"] if span.get("session_id") == session_id]
+    assert spans
+    assert all("service:wrong-service" not in span["tags"] for span in spans)
+    assert all("session_id:wrong-session" not in span["tags"] for span in spans)
+
+
+async def test_session_tags_require_launch_token(agent):
+    response = await agent.post(
+        "/claude/hooks/session/tags",
+        json={"tags": {"iteration": "2"}},
+    )
+    assert response.status == 404
 
 
 async def test_hook_session_creates_agent_span(agent):
@@ -62,6 +360,53 @@ async def test_hook_session_creates_agent_span(agent):
     events = data["result"]["events"]
     trace_ids = {e["event"]["trace_id"] for e in events}
     assert root["trace_id"] in trace_ids
+
+
+async def test_backfill_session_is_idempotent_for_same_session(agent):
+    payload = {
+        "session_id": "sess-backfill-once",
+        "cwd": "/p",
+        "entries": [
+            {
+                "type": "user",
+                "timestamp": "2026-05-11T12:00:00.000Z",
+                "message": {"role": "user", "content": "do thing"},
+            },
+            {
+                "type": "assistant",
+                "timestamp": "2026-05-11T12:00:01.000Z",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-opus-4-7",
+                    "content": [{"type": "text", "text": "ok"}],
+                },
+            },
+        ],
+    }
+
+    first = await agent.post(
+        "/claude/hooks/backfill_session",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(payload),
+    )
+    assert first.status == 200
+    first_body = await first.json()
+    assert first_body["status"] == "ok"
+    assert first_body["spans_created"] == 3
+
+    second = await agent.post(
+        "/claude/hooks/backfill_session",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(payload),
+    )
+    assert second.status == 200
+    second_body = await second.json()
+    assert second_body["status"] == "skipped"
+    assert second_body["reason"] == "already_backfilled"
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = (await resp.json())["spans"]
+    assert len([s for s in spans if s.get("session_id") == "sess-backfill-once"]) == 3
 
 
 async def test_hook_tool_use_creates_tool_span(agent):
@@ -112,6 +457,163 @@ async def test_hook_tool_use_creates_tool_span(agent):
     step_spans = [s for s in spans if s["meta"]["span"]["kind"] == "step"]
     assert step_spans == []
     assert tool["parent_id"] == root_spans[0]["span_id"]
+
+
+async def test_claude_project_metadata_from_hook_cwd(agent, tmp_path, monkeypatch):
+    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+
+    monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    _local_git_metadata.cache_clear()
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/DataDog/claude-project.git"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    session_id = "sess-project-metadata"
+    common = {"session_id": session_id, "cwd": str(tmp_path)}
+
+    await _post_hook(agent, {**common, "hook_event_name": "SessionStart"})
+    await _post_hook(agent, {**common, "hook_event_name": "UserPromptSubmit", "prompt": "list files"})
+    await _post_hook(
+        agent,
+        {
+            **common,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-project-1",
+            "tool_input": {"command": "ls"},
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            **common,
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-project-1",
+            "tool_response": "README.md",
+        },
+    )
+    await _post_hook(agent, {**common, "hook_event_name": "Stop"})
+
+    resp = await agent.get("/claude/hooks/spans")
+    assert resp.status == 200
+    spans = [s for s in (await resp.json())["spans"] if s.get("session_id") == session_id]
+    root = next(s for s in spans if s["parent_id"] == "undefined")
+    tool = next(s for s in spans if s["meta"]["span"]["kind"] == "tool")
+
+    for span in (root, tool):
+        assert "project_name:claude-project" in span["tags"]
+        assert "git.repository_url:github.com/DataDog/claude-project" in span["tags"]
+        assert not any("commit" in tag for tag in span["tags"])
+    assert root["meta"]["metadata"]["project_name"] == "claude-project"
+    assert root["meta"]["metadata"]["git_repository_url"] == "github.com/DataDog/claude-project"
+
+
+async def test_claude_spans_tagged_with_git_commit_sha(agent, tmp_path, monkeypatch):
+    """Spans carry git.commit.sha for the same repo as the git.repository_url tag."""
+    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+
+    monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    _local_git_metadata.cache_clear()
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True)
+
+    _git("init")
+    _git("config", "user.email", "qa@local")
+    _git("config", "user.name", "QA")
+    _git("remote", "add", "origin", "https://github.com/DataDog/claude-project.git")
+    (tmp_path / "README.md").write_text("# repo\n")
+    _git("add", "-A")
+    _git("commit", "-m", "initial commit")
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    session_id = "sess-commit-sha"
+    common = {"session_id": session_id, "cwd": str(tmp_path)}
+
+    await _post_hook(agent, {**common, "hook_event_name": "SessionStart"})
+    await _post_hook(agent, {**common, "hook_event_name": "UserPromptSubmit", "prompt": "list files"})
+    await _post_hook(
+        agent,
+        {
+            **common,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-commit-1",
+            "tool_input": {"command": "ls"},
+        },
+    )
+    await _post_hook(
+        agent,
+        {
+            **common,
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "tool-commit-1",
+            "tool_response": "README.md",
+        },
+    )
+    await _post_hook(agent, {**common, "hook_event_name": "Stop"})
+
+    resp = await agent.get("/claude/hooks/spans")
+    assert resp.status == 200
+    spans = [s for s in (await resp.json())["spans"] if s.get("session_id") == session_id]
+    root = next(s for s in spans if s["parent_id"] == "undefined")
+    tool = next(s for s in spans if s["meta"]["span"]["kind"] == "tool")
+
+    for span in (root, tool):
+        assert f"git.commit.sha:{sha}" in span["tags"]
+        assert "git.repository_url:github.com/DataDog/claude-project" in span["tags"]
+
+
+async def test_claude_project_metadata_updates_when_cwd_changes(agent, tmp_path, monkeypatch):
+    """A hook posted with a new cwd mid-session should re-resolve project metadata."""
+    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+
+    monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    _local_git_metadata.cache_clear()
+
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    for repo, remote in (
+        (repo_a, "https://github.com/DataDog/repo-a.git"),
+        (repo_b, "https://github.com/DataDog/repo-b.git"),
+    ):
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "remote", "add", "origin", remote], cwd=repo, check=True, capture_output=True)
+
+    session_id = "sess-cwd-change"
+
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "SessionStart", "cwd": str(repo_a)})
+    await _post_hook(
+        agent,
+        {"session_id": session_id, "hook_event_name": "UserPromptSubmit", "cwd": str(repo_a), "prompt": "first"},
+    )
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "Stop", "cwd": str(repo_a)})
+    # Second turn — cwd switches to a different repo.
+    await _post_hook(
+        agent,
+        {"session_id": session_id, "hook_event_name": "UserPromptSubmit", "cwd": str(repo_b), "prompt": "second"},
+    )
+    await _post_hook(agent, {"session_id": session_id, "hook_event_name": "Stop", "cwd": str(repo_b)})
+
+    resp = await agent.get("/claude/hooks/spans")
+    assert resp.status == 200
+    spans = [s for s in (await resp.json())["spans"] if s.get("session_id") == session_id]
+    roots = [s for s in spans if s["parent_id"] == "undefined"]
+    assert len(roots) == 2
+    roots.sort(key=lambda s: s["start_ns"])
+    assert "project_name:repo-a" in roots[0]["tags"]
+    assert "git.repository_url:github.com/DataDog/repo-a" in roots[0]["tags"]
+    assert "project_name:repo-b" in roots[1]["tags"]
+    assert "git.repository_url:github.com/DataDog/repo-b" in roots[1]["tags"]
 
 
 async def test_hook_subagent_creates_nested_agent(agent):
@@ -646,3 +1148,55 @@ async def test_concurrent_subagents_parent_correctly(agent):
             f"Subagent {agent_span['name']} has parent_id={agent_span['parent_id']} "
             f"but expected root span_id={root['span_id']}"
         )
+
+
+def test_instrumented_live_task_subagent_parents_to_spawning_step():
+    link_tracker = ClaudeLinkTracker()
+    hooks = ClaudeHooksAPI(link_tracker=link_tracker)
+    proxy = ClaudeProxyAPI(hooks_api=hooks, link_tracker=link_tracker)
+    session_id = "sess-live-step-subagent"
+
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "SessionStart", "lapdog_instrumented": True})
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "UserPromptSubmit", "user_prompt": "Run a task"})
+    session = hooks._sessions[session_id]
+    llm_span = proxy._create_llm_span(
+        session,
+        {"model": "claude-opus-4-7", "messages": [{"role": "user", "content": "Run a task"}]},
+        {
+            "model": "claude-opus-4-7",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "content": [
+                {"type": "text", "text": "Launching an Explore subagent."},
+                {
+                    "type": "tool_use",
+                    "id": "task-1",
+                    "name": "Task",
+                    "input": {"description": "Explore", "prompt": "go look"},
+                },
+            ],
+        },
+        start_ns=1_000,
+        duration_ns=500,
+    )
+    hooks._assembled_spans.append(llm_span)
+
+    hooks._dispatch_hook(
+        {
+            "session_id": session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Task",
+            "tool_use_id": "task-1",
+            "tool_input": {"description": "Explore", "prompt": "go look"},
+        }
+    )
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "SubagentStart", "agent_type": "Task"})
+
+    spans = [s for s in hooks._assembled_spans if s.get("session_id") == session_id]
+    by_id = {s["span_id"]: s for s in spans}
+    step = next(s for s in spans if s["meta"]["span"]["kind"] == "step")
+    subagent = next(s for s in spans if s["meta"]["span"]["kind"] == "agent" and s["parent_id"] != "undefined")
+
+    assert llm_span["parent_id"] == step["span_id"]
+    assert subagent["name"] == "Task - Explore"
+    assert subagent["parent_id"] == step["span_id"]
+    assert by_id[subagent["parent_id"]]["meta"]["span"]["kind"] == "step"

@@ -221,6 +221,42 @@ def _by_kind(spans, kind):
     return [span for span in spans if span.get("meta", {}).get("span", {}).get("kind") == kind]
 
 
+async def test_codex_subagent_spawn_parents_to_active_step(agent):
+    sid = "codex-subagent-parent-step"
+
+    await _post_codex(agent, sid, _session_meta(sid))
+    await _post_codex(agent, sid, _turn_context())
+    await _post_codex(agent, sid, _event("user_message", message="delegate"))
+    await _post_codex(
+        agent,
+        sid,
+        _event(
+            "collab_agent_spawn_begin",
+            timestamp="2026-05-11T17:00:02.500Z",
+            call_id="spawn-1",
+            sender_thread_id=sid,
+            prompt="inspect the repo",
+            new_agent_nickname="worker",
+        ),
+    )
+
+    spans = await _spans(agent, sid)
+    roots = [span for span in spans if span["parent_id"] == "undefined"]
+    steps = _by_kind(spans, "step")
+    subagents = [
+        span
+        for span in _by_kind(spans, "agent")
+        if span["parent_id"] != "undefined" and span["meta"].get("metadata", {}).get("subagent", {})
+    ]
+
+    assert len(roots) == 1
+    assert len(steps) == 1
+    assert len(subagents) == 1
+    assert steps[0]["parent_id"] == roots[0]["span_id"]
+    assert subagents[0]["name"] == "worker"
+    assert subagents[0]["parent_id"] == steps[0]["span_id"]
+
+
 def test_codex_proxy_caps_messages_and_links_reasoning_to_tool_calls():
     class FakeConfig:
         ml_app = "codex"
@@ -384,7 +420,9 @@ async def test_codex_proxy_does_not_create_empty_codex_model_span(agent, aiohttp
 
 async def test_codex_proxy_span_parents_to_jsonl_turn_and_dedupes_token_count(agent, aiohttp_server):
     sid = "codex-proxy-hybrid"
-    await _post_codex(agent, sid, _session_meta(sid))
+    session_meta = _session_meta(sid)
+    session_meta["git"] = {"repository_url": "https://github.com/DataDog/codex-proxy-project.git"}
+    await _post_codex(agent, sid, session_meta)
     await _post_codex(agent, sid, _turn_context())
     await _post_codex(agent, sid, _event("user_message", message="hello"))
 
@@ -429,6 +467,8 @@ async def test_codex_proxy_span_parents_to_jsonl_turn_and_dedupes_token_count(ag
     assert llms[0]["parent_id"] == steps[0]["span_id"]
     assert steps[0]["parent_id"] == roots[0]["span_id"]
     assert "source:codex-proxy" in llms[0]["tags"]
+    assert "project_name:codex-proxy-project" in llms[0]["tags"]
+    assert "git.repository_url:github.com/DataDog/codex-proxy-project" in llms[0]["tags"]
 
 
 async def test_codex_proxy_overlapping_llm_spans_split_into_steps(agent, aiohttp_server):
