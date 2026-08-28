@@ -1335,7 +1335,7 @@ class TestProxiedTraceResponse:
 
     @pytest.fixture
     async def agent_url(self, aiohttp_server):
-        """An upstream agent that replies with compact JSON, as the real agent does."""
+        """Serve compact JSON from an upstream agent, as the real agent does."""
         compact = json.dumps({"rate_by_service": PROXIED_RATES}, separators=(",", ":"))
 
         async def handler(request):
