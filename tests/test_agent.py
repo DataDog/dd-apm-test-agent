@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 
 import aiohttp
+from aiohttp import web
 import msgpack
 import pytest
 
@@ -1320,3 +1321,45 @@ async def test_tcp_available_when_uds_configured(
         assert resp.status == 200
         received_traces = await resp.json()
         assert received_traces == v04_reference_http_trace_payload_data_raw
+
+
+# Enough entries that the re-serialized body is longer than the compact upstream one.
+PROXIED_RATES = {f"service:svc{i:03d},env:": 1.0 for i in range(20)}
+
+
+class TestProxiedTraceResponse:
+    """Regression: _forward_request re-serializes the upstream body with json.dumps,
+    whose default separators make it longer than the agent's compact JSON. Relaying
+    the upstream Content-Length verbatim truncated it into invalid JSON.
+    """
+
+    @pytest.fixture
+    async def agent_url(self, aiohttp_server):
+        """Serve compact JSON from an upstream agent, as the real agent does."""
+        compact = json.dumps({"rate_by_service": PROXIED_RATES}, separators=(",", ":"))
+
+        async def handler(request):
+            return web.Response(body=compact.encode(), content_type="application/json")
+
+        app = web.Application()
+        app.router.add_route("*", "/v0.4/traces", handler)
+        server = await aiohttp_server(app)
+        yield f"http://127.0.0.1:{server.port}"
+
+    async def test_response_is_not_truncated(
+        self,
+        agent,
+        v04_reference_http_trace_payload_headers,
+        v04_reference_http_trace_payload_data,
+    ):
+        resp = await agent.put(
+            "/v0.4/traces",
+            headers=v04_reference_http_trace_payload_headers,
+            data=v04_reference_http_trace_payload_data,
+        )
+
+        assert resp.status == 200
+        body = await resp.read()
+        # The declared length must describe the body sent, so it stays parseable.
+        assert int(resp.headers["Content-Length"]) == len(body)
+        assert json.loads(body) == {"rate_by_service": PROXIED_RATES}

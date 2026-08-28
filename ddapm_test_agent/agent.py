@@ -257,9 +257,17 @@ async def _prepare_and_send_request(data: bytes, request: Request, headers: Mapp
     log.debug(f"Using headers: {headers}")
 
     client_response, body = await _forward_request(data, headers, full_agent_url)
+    # The body is re-serialized in _forward_request, so the agent's Content-Length no
+    # longer matches it. Drop the headers describing the original encoding and let
+    # aiohttp recompute them from the body we actually send.
+    response_headers = {
+        k: v
+        for k, v in client_response.headers.items()
+        if k.lower() not in ("content-length", "content-encoding", "transfer-encoding")
+    }
     return web.Response(
         status=client_response.status,
-        headers=client_response.headers,
+        headers=response_headers,
         body=body,
     )
 
