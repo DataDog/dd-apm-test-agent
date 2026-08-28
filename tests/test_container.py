@@ -31,6 +31,10 @@ class DockerContainer:
         p = subprocess.run(["docker", "logs", self.id], capture_output=True, check=True)
         return p.stdout.decode(), p.stderr.decode()
 
+    def has_unix_socket(self, path: str) -> bool:
+        p = subprocess.run(["docker", "exec", self.id, "test", "-S", path], capture_output=True)
+        return p.returncode == 0
+
 
 @contextlib.contextmanager
 def docker_run(
@@ -102,12 +106,12 @@ def test_container_uds(build_image, tmp_path_factory):
         env={"DD_APM_RECEIVER_SOCKET": "/opt/datadog-agent/run/apm.socket"},
     ) as c:
         for i in range(50):
-            stdout, stderr = c.logs()
-            if "could not set permissions" in stderr:
+            if c.has_unix_socket("/opt/datadog-agent/run/apm.socket"):
                 break
             time.sleep(0.1)
         else:
-            raise Exception("Test agent did not start in time: %s" % stderr)
+            stdout, stderr = c.logs()
+            raise Exception("Test agent did not create its UDS socket in time: %s%s" % (stdout, stderr))
 
 
 @pytest.mark.skipif(platform.system() != "Windows", reason="Named pipes are Windows-specific")

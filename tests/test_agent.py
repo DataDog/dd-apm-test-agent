@@ -15,7 +15,6 @@ import pytest
 from ddapm_test_agent.trace import decode_v1
 from ddapm_test_agent.trace import trace_id
 
-
 _FAST_EXIT_ARGS = ["--port=4318", "--otlp-http-port=4318"]
 
 
@@ -479,10 +478,12 @@ async def test_put_integrations(
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="Unix domain sockets are not supported on Windows")
-async def test_uds(tmp_path, agent, available_port, loop):
+async def test_uds(tmp_path, agent, available_port, testagent_otlp_http_port, testagent_otlp_grpc_port, loop):
     env = os.environ.copy()
     env["DD_APM_RECEIVER_SOCKET"] = str(tmp_path / "apm.socket")
     env["PORT"] = str(available_port)
+    env["OTLP_HTTP_PORT"] = str(testagent_otlp_http_port)
+    env["OTLP_GRPC_PORT"] = str(testagent_otlp_grpc_port)
     p = subprocess.Popen(["ddapm-test-agent"], env=env)
 
     # Sleep for 1 second to give time for the testagent to start up
@@ -1029,9 +1030,9 @@ async def test_trace_v1_sampling_mechanism_only_on_first_span():
     first_span = result[0][0]
     child_span = result[0][1]
     assert first_span["meta"].get("_dd.p.dm") == "-1"
-    assert child_span["meta"].get("_dd.p.dm") is None, (
-        "non-first spans in a chunk should not have _dd.p.dm set from samplingMechanism"
-    )
+    assert (
+        child_span["meta"].get("_dd.p.dm") is None
+    ), "non-first spans in a chunk should not have _dd.p.dm set from samplingMechanism"
 
 
 async def test_trace_v1_span_event():

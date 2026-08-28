@@ -4,8 +4,8 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -30,10 +30,10 @@ from lapdog.paths import LAPDOG_DIR
 from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "tags", "uninstall"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "copilot", "tags", "uninstall"]
 # Managed launchers that also exist as external binaries a user might invoke by
 # an explicit path (e.g. ``lapdog ~/.local/bin/claude``)
-_PATH_ROUTABLE_LAUNCHERS = ("claude", "pi", "codex")
+_PATH_ROUTABLE_LAUNCHERS = ("claude", "pi", "codex", "copilot")
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -43,6 +43,7 @@ LAPDOG_USAGE = (
     "  claude     Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi         Start lapdog in background if needed, install extension, then launch pi\n"
     "  codex      Start lapdog in background if needed, then launch Codex with tracing\n"
+    "  copilot    Start lapdog in background if needed, then launch GitHub Copilot CLI with OTel tracing\n"
     "  tags       Add tags to the current instrumented coding-agent session\n"
     "  uninstall  Stop lapdog and remove all state it wrote (~/.lapdog, Claude hooks, pi extension, Codex watchers)\n"
     "\n"
@@ -149,6 +150,25 @@ def _resolved_port(cli_args: Optional[List[str]] = None) -> int:
                 return int(arg.split("=", 1)[1])
             i += 1
     return int(os.environ.get("PORT", "8126"))
+
+
+def _resolved_otlp_http_port() -> int:
+    """Infer the OTLP HTTP port the same way the agent does: OTLP_HTTP_PORT env, else 4318."""
+    return int(os.environ.get("OTLP_HTTP_PORT", "4318"))
+
+
+def _default_otel_exporter_endpoint() -> str:
+    return f"http://localhost:{_resolved_otlp_http_port()}"
+
+
+def _merge_otel_resource_attributes(env: Dict[str, str], attrs: List[str]) -> None:
+    """Prepend Lapdog resource attrs while preserving user-provided attrs."""
+    merged = [attr for attr in attrs if attr]
+    existing = env.get("OTEL_RESOURCE_ATTRIBUTES")
+    if existing:
+        merged.extend(part.strip() for part in existing.split(",") if part.strip())
+    if merged:
+        env["OTEL_RESOURCE_ATTRIBUTES"] = ",".join(merged)
 
 
 def _pid_file_path() -> str:
@@ -627,6 +647,32 @@ def _run_pi(
     os.execve(pi_bin, [pi_bin] + args, env)
 
 
+def _run_copilot(args: Optional[List[str]] = None) -> None:
+    """Exec GitHub Copilot CLI with OpenTelemetry export pointed at Lapdog. Never returns."""
+    if args is None:
+        args = []
+    copilot_bin = shutil.which("copilot")
+    if not copilot_bin:
+        print("[lapdog] 'copilot' not found in PATH", file=sys.stderr)
+        sys.exit(1)
+
+    env = os.environ.copy()
+    env.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", _default_otel_exporter_endpoint())
+    env.setdefault("OTEL_SERVICE_NAME", "github-copilot-cli")
+    env.setdefault("COPILOT_OTEL_SOURCE_NAME", "github.copilot")
+    env.setdefault("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "false")
+    _merge_otel_resource_attributes(
+        env,
+        [
+            "service.name=github-copilot-cli",
+            "agent.framework=github-copilot",
+            "agent.runtime=cli",
+        ],
+    )
+
+    os.execve(copilot_bin, [copilot_bin] + args, env)
+
+
 def cmd_pi(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) -> None:
     """Ensure lapdog is running, install the pi extension, then launch pi.
 
@@ -648,6 +694,17 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) 
 
     print(build_running_banner(data_type="coding session"))
     _run_pi(args=sub_cmd_args, port=port, session_token=uuid.uuid4().hex)
+
+
+def cmd_copilot(sub_cmd_args: List[str], forward_data: bool) -> None:
+    """Ensure lapdog is running, then launch GitHub Copilot CLI with OTel tracing."""
+    port = _ensure_lapdog_running(forward_data, detached=True)
+    if port is None:
+        print("[lapdog] Could not determine lapdog port. Run 'lapdog status' for details.", file=sys.stderr)
+        sys.exit(1)
+
+    print(build_running_banner(data_type="coding session"))
+    _run_copilot(args=sub_cmd_args)
 
 
 def _codex_watcher_pid_file(log_dir: str, singleton_key: str) -> str:
@@ -1242,6 +1299,8 @@ def main() -> None:
             forward_data=lapdog_parsed_args.forward,
             backfill=backfill,
         )
+    elif sub_cmd == "copilot":
+        cmd_copilot(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
     elif sub_cmd == "tags":
         cmd_tags(sub_cmd_args)
     elif sub_cmd == "uninstall":
