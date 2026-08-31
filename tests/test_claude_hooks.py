@@ -1,11 +1,16 @@
+import asyncio
 import gzip
 import json
 import os
 import subprocess
 import tempfile
+from typing import Any
+from typing import Dict
+from typing import List
 
 import msgpack
 
+from ddapm_test_agent import claude_hooks as claude_hooks_module
 from ddapm_test_agent.claude_hooks import ClaudeHooksAPI
 from ddapm_test_agent.claude_link_tracker import ClaudeLinkTracker
 from ddapm_test_agent.claude_proxy import ClaudeProxyAPI
@@ -1200,3 +1205,211 @@ def test_instrumented_live_task_subagent_parents_to_spawning_step():
     assert subagent["name"] == "Task - Explore"
     assert subagent["parent_id"] == step["span_id"]
     assert by_id[subagent["parent_id"]]["meta"]["span"]["kind"] == "step"
+
+
+class _HookRequest:
+    def __init__(self, body: Dict[str, Any]) -> None:
+        self._body = body
+
+    async def json(self) -> Dict[str, Any]:
+        return dict(self._body)
+
+
+async def test_post_tool_use_incrementally_forwards_completed_tool_before_stop(monkeypatch):
+    hooks = ClaudeHooksAPI()
+    hooks.set_app(
+        {
+            "disable_llmobs_data_forwarding": False,
+            "dd_site": "datadoghq.com",
+            "dd_api_key": "test-key",
+            "agent_url": "",
+        }
+    )
+    calls = []
+    backend = {}
+
+    async def fake_post_spans(url: str, headers: Dict[str, str], spans: List[Dict[str, Any]], description: str) -> None:
+        calls.append((description, spans))
+        for span in spans:
+            backend[(span["trace_id"], span["span_id"])] = span
+
+    monkeypatch.setattr(hooks, "_post_spans_to_backend", fake_post_spans)
+    session_id = "incremental-session"
+    await hooks.handle_hook(_HookRequest({"session_id": session_id, "hook_event_name": "SessionStart"}))
+    await hooks.handle_hook(
+        _HookRequest(
+            {
+                "session_id": session_id,
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "run a tool",
+            }
+        )
+    )
+    await hooks.handle_hook(
+        _HookRequest(
+            {
+                "session_id": session_id,
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_use_id": "tool-1",
+                "tool_input": {"command": "true"},
+            }
+        )
+    )
+    await hooks.handle_hook(
+        _HookRequest(
+            {
+                "session_id": session_id,
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Bash",
+                "tool_use_id": "tool-1",
+                "tool_response": "ok",
+            }
+        )
+    )
+
+    assert len(calls) == 1
+    description, tool_spans = calls[0]
+    assert description == "forward 1 span updates"
+    assert any(span["span_id"] == tool_spans[0]["span_id"] for span in hooks._assembled_spans)
+    assert tool_spans[0]["meta"]["span"]["kind"] == "tool"
+    assert tool_spans[0]["meta"]["metadata"]["tool_id"] == "tool-1"
+
+    await hooks.handle_hook(_HookRequest({"session_id": session_id, "hook_event_name": "Stop"}))
+    assert len(calls) == 2
+    assert len(backend) == len({(span["trace_id"], span["span_id"]) for span in hooks._assembled_spans})
+
+    hooks._set_session_tags(hooks._sessions[session_id], {"post_close": "yes"})
+    assert all("post_close:yes" in span["tags"] for span in hooks._assembled_spans)
+    assert all("post_close:yes" not in span["tags"] for _, spans in calls for span in spans)
+
+
+async def test_forwarders_share_non_mutating_normalization(monkeypatch):
+    hooks = ClaudeHooksAPI()
+    session = hooks._get_or_create_session("normalization-session")
+    source = {
+        "span_id": "span-1",
+        "trace_id": session.trace_id,
+        "tags": ["session_id:normalization-session"],
+        "metrics": {"input_tokens": 10, "estimated_total_cost": 3.5, "custom": 20},
+    }
+    hooks._assembled_spans = [source]
+    hooks.set_app(
+        {
+            "disable_llmobs_data_forwarding": False,
+            "dd_site": "datadoghq.com",
+            "dd_api_key": "test-key",
+            "agent_url": "",
+        }
+    )
+    sent = []
+
+    async def fake_post_spans(url: str, headers: Dict[str, str], spans: List[Dict[str, Any]], description: str) -> None:
+        sent.append(spans)
+
+    monkeypatch.setattr(hooks, "_post_spans_to_backend", fake_post_spans)
+    await hooks._forward_span_update([source])
+    await hooks._forward_trace_to_backend(session.session_id)
+
+    assert sent[0] == sent[1]
+    assert sent[0][0]["metrics"] == {"input_tokens": 10, "custom": 20}
+    assert sent[0][0]["tags"] == ["session_id:normalization-session", "lapdog_forwarded:true"]
+    assert source == {
+        "span_id": "span-1",
+        "trace_id": session.trace_id,
+        "tags": ["session_id:normalization-session"],
+        "metrics": {"input_tokens": 10, "estimated_total_cost": 3.5, "custom": 20},
+    }
+
+
+async def test_incremental_forwarding_guards_and_failure_isolation(monkeypatch):
+    hooks = ClaudeHooksAPI()
+    span = {"span_id": "span-1", "trace_id": "trace-1", "metrics": {}, "tags": []}
+    calls = []
+
+    async def fake_post_spans(*args: Any) -> None:
+        calls.append(args)
+
+    monkeypatch.setattr(hooks, "_post_spans_to_backend", fake_post_spans)
+    await hooks._forward_span_update([span])
+    assert calls == []
+
+    hooks.set_app(
+        {
+            "disable_llmobs_data_forwarding": True,
+            "dd_site": "datadoghq.com",
+            "dd_api_key": "test-key",
+            "agent_url": "",
+        }
+    )
+    await hooks._forward_span_update([span])
+    assert calls == []
+
+    hooks._app["disable_llmobs_data_forwarding"] = False
+    hooks._app["dd_api_key"] = None
+    await hooks._forward_span_update([span])
+    assert calls == []
+
+
+async def test_incremental_timeout_cancels_held_open_sender_and_preserves_hook_result(monkeypatch, caplog):
+    hooks = ClaudeHooksAPI()
+    hooks.set_app(
+        {
+            "disable_llmobs_data_forwarding": False,
+            "dd_site": "",
+            "dd_api_key": None,
+            "agent_url": "http://127.0.0.1:1",
+        }
+    )
+    assert claude_hooks_module._INCREMENTAL_FORWARD_TIMEOUT_SECONDS == 1.0
+    production_timeout = 0.05
+    monkeypatch.setattr(claude_hooks_module, "_INCREMENTAL_FORWARD_TIMEOUT_SECONDS", production_timeout)
+    sender_started = asyncio.Event()
+    sender_cancelled = asyncio.Event()
+
+    async def held_open_post(*args: Any) -> None:
+        sender_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            sender_cancelled.set()
+            raise
+
+    monkeypatch.setattr(hooks, "_post_to_backend", held_open_post)
+    session_id = "timeout-session"
+    await hooks.handle_hook(_HookRequest({"session_id": session_id, "hook_event_name": "SessionStart"}))
+    await hooks.handle_hook(
+        _HookRequest(
+            {
+                "session_id": session_id,
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_use_id": "timeout-tool",
+                "tool_input": {"command": "true"},
+            }
+        )
+    )
+    with caplog.at_level("WARNING", logger=claude_hooks_module.__name__):
+        response = await asyncio.wait_for(
+            hooks.handle_hook(
+                _HookRequest(
+                    {
+                        "session_id": session_id,
+                        "hook_event_name": "PostToolUse",
+                        "tool_name": "Bash",
+                        "tool_use_id": "timeout-tool",
+                        "tool_response": "ok",
+                    }
+                )
+            ),
+            timeout=production_timeout * 10,
+        )
+
+    assert sender_started.is_set()
+    assert any(
+        record.getMessage() == "Error trying to forward completed tool span: TimeoutError()"
+        for record in caplog.records
+    )
+    assert sender_cancelled.is_set()
+    assert response.status == 200
+    assert json.loads(response.body) == {"status": "ok"}
