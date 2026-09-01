@@ -1217,6 +1217,7 @@ class _HookRequest:
 
 async def test_post_tool_use_incrementally_forwards_completed_tool_before_stop(monkeypatch):
     hooks = ClaudeHooksAPI()
+    hooks._link_tracker = ClaudeLinkTracker()
     hooks.set_app(
         {
             "disable_llmobs_data_forwarding": False,
@@ -1235,7 +1236,11 @@ async def test_post_tool_use_incrementally_forwards_completed_tool_before_stop(m
 
     monkeypatch.setattr(hooks, "_post_spans_to_backend", fake_post_spans)
     session_id = "incremental-session"
-    await hooks.handle_hook(_HookRequest({"session_id": session_id, "hook_event_name": "SessionStart"}))
+    await hooks.handle_hook(
+        _HookRequest(
+            {"session_id": session_id, "hook_event_name": "SessionStart", "lapdog_instrumented": True}
+        )
+    )
     await hooks.handle_hook(
         _HookRequest(
             {
@@ -1245,6 +1250,15 @@ async def test_post_tool_use_incrementally_forwards_completed_tool_before_stop(m
             }
         )
     )
+    session = hooks._sessions[session_id]
+    hooks._start_step_for_llm(
+        session=session,
+        llm_span_id="llm-1",
+        agent_parent_id=session.root_span_id,
+        llm_start_ns=1,
+        tool_use_ids=["tool-1"],
+    )
+    hooks._link_tracker.on_llm_tool_choice("tool-1", "Bash", "{}", "llm-1", session.trace_id)
     await hooks.handle_hook(
         _HookRequest(
             {
@@ -1282,6 +1296,94 @@ async def test_post_tool_use_incrementally_forwards_completed_tool_before_stop(m
     hooks._set_session_tags(hooks._sessions[session_id], {"post_close": "yes"})
     assert all("post_close:yes" in span["tags"] for span in hooks._assembled_spans)
     assert all("post_close:yes" not in span["tags"] for _, spans in calls for span in spans)
+
+
+async def test_turn_root_parent_is_deferred_to_single_final_flush(monkeypatch):
+    hooks = ClaudeHooksAPI()
+    hooks.set_app(
+        {
+            "disable_llmobs_data_forwarding": False,
+            "dd_site": "datadoghq.com",
+            "dd_api_key": "test-key",
+            "agent_url": "",
+        }
+    )
+    rows = []
+
+    async def fake_post_spans(url: str, headers: Dict[str, str], spans: List[Dict[str, Any]], description: str) -> None:
+        rows.extend(spans)
+
+    monkeypatch.setattr(hooks, "_post_spans_to_backend", fake_post_spans)
+    session_id = "turn-root-parent-session"
+    await hooks.handle_hook(_HookRequest({"session_id": session_id, "hook_event_name": "SessionStart"}))
+    await hooks.handle_hook(
+        _HookRequest({"session_id": session_id, "hook_event_name": "UserPromptSubmit", "prompt": "run a tool"})
+    )
+    await hooks.handle_hook(
+        _HookRequest(
+            {"session_id": session_id, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "root-tool", "tool_input": {"command": "true"}}
+        )
+    )
+    await hooks.handle_hook(
+        _HookRequest(
+            {"session_id": session_id, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "root-tool", "tool_response": "ok"}
+        )
+    )
+
+    assert not [row for row in rows if row.get("meta", {}).get("metadata", {}).get("tool_id") == "root-tool"]
+    await hooks.handle_hook(_HookRequest({"session_id": session_id, "hook_event_name": "Stop"}))
+
+    tool_rows = [row for row in rows if row.get("meta", {}).get("metadata", {}).get("tool_id") == "root-tool"]
+    assert len(tool_rows) == 1
+    assert tool_rows[0]["parent_id"] == hooks._sessions[session_id].root_span_id
+
+
+async def test_late_reparent_still_produces_one_final_row_under_step(monkeypatch):
+    hooks = ClaudeHooksAPI()
+    hooks.set_app(
+        {
+            "disable_llmobs_data_forwarding": False,
+            "dd_site": "datadoghq.com",
+            "dd_api_key": "test-key",
+            "agent_url": "",
+        }
+    )
+    rows = []
+
+    async def fake_post_spans(url: str, headers: Dict[str, str], spans: List[Dict[str, Any]], description: str) -> None:
+        rows.extend(spans)
+
+    monkeypatch.setattr(hooks, "_post_spans_to_backend", fake_post_spans)
+    session_id = "late-reparent-session"
+    await hooks.handle_hook(
+        _HookRequest({"session_id": session_id, "hook_event_name": "SessionStart", "lapdog_instrumented": True})
+    )
+    await hooks.handle_hook(
+        _HookRequest({"session_id": session_id, "hook_event_name": "UserPromptSubmit", "prompt": "run a tool"})
+    )
+    await hooks.handle_hook(
+        _HookRequest({"session_id": session_id, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "late-tool", "tool_input": {"command": "true"}})
+    )
+    await hooks.handle_hook(
+        _HookRequest({"session_id": session_id, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "late-tool", "tool_response": "ok"})
+    )
+    assert rows == []
+
+    session = hooks._sessions[session_id]
+    active_step = hooks._start_step_for_llm(
+        session=session,
+        llm_span_id="late-llm",
+        agent_parent_id=session.root_span_id,
+        llm_start_ns=1,
+        tool_use_ids=["late-tool"],
+    )
+    tool = next(span for span in hooks._assembled_spans if span.get("meta", {}).get("metadata", {}).get("tool_id") == "late-tool")
+    assert tool["parent_id"] == active_step.span_id
+
+    await hooks.handle_hook(_HookRequest({"session_id": session_id, "hook_event_name": "Stop"}))
+    tool_rows = [row for row in rows if row.get("meta", {}).get("metadata", {}).get("tool_id") == "late-tool"]
+    assert len(tool_rows) == 1
+    assert tool_rows[0]["parent_id"] == active_step.span_id
 
 
 async def test_forwarders_share_non_mutating_normalization(monkeypatch):
@@ -1353,6 +1455,7 @@ async def test_incremental_forwarding_guards_and_failure_isolation(monkeypatch):
 
 async def test_incremental_timeout_cancels_held_open_sender_and_preserves_hook_result(monkeypatch, caplog):
     hooks = ClaudeHooksAPI()
+    hooks._link_tracker = ClaudeLinkTracker()
     hooks.set_app(
         {
             "disable_llmobs_data_forwarding": False,
@@ -1377,7 +1480,16 @@ async def test_incremental_timeout_cancels_held_open_sender_and_preserves_hook_r
 
     monkeypatch.setattr(hooks, "_post_to_backend", held_open_post)
     session_id = "timeout-session"
-    await hooks.handle_hook(_HookRequest({"session_id": session_id, "hook_event_name": "SessionStart"}))
+    await hooks.handle_hook(
+        _HookRequest(
+            {"session_id": session_id, "hook_event_name": "SessionStart", "lapdog_instrumented": True}
+        )
+    )
+    session = hooks._sessions[session_id]
+    hooks._start_step_for_llm(
+        session=session, llm_span_id="timeout-llm", agent_parent_id=session.root_span_id, llm_start_ns=1, tool_use_ids=["timeout-tool"]
+    )
+    hooks._link_tracker.on_llm_tool_choice("timeout-tool", "Bash", "{}", "timeout-llm", session.trace_id)
     await hooks.handle_hook(
         _HookRequest(
             {

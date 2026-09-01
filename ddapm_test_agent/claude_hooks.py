@@ -1075,6 +1075,12 @@ class ClaudeHooksAPI:
         if estimated_permission_wait_ms is not None:
             self._set_hidden_metadata(span, estimated_permission_wait_ms=estimated_permission_wait_ms)
         self._append_span(span)
+        # Only publish early when the tree position is final. A parent that is
+        # not a registered step may still be re-parented when the proxy opens
+        # the inference step for this tool use; the closing flush remains the
+        # first and only forward for that provisional position.
+        if parent_id not in session.step_agent_by_span_id:
+            return None
         return span
 
     def _handle_subagent_start(self, session_id: str, body: Dict[str, Any]) -> None:
