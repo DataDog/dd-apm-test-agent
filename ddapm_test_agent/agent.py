@@ -408,7 +408,7 @@ class _AgentSession:
 
 
 class Agent:
-    def __init__(self) -> None:
+    def __init__(self, max_requests: Optional[int] = None) -> None:
         """
         Try to only store the requests sent to the agent. There are many representations
         of data but typically information is lost while transforming the data so it is best
@@ -416,6 +416,7 @@ class Agent:
         """
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
+        self._max_requests = max(0, max_requests) if max_requests is not None else None
         self._rc_server = RemoteConfigServer()
         self._trace_failures: Dict[str, List[Tuple[CheckTrace, str]]] = defaultdict(default_value_trace_failures)
         self._trace_check_results_by_check: Dict[str, Dict[str, Dict[str, int]]] = defaultdict(
@@ -555,7 +556,12 @@ class Agent:
         # result in: RuntimeError: readany() called while another coroutine is already waiting for incoming data
         # See: https://github.com/DataDog/dd-apm-test-agent/pull/101 for more info
         request["_testagent_data"] = await request.read()
+        self._append_request(request)
+
+    def _append_request(self, request: Request) -> None:
         self._requests.append(request)
+        if self._max_requests is not None and len(self._requests) > self._max_requests:
+            del self._requests[: len(self._requests) - self._max_requests]
 
     def _request_data(self, request: Request) -> bytes:
         """Return the data from the request.
@@ -832,7 +838,7 @@ class Agent:
             handler=self.handle_evp_proxy_v4_api_v2_llmobs,
             session_token=token,
         )
-        self._requests.append(cast(Request, synthetic))
+        self._append_request(cast(Request, synthetic))
 
     def _decode_v05_traces(self, request: Request) -> v04TracePayload:
         raw_data = self._request_data(request)
@@ -1386,7 +1392,7 @@ class Agent:
 
     async def handle_session_start(self, request: Request) -> web.Response:
         rates = json.loads(request.url.query.get("agent_sample_rate_by_service", "{}"))
-        self._requests.append(request)
+        self._append_request(request)
         session = self._sessions[_session_token(request)]
         session.sample_rate_by_service_env = rates
         log.info("Starting new session with token %r: %r", _session_token(request), session)
@@ -1636,7 +1642,7 @@ class Agent:
 
     async def handle_v1_profiling(self, request: Request) -> web.Response:
         await request.read()
-        self._requests.append(request)
+        self._append_request(request)
         # TODO: valid response?
         return web.HTTPOk()
 
@@ -2068,8 +2074,10 @@ def make_app(
     lapdog_mode: bool = False,
     org_prop_marker: str = "",
     enable_web_ui: bool = False,
+    max_requests: int = 200,
 ) -> web.Application:
-    agent = Agent()
+    retention_limit = max_requests if lapdog_mode else None
+    agent = Agent(max_requests=retention_limit)
 
     # Build middleware list conditionally
     middlewares = []
@@ -2157,7 +2165,10 @@ def make_app(
 
     # Add Claude Code hooks and proxy routes with shared link tracker
     claude_link_tracker = ClaudeLinkTracker()
-    claude_hooks_api = ClaudeHooksAPI(link_tracker=claude_link_tracker)
+    claude_hooks_api = ClaudeHooksAPI(
+        link_tracker=claude_link_tracker,
+        retention_limit=retention_limit,
+    )
     claude_hooks_api.set_app(app)
     app.add_routes(claude_hooks_api.get_routes())
     llmobs_event_platform_api.set_claude_hooks_api(claude_hooks_api)
@@ -2165,10 +2176,10 @@ def make_app(
     claude_proxy_api = ClaudeProxyAPI(hooks_api=claude_hooks_api, link_tracker=claude_link_tracker)
     app.add_routes(claude_proxy_api.get_routes())
 
-    pi_hooks_api = PiHooksAPI(hooks_api=claude_hooks_api)
+    pi_hooks_api = PiHooksAPI(hooks_api=claude_hooks_api, retention_limit=retention_limit)
     app.add_routes(pi_hooks_api.get_routes())
 
-    codex_hooks_api = CodexHooksAPI(hooks_api=claude_hooks_api)
+    codex_hooks_api = CodexHooksAPI(hooks_api=claude_hooks_api, retention_limit=retention_limit)
     app.add_routes(codex_hooks_api.get_routes())
 
     codex_proxy_api = CodexProxyAPI(hooks_api=codex_hooks_api)
@@ -2551,7 +2562,7 @@ def main(args: Optional[List[str]] = None) -> None:
         "--max-requests",
         type=int,
         default=int(os.environ.get("MAX_REQUESTS", 200)),
-        help="Maximum number of requests to keep in memory for the UI (default: 200). Older requests are discarded when limit is reached.",
+        help="Maximum number of requests and events to keep in memory for the UI and Lapdog mode (default: 200). Older entries are discarded when the limit is reached.",
     )
     parser.add_argument(
         "--dd-site",
@@ -2643,6 +2654,7 @@ def main(args: Optional[List[str]] = None) -> None:
         lapdog_mode=parsed_args.lapdog_mode,
         org_prop_marker=parsed_args.org_prop_marker,
         enable_web_ui=parsed_args.web_ui_port > 0,
+        max_requests=parsed_args.max_requests,
     )
 
     # Validate port configuration

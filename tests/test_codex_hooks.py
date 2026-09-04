@@ -8,6 +8,7 @@ import msgpack
 import pytest
 
 from ddapm_test_agent.claude_hooks import ClaudeHooksAPI
+from ddapm_test_agent.codex_hooks import CodexSession
 
 
 @pytest.fixture
@@ -242,6 +243,42 @@ async def test_codex_raw_events_redact_launch_token(agent):
     assert raw_events
     assert all("proxy_session_key" not in event for event in raw_events)
     assert "codex-secret-launch-token" not in json.dumps(raw_events)
+
+
+@pytest.mark.parametrize(("lapdog_mode", "max_requests"), [(True, 2)])
+async def test_codex_lapdog_mode_bounds_in_memory_history(agent, agent_app, lapdog_mode, max_requests):
+    for index in range(3):
+        session_id = f"bounded-codex-{index}"
+        await _post(agent, session_id, _session_meta(session_id))
+        await _post(agent, session_id, _turn_context(f"turn-{index}"))
+        await _post(agent, session_id, _event("user_message", message=f"input-{index}"))
+        await _post(agent, session_id, _event("agent_message", message=f"output-{index}"))
+        await _post(agent, session_id, _event("task_complete", last_agent_message=f"output-{index}"))
+
+    raw_response = await agent.get("/codex/hooks/raw")
+    raw_events = (await raw_response.json())["events"]
+    assert len(raw_events) == max_requests
+    assert {event["session_id"] for event in raw_events} == {"bounded-codex-2"}
+
+    spans_response = await agent.get("/claude/hooks/spans")
+    retained_session_ids = {span.get("session_id") for span in (await spans_response.json())["spans"]}
+    assert "bounded-codex-0" not in retained_session_ids
+    assert {"bounded-codex-1", "bounded-codex-2"}.issubset(retained_session_ids)
+
+    for _ in range(3):
+        assert (await agent.get("/info")).status == 200
+    assert len(agent_app.app["agent"]._requests) == max_requests
+
+
+def test_codex_lapdog_mode_bounds_record_deduplication():
+    session = CodexSession("bounded-dedup", start_ns=0, retention_limit=2)
+
+    assert session.remember_record("first")
+    assert not session.remember_record("first")
+    assert session.remember_record("second")
+    assert session.remember_record("third")
+    assert len(session.seen_records) == 2
+    assert session.remember_record("first")
 
 
 async def test_codex_session_tags_target_only_requested_thread(agent):

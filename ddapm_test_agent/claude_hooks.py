@@ -329,7 +329,11 @@ def _extract_intent(tool_name: str, tool_input: Any) -> str:
 class ClaudeHooksAPI:
     """Handler for Claude Code hook events."""
 
-    def __init__(self, link_tracker: Optional[ClaudeLinkTracker] = None) -> None:
+    def __init__(
+        self,
+        link_tracker: Optional[ClaudeLinkTracker] = None,
+        retention_limit: Optional[int] = None,
+    ) -> None:
         self._sessions: Dict[str, SessionState] = {}
         self._session_ids_by_token: Dict[str, Set[str]] = {}
         self._session_tokens_by_id: Dict[str, Set[str]] = {}
@@ -337,6 +341,8 @@ class ClaudeHooksAPI:
         self._tag_update_sequence = 0
         self._assembled_spans: List[Dict[str, Any]] = []
         self._raw_events: List[Dict[str, Any]] = []
+        self._retention_limit = max(0, retention_limit) if retention_limit is not None else None
+        self._completed_trace_ids: List[str] = []
         self._link_tracker = link_tracker
         self._app: Optional[web.Application] = None
 
@@ -427,6 +433,19 @@ class ClaudeHooksAPI:
             self._assembled_spans.append(span)
         else:
             self._assembled_spans.insert(index, span)
+
+    def _append_raw_event(self, event: Dict[str, Any]) -> None:
+        self._raw_events.append(event)
+        if self._retention_limit is not None and len(self._raw_events) > self._retention_limit:
+            del self._raw_events[: len(self._raw_events) - self._retention_limit]
+
+    def _mark_trace_completed(self, trace_id: str) -> None:
+        if self._retention_limit is None or trace_id in self._completed_trace_ids:
+            return
+        self._completed_trace_ids.append(trace_id)
+        while len(self._completed_trace_ids) > self._retention_limit:
+            expired_trace_id = self._completed_trace_ids.pop(0)
+            self._assembled_spans = [span for span in self._assembled_spans if span.get("trace_id") != expired_trace_id]
 
     def _get_or_create_session(self, session_id: str) -> SessionState:
         """Get existing session or create a new one."""
@@ -1927,7 +1946,7 @@ class ClaudeHooksAPI:
         session_token = body.pop("lapdog_session_token", "")
         if isinstance(session_token, str) and session_token:
             self._register_session_token(session_token, session_id)
-        self._raw_events.append(body)
+        self._append_raw_event(body)
 
         # wait for the transcript to be fully flushed before dispatching the hook
         if body.get("hook_event_name") == "Stop":
@@ -1944,6 +1963,9 @@ class ClaudeHooksAPI:
         if hook_event_name in ("Stop", "SessionEnd"):
             await self._forward_trace_to_backend(session_id)
             await self._forward_eval_metrics_to_backend(session_id)
+            session = self._sessions.get(session_id)
+            if session is not None:
+                self._mark_trace_completed(session.trace_id)
 
         return web.json_response({"status": "ok"})
 
@@ -2090,7 +2112,10 @@ class ClaudeHooksAPI:
             log.warning("claude backfill_session failed for %s: %r", session_id, exc)
             return web.json_response({"status": "error", "error": repr(exc)}, status=400)
         self._assembled_spans.extend(spans)
-        traces = len({s.get("trace_id") for s in spans})
+        trace_ids = {str(s.get("trace_id")) for s in spans if s.get("trace_id")}
+        for trace_id in trace_ids:
+            self._mark_trace_completed(trace_id)
+        traces = len(trace_ids)
         return web.json_response({"status": "ok", "spans_created": len(spans), "traces_created": traces})
 
     def get_routes(self) -> List[web.RouteDef]:
