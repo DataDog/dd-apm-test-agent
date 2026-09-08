@@ -387,7 +387,7 @@ def cmd_status() -> None:
     """Print lapdog status (from /info). Only works when lapdog was started by this CLI (pid file exists)."""
     pid, port = _read_pid_file()
     if port is None:
-        print("[lapdog] No lapdog running (start with 'lapdog start' or 'lapdog claude').", file=sys.stderr)
+        print(build_status_banner(is_running=False))
         sys.exit(1)
     url = _url_for_port(port)
     try:

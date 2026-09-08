@@ -152,16 +152,21 @@ def _build(text_lines: list[str]) -> str:
     return "\n".join(ascii_lines)
 
 
-def build_status_banner(port: int | None, pid: int | None, logs_path: str) -> str:
+def build_status_banner(port: int | None = None, pid: int | None = None, logs_path: str | None = None, is_running: bool = True) -> str:
     lines = [
         f"{BOLD}lapdog{RESET} {DIM}v{_get_version()}{RESET}",
         "",
         "",
     ]
 
-    lines.append(f"{DIM}Lapdog is running on port {RESET}{BOLD}{port}{RESET}{DIM}.{RESET}" if port else "")
-    lines.append(f"{DIM}Process ID (pid): {RESET}{BOLD}{pid}{RESET}{DIM}.{RESET}" if pid else "")
-    lines.append(f"{DIM}Logs: {RESET}{BOLD}{logs_path}{RESET}{DIM}.{RESET}")
+    if is_running:
+        lines.append(f"{DIM}Lapdog is running on port {RESET}{BOLD}{port}{RESET}{DIM}.{RESET}" if port else "")
+        lines.append(f"{DIM}Process ID (pid): {RESET}{BOLD}{pid}{RESET}{DIM}.{RESET}" if pid else "")
+        lines.append(f"{DIM}Logs: {RESET}{BOLD}{logs_path}{RESET}{DIM}.{RESET}" if logs_path else "")
+    else:
+        lines.append(f"{DIM}Lapdog is not running.{RESET}")
+        lines.append(f"{DIM}Start lapdog with {RESET}{BOLD}lapdog start{RESET}{DIM} or {RESET}{BOLD}lapdog claude{RESET}")
+        lines.append(f"{DIM}to start and observe local agent data with Lapdog.")
 
     return _build(text_lines=lines)
 
