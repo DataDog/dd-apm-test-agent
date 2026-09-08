@@ -152,7 +152,12 @@ def _build(text_lines: list[str]) -> str:
     return "\n".join(ascii_lines)
 
 
-def build_status_banner(port: int | None = None, pid: int | None = None, logs_path: str | None = None, is_running: bool = True) -> str:
+def build_status_banner(
+    port: Optional[int] = None,
+    pid: Optional[int] = None,
+    logs_path: Optional[str] = None,
+    is_running: bool = True
+) -> str:
     lines = [
         f"{BOLD}lapdog{RESET} {DIM}v{_get_version()}{RESET}",
         "",
