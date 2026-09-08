@@ -1135,7 +1135,6 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "-v",
         "--version",
         action="store_true",
         dest="version",
@@ -1143,7 +1142,6 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "-h",
         "--help",
         action="store_true",
         dest="help",
