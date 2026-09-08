@@ -136,7 +136,7 @@ def _render_lapdog_art(face: str, shadow: str, reset: str) -> List[str]:
     return lines
 
 
-def _build(text_lines: list[str]) -> str:
+def _build(text_lines: List[str]) -> str:
     art_lines = _render_lapdog_art(FACE, SHADOW, RESET)
 
     # Vertically center the text block against the art.
