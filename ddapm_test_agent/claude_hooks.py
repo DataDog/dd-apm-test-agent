@@ -5,6 +5,7 @@ into LLMObs-format spans that can be queried through the Event Platform APIs.
 """
 
 import asyncio
+import copy
 import getpass
 import gzip
 import json
@@ -72,6 +73,7 @@ _RESERVED_SESSION_TAG_KEYS = frozenset(
     }
 )
 _MAX_SPANS_PER_BACKEND_REQUEST = 20
+_INCREMENTAL_FORWARD_TIMEOUT_SECONDS = 1.0
 
 # Models with 1M token context windows (native, no beta header needed).
 # All other models default to 200k.
@@ -931,7 +933,7 @@ class ClaudeHooksAPI:
             start_ns=now_ns,
         )
 
-    def _handle_post_tool_use(self, session_id: str, body: Dict[str, Any]) -> None:
+    def _handle_post_tool_use(self, session_id: str, body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Handle PostToolUse hook event.
 
         If this is PostToolUse for a "Task" tool with a deferred agent span,
@@ -1030,7 +1032,7 @@ class ClaudeHooksAPI:
                 if context_delta:
                     self._set_hidden_metadata(span, context_delta=context_delta)
                 self._append_span(span)
-            return
+            return None
 
         # Normal tool span
         duration = now_ns - start_ns
@@ -1073,6 +1075,13 @@ class ClaudeHooksAPI:
         if estimated_permission_wait_ms is not None:
             self._set_hidden_metadata(span, estimated_permission_wait_ms=estimated_permission_wait_ms)
         self._append_span(span)
+        # Only publish early when the tree position is final. A parent that is
+        # not a registered step may still be re-parented when the proxy opens
+        # the inference step for this tool use; the closing flush remains the
+        # first and only forward for that provisional position.
+        if parent_id not in session.step_agent_by_span_id:
+            return None
+        return span
 
     def _handle_subagent_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SubagentStart hook event — pushes a new agent onto the stack.
@@ -1681,8 +1690,8 @@ class ClaudeHooksAPI:
         if root_span is not None:
             root_span["duration"] = -1
 
-    def _dispatch_hook(self, body: Dict[str, Any]) -> None:
-        """Dispatch a hook event to the appropriate handler."""
+    def _dispatch_hook(self, body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Dispatch a hook event and return a completed span when one was emitted."""
         session_id = body.get("session_id", "")
         hook_event_name = body.get("hook_event_name", "")
         if session_id:
@@ -1709,9 +1718,24 @@ class ClaudeHooksAPI:
 
         handler = handlers.get(hook_event_name)
         if handler:
-            handler(session_id, body)
-        else:
-            log.debug("Unhandled hook event: %s", hook_event_name)
+            result = handler(session_id, body)
+            return result if isinstance(result, dict) else None
+        log.debug("Unhandled hook event: %s", hook_event_name)
+        return None
+
+    def _normalize_spans_for_forwarding(self, spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Return independent backend copies with locally-derived fields removed."""
+        normalized: List[Dict[str, Any]] = []
+        for source in spans:
+            span = copy.deepcopy(source)
+            metrics = span.get("metrics")
+            if metrics:
+                span["metrics"] = {key: value for key, value in metrics.items() if key not in COST_METRIC_KEYS}
+            tags = span.get("tags") or []
+            if "lapdog_forwarded:true" not in tags:
+                span["tags"] = list(tags) + ["lapdog_forwarded:true"]
+            normalized.append(span)
+        return normalized
 
     def _resolve_backend_target(
         self,
@@ -1808,8 +1832,9 @@ class ClaudeHooksAPI:
         if target is None:
             return
         url, headers = target
+        forwarded_spans = self._normalize_spans_for_forwarding(spans)
 
-        await self._post_spans_to_backend(url, headers, spans, f"forward {len(spans)} span updates")
+        await self._post_spans_to_backend(url, headers, forwarded_spans, f"forward {len(spans)} span updates")
 
     async def _forward_trace_to_backend(
         self, session_id: str, trace_id: Optional[str] = None, span_source: str = "Claude hooks"
@@ -1829,18 +1854,7 @@ class ClaudeHooksAPI:
             return
         url, headers = target
 
-        # Strip locally-computed cost estimates before forwarding — let real cost tracking happen on ingestion
-        forwarded_spans = []
-        for s in spans:
-            span = (
-                {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}}
-                if s.get("metrics")
-                else dict(s)
-            )
-            tags: List[Any] = span.get("tags") or []
-            if "lapdog_forwarded:true" not in tags:
-                span["tags"] = tags + ["lapdog_forwarded:true"]
-            forwarded_spans.append(span)
+        forwarded_spans = self._normalize_spans_for_forwarding(spans)
 
         await self._post_spans_to_backend(
             url,
@@ -1933,9 +1947,18 @@ class ClaudeHooksAPI:
         if body.get("hook_event_name") == "Stop":
             await asyncio.sleep(1.0)
 
-        self._dispatch_hook(body)
+        completed_span = self._dispatch_hook(body)
 
         hook_event_name = body.get("hook_event_name", "")
+
+        if hook_event_name == "PostToolUse" and completed_span is not None:
+            try:
+                await asyncio.wait_for(
+                    self._forward_span_update([completed_span]),
+                    timeout=_INCREMENTAL_FORWARD_TIMEOUT_SECONDS,
+                )
+            except Exception as e:
+                log.warning("Error trying to forward completed tool span: %r", e)
 
         # Forward completed traces to the backend (includes the now-updated root span).
         # The eager root span is only used locally so the test agent UI has a root node
