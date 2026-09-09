@@ -5,8 +5,8 @@ from typing import Dict
 from typing import List
 from unittest import mock
 
-from ddapm_test_agent import claude_backfill
 from lapdog import backfill_claude
+from lapdog import claude_session_backfill as claude_backfill
 
 
 def _write_transcript(path: Path, entries: List[Dict[str, Any]]) -> None:

@@ -1,4 +1,4 @@
-"""LLM Observability Query Parser with Boolean Logic Support.
+"""Lapdog's LLM Observability Query Parser with Boolean Logic Support.
 
 This module implements a query parser that supports:
 - Boolean operators: AND, OR, NOT
@@ -22,6 +22,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
+
 
 # ============================================================================
 # AST Node Classes

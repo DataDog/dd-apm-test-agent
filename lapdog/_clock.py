@@ -1,4 +1,4 @@
-"""Monotonic wall-clock helper used by span emitters.
+"""Monotonic wall-clock helper used by Lapdog span emitters.
 
 Windows' ``time.time_ns()`` is backed by ``GetSystemTimePreciseAsFileTime``,
 which advertises 100 ns resolution but can return identical values on
@@ -15,6 +15,7 @@ track ``perf_counter_ns`` alongside every timestamp.
 
 import threading
 import time
+
 
 _lock = threading.Lock()
 _last_ns = 0

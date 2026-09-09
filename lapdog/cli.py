@@ -4,8 +4,8 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 import uuid
 
+from ddapm_test_agent import _get_version
 from lapdog import backfill_claude
 from lapdog import backfill_codex
 from lapdog import backfill_pi
@@ -31,7 +32,6 @@ from lapdog.paths import LAPDOG_DIR
 from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
 
-from ddapm_test_agent import _get_version
 
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "tags", "uninstall"]
 # Managed launchers that also exist as external binaries a user might invoke by
@@ -257,7 +257,7 @@ def _start_lapdog(
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    args = [sys.executable, "-m", "ddapm_test_agent.agent", "--lapdog-mode"]
+    args = [sys.executable, "-m", "lapdog.server"]
 
     env = os.environ.copy()
     env["TEST_AGENT_VERSION"] = _get_version()

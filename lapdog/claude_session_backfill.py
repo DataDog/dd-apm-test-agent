@@ -40,12 +40,13 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
-from ddapm_test_agent.backfill_utils import backfill_metadata
-from ddapm_test_agent.backfill_utils import format_span_id
-from ddapm_test_agent.backfill_utils import format_trace_id
-from ddapm_test_agent.backfill_utils import to_text
-from ddapm_test_agent.claude_cost_tracker import compute_cost_metrics
-from ddapm_test_agent.lapdog_app_names import CLAUDE_CODE_ML_APP as _ML_APP
+from .app_names import CLAUDE_CODE_ML_APP as _ML_APP
+from .backfill_utils import backfill_metadata
+from .backfill_utils import format_span_id
+from .backfill_utils import format_trace_id
+from .backfill_utils import to_text
+from .claude_cost_tracker import compute_cost_metrics
+
 
 _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()

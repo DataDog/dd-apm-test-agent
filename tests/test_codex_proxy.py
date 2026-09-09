@@ -4,8 +4,13 @@ import json
 from aiohttp import web
 import pytest
 
-from ddapm_test_agent import codex_proxy as codex_proxy_module
-from ddapm_test_agent.codex_proxy import _is_client_disconnect_error
+from lapdog import codex_proxy as codex_proxy_module
+from lapdog.codex_proxy import _is_client_disconnect_error
+
+
+@pytest.fixture
+def agent(lapdog_agent):
+    return lapdog_agent
 
 
 @pytest.fixture

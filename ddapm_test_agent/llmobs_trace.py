@@ -5,11 +5,15 @@ POSTing to ``/evp_proxy/.../llmobs``, these helpers rebuild SDK span events and 
 envelopes so the agent can synthesize an equivalent EVP request at ingestion time.
 """
 
+import gzip
+import json
 import logging
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+
+import msgpack
 
 
 log = logging.getLogger(__name__)
@@ -20,6 +24,30 @@ LLMOBS_ROOT_PARENT_ID = "undefined"
 
 ERROR_TYPE_TAG = "error.type"
 TRACE_ID_HIGH_TAG = "_dd.p.tid"
+
+
+def decode_llmobs_payload(data: bytes, content_type: str) -> List[Dict[str, Any]]:
+    """Decode an LLMObs payload encoded as JSON or msgpack, optionally with gzip."""
+    events: List[Dict[str, Any]] = []
+    try:
+        if content_type and "gzip" in content_type.lower():
+            data = gzip.decompress(data)
+
+        if content_type and "msgpack" in content_type.lower():
+            payload = msgpack.unpackb(data, raw=False, strict_map_key=False)
+        else:
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                payload = msgpack.unpackb(data, raw=False, strict_map_key=False)
+
+        if isinstance(payload, list):
+            events.extend(payload)
+        else:
+            events.append(payload)
+    except Exception as e:
+        log.warning("Failed to decode LLMObs payload: %s", e)
+    return events
 
 
 def _format_apm_trace_id(apm_trace_id: int, meta: Any) -> str:

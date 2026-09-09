@@ -1,4 +1,4 @@
-"""Shared helpers for server-side historical session backfills."""
+"""Shared helpers for Lapdog's server-side historical session backfills."""
 
 import json
 import secrets

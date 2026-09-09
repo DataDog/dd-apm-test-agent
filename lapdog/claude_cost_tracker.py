@@ -1,4 +1,4 @@
-"""Cost tracking for Anthropic models used with Claude Code.
+"""Cost tracking for Anthropic models used with Claude Code in Lapdog.
 
 Pricing is in nanodollars per token (1 nanodollar = 1e-9 USD), matching the
 convention used in dd-go/domains/ml-observability/libs/costtracker/model_prices.go

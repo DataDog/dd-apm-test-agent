@@ -1,4 +1,4 @@
-from ddapm_test_agent.claude_cost_tracker import compute_cost_metrics
+from lapdog.claude_cost_tracker import compute_cost_metrics
 
 
 class TestModelLookup:

@@ -6,10 +6,11 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
-from ddapm_test_agent._clock import monotonic_wall_ns
-from ddapm_test_agent.claude_hooks import ClaudeHooksAPI
-from ddapm_test_agent.claude_link_tracker import ClaudeLinkTracker
-from ddapm_test_agent.claude_proxy import ClaudeProxyAPI
+from lapdog._clock import monotonic_wall_ns
+from lapdog.claude_hooks import ClaudeHooksAPI
+from lapdog.claude_link_tracker import ClaudeLinkTracker
+from lapdog.claude_proxy import ClaudeProxyAPI
+
 
 # ------------------------------------------------------------------
 # Helpers
@@ -484,7 +485,7 @@ def test_step_has_semantic_type_tag():
 
 
 def test_proxy_llm_span_uses_session_base_tags_with_git_commit_sha(tmp_path, monkeypatch):
-    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+    from lapdog.coding_agent_metadata import _local_git_metadata
 
     monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
     _local_git_metadata.cache_clear()

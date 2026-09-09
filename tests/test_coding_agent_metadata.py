@@ -1,13 +1,13 @@
 import dataclasses
 import subprocess
 
-from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
-from ddapm_test_agent.coding_agent_metadata import git_commit_sha_for_cwd
-from ddapm_test_agent.coding_agent_metadata import git_commit_sha_tags
-from ddapm_test_agent.coding_agent_metadata import normalize_git_repository_url
-from ddapm_test_agent.coding_agent_metadata import project_metadata_tags
-from ddapm_test_agent.coding_agent_metadata import project_name_from_git_repository_url
-from ddapm_test_agent.coding_agent_metadata import resolve_project_metadata
+from lapdog.coding_agent_metadata import _local_git_metadata
+from lapdog.coding_agent_metadata import git_commit_sha_for_cwd
+from lapdog.coding_agent_metadata import git_commit_sha_tags
+from lapdog.coding_agent_metadata import normalize_git_repository_url
+from lapdog.coding_agent_metadata import project_metadata_tags
+from lapdog.coding_agent_metadata import project_name_from_git_repository_url
+from lapdog.coding_agent_metadata import resolve_project_metadata
 
 
 def _git(repo, *args):

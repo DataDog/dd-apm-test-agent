@@ -37,9 +37,11 @@ from typing import cast
 from aiohttp import web
 from aiohttp.web import Request
 
-from ddapm_test_agent import pi_backfill
+from ddapm_test_agent.cors import with_cors
 
+from . import pi_session_backfill
 from ._clock import monotonic_wall_ns
+from .app_names import PI_CODING_AGENT_ML_APP
 from .backfill_utils import has_backfilled_session
 from .claude_cost_tracker import compute_cost_metrics
 from .claude_cost_tracker import cost_from_provider_usage
@@ -51,8 +53,7 @@ from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
 from .codex_cost_tracker import compute_openai_cost_metrics
 from .coding_agent_metadata import apply_project_metadata_to_span
-from .lapdog_app_names import PI_CODING_AGENT_ML_APP
-from .llmobs_event_platform import with_cors
+
 
 log = logging.getLogger(__name__)
 
@@ -1129,7 +1130,7 @@ class PiHooksAPI:
             )
 
         try:
-            spans = pi_backfill.session_to_spans(session_id, cwd, entries)
+            spans = pi_session_backfill.session_to_spans(session_id, cwd, entries)
         except Exception as exc:
             log.warning("pi backfill_session failed for %s: %r", session_id, exc)
             return web.json_response({"status": "error", "error": repr(exc)}, status=400)
