@@ -92,7 +92,7 @@ docker run --rm \
     -p 4318:4318 \
     -p 4317:4317 \
     ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest \
-    ddapm-test-agent --lapdog-mode
+    python -m lapdog.server
 ```
 
 Then point your application at the host: `DD_TRACE_AGENT_URL=http://localhost:8126`.
@@ -106,7 +106,7 @@ docker run --rm \
     -p 8126:8126 \
     -v "$PWD/.lapdog-data:/snapshots" \
     ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent:latest \
-    ddapm-test-agent --lapdog-mode
+    python -m lapdog.server
 ```
 
 If you want the `lapdog claude` or `lapdog codex` workflow, the CLI must run

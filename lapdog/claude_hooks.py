@@ -27,9 +27,11 @@ from aiohttp import web
 from aiohttp.web import Request
 import msgpack
 
-from ddapm_test_agent import claude_backfill
+from ddapm_test_agent.cors import with_cors
 
+from . import claude_session_backfill
 from ._clock import monotonic_wall_ns
+from .app_names import CLAUDE_CODE_ML_APP
 from .backfill_utils import has_backfilled_session
 from .claude_cost_tracker import COST_METRIC_KEYS
 from .claude_link_tracker import ClaudeLinkTracker
@@ -40,8 +42,7 @@ from .coding_agent_metadata import extract_git_repository_url
 from .coding_agent_metadata import git_commit_sha_tags
 from .coding_agent_metadata import project_metadata_tags
 from .coding_agent_metadata import resolve_project_metadata
-from .lapdog_app_names import CLAUDE_CODE_ML_APP
-from .llmobs_event_platform import with_cors
+
 
 log = logging.getLogger(__name__)
 
@@ -2082,7 +2083,7 @@ class ClaudeHooksAPI:
             )
 
         try:
-            spans = claude_backfill.session_to_spans(session_id, cwd, entries, subagents=subagents)
+            spans = claude_session_backfill.session_to_spans(session_id, cwd, entries, subagents=subagents)
         except Exception as exc:
             # A single malformed transcript shouldn't propagate as a 500 that
             # closes the connection — return a structured failure so the

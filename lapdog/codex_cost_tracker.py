@@ -1,4 +1,4 @@
-"""Cost tracking for OpenAI models used by Codex.
+"""Cost tracking for OpenAI models used by Codex in Lapdog.
 
 Pricing is in nanodollars per token (1 nanodollar = 1e-9 USD), matching the
 metric keys expected by the web-ui LLM observability span detail view.
