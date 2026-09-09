@@ -2,4 +2,5 @@
 features:
   - |
     Add Lapdog cost tracking for Claude Fable 5.1 and GPT-6 Astra, including
-    Fable 5.1's reduced cache-read rate and Astra's long-context pricing.
+    Fable 5.1's reduced cache-read rate and long-context pricing for GPT-5.6
+    and Astra.

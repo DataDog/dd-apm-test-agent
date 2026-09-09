@@ -55,6 +55,26 @@ class TestCostCalculation:
         result = compute_openai_cost_metrics("gpt-5.6-terra", 100, 0, 0)
         assert result["estimated_non_cached_input_cost"] == 100 * 2_000
 
+    def test_gpt_5_6_long_context_pricing(self) -> None:
+        # Above 272K input tokens: input/cache cost 2x and output costs 1.5x.
+        for model, input_price, cached_input, output_price in (
+            ("gpt-5.6", 5_000, 500, 30_000),
+            ("gpt-5.6-terra", 2_000, 200, 12_000),
+        ):
+            result = compute_openai_cost_metrics(model, 272_000, 1, 50)
+            assert result["estimated_non_cached_input_cost"] == 272_000 * input_price * 2
+            assert result["estimated_cache_read_input_cost"] == cached_input * 2
+            assert result["estimated_output_cost"] == 50 * output_price * 3 // 2
+
+    def test_gpt_5_6_long_context_boundary(self) -> None:
+        for model, input_price, output_price in (
+            ("gpt-5.6", 5_000, 30_000),
+            ("gpt-5.6-terra", 2_000, 12_000),
+        ):
+            result = compute_openai_cost_metrics(model, 272_000, 0, 1)
+            assert result["estimated_non_cached_input_cost"] == 272_000 * input_price
+            assert result["estimated_output_cost"] == output_price
+
     def test_gpt_5_3_codex_pricing(self) -> None:
         # gpt-5.3-codex: $1.75 input / $0.175 cached / $14 output per Mtok.
         result = compute_openai_cost_metrics("gpt-5.3-codex", 100, 20, 50)

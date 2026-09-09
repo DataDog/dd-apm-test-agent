@@ -9,7 +9,8 @@ Latest models:
   * gpt-6-astra ($10 / $50 per Mtok, 90% cached-input discount). Prompts over
     272K input tokens cost 2x for input/cache and 1.5x for output.
   * gpt-5.6 family (Sol $5 / $30, Terra $2 / $12 per Mtok, 90% cached-input
-    discount). The nano-tier "Luna" variant is deliberately left out so it
+    discount). Prompts over 272K input tokens cost 2x for input/cache and 1.5x
+    for output. The nano-tier "Luna" variant is deliberately left out so it
     resolves to the higher "gpt-5.6" (Sol) rate via prefix match — a
     conservative upper bound, since its own rate was inconsistent across
     sources.
@@ -42,8 +43,20 @@ _PRICING: List[_OpenAIPrice] = [
         long_context_threshold=272_000,
     ),
     # gpt-5.6 family (Terra listed before the Sol catch-all so it isn't shadowed).
-    _OpenAIPrice("gpt-5.6-terra", input_price=2_000, cached_input=200, output=12_000),
-    _OpenAIPrice("gpt-5.6", input_price=5_000, cached_input=500, output=30_000),
+    _OpenAIPrice(
+        "gpt-5.6-terra",
+        input_price=2_000,
+        cached_input=200,
+        output=12_000,
+        long_context_threshold=272_000,
+    ),
+    _OpenAIPrice(
+        "gpt-5.6",
+        input_price=5_000,
+        cached_input=500,
+        output=30_000,
+        long_context_threshold=272_000,
+    ),
     _OpenAIPrice("gpt-5.5", input_price=5_000, cached_input=500, output=30_000),
     _OpenAIPrice("gpt-5.4-mini", input_price=750, cached_input=75, output=4_500),
     _OpenAIPrice("gpt-5.4", input_price=2_500, cached_input=250, output=15_000),
