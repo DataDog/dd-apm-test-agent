@@ -42,13 +42,13 @@ class TestCostCalculation:
         assert result["estimated_output_cost"] == 50_000
 
     def test_gpt_5_6_sol_pricing(self) -> None:
-        # gpt-5.6 (Sol): $5 input / $0.50 cached / $30 output per Mtok.
+        # gpt-5.6 (Sol): $4 input / $0.40 cached / $20 output per Mtok.
         result = compute_openai_cost_metrics("gpt-5.6", 100, 20, 50)
-        assert result["estimated_non_cached_input_cost"] == 100 * 5_000
-        assert result["estimated_cache_read_input_cost"] == 20 * 500
-        assert result["estimated_output_cost"] == 50 * 30_000
-        assert result["estimated_input_cost"] == 100 * 5_000 + 20 * 500
-        assert result["estimated_total_cost"] == 100 * 5_000 + 20 * 500 + 50 * 30_000
+        assert result["estimated_non_cached_input_cost"] == 100 * 4_000
+        assert result["estimated_cache_read_input_cost"] == 20 * 400
+        assert result["estimated_output_cost"] == 50 * 20_000
+        assert result["estimated_input_cost"] == 100 * 4_000 + 20 * 400
+        assert result["estimated_total_cost"] == 100 * 4_000 + 20 * 400 + 50 * 20_000
 
     def test_gpt_5_6_terra_not_shadowed_by_sol(self) -> None:
         # "gpt-5.6-terra" must match the Terra tier, not the "gpt-5.6" catch-all.
@@ -58,7 +58,7 @@ class TestCostCalculation:
     def test_gpt_5_6_long_context_pricing(self) -> None:
         # Above 272K input tokens: input/cache cost 2x and output costs 1.5x.
         for model, input_price, cached_input, output_price in (
-            ("gpt-5.6", 5_000, 500, 30_000),
+            ("gpt-5.6", 4_000, 400, 20_000),
             ("gpt-5.6-terra", 2_000, 200, 12_000),
         ):
             result = compute_openai_cost_metrics(model, 272_000, 1, 50)
@@ -68,7 +68,7 @@ class TestCostCalculation:
 
     def test_gpt_5_6_long_context_boundary(self) -> None:
         for model, input_price, output_price in (
-            ("gpt-5.6", 5_000, 30_000),
+            ("gpt-5.6", 4_000, 20_000),
             ("gpt-5.6-terra", 2_000, 12_000),
         ):
             result = compute_openai_cost_metrics(model, 272_000, 0, 1)

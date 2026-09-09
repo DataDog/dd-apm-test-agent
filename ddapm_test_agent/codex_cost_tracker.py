@@ -8,8 +8,9 @@ Pricing data last updated 2026-09 from OpenAI API pricing pages.
 Latest models:
   * gpt-6-astra ($10 / $50 per Mtok, 90% cached-input discount). Prompts over
     272K input tokens cost 2x for input/cache and 1.5x for output.
-  * gpt-5.6 family (Sol $5 / $30, Terra $2 / $12 per Mtok, 90% cached-input
-    discount). Prompts over 272K input tokens cost 2x for input/cache and 1.5x
+  * gpt-5.6 family (Sol $4 / $20, Terra $2 / $12 per Mtok, 90% cached-input
+    discount). Sol's promotional rates are documented through at least
+    2026-11-21. Prompts over 272K input tokens cost 2x for input/cache and 1.5x
     for output. The nano-tier "Luna" variant is deliberately left out so it
     resolves to the higher "gpt-5.6" (Sol) rate via prefix match — a
     conservative upper bound, since its own rate was inconsistent across
@@ -52,9 +53,9 @@ _PRICING: List[_OpenAIPrice] = [
     ),
     _OpenAIPrice(
         "gpt-5.6",
-        input_price=5_000,
-        cached_input=500,
-        output=30_000,
+        input_price=4_000,
+        cached_input=400,
+        output=20_000,
         long_context_threshold=272_000,
     ),
     _OpenAIPrice("gpt-5.5", input_price=5_000, cached_input=500, output=30_000),
