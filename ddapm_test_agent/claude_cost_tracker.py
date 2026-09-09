@@ -11,7 +11,7 @@ and the metric keys expected by the web-ui LLM observability span detail view:
     estimated_cache_write_input_cost
     estimated_cache_read_input_cost
 
-Pricing data last updated 2026-08 based on:
+Pricing data last updated 2026-09 based on:
   * Anthropic public pricing: https://www.anthropic.com/pricing#api
   * pi-ai models.generated.js (the data Claude Code itself uses to compute
     the self-reported per-turn cost shown in its UI):
@@ -24,7 +24,9 @@ whereas Opus 4 / 4.1 / 3 still cost $15 / $75 / $1.50 / $18.75 per Mtok.
 Using the old Opus rates for 4.5+ overcharges by exactly 3x.
 
 The Claude 5 family adds Sonnet 5 ($3 / $15 per Mtok, same tier as Sonnet 4.6)
-and Fable 5 / Mythos 5 ($10 / $50 per Mtok — the most capable tier).  Sonnet 5
+and Fable 5 / Mythos 5 ($10 / $50 per Mtok — the most capable tier). Fable 5.1
+keeps those input and output rates while reducing cache reads to $0.25 per Mtok.
+Sonnet 5
 carries an introductory rate of $2 / $10 per Mtok through 2026-08-31; because
 these values are only estimates, the table uses the higher ongoing list price
 ($3 / $15) as a conservative upper bound rather than the temporary intro rate.
@@ -87,6 +89,14 @@ COST_METRIC_KEYS: FrozenSet[str] = frozenset(
 _ONE_TIER = 0  # sentinel: no upper bound on a single tier
 
 _PRICING: List[Tuple[str, List[_PriceTier]]] = [
+    # ---- Fable 5.1 ---------------------------------------------------------
+    # $10 / $50 / $0.25 cache-read / $12.50 cache-write per Mtok.
+    # This must precede Fable 5 so prefix matching does not use the older
+    # model's $1.00 cache-read rate.
+    (
+        "claude-fable-5-1",
+        [_PriceTier(0, _ONE_TIER, 10_000, 12_500, 250, 50_000)],
+    ),
     # ---- Fable 5 / Mythos 5 (most capable tier, Claude 5 family) -------------
     # $10 / $50 / $1.00 cache-read / $12.50 cache-write per Mtok.
     # Mythos 5 is Project-Glasswing-only but shares Fable 5's pricing.

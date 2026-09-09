@@ -31,6 +31,9 @@ class TestModelLookup:
         assert compute_cost_metrics("claude-fable-5", 1000, 0, 0, 0) is not None
         assert compute_cost_metrics("claude-mythos-5", 1000, 0, 0, 0) is not None
 
+    def test_fable_5_1(self) -> None:
+        assert compute_cost_metrics("claude-fable-5-1", 1000, 0, 0, 0) is not None
+
     def test_unknown_model_returns_none(self) -> None:
         assert compute_cost_metrics("gpt-4o", 1000, 0, 0, 0) is None
 
@@ -133,6 +136,15 @@ class TestCostCalculation:
             assert result["estimated_cache_write_input_cost"] == 200 * 12_500, model
             assert result["estimated_cache_read_input_cost"] == 500 * 1_000, model
             assert result["estimated_output_cost"] == 50 * 50_000, model
+
+    def test_fable_5_1_pricing(self) -> None:
+        # Fable 5.1 keeps Fable 5's rates but reduces cache reads to $0.25/Mtok.
+        result = compute_cost_metrics("claude-fable-5-1", 100, 200, 500, 50)
+        assert result is not None
+        assert result["estimated_non_cached_input_cost"] == 100 * 10_000
+        assert result["estimated_cache_write_input_cost"] == 200 * 12_500
+        assert result["estimated_cache_read_input_cost"] == 500 * 250
+        assert result["estimated_output_cost"] == 50 * 50_000
 
     def test_zero_tokens_returns_all_zeros(self) -> None:
         result = compute_cost_metrics("claude-sonnet-4-6", 0, 0, 0, 0)
