@@ -2,6 +2,10 @@ from ddapm_test_agent.codex_cost_tracker import compute_openai_cost_metrics
 
 
 class TestModelLookup:
+    def test_gpt_6_astra(self) -> None:
+        assert compute_openai_cost_metrics("gpt-6-astra", 1000, 0, 0) != {}
+        assert compute_openai_cost_metrics("gpt-6-astra-2026-09-03", 1000, 0, 0) != {}
+
     def test_gpt_5_6(self) -> None:
         assert compute_openai_cost_metrics("gpt-5.6", 1000, 0, 0) != {}
 
@@ -16,6 +20,27 @@ class TestModelLookup:
 
 
 class TestCostCalculation:
+    def test_gpt_6_astra_pricing(self) -> None:
+        # gpt-6-astra: $10 input / $1 cached / $50 output per Mtok.
+        result = compute_openai_cost_metrics("gpt-6-astra", 100, 20, 50)
+        assert result["estimated_non_cached_input_cost"] == 100 * 10_000
+        assert result["estimated_cache_read_input_cost"] == 20 * 1_000
+        assert result["estimated_output_cost"] == 50 * 50_000
+        assert result["estimated_input_cost"] == 100 * 10_000 + 20 * 1_000
+        assert result["estimated_total_cost"] == 100 * 10_000 + 20 * 1_000 + 50 * 50_000
+
+    def test_gpt_6_astra_long_context_pricing(self) -> None:
+        # Above 272K input tokens: input/cache cost 2x and output costs 1.5x.
+        result = compute_openai_cost_metrics("gpt-6-astra", 272_000, 1, 50)
+        assert result["estimated_non_cached_input_cost"] == 272_000 * 10_000 * 2
+        assert result["estimated_cache_read_input_cost"] == 1 * 1_000 * 2
+        assert result["estimated_output_cost"] == 50 * 50_000 * 3 // 2
+
+    def test_gpt_6_astra_long_context_boundary(self) -> None:
+        result = compute_openai_cost_metrics("gpt-6-astra", 272_000, 0, 1)
+        assert result["estimated_non_cached_input_cost"] == 272_000 * 10_000
+        assert result["estimated_output_cost"] == 50_000
+
     def test_gpt_5_6_sol_pricing(self) -> None:
         # gpt-5.6 (Sol): $5 input / $0.50 cached / $30 output per Mtok.
         result = compute_openai_cost_metrics("gpt-5.6", 100, 20, 50)
