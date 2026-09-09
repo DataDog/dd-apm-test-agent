@@ -3,12 +3,15 @@
 Pricing is in nanodollars per token (1 nanodollar = 1e-9 USD), matching the
 metric keys expected by the web-ui LLM observability span detail view.
 
-Pricing data last updated 2026-08 from OpenAI API pricing pages. Standard
-rates are documented for context lengths under 270K tokens.
+Pricing data last updated 2026-09 from OpenAI API pricing pages.
 
-Latest models added 2026-08:
-  * gpt-5.6 family (Sol $5 / $30, Terra $2 / $12 per Mtok, 90% cached-input
-    discount). The nano-tier "Luna" variant is deliberately left out so it
+Latest models:
+  * gpt-6-astra ($10 / $50 per Mtok, 90% cached-input discount). Prompts over
+    272K input tokens cost 2x for input/cache and 1.5x for output.
+  * gpt-5.6 family (Sol $4 / $20, Terra $2 / $12 per Mtok, 90% cached-input
+    discount). Sol's promotional rates are documented through at least
+    2026-11-21. Prompts over 272K input tokens cost 2x for input/cache and 1.5x
+    for output. The nano-tier "Luna" variant is deliberately left out so it
     resolves to the higher "gpt-5.6" (Sol) rate via prefix match — a
     conservative upper bound, since its own rate was inconsistent across
     sources.
@@ -29,12 +32,32 @@ class _OpenAIPrice:
     input_price: int
     cached_input: int
     output: int
+    long_context_threshold: int = 0
 
 
 _PRICING: List[_OpenAIPrice] = [
+    _OpenAIPrice(
+        "gpt-6-astra",
+        input_price=10_000,
+        cached_input=1_000,
+        output=50_000,
+        long_context_threshold=272_000,
+    ),
     # gpt-5.6 family (Terra listed before the Sol catch-all so it isn't shadowed).
-    _OpenAIPrice("gpt-5.6-terra", input_price=2_000, cached_input=200, output=12_000),
-    _OpenAIPrice("gpt-5.6", input_price=5_000, cached_input=500, output=30_000),
+    _OpenAIPrice(
+        "gpt-5.6-terra",
+        input_price=2_000,
+        cached_input=200,
+        output=12_000,
+        long_context_threshold=272_000,
+    ),
+    _OpenAIPrice(
+        "gpt-5.6",
+        input_price=4_000,
+        cached_input=400,
+        output=20_000,
+        long_context_threshold=272_000,
+    ),
     _OpenAIPrice("gpt-5.5", input_price=5_000, cached_input=500, output=30_000),
     _OpenAIPrice("gpt-5.4-mini", input_price=750, cached_input=75, output=4_500),
     _OpenAIPrice("gpt-5.4", input_price=2_500, cached_input=250, output=15_000),
@@ -74,9 +97,13 @@ def compute_openai_cost_metrics(
     if price is None:
         return {}
 
-    non_cached_input_cost = non_cached_input_tokens * price.input_price
-    cache_read_cost = cached_input_tokens * price.cached_input
-    output_cost = output_tokens * price.output
+    total_input_tokens = non_cached_input_tokens + cached_input_tokens
+    long_context = price.long_context_threshold and total_input_tokens > price.long_context_threshold
+    input_multiplier = 2 if long_context else 1
+    output_numerator = 3 if long_context else 2
+    non_cached_input_cost = non_cached_input_tokens * price.input_price * input_multiplier
+    cache_read_cost = cached_input_tokens * price.cached_input * input_multiplier
+    output_cost = output_tokens * price.output * output_numerator // 2
     input_cost = non_cached_input_cost + cache_read_cost
 
     return {
