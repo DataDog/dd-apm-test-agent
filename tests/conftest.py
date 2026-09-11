@@ -164,6 +164,16 @@ def disable_llmobs_data_forwarding() -> Generator[bool, None, None]:
 
 
 @pytest.fixture
+def lapdog_mode() -> Generator[bool, None, None]:
+    yield False
+
+
+@pytest.fixture
+def max_requests() -> Generator[int, None, None]:
+    yield 200
+
+
+@pytest.fixture
 async def agent_app(
     aiohttp_server,
     agent_enabled_checks,
@@ -187,6 +197,8 @@ async def agent_app(
     dd_site,
     dd_api_key,
     disable_llmobs_data_forwarding,
+    lapdog_mode,
+    max_requests,
 ):
     app = await aiohttp_server(
         make_app(
@@ -211,6 +223,8 @@ async def agent_app(
             dd_site=dd_site,
             dd_api_key=dd_api_key,
             disable_llmobs_data_forwarding=disable_llmobs_data_forwarding,
+            lapdog_mode=lapdog_mode,
+            max_requests=max_requests,
         )
     )
     yield app

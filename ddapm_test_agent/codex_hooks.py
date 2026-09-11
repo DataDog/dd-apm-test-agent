@@ -1,6 +1,7 @@
 """Codex session JSONL -> LLM Observability spans."""
 
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -300,7 +301,7 @@ class CodexTurn:
 
 
 class CodexSession:
-    def __init__(self, session_id: str, start_ns: int) -> None:
+    def __init__(self, session_id: str, start_ns: int, retention_limit: Optional[int] = None) -> None:
         self.raw_session_id = session_id
         self.session_id = session_id
         self.start_ns = start_ns
@@ -319,7 +320,9 @@ class CodexSession:
         self.pending_tool_reasoning: Dict[str, List[Dict[str, Any]]] = {}
         self.active_turn: Optional[CodexTurn] = None
         self.completed_turns: List[str] = []
-        self.seen_records: Set[str] = set()
+        self.seen_records: Set[bytes] = set()
+        self.seen_record_order: List[bytes] = []
+        self.retention_limit = max(0, retention_limit) if retention_limit is not None else None
         # Codex reuses tool call_ids like "web_search_2" across turns. Track
         # how many times each id has been seen and the unique id currently in
         # flight so PendingToolSpan keys stay unique and outputs pair correctly.
@@ -331,6 +334,18 @@ class CodexSession:
         self.pending_subagents: Dict[str, Dict[str, Any]] = {}
         self.task_id = ""
         self.proxy_session_keys: Set[str] = set()
+
+    def remember_record(self, record_fingerprint: str) -> bool:
+        digest = hashlib.sha256(record_fingerprint.encode()).digest()
+        if digest in self.seen_records:
+            return False
+        self.seen_records.add(digest)
+        if self.retention_limit is not None:
+            self.seen_record_order.append(digest)
+            if len(self.seen_record_order) > self.retention_limit:
+                expired_digest = self.seen_record_order.pop(0)
+                self.seen_records.remove(expired_digest)
+        return True
 
 
 class CodexConfig:
@@ -350,11 +365,13 @@ class CodexHooksAPI:
     and posts each record here, wrapped with the Codex session id.
     """
 
-    def __init__(self, hooks_api: ClaudeHooksAPI) -> None:
+    def __init__(self, hooks_api: ClaudeHooksAPI, retention_limit: Optional[int] = None) -> None:
         self._hooks_api = hooks_api
         self._config = CodexConfig()
         self._sessions: Dict[str, CodexSession] = {}
         self._raw_events: List[Dict[str, Any]] = []
+        self._retention_limit = max(0, retention_limit) if retention_limit is not None else None
+        self._completed_trace_ids: List[str] = []
         self._last_session_id = ""
         self._proxy_session_ids: Dict[str, str] = {}
         self._orphan_proxy_llm_spans: List[OrphanProxySpan] = []
@@ -394,7 +411,11 @@ class CodexHooksAPI:
     def _get_or_create_session(self, session_id: str, start_ns: int) -> CodexSession:
         if session_id not in self._sessions:
             group_session_id = self._child_session_ids.get(session_id, session_id)
-            self._sessions[session_id] = CodexSession(session_id=group_session_id, start_ns=start_ns)
+            self._sessions[session_id] = CodexSession(
+                session_id=group_session_id,
+                start_ns=start_ns,
+                retention_limit=self._retention_limit,
+            )
             if session_id not in self._hooks_api._sessions:
                 self._hooks_api._sessions[session_id] = SessionState(
                     session_id=group_session_id,
@@ -1897,10 +1918,8 @@ class CodexHooksAPI:
             record_fingerprint = json.dumps(record, sort_keys=True, separators=(",", ":"))
         except (TypeError, ValueError):
             record_fingerprint = ""
-        if record_fingerprint:
-            if record_fingerprint in session.seen_records:
-                return []
-            session.seen_records.add(record_fingerprint)
+        if record_fingerprint and not session.remember_record(record_fingerprint):
+            return []
 
         record_type = record.get("type", "")
 
@@ -1950,6 +1969,8 @@ class CodexHooksAPI:
         raw_body = dict(body)
         raw_body.pop("proxy_session_key", None)
         self._raw_events.append(raw_body)
+        if self._retention_limit is not None and len(self._raw_events) > self._retention_limit:
+            del self._raw_events[: len(self._raw_events) - self._retention_limit]
         self._last_session_id = session_id
         is_backfill = body.get("backfill") is True
         completed = self._dispatch(session_id, record, proxy_session_key=proxy_session_key)
@@ -1961,7 +1982,23 @@ class CodexHooksAPI:
                 await self._hooks_api._forward_eval_metrics_to_backend(
                     completed_session_id, trace_id=completed_trace_id
                 )
+        for _, completed_trace_id in completed:
+            self._mark_trace_completed(completed_trace_id)
         return web.json_response({"status": "ok"})
+
+    def _mark_trace_completed(self, trace_id: str) -> None:
+        if self._retention_limit is None or trace_id in self._completed_trace_ids:
+            return
+        self._completed_trace_ids.append(trace_id)
+        while len(self._completed_trace_ids) > self._retention_limit:
+            expired_trace_id = self._completed_trace_ids.pop(0)
+            self._hooks_api._assembled_spans = [
+                span for span in self._hooks_api._assembled_spans if span.get("trace_id") != expired_trace_id
+            ]
+            for session in self._sessions.values():
+                turn = session.active_turn
+                if turn is not None and turn.closed and turn.trace_id == expired_trace_id:
+                    session.active_turn = None
 
     async def handle_raw_events(self, request: Request) -> web.Response:
         return web.json_response({"events": self._raw_events})

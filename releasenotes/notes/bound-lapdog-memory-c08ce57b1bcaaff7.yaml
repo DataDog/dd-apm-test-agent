@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    Bound in-memory request, coding-agent event, and completed trace retention
+    when the test agent runs in Lapdog mode.

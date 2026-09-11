@@ -288,9 +288,10 @@ class PiHooksAPI:
     forwarding so pi traces are queryable through the same Event Platform APIs.
     """
 
-    def __init__(self, hooks_api: ClaudeHooksAPI) -> None:
+    def __init__(self, hooks_api: ClaudeHooksAPI, retention_limit: Optional[int] = None) -> None:
         self._hooks_api = hooks_api
         self._raw_events: List[Dict[str, Any]] = []
+        self._retention_limit = max(0, retention_limit) if retention_limit is not None else None
         # Pending LLM span per session (pi sends one LLM call at a time)
         self._pending_llm: Dict[str, PendingLLMSpan] = {}
         # Active step span per session (one inference cycle)
@@ -1080,6 +1081,8 @@ class PiHooksAPI:
         if isinstance(session_token, str) and session_token:
             self._hooks_api._register_session_token(session_token, session_id)
         self._raw_events.append(body)
+        if self._retention_limit is not None and len(self._raw_events) > self._retention_limit:
+            del self._raw_events[: len(self._raw_events) - self._retention_limit]
         self._dispatch(body)
 
         hook_event_name = body.get("hook_event_name", "")
@@ -1088,6 +1091,9 @@ class PiHooksAPI:
         if hook_event_name in ("agent_end", "session_shutdown"):
             await self._hooks_api._forward_trace_to_backend(session_id)
             await self._hooks_api._forward_eval_metrics_to_backend(session_id)
+            session = self._hooks_api._sessions.get(session_id)
+            if session is not None:
+                self._hooks_api._mark_trace_completed(session.trace_id)
 
         return web.json_response({"status": "ok"})
 
@@ -1134,7 +1140,10 @@ class PiHooksAPI:
             log.warning("pi backfill_session failed for %s: %r", session_id, exc)
             return web.json_response({"status": "error", "error": repr(exc)}, status=400)
         self._hooks_api._assembled_spans.extend(spans)
-        traces = len({s.get("trace_id") for s in spans})
+        trace_ids = {str(s.get("trace_id")) for s in spans if s.get("trace_id")}
+        for trace_id in trace_ids:
+            self._hooks_api._mark_trace_completed(trace_id)
+        traces = len(trace_ids)
         return web.json_response({"status": "ok", "spans_created": len(spans), "traces_created": traces})
 
     def get_routes(self) -> List[web.RouteDef]:
