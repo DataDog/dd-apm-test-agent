@@ -100,6 +100,7 @@ async def test_oauth_token_does_not_replace_inline_runtime_configuration(lapdog_
     response = await lapdog_agent.post(
         "/lapdog/oauth/token",
         json={"access_token": "oauth-token", "site": "us5.datadoghq.com"},
+        headers={"Origin": "https://lapdog.datadoghq.com"},
     )
 
     assert response.status == 201
@@ -115,10 +116,46 @@ async def test_oauth_token_rejects_site_not_offered_by_web_ui(lapdog_agent, monk
     response = await lapdog_agent.post(
         "/lapdog/oauth/token",
         json={"access_token": "oauth-token", "site": "attacker.example"},
+        headers={"Origin": "https://lapdog.datadoghq.com"},
     )
 
     assert response.status == 400
     create_api_key.assert_not_awaited()
+
+
+async def test_oauth_token_rejects_unexpected_origin(lapdog_agent, monkeypatch):
+    create_api_key = mock.AsyncMock()
+    monkeypatch.setattr(auth, "_create_api_key", create_api_key)
+
+    response = await lapdog_agent.post(
+        "/lapdog/oauth/token",
+        json={"access_token": "oauth-token", "site": "datadoghq.com"},
+        headers={"Origin": "https://attacker.example"},
+    )
+
+    assert response.status == 403
+    create_api_key.assert_not_awaited()
+
+
+async def test_oauth_token_rejects_non_json_content_type(lapdog_agent, monkeypatch):
+    create_api_key = mock.AsyncMock()
+    monkeypatch.setattr(auth, "_create_api_key", create_api_key)
+
+    response = await lapdog_agent.post(
+        "/lapdog/oauth/token",
+        data='{"access_token":"oauth-token","site":"datadoghq.com"}',
+        headers={
+            "Content-Type": "text/plain",
+            "Origin": "https://lapdog.datadoghq.com",
+        },
+    )
+
+    assert response.status == 415
+    create_api_key.assert_not_awaited()
+
+
+def test_oauth_origin_allows_https_localhost_on_any_port():
+    assert auth._is_allowed_oauth_origin("https://localhost:12345")
 
 
 async def test_create_api_key_uses_oauth_bearer_and_requested_name(monkeypatch):

@@ -17,6 +17,7 @@ from aiohttp import ClientSession
 from aiohttp import web
 from aiohttp.web import Request
 
+from ddapm_test_agent.cors import ALLOWED_ORIGIN_PATTERN
 from ddapm_test_agent.cors import with_cors
 
 from . import config
@@ -36,6 +37,10 @@ SUPPORTED_DD_SITES: Set[str] = {
     "us4.datadoghq.com",
     "us5.datadoghq.com",
 }
+
+
+def _is_allowed_oauth_origin(origin: Optional[str]) -> bool:
+    return bool(origin and ALLOWED_ORIGIN_PATTERN.fullmatch(origin))
 
 
 def _api_key_name() -> str:
@@ -90,6 +95,11 @@ class LapdogAuthAPI:
         self._app = app
 
     async def handle_oauth_token(self, request: Request) -> web.Response:
+        if not _is_allowed_oauth_origin(request.headers.get("Origin")):
+            return web.HTTPForbidden(text="Unsupported OAuth origin")
+        if request.content_type != "application/json":
+            return web.HTTPUnsupportedMediaType(text="Expected application/json")
+
         try:
             body = await request.json()
         except (ValueError, TypeError):
