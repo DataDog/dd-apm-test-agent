@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    LLMObs spans whose payload uses the flat ``meta["span.kind"]`` form
+    (instead of the nested ``meta["span"]["kind"]`` form the ddtrace
+    LLMObs writer emits today) now have their kind preserved through the
+    leash UI trace and list endpoints. Previously tool, agent, workflow,
+    retrieval, and embedding spans submitted in the flat form were
+    silently rendered as ``kind="llm"``.

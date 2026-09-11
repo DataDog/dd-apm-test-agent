@@ -121,6 +121,29 @@ def extract_spans_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, An
     return spans
 
 
+def _resolve_span_kind(span: Dict[str, Any]) -> str:
+    """Resolve the LLMObs span kind from a span dict.
+
+    The canonical shape is the nested ``meta["span"]["kind"]`` form that the
+    ddtrace LLMObs writer emits today. Some SDK paths and manual senders
+    instead set the flat ``meta["span.kind"]`` key (the same dotted form APM
+    uses for OpenTelemetry span kind on regular trace spans). Tolerating
+    both keeps tool / agent / workflow spans from being silently coerced
+    back to ``llm`` when the wire format isn't strictly nested.
+    """
+    meta = span.get("meta")
+    if isinstance(meta, dict):
+        nested = meta.get("span")
+        if isinstance(nested, dict):
+            kind = nested.get("kind")
+            if isinstance(kind, str) and kind:
+                return kind
+        flat = meta.get("span.kind")
+        if isinstance(flat, str) and flat:
+            return flat
+    return "llm"
+
+
 def remap_sdk_span_to_ui_format(span: Dict[str, Any], event_ml_app: str = "") -> Dict[str, Any]:
     """Remap span from SDK format to UI-expected format (extract ml_app, service, env, session_id from tags)."""
     tags = span.get("tags", [])
@@ -142,8 +165,7 @@ def remap_sdk_span_to_ui_format(span: Dict[str, Any], event_ml_app: str = "") ->
     if "hostname" not in span or not span["hostname"]:
         span["hostname"] = extracted.get("hostname", "")
 
-    meta = span.get("meta", {})
-    span_kind = meta.get("span", {}).get("kind", "llm")
+    span_kind = _resolve_span_kind(span)
 
     if "meta" not in span:
         span["meta"] = {}
@@ -911,7 +933,7 @@ def build_event_platform_list_response(
         duration = span.get("duration", 0)
         start_ns = span.get("start_ns", monotonic_wall_ns())
         tags = span.get("tags", [])
-        span_kind = meta.get("span", {}).get("kind", "llm")
+        span_kind = _resolve_span_kind(span)
         ml_app = span.get("ml_app", span.get("_ui_ml_app", "unknown"))
         service = span.get("service", "")
         env = span.get("env", "")
@@ -1323,7 +1345,7 @@ class LLMObsEventPlatformAPI:
             duration = found_span.get("duration", 0)
             start_ns = found_span.get("start_ns", monotonic_wall_ns())
             tags = found_span.get("tags", [])
-            span_kind = meta.get("span", {}).get("kind", "llm")
+            span_kind = _resolve_span_kind(found_span)
             ml_app = found_span.get("ml_app", found_span.get("_ui_ml_app", "unknown"))
             service = found_span.get("service", "")
             env = found_span.get("env", "")
@@ -1444,7 +1466,7 @@ class LLMObsEventPlatformAPI:
                 meta = span.get("meta", {})
                 metrics = span.get("metrics", {})
                 tags = span.get("tags", [])
-                span_kind = meta.get("span", {}).get("kind", "llm")
+                span_kind = _resolve_span_kind(span)
                 ml_app = span.get("ml_app", span.get("_ui_ml_app", "unknown"))
                 service = span.get("service", "")
                 children_ids = children_map.get(span_id, [])
