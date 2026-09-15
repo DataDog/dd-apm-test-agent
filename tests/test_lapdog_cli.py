@@ -4,8 +4,8 @@ from unittest import mock
 
 import pytest
 
-from lapdog import codex_args
 from lapdog import cli
+from lapdog import codex_args
 
 
 def test_codex_command_is_registered():
@@ -1012,3 +1012,21 @@ def test_main_routes_unknown_command_to_cmd_exec(monkeypatch):
 
     cmd_exec.assert_called_once()
     cmd_claude.assert_not_called()
+
+
+def test_start_lapdog_uses_dedicated_server_module(tmp_path, monkeypatch):
+    process = mock.Mock(pid=1234)
+    popen = mock.Mock(return_value=process)
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli, "_write_pid_file", mock.Mock())
+    monkeypatch.setattr(cli, "_wait_for_lapdog", mock.Mock())
+    monkeypatch.setattr(cli.subprocess, "Popen", popen)
+
+    cli._start_lapdog(8126)
+
+    assert popen.call_args.args[0] == [
+        cli.sys.executable,
+        "-m",
+        "lapdog.server",
+        "--disable-llmobs-data-forwarding",
+    ]

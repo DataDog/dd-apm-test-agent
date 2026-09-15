@@ -1,4 +1,4 @@
-from ddapm_test_agent.codex_cost_tracker import compute_openai_cost_metrics
+from lapdog.codex_cost_tracker import compute_openai_cost_metrics
 
 
 class TestModelLookup:

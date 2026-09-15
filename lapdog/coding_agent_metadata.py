@@ -1,4 +1,4 @@
-"""Project metadata helpers for coding-agent LLMObs traces."""
+"""Project metadata helpers for Lapdog coding-agent LLMObs traces."""
 
 import dataclasses
 from functools import lru_cache
@@ -11,6 +11,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from urllib.parse import urlparse
+
 
 log = logging.getLogger(__name__)
 

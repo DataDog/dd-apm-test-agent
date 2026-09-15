@@ -39,10 +39,11 @@ from ddapm_test_agent.apmtelemetry import TelemetryEvent
 from ddapm_test_agent.client import TestOTLPClient
 from ddapm_test_agent.logs import LOGS_ENDPOINT
 from ddapm_test_agent.metrics import METRICS_ENDPOINT
-from ddapm_test_agent.traces_otlp import TRACES_ENDPOINT
 from ddapm_test_agent.trace import Span
 from ddapm_test_agent.trace import Trace
 from ddapm_test_agent.trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
+from ddapm_test_agent.traces_otlp import TRACES_ENDPOINT
+from lapdog.server import make_app as make_lapdog_app
 
 
 # Fix the service name to make tests consistently pass local and in CI.
@@ -219,6 +220,65 @@ async def agent_app(
 @pytest.fixture
 async def agent(agent_app, aiohttp_client, loop):
     client = await aiohttp_client(agent_app)
+    yield client
+
+
+@pytest.fixture
+async def lapdog_agent_app(
+    aiohttp_server,
+    agent_enabled_checks,
+    log_span_fmt,
+    snapshot_dir,
+    snapshot_ci_mode,
+    snapshot_ignored_attrs,
+    agent_url,
+    trace_request_delay,
+    suppress_trace_parse_errors,
+    pool_trace_check_failures,
+    disable_error_responses,
+    snapshot_removed_attrs,
+    snapshot_regex_placeholders,
+    vcr_cassettes_directory,
+    vcr_ci_mode,
+    vcr_provider_map,
+    vcr_ignore_headers,
+    vcr_json_body_normalizers,
+    vcr_body_regex_normalizers,
+    dd_site,
+    dd_api_key,
+    disable_llmobs_data_forwarding,
+):
+    app = await aiohttp_server(
+        make_lapdog_app(
+            enabled_checks=agent_enabled_checks,
+            log_span_fmt=log_span_fmt,
+            snapshot_dir=str(snapshot_dir),
+            snapshot_ci_mode=snapshot_ci_mode,
+            snapshot_ignored_attrs=snapshot_ignored_attrs,
+            agent_url=agent_url,
+            trace_request_delay=trace_request_delay,
+            suppress_trace_parse_errors=suppress_trace_parse_errors,
+            pool_trace_check_failures=pool_trace_check_failures,
+            disable_error_responses=disable_error_responses,
+            snapshot_removed_attrs=snapshot_removed_attrs,
+            snapshot_regex_placeholders=snapshot_regex_placeholders,
+            vcr_cassettes_directory=vcr_cassettes_directory,
+            vcr_ci_mode=vcr_ci_mode,
+            vcr_provider_map=vcr_provider_map,
+            vcr_ignore_headers=vcr_ignore_headers,
+            vcr_json_body_normalizers=vcr_json_body_normalizers,
+            vcr_body_regex_normalizers=vcr_body_regex_normalizers,
+            dd_site=dd_site,
+            dd_api_key=dd_api_key,
+            disable_llmobs_data_forwarding=disable_llmobs_data_forwarding,
+        )
+    )
+    yield app
+
+
+@pytest.fixture
+async def lapdog_agent(lapdog_agent_app, aiohttp_client, loop):
+    client = await aiohttp_client(lapdog_agent_app)
     yield client
 
 

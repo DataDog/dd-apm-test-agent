@@ -15,6 +15,8 @@ from typing import Tuple
 from aiohttp import web
 from aiohttp.web import Request
 
+from ddapm_test_agent.cors import with_cors
+
 from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import PendingToolSpan
 from .claude_hooks import SessionState
@@ -26,7 +28,7 @@ from .coding_agent_metadata import apply_project_metadata_to_span
 from .coding_agent_metadata import extract_agent_project_name
 from .coding_agent_metadata import extract_git_repository_url
 from .coding_agent_metadata import resolve_project_metadata
-from .llmobs_event_platform import with_cors
+
 
 log = logging.getLogger(__name__)
 

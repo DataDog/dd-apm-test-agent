@@ -5,9 +5,9 @@ from typing import Dict
 from typing import List
 from unittest import mock
 
-from ddapm_test_agent import pi_backfill
 from lapdog import _backfill_common
 from lapdog import backfill_pi
+from lapdog import pi_session_backfill as pi_backfill
 
 
 def _write_session(path: Path, entries: List[Dict[str, Any]]) -> None:

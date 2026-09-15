@@ -6,14 +6,12 @@ from collections import OrderedDict
 from collections import defaultdict
 from dataclasses import dataclass
 from dataclasses import field
-import gzip
 import json
 import logging
 import os
 import platform
 import pprint
 import re
-import requests
 import socket
 import sys
 import threading
@@ -40,7 +38,6 @@ from aiohttp.web import HTTPException
 from aiohttp.web import Request
 from aiohttp.web import middleware
 from grpc import aio as grpc_aio
-import msgpack
 from msgpack.exceptions import ExtraData as MsgPackExtraDataException
 from multidict import CIMultiDict
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceResponse
@@ -49,6 +46,7 @@ from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportM
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import add_MetricsServiceServicer_to_server
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import add_TraceServiceServicer_to_server
+import requests
 from yarl import URL
 
 from . import _get_version
@@ -59,15 +57,9 @@ from .apmtelemetry import v2_decode_request as v2_apmtelemetry_decode_request
 from .checks import CheckTrace
 from .checks import Checks
 from .checks import start_trace
-from .claude_hooks import ClaudeHooksAPI
-from .claude_link_tracker import ClaudeLinkTracker
-from .claude_proxy import ClaudeProxyAPI
-from .pi_hooks import PiHooksAPI
-from .codex_hooks import CodexHooksAPI
-from .codex_proxy import CodexProxyAPI
+from .cors import ALLOWED_ORIGIN_PATTERN
 from .integration import Integration
-from .llmobs_event_platform import LLMObsEventPlatformAPI
-from .llmobs_event_platform import decode_llmobs_payload
+from .llmobs_trace import decode_llmobs_payload
 from .llmobs_trace import extract_llmobs_envelopes_from_v04_traces
 from .logs import LOGS_ENDPOINT
 from .logs import OTLPLogsGRPCServicer
@@ -102,30 +94,8 @@ from .tracestats import v06StatsPayload
 from .vcr_proxy import proxy_request
 
 
-def _inject_lapdog_forwarded(data: bytes, content_encoding: str) -> bytes:
-    """Decode a forwarded LLM obs msgpack payload, add lapdog_forwarded:true to each span's tags, and re-encode.
-
-    Falls back to the original bytes if decoding fails (e.g. unexpected format).
-    """
-    try:
-        is_gzipped = "gzip" in content_encoding.lower()
-        if is_gzipped:
-            data = gzip.decompress(data)
-        payload = msgpack.unpackb(data, raw=False)
-        if isinstance(payload, dict):
-            ml_obs = payload.get("ml_obs")
-            spans = (ml_obs.get("spans") if isinstance(ml_obs, dict) else None) or payload.get("spans") or []
-            for span in spans:
-                if not isinstance(span, dict):
-                    continue
-                tags = span.get("tags") or []
-                if "lapdog_forwarded:true" not in tags:
-                    span["tags"] = tags + ["lapdog_forwarded:true"]
-        data = msgpack.packb(payload, use_bin_type=True)
-        if is_gzipped:
-            data = gzip.compress(data)
-    except Exception:
-        pass
+def _identity_llmobs_payload(data: bytes, content_encoding: str) -> bytes:
+    """Return the payload unchanged for standalone test-agent forwarding."""
     return data
 
 
@@ -447,6 +417,8 @@ class Agent:
         )
 
         self.vcr_cassette_prefix: Optional[str] = None
+        self.llmobs_payload_transform: Callable[[bytes, str], bytes] = _identity_llmobs_payload
+        self.llmobs_span_update_listener: Optional[Callable[[bytes, str], None]] = None
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -1029,8 +1001,9 @@ class Agent:
             headers["DD-API-KEY"] = dd_api_key
 
         raw = await request.read()
-        if request.app["lapdog_mode"]:
-            raw = _inject_lapdog_forwarded(raw, request.headers.get("Content-Encoding", ""))
+        transformed_raw = self.llmobs_payload_transform(raw, request.headers.get("Content-Encoding", ""))
+        if transformed_raw is not raw:
+            raw = transformed_raw
             headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
         async with ClientSession() as session:
             async with session.post(url, headers=headers, data=raw) as resp:
@@ -1066,8 +1039,9 @@ class Agent:
                 try:
                     fwd_data = data
                     fwd_headers = headers
-                    if request.app["lapdog_mode"]:
-                        fwd_data = _inject_lapdog_forwarded(data, headers.get("Content-Encoding", ""))
+                    transformed_data = self.llmobs_payload_transform(data, headers.get("Content-Encoding", ""))
+                    if transformed_data is not data:
+                        fwd_data = transformed_data
                         fwd_headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
                     async with ClientSession() as session:
                         async with session.post(url, headers=fwd_headers, data=fwd_data) as resp:
@@ -1079,9 +1053,8 @@ class Agent:
                     log.warning("Error forwarding LLMObs span update: %s", e)
 
         # Update local stored spans
-        llmobs_api = request.app.get("llmobs_event_platform_api")
-        if llmobs_api:
-            llmobs_api.update_spans(data, content_type)
+        if self.llmobs_span_update_listener is not None:
+            self.llmobs_span_update_listener(data, content_type)
 
         return web.HTTPOk()
 
@@ -1115,8 +1088,9 @@ class Agent:
             headers["DD-API-KEY"] = dd_api_key
 
         raw = await request.read()
-        if request.app["lapdog_mode"]:
-            raw = _inject_lapdog_forwarded(raw, request.headers.get("Content-Encoding", ""))
+        transformed_raw = self.llmobs_payload_transform(raw, request.headers.get("Content-Encoding", ""))
+        if transformed_raw is not raw:
+            raw = transformed_raw
             headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
         async with ClientSession() as session:
             async with session.post(url, headers=headers, data=raw) as resp:
@@ -1151,8 +1125,9 @@ class Agent:
                 try:
                     fwd_data = data
                     fwd_headers = headers
-                    if request.app["lapdog_mode"]:
-                        fwd_data = _inject_lapdog_forwarded(data, headers.get("Content-Encoding", ""))
+                    transformed_data = self.llmobs_payload_transform(data, headers.get("Content-Encoding", ""))
+                    if transformed_data is not data:
+                        fwd_data = transformed_data
                         fwd_headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
                     async with ClientSession() as session:
                         async with session.post(url, headers=fwd_headers, data=fwd_data) as resp:
@@ -1163,9 +1138,8 @@ class Agent:
                 except Exception as e:
                     log.warning("Error forwarding LLMObs span update: %s", e)
 
-        llmobs_api = request.app.get("llmobs_event_platform_api")
-        if llmobs_api:
-            llmobs_api.update_spans(data, content_type)
+        if self.llmobs_span_update_listener is not None:
+            self.llmobs_span_update_listener(data, content_type)
 
         return web.HTTPOk()
 
@@ -1219,15 +1193,13 @@ class Agent:
 
     async def handle_settings(self, request: Request) -> web.Response:
         """Allow to change test agent settings on the fly"""
-        from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
-
         headers: Dict[str, str] = {
             "Access-Control-Allow-Methods": "POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type",
             "Vary": "Origin",
         }
         origin = request.headers.get("Origin", "")
-        if _ALLOWED_ORIGIN_PATTERN.match(origin):
+        if ALLOWED_ORIGIN_PATTERN.match(origin):
             headers["Access-Control-Allow-Origin"] = origin
 
         # Handle OPTIONS preflight
@@ -1270,15 +1242,13 @@ class Agent:
         return web.HTTPAccepted(headers=headers)
 
     async def handle_info(self, request: Request) -> web.Response:
-        from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
-
         headers: Dict[str, str] = {
             "Access-Control-Allow-Methods": "GET, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type",
             "Vary": "Origin",
         }
         origin = request.headers.get("Origin", "")
-        if _ALLOWED_ORIGIN_PATTERN.match(origin):
+        if ALLOWED_ORIGIN_PATTERN.match(origin):
             headers["Access-Control-Allow-Origin"] = origin
 
         # Handle OPTIONS preflight
@@ -1550,15 +1520,13 @@ class Agent:
         return web.json_response(traces)
 
     async def handle_session_requests(self, request: Request) -> web.Response:
-        from .llmobs_event_platform import _ALLOWED_ORIGIN_PATTERN
-
         headers: Dict[str, str] = {
             "Access-Control-Allow-Methods": "GET, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type",
             "Vary": "Origin",
         }
         origin = request.headers.get("Origin", "")
-        if _ALLOWED_ORIGIN_PATTERN.match(origin):
+        if ALLOWED_ORIGIN_PATTERN.match(origin):
             headers["Access-Control-Allow-Origin"] = origin
 
         # Handle OPTIONS preflight
@@ -2065,7 +2033,6 @@ def make_app(
     dd_site: str,
     dd_api_key: Optional[str],
     disable_llmobs_data_forwarding: bool,
-    lapdog_mode: bool = False,
     org_prop_marker: str = "",
     enable_web_ui: bool = False,
 ) -> web.Application:
@@ -2149,41 +2116,6 @@ def make_app(
         ]
     )
 
-    # Add LLM Observability Event Platform API routes
-    # These provide Datadog Event Platform compatible endpoints for local development
-    llmobs_event_platform_api = LLMObsEventPlatformAPI(agent)
-    app["llmobs_event_platform_api"] = llmobs_event_platform_api
-    app.add_routes(llmobs_event_platform_api.get_routes())
-
-    # Add Claude Code hooks and proxy routes with shared link tracker
-    claude_link_tracker = ClaudeLinkTracker()
-    claude_hooks_api = ClaudeHooksAPI(link_tracker=claude_link_tracker)
-    claude_hooks_api.set_app(app)
-    app.add_routes(claude_hooks_api.get_routes())
-    llmobs_event_platform_api.set_claude_hooks_api(claude_hooks_api)
-
-    claude_proxy_api = ClaudeProxyAPI(hooks_api=claude_hooks_api, link_tracker=claude_link_tracker)
-    app.add_routes(claude_proxy_api.get_routes())
-
-    pi_hooks_api = PiHooksAPI(hooks_api=claude_hooks_api)
-    app.add_routes(pi_hooks_api.get_routes())
-
-    codex_hooks_api = CodexHooksAPI(hooks_api=claude_hooks_api)
-    app.add_routes(codex_hooks_api.get_routes())
-
-    codex_proxy_api = CodexProxyAPI(hooks_api=codex_hooks_api)
-    app.add_routes(codex_proxy_api.get_routes())
-
-    async def _cleanup_claude_proxy(app: web.Application) -> None:
-        await claude_proxy_api.close()
-
-    app.on_cleanup.append(_cleanup_claude_proxy)
-
-    async def _cleanup_codex_proxy(app: web.Application) -> None:
-        await codex_proxy_api.close()
-
-    app.on_cleanup.append(_cleanup_codex_proxy)
-
     checks = Checks(
         checks=[
             CheckMetaTracerVersionHeader,
@@ -2226,7 +2158,6 @@ def make_app(
         disable_llmobs_data_forwarding = True
 
     app["disable_llmobs_data_forwarding"] = disable_llmobs_data_forwarding
-    app["lapdog_mode"] = lapdog_mode
 
     return app
 
@@ -2362,7 +2293,10 @@ def _handle_windows_named_pipe_client(
             pass
 
 
-def main(args: Optional[List[str]] = None) -> None:
+def main(
+    args: Optional[List[str]] = None,
+    app_factory: Optional[Callable[..., web.Application]] = None,
+) -> None:
     if args is None:
         args = sys.argv[1:]
     parser = argparse.ArgumentParser(
@@ -2577,11 +2511,6 @@ def main(args: Optional[List[str]] = None) -> None:
         default=os.environ.get("DISABLE_LLMOBS_DATA_FORWARDING", "").lower() in ("true", "1", "yes"),
         help="Disable data forwarding to Datadog.",
     )
-    parser.add_argument(
-        "--lapdog-mode",
-        action="store_true",
-        default=False,
-    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -2618,7 +2547,10 @@ def main(args: Optional[List[str]] = None) -> None:
             "default snapshot directory %r does not exist or is not readable. Snapshotting will not work.",
             os.path.abspath(parsed_args.snapshot_dir),
         )
-    app = make_app(
+    if app_factory is None:
+        app_factory = make_app
+
+    app = app_factory(
         enabled_checks=parsed_args.enabled_checks,
         log_span_fmt=parsed_args.log_span_fmt,
         snapshot_dir=parsed_args.snapshot_dir,
@@ -2640,7 +2572,6 @@ def main(args: Optional[List[str]] = None) -> None:
         dd_site=parsed_args.dd_site,
         dd_api_key=parsed_args.dd_api_key,
         disable_llmobs_data_forwarding=parsed_args.disable_llmobs_data_forwarding,
-        lapdog_mode=parsed_args.lapdog_mode,
         org_prop_marker=parsed_args.org_prop_marker,
         enable_web_ui=parsed_args.web_ui_port > 0,
     )
