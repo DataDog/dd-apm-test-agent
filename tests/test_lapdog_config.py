@@ -10,7 +10,7 @@ def test_save_and_load_config(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
     monkeypatch.setattr(config, "CONFIG_FILE", str(config_path))
 
-    config.save_config("us3.datadoghq.com", data_forwarding=True)
+    config.write_config({"dd_site": "us3.datadoghq.com", "data_forwarding": True})
 
     assert config.load_config() == {
         "dd_site": "us3.datadoghq.com",
@@ -27,6 +27,29 @@ def test_load_config_ignores_invalid_json(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_FILE", str(config_path))
 
     assert config.load_config() == {}
+
+
+def test_write_config_merge_preserves_existing_values(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    monkeypatch.setattr(config, "CONFIG_FILE", str(config_path))
+    config.write_config({"dd_site": "datadoghq.eu", "data_forwarding": True})
+
+    config.write_config({"data_forwarding": False}, merge=True)
+
+    assert config.load_config() == {
+        "dd_site": "datadoghq.eu",
+        "data_forwarding": False,
+    }
+
+
+def test_write_config_replaces_existing_values_by_default(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    monkeypatch.setattr(config, "CONFIG_FILE", str(config_path))
+    config.write_config({"dd_site": "datadoghq.eu", "data_forwarding": True})
+
+    config.write_config({"data_forwarding": False})
+
+    assert config.load_config() == {"data_forwarding": False}
 
 
 def test_keyring_helpers(monkeypatch):

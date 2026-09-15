@@ -418,7 +418,8 @@ class Agent:
 
         self.vcr_cassette_prefix: Optional[str] = None
         self.llmobs_payload_transform: Callable[[bytes, str], bytes] = _identity_llmobs_payload
-        self.llmobs_span_update_listener: Optional[Callable[[bytes, str], None]] = None
+        self.llmobs_span_update_listener: Optional[Callable[[bytes, str], object]] = None
+        self.settings_update_listener: Optional[Callable[[Dict[str, Any]], None]] = None
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -1232,6 +1233,9 @@ class Agent:
                 )
 
             request.app["authenticated"] = True
+
+        if self.settings_update_listener is not None:
+            self.settings_update_listener(data)
 
         # Second pass to apply the config
         for key in data:

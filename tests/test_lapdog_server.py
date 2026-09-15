@@ -56,15 +56,31 @@ async def test_lapdog_and_base_apps_use_different_forwarding_extensions(agent, l
     assert base_agent.llmobs_payload_transform is not extended_agent.llmobs_payload_transform
     assert base_agent.llmobs_span_update_listener is None
     assert extended_agent.llmobs_span_update_listener is not None
+    assert base_agent.settings_update_listener is None
+    assert extended_agent.settings_update_listener is not None
+
+
+async def test_forwarding_setting_is_persisted(lapdog_agent, monkeypatch):
+    write_config = mock.Mock()
+    monkeypatch.setattr(server.config, "write_config", write_config)
+
+    response = await lapdog_agent.post(
+        "/test/settings",
+        json={"disable_llmobs_data_forwarding": True},
+    )
+
+    assert response.status == 202
+    write_config.assert_called_once_with({"data_forwarding": False}, merge=True)
+    assert lapdog_agent.app["disable_llmobs_data_forwarding"] is True
 
 
 async def test_oauth_token_creates_and_persists_api_key(lapdog_agent, monkeypatch):
     create_api_key = mock.AsyncMock(return_value=("created-key", "key-id"))
     set_api_key = mock.Mock()
-    save_config = mock.Mock()
+    write_config = mock.Mock()
     monkeypatch.setattr(auth, "_create_api_key", create_api_key)
     monkeypatch.setattr(auth.config, "set_api_key", set_api_key)
-    monkeypatch.setattr(auth.config, "save_config", save_config)
+    monkeypatch.setattr(auth.config, "write_config", write_config)
 
     response = await lapdog_agent.post(
         "/lapdog/oauth/token",
@@ -77,7 +93,7 @@ async def test_oauth_token_creates_and_persists_api_key(lapdog_agent, monkeypatc
     assert response.headers["Access-Control-Allow-Origin"] == "https://lapdog.datadoghq.com"
     create_api_key.assert_awaited_once_with("oauth-token", "us5.datadoghq.com")
     set_api_key.assert_called_once_with("created-key")
-    save_config.assert_called_once_with(dd_site="us5.datadoghq.com", data_forwarding=True)
+    write_config.assert_called_once_with({"dd_site": "us5.datadoghq.com", "data_forwarding": True})
     assert lapdog_agent.app["dd_api_key"] == "created-key"
     assert lapdog_agent.app["dd_site"] == "us5.datadoghq.com"
     assert lapdog_agent.app["disable_llmobs_data_forwarding"] is False
@@ -87,7 +103,7 @@ async def test_oauth_token_creates_and_persists_api_key(lapdog_agent, monkeypatc
 async def test_oauth_token_does_not_replace_inline_runtime_configuration(lapdog_agent, monkeypatch):
     monkeypatch.setattr(auth, "_create_api_key", mock.AsyncMock(return_value=("created-key", "key-id")))
     monkeypatch.setattr(auth.config, "set_api_key", mock.Mock())
-    monkeypatch.setattr(auth.config, "save_config", mock.Mock())
+    monkeypatch.setattr(auth.config, "write_config", mock.Mock())
     lapdog_agent.app["lapdog_auth_overrides"] = {
         "dd_api_key": True,
         "dd_site": True,

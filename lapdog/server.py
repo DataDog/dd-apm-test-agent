@@ -106,9 +106,15 @@ def _inject_lapdog_forwarded(data: bytes, content_encoding: str) -> bytes:
     return data
 
 
+def _persist_lapdog_settings(settings: Dict[str, Any]) -> None:
+    forwarding_disabled = settings.get("disable_llmobs_data_forwarding")
+    if isinstance(forwarding_disabled, bool):
+        config.write_config({"data_forwarding": not forwarding_disabled}, merge=True)
+
+
 def extend_app(app: web.Application) -> web.Application:
     """Add Lapdog routes, shared state, forwarding behavior, and cleanup hooks."""
-    agent = app["agent"]
+    agent: test_agent.Agent = app["agent"]
 
     llmobs_event_platform_api = LLMObsEventPlatformAPI(agent)
     claude_link_tracker = ClaudeLinkTracker()
@@ -134,6 +140,9 @@ def extend_app(app: web.Application) -> web.Application:
     app["llmobs_event_platform_api"] = llmobs_event_platform_api
     agent.llmobs_payload_transform = _inject_lapdog_forwarded
     agent.llmobs_span_update_listener = llmobs_event_platform_api.update_spans
+    # TODO: Add an agent_factory seam to the base make_app and migrate these
+    # behavioral extensions to a LapdogAgent subclass if more hooks accumulate.
+    agent.settings_update_listener = _persist_lapdog_settings
 
     async def cleanup_proxies(cleanup_app: web.Application) -> None:
         await claude_proxy_api.close()

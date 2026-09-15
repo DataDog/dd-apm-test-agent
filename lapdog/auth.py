@@ -120,7 +120,7 @@ class LapdogAuthAPI:
             return error
         try:
             config.set_api_key(api_key)
-            config.save_config(dd_site=site, data_forwarding=True)
+            config.write_config({"dd_site": site, "data_forwarding": True})
         except Exception:
             log.exception("Failed to persist Lapdog authentication")
             return web.HTTPInternalServerError(text="Failed to persist Lapdog authentication")

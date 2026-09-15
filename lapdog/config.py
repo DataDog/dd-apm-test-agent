@@ -26,18 +26,16 @@ def load_config() -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def save_config(dd_site: str, data_forwarding: bool) -> None:
-    """Atomically persist non-secret Lapdog configuration."""
+def write_config(value: Dict[str, Any], *, merge: bool = False) -> None:
+    """Atomically replace or merge non-secret Lapdog configuration."""
+    config_value = load_config() if merge else {}
+    config_value.update(value)
     config_dir = os.path.dirname(CONFIG_FILE)
     os.makedirs(config_dir, mode=0o700, exist_ok=True)
     fd, temporary_path = tempfile.mkstemp(prefix="config-", suffix=".json", dir=config_dir)
     try:
         with os.fdopen(fd, "w") as config_file:
-            json.dump(
-                {"dd_site": dd_site, "data_forwarding": data_forwarding},
-                config_file,
-                indent=2,
-            )
+            json.dump(config_value, config_file, indent=2)
             config_file.write("\n")
         os.chmod(temporary_path, 0o600)
         os.replace(temporary_path, CONFIG_FILE)
