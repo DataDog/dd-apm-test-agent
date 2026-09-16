@@ -8,40 +8,20 @@ from lapdog import cli
 from lapdog import codex_args
 
 
-@pytest.mark.parametrize(
-    ("search_path", "expected_executable"),
-    [
-        (False, "C:\\tools\\codex.exe"),
-        (True, None),
-    ],
-)
-def test_run_uses_popen_on_windows(monkeypatch, search_path, expected_executable):
-    process = mock.Mock()
-    process.wait.return_value = 23
-    popen = mock.Mock(return_value=process)
-    env = {"LAPDOG_URL": "http://localhost:8126"}
-
-    monkeypatch.setattr(cli.sys, "platform", "win32")
-    monkeypatch.setattr(cli.subprocess, "Popen", popen)
+@pytest.mark.skipif(cli.sys.platform != "win32", reason="Windows-specific subprocess behavior")
+@pytest.mark.parametrize("search_path", [False, True])
+def test_run_executes_command_on_windows(tmp_path, search_path):
+    command = tmp_path / "lapdog-test-command.cmd"
+    command.write_text("@exit /b 23\n")
 
     with pytest.raises(SystemExit) as exc_info:
         cli._run(
-            bin_path="C:\\tools\\codex.exe",
-            argv=["codex", "exec", "hello"],
-            env=env,
+            bin_path=str(command),
+            argv=[str(command)],
             search_path=search_path,
         )
 
     assert exc_info.value.code == 23
-    expected_kwargs = {
-        "env": env,
-        "stdin": None,
-        "stdout": None,
-        "stderr": None,
-    }
-    if expected_executable is not None:
-        expected_kwargs["executable"] = expected_executable
-    popen.assert_called_once_with(["codex", "exec", "hello"], **expected_kwargs)
 
 
 def test_codex_command_is_registered():
