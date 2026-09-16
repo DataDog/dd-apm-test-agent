@@ -52,6 +52,13 @@ _LAPDOG_LETTERS = (
 )
 
 
+FACE = "\033[38;5;177m"  # light purple
+SHADOW = "\033[38;5;54m"  # deep purple
+DIM = "\033[2m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+
 def _render_lapdog_art(face: str, shadow: str, reset: str) -> List[str]:
     """Render LAPDOG word art as colored lines with a 1-cell drop shadow.
 
@@ -129,39 +136,62 @@ def _render_lapdog_art(face: str, shadow: str, reset: str) -> List[str]:
     return lines
 
 
+def _build(text_lines: List[str]) -> str:
+    art_lines = _render_lapdog_art(FACE, SHADOW, RESET)
+
+    # Vertically center the text block against the art.
+    pad_top = max((len(art_lines) - len(text_lines)) // 2, 0)
+    padded_right = [""] * pad_top + text_lines
+    while len(padded_right) < len(art_lines):
+        padded_right.append("")
+
+    ascii_lines = [""]
+    for art, text in zip(art_lines, padded_right):
+        ascii_lines.append(f"  {art}  {text}")
+    ascii_lines.append("")
+    return "\n".join(ascii_lines)
+
+
+def build_status_banner(
+    port: Optional[int] = None,
+    pid: Optional[int] = None,
+    logs_path: Optional[str] = None,
+    is_running: bool = True
+) -> str:
+    lines = [
+        f"{BOLD}lapdog{RESET} {DIM}v{_get_version()}{RESET}",
+        "",
+        "",
+    ]
+
+    if is_running:
+        lines.append(f"{DIM}Lapdog is running on port {RESET}{BOLD}{port}{RESET}{DIM}.{RESET}" if port else "")
+        lines.append(f"{DIM}Process ID (pid): {RESET}{BOLD}{pid}{RESET}{DIM}.{RESET}" if pid else "")
+        lines.append(f"{DIM}Logs: {RESET}{BOLD}{logs_path}{RESET}{DIM}.{RESET}" if logs_path else "")
+    else:
+        lines.append(f"{DIM}Lapdog is not running.{RESET}")
+        lines.append(f"{DIM}Start lapdog with {RESET}{BOLD}lapdog start{RESET}{DIM} or {RESET}{BOLD}lapdog claude{RESET}")
+        lines.append(f"{DIM}to start and observe local agent data with Lapdog.")
+
+    return _build(text_lines=lines)
+
+
 def build_running_banner(data_type: str, warning_lines: Optional[List[str]] = None) -> str:
     """
     Arguments:
         data_type: The type of data (coding session, application)
         warning_lines: Optional extra lines to show instead of the default stop hint.
     """
-    face = "\033[38;5;177m"  # light purple
-    shadow = "\033[38;5;54m"  # deep purple
-    dim = "\033[2m"
-    bold = "\033[1m"
-    reset = "\033[0m"
-
-    art_lines = _render_lapdog_art(face, shadow, reset)
-
-    right_lines = [
-        f"{bold}lapdog{reset} {dim}v{_get_version()}{reset}",
+    lines = [
+        f"{BOLD}lapdog{RESET} {DIM}v{_get_version()}{RESET}",
         "",
-        f"{dim}Lapdog has started and is listening for data.{reset}",
-        f"{dim}Open {reset}{face}https://lapdog.datadoghq.com{reset}{dim} to view insights,{reset}",
-        f"{dim}costs, optimizations and more related to this {data_type}.{reset}",
+        f"{DIM}Lapdog has started and is listening for data.{RESET}",
+        f"{DIM}Open {RESET}{FACE}https://lapdog.datadoghq.com{RESET}{DIM} to view insights,{RESET}",
+        f"{DIM}costs, optimizations and more related to this {data_type}.{RESET}",
     ]
     if warning_lines:
-        right_lines.extend(f"{dim}{line}{reset}" for line in warning_lines)
+        lines.extend(f"{DIM}{line}{RESET}" for line in warning_lines)
     else:
-        right_lines.append(f"{dim}Run {bold}lapdog stop{reset} {dim}to stop Lapdog from running.{reset}")
-    # Vertically center the text block against the art.
-    pad_top = max((len(art_lines) - len(right_lines)) // 2, 0)
-    padded_right = [""] * pad_top + right_lines
-    while len(padded_right) < len(art_lines):
-        padded_right.append("")
+        lines.append(f"{DIM}Run {BOLD}lapdog stop{RESET} {DIM}to stop Lapdog from running.{RESET}")
 
-    lines = [""]
-    for art, text in zip(art_lines, padded_right):
-        lines.append(f"  {art}  {text}")
-    lines.append("")
-    return "\n".join(lines)
+    return _build(text_lines=lines)

@@ -1,0 +1,11 @@
+---
+features:
+  - |
+    Add cost tracking for more of the latest Claude and Codex models. Claude:
+    ``claude-sonnet-5`` ($3 / $15 per Mtok) and ``claude-fable-5`` /
+    ``claude-mythos-5`` ($10 / $50). Codex/OpenAI: ``gpt-5.6`` and
+    ``gpt-5.6-terra``, plus ``gpt-5.3-codex`` (the current Codex CLI default).
+    Without these entries, spans for the newest models fell through and were
+    reported with no estimated cost. Where a rate was ambiguous (Sonnet 5's
+    introductory price, the disputed gpt-5.6 "Luna" tier) the higher estimate
+    is used, since these costs are only estimates.

@@ -7,7 +7,12 @@ import subprocess
 import msgpack
 import pytest
 
-from ddapm_test_agent.claude_hooks import ClaudeHooksAPI
+from lapdog.claude_hooks import ClaudeHooksAPI
+
+
+@pytest.fixture
+def agent(lapdog_agent):
+    return lapdog_agent
 
 
 @pytest.fixture
@@ -332,7 +337,7 @@ async def test_codex_project_metadata_from_session_git(agent):
 
 
 async def test_codex_project_metadata_uses_local_git_fallback(agent, tmp_path, monkeypatch):
-    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+    from lapdog.coding_agent_metadata import _local_git_metadata
 
     monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
     _local_git_metadata.cache_clear()
@@ -374,7 +379,7 @@ async def test_codex_project_metadata_uses_local_git_fallback(agent, tmp_path, m
 
 
 async def test_codex_project_metadata_uses_cwd_basename_without_git(agent, tmp_path, monkeypatch):
-    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+    from lapdog.coding_agent_metadata import _local_git_metadata
 
     monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
     _local_git_metadata.cache_clear()

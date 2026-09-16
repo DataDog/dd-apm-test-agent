@@ -1,4 +1,4 @@
-"""Span link tracking for connecting LLM and tool spans in Claude Code traces.
+"""Span link tracking for connecting LLM and tool spans in Lapdog's Claude Code traces.
 
 Follows the same linking pattern as dd-trace-py's LinkTracker:
 - LLM.output -> Tool.input (when LLM generates tool_use, link to the tool span)
@@ -11,6 +11,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
+
 
 log = logging.getLogger(__name__)
 

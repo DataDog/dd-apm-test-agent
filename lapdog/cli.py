@@ -4,8 +4,8 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -19,16 +19,19 @@ import urllib.error
 import urllib.request
 import uuid
 
+from ddapm_test_agent import _get_version
 from lapdog import backfill_claude
 from lapdog import backfill_codex
 from lapdog import backfill_pi
 from lapdog import codex_args
 from lapdog import tracer_inject
 from lapdog.lapdog_ascii_art import build_running_banner
+from lapdog.lapdog_ascii_art import build_status_banner
 from lapdog.paths import CODEX_APP_CURSOR_FILE
 from lapdog.paths import LAPDOG_DIR
 from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
+
 
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "tags", "uninstall"]
 # Managed launchers that also exist as external binaries a user might invoke by
@@ -281,7 +284,10 @@ def _start_lapdog(
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    args = [sys.executable, "-m", "ddapm_test_agent.agent", "--lapdog-mode"]
+    args = [sys.executable, "-m", "lapdog.server"]
+
+    env = os.environ.copy()
+    env["TEST_AGENT_VERSION"] = _get_version()
 
     if not forward_data:
         args.append("--disable-llmobs-data-forwarding")
@@ -299,7 +305,7 @@ def _start_lapdog(
     else:
         popen_kwargs["start_new_session"] = True
     with open(log_path, "w") as log_file:
-        proc = subprocess.Popen(args, stdout=log_file, **popen_kwargs)
+        proc = subprocess.Popen(args, stdout=log_file, env=env, **popen_kwargs)
     _write_pid_file(proc.pid, port)
     _wait_for_lapdog(proc, log_path)
 
@@ -411,14 +417,14 @@ def cmd_status() -> None:
     """Print lapdog status (from /info). Only works when lapdog was started by this CLI (pid file exists)."""
     pid, port = _read_pid_file()
     if port is None:
-        print("[lapdog] No lapdog running (start with 'lapdog start' or 'lapdog claude').", file=sys.stderr)
+        print(build_status_banner(is_running=False))
         sys.exit(1)
     url = _url_for_port(port)
     try:
         status = _http_get_status(url, timeout=2)
         if status >= 400:
             raise OSError(f"HTTP {status}")
-        print(f"[lapdog] Lapdog running at {url} (pid={pid}, logs: {_log_file_path()})", file=sys.stderr)
+        print(build_status_banner(port=port, pid=pid, logs_path=_log_file_path()))
     except Exception as e:
         print(f"[lapdog] Lapdog not reachable at {url}: {e}", file=sys.stderr)
         sys.exit(1)
@@ -1111,7 +1117,7 @@ def cmd_uninstall() -> None:
     )
 
 
-def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
+def _parse_command(cmd_args: List[str]) -> Tuple[List[str], Optional[List[str]]]:
     lapdog_args: List[str] = []
 
     for arg_idx, arg in enumerate(cmd_args):
@@ -1120,9 +1126,7 @@ def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
 
         lapdog_args.append(arg)
 
-    # no sub command found
-    print(LAPDOG_USAGE, file=sys.stderr)
-    sys.exit(1)
+    return lapdog_args, None
 
 
 def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
@@ -1130,6 +1134,7 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Lapdog CLI",
         prog="lapdog",
+        add_help=False
     )
 
     parser.add_argument(
@@ -1162,6 +1167,20 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
             "CLI. Sources: ~/.codex/sessions (codex), ~/.claude/projects (claude), "
             "~/.pi/agent/sessions + ~/.omp/agent/sessions (pi)."
         ),
+    )
+
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        dest="version",
+        help="Print version info and exit."
+    )
+
+    parser.add_argument(
+        "--help",
+        action="store_true",
+        dest="help",
+        help="Print usage info and exit."
     )
 
     return parser.parse_args(args=lapdog_args)
@@ -1236,6 +1255,18 @@ def main() -> None:
 
     lapdog_args, remaining = _parse_command(args[1:])
     lapdog_parsed_args = _parse_lapdog_args(lapdog_args)
+
+    if lapdog_parsed_args.version:
+        print(_get_version())
+        sys.exit(0)
+
+    if lapdog_parsed_args.help:
+        print(LAPDOG_USAGE)
+        sys.exit(0)
+
+    if not remaining:
+        print(LAPDOG_USAGE)
+        sys.exit(1)
 
     sub_cmd = _canonical_launcher(remaining[0]) or remaining[0].lower()
     sub_cmd_args = remaining[1:]

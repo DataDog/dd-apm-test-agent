@@ -1,4 +1,4 @@
-from ddapm_test_agent.claude_cost_tracker import compute_cost_metrics
+from lapdog.claude_cost_tracker import compute_cost_metrics
 
 
 class TestModelLookup:
@@ -19,6 +19,21 @@ class TestModelLookup:
     def test_date_stamped_id_haiku(self) -> None:
         result = compute_cost_metrics("claude-haiku-4-5-20251001", 1000, 0, 0, 0)
         assert result is not None
+
+    def test_opus_4_8(self) -> None:
+        assert compute_cost_metrics("claude-opus-4-8", 1000, 0, 0, 0) is not None
+        assert compute_cost_metrics("claude-opus-4-8-20260101", 1000, 0, 0, 0) is not None
+
+    def test_sonnet_5(self) -> None:
+        assert compute_cost_metrics("claude-sonnet-5", 1000, 0, 0, 0) is not None
+
+    def test_fable_and_mythos_5(self) -> None:
+        assert compute_cost_metrics("claude-fable-5", 1000, 0, 0, 0) is not None
+        assert compute_cost_metrics("claude-mythos-5", 1000, 0, 0, 0) is not None
+
+    def test_fable_and_mythos_5_1(self) -> None:
+        assert compute_cost_metrics("claude-fable-5-1", 1000, 0, 0, 0) is not None
+        assert compute_cost_metrics("claude-mythos-5-1", 1000, 0, 0, 0) is not None
 
     def test_unknown_model_returns_none(self) -> None:
         assert compute_cost_metrics("gpt-4o", 1000, 0, 0, 0) is None
@@ -96,6 +111,42 @@ class TestCostCalculation:
             assert result["estimated_cache_write_input_cost"] == 200 * 6_250, model
             assert result["estimated_cache_read_input_cost"] == 500 * 500, model
             assert result["estimated_output_cost"] == 50 * 25_000, model
+
+    def test_opus_4_8_not_shadowed_by_legacy_opus_4(self) -> None:
+        # "claude-opus-4-8" must match the reduced tier, not the legacy
+        # "claude-opus-4" prefix (which would triple the cost).
+        result = compute_cost_metrics("claude-opus-4-8", 100, 0, 0, 0)
+        assert result is not None
+        assert result["estimated_non_cached_input_cost"] == 100 * 5_000
+
+    def test_sonnet_5_pricing(self) -> None:
+        # claude-sonnet-5: list rates match the Sonnet 4.6 tier.
+        result = compute_cost_metrics("claude-sonnet-5", 100, 200, 500, 50)
+        assert result is not None
+        assert result["estimated_non_cached_input_cost"] == 100 * 3_000
+        assert result["estimated_cache_write_input_cost"] == 200 * 3_750
+        assert result["estimated_cache_read_input_cost"] == 500 * 300
+        assert result["estimated_output_cost"] == 50 * 15_000
+
+    def test_fable_and_mythos_5_pricing(self) -> None:
+        # Fable 5 / Mythos 5: $10 / $50 per Mtok, cache write $12.50, cache read $1.00.
+        for model in ("claude-fable-5", "claude-mythos-5"):
+            result = compute_cost_metrics(model, 100, 200, 500, 50)
+            assert result is not None, model
+            assert result["estimated_non_cached_input_cost"] == 100 * 10_000, model
+            assert result["estimated_cache_write_input_cost"] == 200 * 12_500, model
+            assert result["estimated_cache_read_input_cost"] == 500 * 1_000, model
+            assert result["estimated_output_cost"] == 50 * 50_000, model
+
+    def test_fable_and_mythos_5_1_pricing(self) -> None:
+        # Fable/Mythos 5.1 keep the 5.0 rates but reduce cache reads to $0.25/Mtok.
+        for model in ("claude-fable-5-1", "claude-mythos-5-1"):
+            result = compute_cost_metrics(model, 100, 200, 500, 50)
+            assert result is not None, model
+            assert result["estimated_non_cached_input_cost"] == 100 * 10_000, model
+            assert result["estimated_cache_write_input_cost"] == 200 * 12_500, model
+            assert result["estimated_cache_read_input_cost"] == 500 * 250, model
+            assert result["estimated_output_cost"] == 50 * 50_000, model
 
     def test_zero_tokens_returns_all_zeros(self) -> None:
         result = compute_cost_metrics("claude-sonnet-4-6", 0, 0, 0, 0)

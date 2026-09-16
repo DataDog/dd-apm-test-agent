@@ -24,6 +24,8 @@ import aiohttp
 from aiohttp import web
 from aiohttp.web import Request
 
+from ddapm_test_agent.cors import with_cors
+
 from ._clock import monotonic_wall_ns
 from .claude_cost_tracker import compute_cost_metrics
 from .claude_hooks import ClaudeHooksAPI
@@ -35,7 +37,7 @@ from .claude_hooks import _get_context_limit
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_link_tracker import SpanLink
 from .coding_agent_metadata import apply_project_metadata_to_span
-from .llmobs_event_platform import with_cors
+
 
 log = logging.getLogger(__name__)
 

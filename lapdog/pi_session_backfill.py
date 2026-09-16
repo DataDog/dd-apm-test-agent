@@ -19,14 +19,15 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
-from ddapm_test_agent.backfill_utils import backfill_metadata
-from ddapm_test_agent.backfill_utils import format_span_id
-from ddapm_test_agent.backfill_utils import format_trace_id
-from ddapm_test_agent.backfill_utils import to_text
-from ddapm_test_agent.claude_hooks import ClaudeHooksAPI
-from ddapm_test_agent.coding_agent_metadata import CodingAgentProjectMetadata
-from ddapm_test_agent.coding_agent_metadata import resolve_project_metadata
-from ddapm_test_agent.lapdog_app_names import PI_CODING_AGENT_ML_APP as _ML_APP
+from .app_names import PI_CODING_AGENT_ML_APP as _ML_APP
+from .backfill_utils import backfill_metadata
+from .backfill_utils import format_span_id
+from .backfill_utils import format_trace_id
+from .backfill_utils import to_text
+from .claude_hooks import ClaudeHooksAPI
+from .coding_agent_metadata import CodingAgentProjectMetadata
+from .coding_agent_metadata import resolve_project_metadata
+
 
 _TAGS_API = ClaudeHooksAPI()
 

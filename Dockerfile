@@ -21,6 +21,7 @@ ADD vcr-cassettes /vcr-cassettes
 # Add only necessary files to speed up development builds
 ADD README.md setup.py test_deps.txt ./
 ADD ddapm_test_agent ./ddapm_test_agent
+ADD lapdog ./lapdog
 ADD .git ./.git
 RUN pip install /src && \
     rm -rf /root/.cache/pip

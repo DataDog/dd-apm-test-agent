@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Lapdog: Adds ``--version`` and ``--help`` flags for the ``lapdog`` CLI (e.g. ``lapdog --version``).

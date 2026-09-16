@@ -5,10 +5,16 @@ import subprocess
 import tempfile
 
 import msgpack
+import pytest
 
-from ddapm_test_agent.claude_hooks import ClaudeHooksAPI
-from ddapm_test_agent.claude_link_tracker import ClaudeLinkTracker
-from ddapm_test_agent.claude_proxy import ClaudeProxyAPI
+from lapdog.claude_hooks import ClaudeHooksAPI
+from lapdog.claude_link_tracker import ClaudeLinkTracker
+from lapdog.claude_proxy import ClaudeProxyAPI
+
+
+@pytest.fixture
+def agent(lapdog_agent):
+    return lapdog_agent
 
 
 async def _post_hook(agent, event):
@@ -460,7 +466,7 @@ async def test_hook_tool_use_creates_tool_span(agent):
 
 
 async def test_claude_project_metadata_from_hook_cwd(agent, tmp_path, monkeypatch):
-    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+    from lapdog.coding_agent_metadata import _local_git_metadata
 
     monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
     _local_git_metadata.cache_clear()
@@ -514,7 +520,7 @@ async def test_claude_project_metadata_from_hook_cwd(agent, tmp_path, monkeypatc
 
 async def test_claude_spans_tagged_with_git_commit_sha(agent, tmp_path, monkeypatch):
     """Spans carry git.commit.sha for the same repo as the git.repository_url tag."""
-    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+    from lapdog.coding_agent_metadata import _local_git_metadata
 
     monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
     _local_git_metadata.cache_clear()
@@ -573,7 +579,7 @@ async def test_claude_spans_tagged_with_git_commit_sha(agent, tmp_path, monkeypa
 
 async def test_claude_project_metadata_updates_when_cwd_changes(agent, tmp_path, monkeypatch):
     """A hook posted with a new cwd mid-session should re-resolve project metadata."""
-    from ddapm_test_agent.coding_agent_metadata import _local_git_metadata
+    from lapdog.coding_agent_metadata import _local_git_metadata
 
     monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
     _local_git_metadata.cache_clear()

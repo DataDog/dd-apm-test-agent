@@ -6,6 +6,11 @@ import pytest
 
 
 @pytest.fixture
+def agent(lapdog_agent):
+    return lapdog_agent
+
+
+@pytest.fixture
 def llmobs_payload():
     return {
         "ml_app": "test-app",
