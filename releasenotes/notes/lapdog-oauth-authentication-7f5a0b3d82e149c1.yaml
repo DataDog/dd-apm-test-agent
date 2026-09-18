@@ -1,0 +1,8 @@
+---
+features:
+  - |
+    Add Lapdog OAuth authentication through the local Lapdog server. Lapdog
+    creates a dedicated Datadog API key, stores it in the system keyring, and
+    persists the selected site and data-forwarding preference across starts.
+    Environment and command-line settings continue to take precedence, and
+    ``lapdog uninstall`` removes the stored keyring credential.

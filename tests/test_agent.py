@@ -585,6 +585,24 @@ async def test_post_known_settings(agent):
     assert agent.app["trace_request_delay"] == 0
 
 
+async def test_post_settings_notifies_listener_before_applying(agent):
+    calls = []
+
+    def listener(settings):
+        calls.append((settings, agent.app["trace_request_delay"]))
+
+    agent.app["agent"].settings_update_listener = listener
+
+    resp = await agent.post(
+        "/test/settings",
+        data='{ "trace_request_delay": 5 }',
+    )
+
+    assert resp.status == 202, await resp.text()
+    assert calls == [({"trace_request_delay": 5}, 0)]
+    assert agent.app["trace_request_delay"] == 5
+
+
 async def test_post_unknown_settings(
     agent,
 ):

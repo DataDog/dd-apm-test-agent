@@ -38,6 +38,7 @@ setup(
         "yarl",
         "requests-aws4auth",
         "jinja2>=3.0.0",
+        "keyring>=24.3.1",
         "pyyaml",
         # ddtrace libraries officially support opentelemetry-proto 1.33.1
         # which implements the v1.7.0 spec

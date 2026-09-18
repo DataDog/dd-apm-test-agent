@@ -24,6 +24,7 @@ from lapdog import backfill_claude
 from lapdog import backfill_codex
 from lapdog import backfill_pi
 from lapdog import codex_args
+from lapdog import config
 from lapdog import tracer_inject
 from lapdog.lapdog_ascii_art import build_running_banner
 from lapdog.lapdog_ascii_art import build_status_banner
@@ -214,7 +215,7 @@ def _process_exists(pid: int) -> bool:
         return False
 
 
-def _ensure_lapdog_running(forward_data: bool = False, detached: bool = False) -> Optional[int]:
+def _ensure_lapdog_running(forward_data: Optional[bool] = None, detached: bool = False) -> Optional[int]:
     """Start lapdog in background if it is not already running. Exits if the port is taken."""
     if _lapdog_alive():
         _, port = _read_pid_file()
@@ -252,7 +253,7 @@ def _remove_pid_file() -> None:
 
 
 def _start_lapdog(
-    port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False
+    port: int, extra_args: Optional[List[str]] = None, forward_data: Optional[bool] = False
 ) -> Tuple[int, int, str]:
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
@@ -262,7 +263,9 @@ def _start_lapdog(
     env = os.environ.copy()
     env["TEST_AGENT_VERSION"] = _get_version()
 
-    if not forward_data:
+    if forward_data is True:
+        args.append("--forward")
+    elif forward_data is False:
         args.append("--disable-llmobs-data-forwarding")
 
     if extra_args:
@@ -344,7 +347,7 @@ def _run_claude(
     os.execve(claude_bin, [claude_bin] + args, env)
 
 
-def cmd_start(sub_cmd_args: List[str], forward_data: bool) -> None:
+def cmd_start(sub_cmd_args: List[str], forward_data: Optional[bool]) -> None:
     """Start lapdog in background with Claude hooks enabled."""
     if _lapdog_alive():
         pid, port = _read_pid_file()
@@ -400,7 +403,7 @@ def cmd_status() -> None:
         sys.exit(1)
 
 
-def _start_lapdog_detached(port: int, forward_data: bool) -> None:
+def _start_lapdog_detached(port: int, forward_data: Optional[bool]) -> None:
     """Start lapdog in a forked child so it is not a child of the calling process.
 
     After os.execv replaces the current process with pi/claude, lapdog must not
@@ -445,7 +448,7 @@ def _start_lapdog_detached(port: int, forward_data: bool) -> None:
     sys.exit(1)
 
 
-def cmd_exec(app_cmd: List[str], forward_data: bool) -> None:
+def cmd_exec(app_cmd: List[str], forward_data: Optional[bool]) -> None:
     """Auto-start lapdog if needed, inject tracer env vars, then exec the app command. Never returns."""
     resolved = shutil.which(app_cmd[0])
     if not resolved:
@@ -466,7 +469,7 @@ def cmd_exec(app_cmd: List[str], forward_data: bool) -> None:
 
 def cmd_claude(
     sub_cmd_args: List[str],
-    forward_data: bool,
+    forward_data: Optional[bool],
     install_plugin: bool,
     backfill: bool = False,
 ) -> None:
@@ -633,7 +636,7 @@ def _run_pi(
     os.execve(pi_bin, [pi_bin] + args, env)
 
 
-def cmd_pi(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) -> None:
+def cmd_pi(sub_cmd_args: List[str], forward_data: Optional[bool], backfill: bool = False) -> None:
     """Ensure lapdog is running, install the pi extension, then launch pi.
 
     When ``backfill`` is True: ensure lapdog is running, replay historical
@@ -998,7 +1001,7 @@ def _run_codex(
     os.execve(codex_bin, [codex_bin] + proxy_args + args, env)
 
 
-def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) -> None:
+def cmd_codex(sub_cmd_args: List[str], forward_data: Optional[bool], backfill: bool = False) -> None:
     """Ensure lapdog is running, start the Codex JSONL watcher, then launch Codex.
 
     When ``backfill`` is True: ensure lapdog is running, replay historical
@@ -1059,6 +1062,12 @@ def cmd_uninstall() -> None:
     if os.path.isdir(LAPDOG_DIR):
         shutil.rmtree(LAPDOG_DIR, ignore_errors=True)
         print("[lapdog] Lapdog-related files under ~/.lapdog removed")
+
+    try:
+        config.delete_api_key()
+        print("[lapdog] Lapdog API key removed from the system keyring")
+    except Exception as e:
+        print(f"[lapdog] Failed to remove API key from the system keyring: {e}", file=sys.stderr)
 
     # remove claude code plugin
     _uninstall_lapdog_claude_code_plugin()
@@ -1220,6 +1229,7 @@ def main() -> None:
 
     lapdog_args, remaining = _parse_command(args[1:])
     lapdog_parsed_args = _parse_lapdog_args(lapdog_args)
+    forward_data = True if lapdog_parsed_args.forward else None
 
     if lapdog_parsed_args.version:
         print(_get_version())
@@ -1243,13 +1253,13 @@ def main() -> None:
     if sub_cmd not in LAPDOG_COMMANDS:
         cmd_exec(
             app_cmd=remaining,
-            forward_data=lapdog_parsed_args.forward,
+            forward_data=forward_data,
         )
 
         return
 
     if sub_cmd == "start":
-        cmd_start(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+        cmd_start(sub_cmd_args=sub_cmd_args, forward_data=forward_data)
     elif sub_cmd == "stop":
         cmd_stop()
     elif sub_cmd == "status":
@@ -1257,20 +1267,20 @@ def main() -> None:
     elif sub_cmd == "claude":
         cmd_claude(
             sub_cmd_args=sub_cmd_args,
-            forward_data=lapdog_parsed_args.forward,
+            forward_data=forward_data,
             install_plugin=lapdog_parsed_args.install_plugin,
             backfill=backfill,
         )
     elif sub_cmd == "pi":
         cmd_pi(
             sub_cmd_args=sub_cmd_args,
-            forward_data=lapdog_parsed_args.forward,
+            forward_data=forward_data,
             backfill=backfill,
         )
     elif sub_cmd == "codex":
         cmd_codex(
             sub_cmd_args=sub_cmd_args,
-            forward_data=lapdog_parsed_args.forward,
+            forward_data=forward_data,
             backfill=backfill,
         )
     elif sub_cmd == "tags":

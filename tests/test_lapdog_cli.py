@@ -1030,3 +1030,30 @@ def test_start_lapdog_uses_dedicated_server_module(tmp_path, monkeypatch):
         "lapdog.server",
         "--disable-llmobs-data-forwarding",
     ]
+
+
+def test_start_lapdog_passes_explicit_forward_override(tmp_path, monkeypatch):
+    process = mock.Mock(pid=1234)
+    popen = mock.Mock(return_value=process)
+    monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli, "_write_pid_file", mock.Mock())
+    monkeypatch.setattr(cli, "_wait_for_lapdog", mock.Mock())
+    monkeypatch.setattr(cli.subprocess, "Popen", popen)
+
+    cli._start_lapdog(8126, forward_data=True)
+
+    assert popen.call_args.args[0] == [cli.sys.executable, "-m", "lapdog.server", "--forward"]
+
+
+def test_uninstall_removes_api_key_from_keyring(monkeypatch):
+    monkeypatch.setattr(cli, "_read_pid_file", lambda: (None, None))
+    monkeypatch.setattr(cli.os.path, "isdir", lambda path: False)
+    monkeypatch.setattr(cli, "_lapdog_claude_code_plugin_installed", lambda: False)
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: False)
+    monkeypatch.setattr(cli, "_stop_all_codex_watchers", mock.Mock())
+    delete_api_key = mock.Mock()
+    monkeypatch.setattr(cli.config, "delete_api_key", delete_api_key)
+
+    cli.cmd_uninstall()
+
+    delete_api_key.assert_called_once_with()
