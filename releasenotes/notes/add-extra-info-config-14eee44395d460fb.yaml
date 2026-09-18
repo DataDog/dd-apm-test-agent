@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Added the new environment variable `DD_AGENT_EXTRA_INFO` to allow adding entries to the `/info` response.

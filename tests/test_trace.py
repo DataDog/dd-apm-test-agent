@@ -184,6 +184,34 @@ def test_decode_v04_bad_doesnt_raise_with_supress(content_type, payload):
         decode_v04(content_type, payload, True)
 
 
+def test_decode_v04_meta_struct_llmobs_roundtrip():
+    # Each meta_struct value is its own msgpack blob — confirm the nested unpack
+    # surfaces ``_llmobs`` as a plain dict for downstream LLMObs extraction.
+    llmobs_payload = {
+        "trace_id": "11111111111111111111111111111111",
+        "parent_id": "undefined",
+        "meta": {"span": {"kind": "llm"}},
+        "metrics": {"total_tokens": 12},
+        "tags": {"env": "test"},
+    }
+    payload = msgpack.packb(
+        [
+            [
+                {
+                    "name": "openai.request",
+                    "span_id": 1234,
+                    "trace_id": 4321,
+                    "start": 1,
+                    "duration": 2,
+                    "meta_struct": {"_llmobs": msgpack.packb(llmobs_payload)},
+                }
+            ]
+        ]
+    )
+    span = decode_v04("application/msgpack", payload, False)[0][0]
+    assert span["meta_struct"]["_llmobs"] == llmobs_payload
+
+
 @pytest.mark.parametrize(
     "trace",
     [

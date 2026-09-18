@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    Add support for span events with array attributes (for example a list of strings or numbers)
+    in ``v1`` trace payloads. These were previously unsupported; they are now decoded the same way
+    as in ``v0.4``/``v0.7`` payloads, including arrays that mix value types.

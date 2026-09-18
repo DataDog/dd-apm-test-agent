@@ -13,16 +13,18 @@ import aiohttp
 from aiohttp import web
 from aiohttp.web import Request
 
+from ddapm_test_agent.cors import with_cors
+
 from ._clock import monotonic_wall_ns
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .codex_cost_tracker import compute_openai_cost_metrics
 from .codex_hooks import CodexHooksAPI
+from .codex_hooks import _canonical_tool_status
 from .codex_hooks import _copy_messages
 from .codex_hooks import _copy_reasoning_items
-from .codex_hooks import _canonical_tool_status
 from .codex_hooks import _extract_reasoning_metadata
-from .llmobs_event_platform import with_cors
+
 
 log = logging.getLogger(__name__)
 

@@ -1,0 +1,3 @@
+---
+fixes:
+  - Represent trace IDs as hex strings (without the `0x`) for ETP traces.

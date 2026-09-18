@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    Fix truncated trace responses when proxying to a real agent via ``DD_AGENT_URL``.
+    The forwarded body is re-serialized with ``json.dumps``, making it longer than the
+    agent's compact JSON, but the agent's ``Content-Length`` was relayed verbatim. The
+    response was cut to that length and tracers failed to parse it. The headers
+    describing the original encoding are now recomputed from the body actually sent.

@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Include native v1 trace requests in the `/test/session/requests` response.

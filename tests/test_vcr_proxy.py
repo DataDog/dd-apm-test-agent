@@ -120,6 +120,11 @@ def vcr_json_body_normalizers() -> Generator[str, None, None]:
 
 
 @pytest.fixture
+def vcr_body_regex_normalizers() -> Generator[str, None, None]:
+    yield "agentId: [a-f0-9]+,duration_ms: \\d+"
+
+
+@pytest.fixture
 def vcr_legacy_cassette(vcr_cassettes_directory: str) -> Generator[str, None, None]:
     cassette_name = _generate_cassette_name("custom/serve", "POST", b'{"foo": "bar"}', None)
     os.makedirs(os.path.join(vcr_cassettes_directory, "custom"), exist_ok=True)
@@ -343,3 +348,73 @@ async def test_vcr_proxy_normalizes_nested_json_field_to_single_cassette(
 
     cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
     assert len(cassette_files) == 1  # same cassette despite different nested dummy_id
+
+
+async def test_vcr_proxy_normalizes_body_regex_to_single_cassette(
+    agent: TestClient[Any, Any], vcr_cassettes_directory: str
+) -> None:
+    resp = await agent.post(
+        "/vcr/custom/serve",
+        json={"foo": "bar", "note": "agentId: a8abe56defff0d36b ran the task"},
+    )
+
+    assert resp.status == 200
+
+    cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
+    assert len(cassette_files) == 1
+
+    resp = await agent.post(
+        "/vcr/custom/serve",
+        json={"foo": "bar", "note": "agentId: ae218d131137d15da ran the task"},
+    )
+
+    assert resp.status == 200
+
+    cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
+    assert len(cassette_files) == 1  # same cassette despite different agentId hex
+
+
+async def test_vcr_proxy_body_regex_supports_multiple_patterns(
+    agent: TestClient[Any, Any], vcr_cassettes_directory: str
+) -> None:
+    resp = await agent.post(
+        "/vcr/custom/serve",
+        json={"note": "agentId: abc123 finished in duration_ms: 6399"},
+    )
+
+    assert resp.status == 200
+
+    cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
+    assert len(cassette_files) == 1
+
+    # both the hex agentId and the duration_ms vary; the second pattern in the list must also normalize
+    resp = await agent.post(
+        "/vcr/custom/serve",
+        json={"note": "agentId: deadbeef finished in duration_ms: 45"},
+    )
+
+    assert resp.status == 200
+
+    cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
+    assert len(cassette_files) == 1
+
+
+async def test_vcr_proxy_body_regex_does_not_collapse_other_body_differences(
+    agent: TestClient[Any, Any], vcr_cassettes_directory: str
+) -> None:
+    resp = await agent.post(
+        "/vcr/custom/serve",
+        json={"foo": "bar", "note": "agentId: abc123 ran"},
+    )
+
+    assert resp.status == 200
+
+    resp = await agent.post(
+        "/vcr/custom/serve",
+        json={"foo": "DIFFERENT", "note": "agentId: def456 ran"},
+    )
+
+    assert resp.status == 200
+
+    cassette_files = get_cassettes_for_provider("custom", vcr_cassettes_directory)
+    assert len(cassette_files) == 2  # different `foo` values still produce separate cassettes

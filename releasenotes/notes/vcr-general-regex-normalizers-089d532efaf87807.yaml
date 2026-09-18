@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    vcr: Add support for normalizing parts of JSON request bodies via regular expression when recording requests via ``--vcr-body-regex-normalizers`` or ``VCR_BODY_REGEX_NORMALIZERS``. This option should take a comma-separated list of regular expressions to normalize, e.g. ``agentId: [a-f0-9]+,duration_ms: \\d+``.

@@ -4,29 +4,39 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
 import time
+from typing import Any
+from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
+import urllib.error
+import urllib.request
 import uuid
 
-import requests
-
+from ddapm_test_agent import _get_version
+from lapdog import backfill_claude
+from lapdog import backfill_codex
+from lapdog import backfill_pi
 from lapdog import codex_args
 from lapdog import tracer_inject
 from lapdog.lapdog_ascii_art import build_running_banner
+from lapdog.lapdog_ascii_art import build_status_banner
 from lapdog.paths import CODEX_APP_CURSOR_FILE
 from lapdog.paths import LAPDOG_DIR
 from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
 
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "uninstall"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "tags", "uninstall"]
+# Managed launchers that also exist as external binaries a user might invoke by
+# an explicit path (e.g. ``lapdog ~/.local/bin/claude``)
+_PATH_ROUTABLE_LAUNCHERS = ("claude", "pi", "codex")
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -36,6 +46,7 @@ LAPDOG_USAGE = (
     "  claude     Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi         Start lapdog in background if needed, install extension, then launch pi\n"
     "  codex      Start lapdog in background if needed, then launch Codex with tracing\n"
+    "  tags       Add tags to the current instrumented coding-agent session\n"
     "  uninstall  Stop lapdog and remove all state it wrote (~/.lapdog, Claude hooks, pi extension, Codex watchers)\n"
     "\n"
     "Any other command is treated as an app to run with tracing instrumentation:\n"
@@ -106,7 +117,7 @@ def _uninstall_lapdog_claude_code_plugin() -> None:
 
     commands = [
         [claude_bin, "plugin", "uninstall", LAPDOG_PLUGIN_NAME],
-        [claude_bin, "plugin", "marketplace", "remove", LAPDOG_MARKETPLACE_SOURCE]
+        [claude_bin, "plugin", "marketplace", "remove", LAPDOG_MARKETPLACE_SOURCE],
     ]
     for cmd in commands:
         try:
@@ -155,6 +166,19 @@ def _url_for_port(port: int) -> str:
     return f"http://127.0.0.1:{port}/info"
 
 
+def _http_get_status(url: str, timeout: float) -> int:
+    """GET url and return the HTTP status code.
+
+    Uses an empty ProxyHandler so macOS _scproxy.get_proxy_settings is never
+    called.  That call crashes inside a forked child on Python 3.13 / macOS
+    because the parent process has internal threads at fork time, leaving
+    CoreFoundation's logging lock state corrupt in the child.
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(url, timeout=timeout) as resp:
+        return int(resp.status)
+
+
 def _lapdog_alive(timeout: float = 2.0) -> bool:
     """Check if the lapdog we started is running (pid file + process exists + /info responds)."""
     pid, port = _read_pid_file()
@@ -163,8 +187,7 @@ def _lapdog_alive(timeout: float = 2.0) -> bool:
     if not _process_exists(pid):
         return False
     try:
-        r = requests.get(_url_for_port(port), timeout=timeout)
-        return r.status_code == 200
+        return _http_get_status(_url_for_port(port), timeout=timeout) == 200
     except Exception:
         return False
 
@@ -234,21 +257,28 @@ def _start_lapdog(
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = _log_file_path()
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    args = [sys.executable, "-m", "ddapm_test_agent.agent", "--lapdog-mode"]
+    args = [sys.executable, "-m", "lapdog.server"]
+
+    env = os.environ.copy()
+    env["TEST_AGENT_VERSION"] = _get_version()
 
     if not forward_data:
         args.append("--disable-llmobs-data-forwarding")
 
     if extra_args:
         args += extra_args
+    popen_kwargs: Dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stderr": subprocess.STDOUT,
+    }
+    if sys.platform == "win32":
+        # On Windows, start_new_session is a no-op. Use creationflags to truly
+        # detach the child so it survives after the launcher process exits.
+        popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
     with open(log_path, "w") as log_file:
-        proc = subprocess.Popen(
-            args,
-            stdin=subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+        proc = subprocess.Popen(args, stdout=log_file, env=env, **popen_kwargs)
     _write_pid_file(proc.pid, port)
     _wait_for_lapdog(proc, log_path)
 
@@ -260,8 +290,7 @@ def _port_in_use(port: Optional[int] = None) -> bool:
     if port is None:
         port = _resolved_port()
     try:
-        r = requests.get(_url_for_port(port), timeout=1)
-        return r.status_code == 200
+        return _http_get_status(_url_for_port(port), timeout=1) == 200
     except Exception:
         return False
 
@@ -284,18 +313,35 @@ def _wait_for_lapdog(proc: "subprocess.Popen[bytes]", log_path: Optional[str] = 
     sys.exit(1)
 
 
-def _run_claude(args: Optional[List[str]] = None) -> None:
+def _run_claude(
+    args: Optional[List[str]] = None, port: Optional[int] = None, session_token: Optional[str] = None
+) -> None:
     """Set BUN_OPTIONS with claude_intercept.mjs and exec the claude binary. Never returns."""
     if args is None:
         args = sys.argv[1:]
     mjs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude_intercept.mjs")
+    # BUN_OPTIONS is re-parsed by Bun as a shell-like arg string, so backslashes
+    # in the path get treated as escape characters and stripped. Bun accepts
+    # forward slashes on Windows, which is the most reliable fix.
+    if sys.platform == "win32":
+        mjs_path = mjs_path.replace("\\", "/")
     claude_bin = shutil.which("claude")
     if not claude_bin:
         print("[ddapm] 'claude' not found in PATH", file=sys.stderr)
         sys.exit(1)
-    existing = os.environ.get("BUN_OPTIONS", "")
-    os.environ["BUN_OPTIONS"] = f"--preload {mjs_path} {existing}".strip()
-    os.execv(claude_bin, [claude_bin] + args)
+    env = os.environ.copy()
+    for variable in ("CODEX_THREAD_ID", "PI_SESSION_ID", "LAPDOG_SESSION_TOKEN"):
+        env.pop(variable, None)
+    existing = env.get("BUN_OPTIONS", "")
+    env["BUN_OPTIONS"] = f"--preload {mjs_path} {existing}".strip()
+    if port is not None:
+        lapdog_url = f"http://localhost:{port}"
+        env["LAPDOG_URL"] = lapdog_url
+        env["DDAPM_GATEWAY_URL"] = f"{lapdog_url}/claude/proxy"
+        env["TEST_AGENT_URL"] = f"{lapdog_url}/info"
+    if session_token:
+        env["LAPDOG_SESSION_TOKEN"] = session_token
+    os.execve(claude_bin, [claude_bin] + args, env)
 
 
 def cmd_start(sub_cmd_args: List[str], forward_data: bool) -> None:
@@ -341,13 +387,15 @@ def cmd_status() -> None:
     """Print lapdog status (from /info). Only works when lapdog was started by this CLI (pid file exists)."""
     pid, port = _read_pid_file()
     if port is None:
-        print("[lapdog] No lapdog running (start with 'lapdog start' or 'lapdog claude').", file=sys.stderr)
+        print(build_status_banner(is_running=False))
         sys.exit(1)
     url = _url_for_port(port)
     try:
-        requests.get(url, timeout=2).raise_for_status()
-        print(f"[lapdog] Lapdog running at {url} (pid={pid}, logs: {_log_file_path()})", file=sys.stderr)
-    except requests.RequestException as e:
+        status = _http_get_status(url, timeout=2)
+        if status >= 400:
+            raise OSError(f"HTTP {status}")
+        print(build_status_banner(port=port, pid=pid, logs_path=_log_file_path()))
+    except Exception as e:
         print(f"[lapdog] Lapdog not reachable at {url}: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -361,7 +409,15 @@ def _start_lapdog_detached(port: int, forward_data: bool) -> None:
     and starting lapdog in the child, the child exits immediately after lapdog
     is ready and lapdog gets re-parented to init/launchd — fully independent of
     the process that will become pi/claude.
+
+    On Windows there is no os.fork() and no SIGCHLD; the DETACHED_PROCESS /
+    CREATE_NEW_PROCESS_GROUP creation flags passed inside _start_lapdog already
+    detach the child from the launcher, so we just call it directly.
     """
+    if sys.platform == "win32":
+        _start_lapdog(port, forward_data=forward_data)
+        return
+
     child_pid = os.fork()
     if child_pid == 0:
         # Child: start lapdog, wait for it to be ready, then exit.
@@ -378,10 +434,15 @@ def _start_lapdog_detached(port: int, forward_data: bool) -> None:
         print("[lapdog] Failed to start lapdog in background.", file=sys.stderr)
         sys.exit(1)
 
-    # The child already verified lapdog is alive via _wait_for_lapdog before
-    # exiting, so we don't re-check here.  The forked child's exit can briefly
-    # disrupt the listening socket (shared fd), causing a transient connection
-    # refused that would make a re-check flaky.
+    # The forked child's exit can briefly disrupt the listening socket. Wait
+    # from the final parent too so immediate follow-up work, such as --backfill
+    # preflight POSTs, does not race the re-parented server.
+    for _ in range(50):
+        if _lapdog_alive(timeout=0.5):
+            return
+        time.sleep(0.2)
+    print("[lapdog] Lapdog failed to become reachable after background start.", file=sys.stderr)
+    sys.exit(1)
 
 
 def cmd_exec(app_cmd: List[str], forward_data: bool) -> None:
@@ -407,14 +468,104 @@ def cmd_claude(
     sub_cmd_args: List[str],
     forward_data: bool,
     install_plugin: bool,
+    backfill: bool = False,
 ) -> None:
-    """Ensure lapdog is running in background, then launch Claude with intercept."""
+    """Ensure lapdog is running in background, then launch Claude with intercept.
+
+    When ``backfill`` is True: ensure lapdog is running, replay historical
+    Claude Code transcripts from ``~/.claude/projects`` through
+    ``/claude/hooks``, and exit without launching Claude. ``forward_data``
+    is forced off and plugin installation is skipped during backfill.
+    """
+    if backfill:
+        port = _ensure_lapdog_running(forward_data=False, detached=True)
+        if port is None:
+            print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+            sys.exit(1)
+        backfill_claude.backfill(f"http://localhost:{port}")
+        return
+
     if install_plugin:
         _ensure_lapdog_claude_code_plugin_installed()
-    _ensure_lapdog_running(forward_data, detached=True)
+    port = _ensure_lapdog_running(forward_data, detached=True)
+    if port is None:
+        print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+        sys.exit(1)
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
 
-    _run_claude(sub_cmd_args)
+    _run_claude(sub_cmd_args, port=port, session_token=uuid.uuid4().hex)
+
+
+def _post_session_tags(
+    lapdog_url: str,
+    session_token: str,
+    tags: Dict[str, str],
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    body: Dict[str, Any] = {"tags": tags}
+    if session_id:
+        body["session_id"] = session_id
+    request = urllib.request.Request(
+        f"{lapdog_url.rstrip('/')}/lapdog/session/tags",
+        data=json.dumps(body).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "X-Lapdog-Session-Token": session_token,
+        },
+        method="POST",
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=2) as response:
+        result = json.loads(response.read())
+    if not isinstance(result, dict):
+        raise ValueError("Lapdog returned an invalid response")
+    return result
+
+
+def cmd_tags(sub_cmd_args: List[str]) -> None:
+    """Add key:value tags to the current instrumented coding-agent session."""
+    if len(sub_cmd_args) < 2 or sub_cmd_args[0] != "set":
+        print("Usage: lapdog tags set <key:value> [key:value ...]", file=sys.stderr)
+        sys.exit(1)
+
+    tags: Dict[str, str] = {}
+    for raw_tag in sub_cmd_args[1:]:
+        key, separator, value = raw_tag.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if not separator or not key or not value:
+            print(f"[lapdog] Invalid tag {raw_tag!r}; expected key:value.", file=sys.stderr)
+            sys.exit(1)
+        tags[key] = value
+
+    session_token = os.environ.get("LAPDOG_SESSION_TOKEN", "")
+    lapdog_url = os.environ.get("LAPDOG_URL", "")
+    target_session_id = os.environ.get("CODEX_THREAD_ID") or os.environ.get("PI_SESSION_ID") or None
+    if not session_token or not lapdog_url:
+        supported_launchers = ", ".join(f"'lapdog {launcher}'" for launcher in _PATH_ROUTABLE_LAUNCHERS)
+        print(
+            "[lapdog] No instrumented coding-agent session found. "
+            f"Run this command from inside a session started with one of: {supported_launchers}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        result = _post_session_tags(lapdog_url, session_token, tags, session_id=target_session_id)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace").strip()
+        print(f"[lapdog] Failed to set session tags: HTTP {exc.code}: {detail}", file=sys.stderr)
+        sys.exit(1)
+    except (OSError, ValueError) as exc:
+        print(f"[lapdog] Failed to set session tags: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    formatted_tags = ", ".join(f"{key}:{value}" for key, value in tags.items())
+    tagged_session_id = result.get("session_id")
+    if tagged_session_id:
+        print(f"[lapdog] Tagged coding-agent session {tagged_session_id}: {formatted_tags}")
+    else:
+        print(f"[lapdog] Queued tags for the current coding-agent session: {formatted_tags}")
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +581,7 @@ def _install_pi_extension() -> None:
     """Copy the bundled lapdog extension into pi's global extensions directory.
 
     If the extension is already installed and identical, skip the copy.
-    LAPDOG_URL is injected at runtime via environment variable when pi is launched.
+    Lapdog URL and session context are injected via environment variables when pi is launched.
     """
     if not os.path.isfile(_PI_EXT_SOURCE):
         print(f"[lapdog] Extension source not found: {_PI_EXT_SOURCE}", file=sys.stderr)
@@ -462,7 +613,11 @@ def _install_pi_extension() -> None:
         print(f"[lapdog] Installed pi extension → {_PI_EXT_DEST}")
 
 
-def _run_pi(args: Optional[List[str]] = None, port: Optional[int] = 8126) -> None:
+def _run_pi(
+    args: Optional[List[str]] = None,
+    port: Optional[int] = 8126,
+    session_token: Optional[str] = None,
+) -> None:
     """Exec the pi binary, forwarding arguments.  Never returns."""
     if args is None:
         args = []
@@ -471,16 +626,34 @@ def _run_pi(args: Optional[List[str]] = None, port: Optional[int] = 8126) -> Non
         print("[lapdog] 'pi' not found in PATH", file=sys.stderr)
         sys.exit(1)
     env = {**os.environ, "LAPDOG_URL": f"http://localhost:{port}"}
+    for variable in ("CODEX_THREAD_ID", "PI_SESSION_ID", "LAPDOG_SESSION_TOKEN"):
+        env.pop(variable, None)
+    if session_token:
+        env["LAPDOG_SESSION_TOKEN"] = session_token
     os.execve(pi_bin, [pi_bin] + args, env)
 
 
-def cmd_pi(sub_cmd_args: List[str], forward_data: bool) -> None:
-    """Ensure lapdog is running, install the pi extension, then launch pi."""
+def cmd_pi(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) -> None:
+    """Ensure lapdog is running, install the pi extension, then launch pi.
+
+    When ``backfill`` is True: ensure lapdog is running, replay historical
+    Pi/OMP sessions through ``/pi/hooks``, and exit without launching pi.
+    The extension is not installed during backfill (no live capture to wire
+    up); ``forward_data`` is forced off.
+    """
+    if backfill:
+        port = _ensure_lapdog_running(forward_data=False, detached=True)
+        if port is None:
+            print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+            sys.exit(1)
+        backfill_pi.backfill(f"http://localhost:{port}")
+        return
+
     port = _ensure_lapdog_running(forward_data, detached=True)
     _install_pi_extension()
 
     print(build_running_banner(data_type="coding session"))
-    _run_pi(args=sub_cmd_args, port=port)
+    _run_pi(args=sub_cmd_args, port=port, session_token=uuid.uuid4().hex)
 
 
 def _codex_watcher_pid_file(log_dir: str, singleton_key: str) -> str:
@@ -527,6 +700,7 @@ def _codex_watcher_matches(
     parent_pid: Optional[int] = None,
     lapdog_url: Optional[str] = None,
     include_all_cwds: Optional[bool] = None,
+    proxy_session_key: Optional[str] = None,
 ) -> bool:
     """Return True when a live process matches the expected watcher metadata."""
     if not _process_exists(pid):
@@ -546,6 +720,13 @@ def _codex_watcher_matches(
         return False
     if include_all_cwds is not None and ("--include-all-cwds" in parts) is not include_all_cwds:
         return False
+    if proxy_session_key is not None:
+        actual_proxy_session_key = _arg_value(parts, "--proxy-session-key")
+        if proxy_session_key:
+            if actual_proxy_session_key != proxy_session_key:
+                return False
+        elif actual_proxy_session_key is not None:
+            return False
     return True
 
 
@@ -554,6 +735,7 @@ def _codex_watcher_reusable(
     parent_pid: int,
     lapdog_url: Optional[str] = None,
     include_all_cwds: Optional[bool] = None,
+    proxy_session_key: Optional[str] = None,
 ) -> bool:
     """Return True only when a pid file points at the expected watcher process.
 
@@ -566,6 +748,7 @@ def _codex_watcher_reusable(
         parent_pid=parent_pid,
         lapdog_url=lapdog_url,
         include_all_cwds=include_all_cwds,
+        proxy_session_key=proxy_session_key,
     )
 
 
@@ -700,6 +883,7 @@ def _start_codex_watcher(
     log_dir = os.path.dirname(log_path)
     os.makedirs(log_dir, exist_ok=True)
     lapdog_url = f"http://localhost:{port}"
+    expected_proxy_session_key = "" if include_all_cwds and proxy_session_key is None else proxy_session_key
     if singleton_key:
         pid_path = _codex_watcher_pid_file(log_dir, singleton_key)
         existing_pid, _ = _read_pid_file(path=pid_path)
@@ -708,6 +892,7 @@ def _start_codex_watcher(
             watcher_parent_pid,
             lapdog_url=lapdog_url,
             include_all_cwds=include_all_cwds,
+            proxy_session_key=expected_proxy_session_key,
         ):
             print(
                 f"[lapdog] Codex watcher already running for this app workspace (PID {existing_pid}).",
@@ -772,7 +957,10 @@ def _start_codex_watcher(
 
 
 def _run_codex(
-    args: Optional[List[str]] = None, port: Optional[int] = None, proxy_session_key: Optional[str] = None
+    args: Optional[List[str]] = None,
+    port: Optional[int] = None,
+    proxy_session_key: Optional[str] = None,
+    session_token: Optional[str] = None,
 ) -> None:
     """Exec the codex binary, forwarding arguments. Never returns."""
     if args is None:
@@ -782,11 +970,14 @@ def _run_codex(
         print("[lapdog] 'codex' not found in PATH", file=sys.stderr)
         sys.exit(1)
     env = os.environ.copy()
+    for variable in ("CODEX_THREAD_ID", "PI_SESSION_ID", "LAPDOG_SESSION_TOKEN"):
+        env.pop(variable, None)
     proxy_args: List[str] = []
     if port is not None:
         proxy_path = f"/codex/proxy/{proxy_session_key}/v1" if proxy_session_key else "/codex/proxy/v1"
         base_url = f"http://localhost:{port}{proxy_path}"
         env["OPENAI_BASE_URL"] = base_url
+        env["LAPDOG_URL"] = f"http://localhost:{port}"
         if env.get("OPENAI_API_KEY"):
             proxy_args = [
                 "-c",
@@ -802,17 +993,35 @@ def _run_codex(
                 "[lapdog] Codex proxy capture requires OPENAI_API_KEY; continuing with JSONL-only tracing.",
                 file=sys.stderr,
             )
+    if session_token:
+        env["LAPDOG_SESSION_TOKEN"] = session_token
     os.execve(codex_bin, [codex_bin] + proxy_args + args, env)
 
 
-def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
-    """Ensure lapdog is running, start the Codex JSONL watcher, then launch Codex."""
+def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) -> None:
+    """Ensure lapdog is running, start the Codex JSONL watcher, then launch Codex.
+
+    When ``backfill`` is True: ensure lapdog is running, replay historical
+    rollouts from ``~/.codex/sessions`` through ``/codex/hooks``, and exit
+    without launching Codex. ``forward_data`` is ignored (forced off) so a
+    backfill never accidentally streams thousands of historical spans to
+    Datadog.
+    """
+    if backfill:
+        port = _ensure_lapdog_running(forward_data=False, detached=True)
+        if port is None:
+            print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
+            sys.exit(1)
+        backfill_codex.backfill(f"http://localhost:{port}", cwd=codex_args.resolve_cwd(sub_cmd_args))
+        return
+
     port = _ensure_lapdog_running(forward_data, detached=True)
     if port is None:
         print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
         sys.exit(1)
     app_mode = codex_args.is_app_command(sub_cmd_args)
-    proxy_session_key = None if app_mode else uuid.uuid4().hex
+    session_token = uuid.uuid4().hex
+    proxy_session_key = None if app_mode else session_token
     parent_pid = os.getpid()
     if app_mode:
         lapdog_pid, _ = _read_pid_file()
@@ -830,7 +1039,12 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool) -> None:
     )
 
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
-    _run_codex(args=sub_cmd_args, port=port, proxy_session_key=proxy_session_key)
+    _run_codex(
+        args=sub_cmd_args,
+        port=port,
+        proxy_session_key=proxy_session_key,
+        session_token=session_token,
+    )
 
 
 def cmd_uninstall() -> None:
@@ -868,7 +1082,7 @@ def cmd_uninstall() -> None:
     )
 
 
-def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
+def _parse_command(cmd_args: List[str]) -> Tuple[List[str], Optional[List[str]]]:
     lapdog_args: List[str] = []
 
     for arg_idx, arg in enumerate(cmd_args):
@@ -877,9 +1091,7 @@ def _parse_command(cmd_args: List[str]) -> Tuple[List[str], List[str]]:
 
         lapdog_args.append(arg)
 
-    # no sub command found
-    print(LAPDOG_USAGE, file=sys.stderr)
-    sys.exit(1)
+    return lapdog_args, None
 
 
 def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
@@ -887,6 +1099,7 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Lapdog CLI",
         prog="lapdog",
+        add_help=False
     )
 
     parser.add_argument(
@@ -909,10 +1122,97 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        default=False,
+        help=(
+            "Ingest historical sessions from disk by replaying them through the local "
+            "agent's /<source>/hooks endpoint, then exit without launching the underlying "
+            "CLI. Sources: ~/.codex/sessions (codex), ~/.claude/projects (claude), "
+            "~/.pi/agent/sessions + ~/.omp/agent/sessions (pi)."
+        ),
+    )
+
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        dest="version",
+        help="Print version info and exit."
+    )
+
+    parser.add_argument(
+        "--help",
+        action="store_true",
+        dest="help",
+        help="Print usage info and exit."
+    )
+
     return parser.parse_args(args=lapdog_args)
 
 
+def _consume_backfill_arg(args: List[str]) -> Tuple[List[str], bool]:
+    """Remove a command-local ``--backfill`` flag before forwarding args.
+
+    Arguments after ``--`` belong to the underlying command and are left alone.
+    """
+    cleaned: List[str] = []
+    backfill = False
+    passthrough = False
+    for arg in args:
+        if passthrough:
+            cleaned.append(arg)
+            continue
+        if arg == "--":
+            passthrough = True
+            cleaned.append(arg)
+            continue
+        if arg == "--backfill":
+            backfill = True
+            continue
+        cleaned.append(arg)
+    return cleaned, backfill
+
+
+def _canonical_launcher(target: str) -> Optional[str]:
+    """Map an invocation target to a managed launcher name, or return None.
+
+    A managed launcher may be invoked either by bare name (``claude``) or by an
+    explicit path that resolves to the same binary (``~/.local/bin/claude``,
+    i.e. what ``which claude`` returns). Both must route to the dedicated
+    launcher (``cmd_claude``/``cmd_pi``/``cmd_codex``).
+
+    A bare, unknown word (e.g. ``python``) returns None so it still falls
+    through to ``cmd_exec`` unchanged.
+    """
+    if target.lower() in _PATH_ROUTABLE_LAUNCHERS:
+        return target.lower()
+
+    if not (target.startswith("~") or os.sep in target or (os.altsep and os.altsep in target)):
+        return None
+
+    invoked = os.path.realpath(os.path.expanduser(target))
+    for launcher in _PATH_ROUTABLE_LAUNCHERS:
+        on_path = shutil.which(launcher)
+        if on_path and os.path.realpath(on_path) == invoked:
+            return launcher
+    return None
+
+
 def main() -> None:
+    # On Windows the default stdout/stderr encoding is the system ANSI codepage
+    # (e.g. cp1252), which can't encode the banner's box-drawing glyphs. Force
+    # UTF-8 with a replacement fallback so lapdog never crashes on its own
+    # output. No-op on POSIX where the default is already UTF-8.
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if reconfigure is not None:
+                try:
+                    reconfigure(encoding="utf-8", errors="replace")
+                except OSError:
+                    pass
+
     args = sys.argv
     if len(args) < 2:
         print(LAPDOG_USAGE, file=sys.stderr)
@@ -921,8 +1221,24 @@ def main() -> None:
     lapdog_args, remaining = _parse_command(args[1:])
     lapdog_parsed_args = _parse_lapdog_args(lapdog_args)
 
-    sub_cmd = remaining[0].lower()
+    if lapdog_parsed_args.version:
+        print(_get_version())
+        sys.exit(0)
+
+    if lapdog_parsed_args.help:
+        print(LAPDOG_USAGE)
+        sys.exit(0)
+
+    if not remaining:
+        print(LAPDOG_USAGE)
+        sys.exit(1)
+
+    sub_cmd = _canonical_launcher(remaining[0]) or remaining[0].lower()
     sub_cmd_args = remaining[1:]
+    command_backfill = False
+    if sub_cmd in _PATH_ROUTABLE_LAUNCHERS:
+        sub_cmd_args, command_backfill = _consume_backfill_arg(sub_cmd_args)
+    backfill = lapdog_parsed_args.backfill or command_backfill
 
     if sub_cmd not in LAPDOG_COMMANDS:
         cmd_exec(
@@ -943,11 +1259,22 @@ def main() -> None:
             sub_cmd_args=sub_cmd_args,
             forward_data=lapdog_parsed_args.forward,
             install_plugin=lapdog_parsed_args.install_plugin,
+            backfill=backfill,
         )
     elif sub_cmd == "pi":
-        cmd_pi(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+        cmd_pi(
+            sub_cmd_args=sub_cmd_args,
+            forward_data=lapdog_parsed_args.forward,
+            backfill=backfill,
+        )
     elif sub_cmd == "codex":
-        cmd_codex(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
+        cmd_codex(
+            sub_cmd_args=sub_cmd_args,
+            forward_data=lapdog_parsed_args.forward,
+            backfill=backfill,
+        )
+    elif sub_cmd == "tags":
+        cmd_tags(sub_cmd_args)
     elif sub_cmd == "uninstall":
         cmd_uninstall()
 

@@ -1,0 +1,20 @@
+---
+security:
+  - |
+    The test agent now binds to ``127.0.0.1`` (loopback) by default instead of
+    all network interfaces. Previously the HTTP, OTLP HTTP, OTLP gRPC, and Web
+    UI servers were reachable from any host on the network, which could expose
+    captured data (including ``lapdog`` Claude Code / Codex / Pi session
+    content) to other machines on the same network.
+features:
+  - |
+    Added a ``--host`` command-line argument (and ``HOST`` environment
+    variable) to control the interface all servers bind to. Defaults to
+    ``127.0.0.1``.
+upgrade:
+  - |
+    The default bind host is now ``127.0.0.1`` instead of all interfaces. To
+    accept connections from other hosts (for example when running outside of a
+    container and pointing a remote tracer at the agent), pass ``--host
+    0.0.0.0`` or set ``HOST=0.0.0.0``. The published Docker images set
+    ``HOST=0.0.0.0`` automatically, so their published ports keep working.

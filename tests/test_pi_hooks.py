@@ -1,6 +1,14 @@
 """Tests for pi coding agent hooks — step span kind emission."""
 
 import json
+import subprocess
+
+import pytest
+
+
+@pytest.fixture
+def agent(lapdog_agent):
+    return lapdog_agent
 
 
 async def _post(agent, event):
@@ -31,13 +39,17 @@ def _session_start(
     session_id=SESSION,
     model_id="claude-sonnet-4-20250514",
     model_provider="anthropic",
+    cwd=None,
 ):
-    return {
+    event = {
         "session_id": session_id,
         "hook_event_name": "session_start",
         "model_id": model_id,
         "model_provider": model_provider,
     }
+    if cwd:
+        event["cwd"] = cwd
+    return event
 
 
 def _agent_start(
@@ -45,14 +57,71 @@ def _agent_start(
     prompt="hello",
     model_id="claude-sonnet-4-20250514",
     model_provider="anthropic",
+    cwd=None,
+    is_continuation=False,
 ):
-    return {
+    event = {
         "session_id": session_id,
         "hook_event_name": "agent_start",
         "user_prompt": prompt,
         "model_id": model_id,
         "model_provider": model_provider,
+        "is_continuation": is_continuation,
     }
+    if cwd:
+        event["cwd"] = cwd
+    return event
+
+
+async def test_backfill_session_is_idempotent_for_same_session(agent):
+    payload = {
+        "session_id": "pi-backfill-once",
+        "cwd": "/p",
+        "entries": [
+            {"type": "session", "id": "pi-backfill-once", "cwd": "/p"},
+            {
+                "type": "message",
+                "message": {
+                    "role": "user",
+                    "timestamp": 1778932800000,
+                    "content": [{"type": "text", "text": "hi"}],
+                },
+            },
+            {
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "timestamp": 1778932801000,
+                    "model": "claude-opus-4-6",
+                    "content": [{"type": "text", "text": "ok"}],
+                },
+            },
+        ],
+    }
+
+    first = await agent.post(
+        "/pi/hooks/backfill_session",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(payload),
+    )
+    assert first.status == 200
+    first_body = await first.json()
+    assert first_body["status"] == "ok"
+    assert first_body["spans_created"] == 3
+
+    second = await agent.post(
+        "/pi/hooks/backfill_session",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(payload),
+    )
+    assert second.status == 200
+    second_body = await second.json()
+    assert second_body["status"] == "skipped"
+    assert second_body["reason"] == "already_backfilled"
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = (await resp.json())["spans"]
+    assert len([s for s in spans if s.get("session_id") == "pi-backfill-once"]) == 3
 
 
 def _agent_end(session_id=SESSION, messages=None):
@@ -84,6 +153,7 @@ def _message_end(
     stop_reason="end_turn",
     model_id="claude-sonnet-4-20250514",
     model_provider="anthropic",
+    error_message="",
 ):
     return {
         "session_id": session_id,
@@ -91,9 +161,10 @@ def _message_end(
         "message_role": "assistant",
         "model_id": model_id,
         "model_provider": model_provider,
-        "content": content or [{"type": "text", "text": "Hello!"}],
+        "content": content if content is not None else [{"type": "text", "text": "Hello!"}],
         "usage": usage or {"input": 100, "output": 50, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 150},
         "stop_reason": stop_reason,
+        "error_message": error_message,
     }
 
 
@@ -138,6 +209,80 @@ def _session_shutdown(session_id=SESSION):
 # ------------------------------------------------------------------
 
 
+async def test_pi_session_tags_apply_to_existing_and_future_spans(agent):
+    sid = "pi-custom-tags"
+    session_token = "pi-launch-token"
+    await _post(
+        agent,
+        {
+            **_session_start(sid),
+            "lapdog_session_token": session_token,
+        },
+    )
+    await _post(agent, _agent_start(sid))
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={"tags": {"dd_auto_experiment_id": "experiment-id", "iteration": "2"}},
+    )
+    assert response.status == 200, await response.text()
+    assert (await response.json())["session_id"] == sid
+
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in _spans(await response.json()) if span.get("session_id") == sid]
+    assert spans
+    assert all("dd_auto_experiment_id:experiment-id" in span["tags"] for span in spans)
+    assert all("iteration:2" in span["tags"] for span in spans)
+
+    response = await agent.get("/pi/hooks/raw")
+    raw_events = (await response.json())["events"]
+    assert all("lapdog_session_token" not in event for event in raw_events)
+
+
+async def test_pi_session_tags_do_not_leak_between_sessions_from_one_launch(agent):
+    session_token = "shared-pi-launch-token"
+    target_session_id = "pi-target-session"
+    other_session_id = "pi-other-session"
+    for session_id in (target_session_id, other_session_id):
+        await _post(
+            agent,
+            {
+                **_session_start(session_id),
+                "lapdog_session_token": session_token,
+            },
+        )
+        await _post(agent, _agent_start(session_id))
+
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": session_token},
+        json={
+            "session_id": target_session_id,
+            "tags": {"iteration": "2"},
+        },
+    )
+    assert response.status == 200, await response.text()
+
+    for session_id in (target_session_id, other_session_id):
+        await _post(agent, _turn_start(session_id))
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = _spans(await response.json())
+    target_spans = [span for span in spans if span.get("session_id") == target_session_id]
+    other_spans = [span for span in spans if span.get("session_id") == other_session_id]
+    assert target_spans
+    assert other_spans
+    assert all("iteration:2" in span["tags"] for span in target_spans)
+    assert all("iteration:2" not in span["tags"] for span in other_spans)
+
+
 async def test_single_step_with_llm_no_tools(agent):
     """One turn_start/turn_end cycle produces: agent → step → llm."""
     sid = "pi-single-step"
@@ -180,6 +325,43 @@ async def test_single_step_with_llm_no_tools(agent):
 
     # Step name
     assert step["name"] == "inference-0"
+
+
+async def test_pi_project_metadata_from_extension_cwd(agent, tmp_path, monkeypatch):
+    from lapdog.coding_agent_metadata import _local_git_metadata
+
+    monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    _local_git_metadata.cache_clear()
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:DataDog/pi-project.git"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    sid = "pi-project-metadata"
+    cwd = str(tmp_path)
+    await _post(agent, _session_start(sid, cwd=cwd))
+    await _post(agent, _agent_start(sid, cwd=cwd))
+    await _post(agent, {**_turn_start(sid), "cwd": cwd})
+    await _post(agent, {**_message_start(sid), "cwd": cwd})
+    await _post(agent, {**_message_end(sid), "cwd": cwd})
+    await _post(agent, {**_turn_end(sid), "cwd": cwd})
+    await _post(agent, {**_agent_end(sid), "cwd": cwd})
+
+    resp = await agent.get("/claude/hooks/spans")
+    assert resp.status == 200
+    spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    root = next(s for s in spans if s["parent_id"] == "undefined")
+    llm = next(s for s in spans if s["meta"]["span"]["kind"] == "llm")
+
+    for span in (root, llm):
+        assert "project_name:pi-project" in span["tags"]
+        assert "git.repository_url:github.com/DataDog/pi-project" in span["tags"]
+        assert not any("commit" in tag for tag in span["tags"])
+    assert root["meta"]["metadata"]["project_name"] == "pi-project"
+    assert root["meta"]["metadata"]["git_repository_url"] == "github.com/DataDog/pi-project"
 
 
 async def test_ai_gateway_anthropic_model_id_gets_estimated_cost(agent):
@@ -374,6 +556,53 @@ async def test_multiple_steps(agent):
     # Tool parents to the first step (the one that called it)
     step0 = next(s for s in steps if s["name"] == "inference-0")
     assert tools[0]["parent_id"] == step0["span_id"]
+
+
+async def test_stale_turn_end_does_not_finalize_next_step(agent):
+    """Out-of-order turn_end for the previous turn must not emit an empty step."""
+    sid = "pi-stale-turn-end"
+    tool_call_id = "tc-a"
+    content1 = [
+        {"type": "toolCall", "id": tool_call_id, "name": "read", "arguments": {"path": "foo.py"}},
+    ]
+    content2 = [{"type": "text", "text": "Done!"}]
+
+    await _post(agent, _session_start(sid))
+    await _post(agent, _agent_start(sid))
+    await _post(agent, _turn_start(sid, turn_index=0))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid, content=content1, stop_reason="toolUse"))
+    await _post(agent, _tool_start(sid, tool_call_id, "read"))
+    await _post(agent, _tool_end(sid, tool_call_id, "read", "file contents"))
+
+    # Pi can emit the next turn_start before the previous turn_end. The stale
+    # turn_end(0) should not close turn 1 before its message_start/message_end.
+    await _post(agent, _turn_start(sid, turn_index=1))
+    await _post(agent, _turn_end(sid, turn_index=0))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid, content=content2, stop_reason="stop"))
+    await _post(agent, _turn_end(sid, turn_index=1))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = _spans(await resp.json())
+    session_spans = [s for s in spans if s.get("session_id") == sid]
+
+    root = [s for s in session_spans if s["parent_id"] == "undefined"][0]
+    steps = sorted(_by_kind(session_spans, "step"), key=lambda s: s["name"])
+    llms = _by_kind(session_spans, "llm")
+    tools = _by_kind(session_spans, "tool")
+
+    assert [s["name"] for s in steps] == ["inference-0", "inference-1"]
+    assert [s["parent_id"] for s in steps] == [root["span_id"], root["span_id"]]
+    assert len(llms) == 2
+    assert len(tools) == 1
+
+    step1 = steps[1]
+    assert step1["meta"]["output"]["value"] == "Done!"
+    assert step1["meta"]["metadata"]["turn_index"] == 1
+    assert any(llm["parent_id"] == step1["span_id"] for llm in llms)
+    assert all(any(child.get("parent_id") == step["span_id"] for child in session_spans) for step in steps)
 
 
 async def test_trajectory_tags(agent):
@@ -729,3 +958,155 @@ async def test_thinking_block_sets_has_thinking(agent):
     assert step["meta"]["metadata"].get("has_thinking") is True
     # Thinking text should NOT appear in output (only text blocks)
     assert step["meta"]["output"]["value"] == "Here's my answer."
+
+
+async def test_llm_error_emits_error_span(agent):
+    """A message_end with stop_reason=error yields an error LLM span + error step."""
+    sid = "pi-llm-error"
+    await _post(agent, _session_start(sid))
+    await _post(agent, _agent_start(sid))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    # Errored assistant message: empty content, stop_reason error, errorMessage set.
+    await _post(
+        agent,
+        _message_end(sid, content=[], stop_reason="error", error_message="rate limit exceeded"),
+    )
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+
+    llms = _by_kind(session_spans, "llm")
+    assert len(llms) == 1
+    llm = llms[0]
+    assert llm["status"] == "error"
+    assert llm["meta"]["error"]["message"] == "rate limit exceeded"
+    assert llm["meta"]["metadata"]["stop_reason"] == "error"
+
+    # The enclosing step reflects the failure (not silently empty/ok).
+    step = _by_kind(session_spans, "step")[0]
+    assert step["status"] == "error"
+    assert step["meta"]["error"]["message"] == "rate limit exceeded"
+
+
+async def test_orphaned_llm_call_emits_error_span_on_agent_end(agent):
+    """message_start with no message_end (thrown error) still yields an error LLM span."""
+    sid = "pi-llm-orphan"
+    await _post(agent, _session_start(sid))
+    await _post(agent, _agent_start(sid))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    # No message_end — the LLM call raised and pi unwound without finalizing.
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+
+    llms = _by_kind(session_spans, "llm")
+    assert len(llms) == 1, "orphaned pending LLM should still produce a span"
+    llm = llms[0]
+    assert llm["status"] == "error"
+    assert "did not complete" in llm["meta"]["error"]["message"]
+
+    step = _by_kind(session_spans, "step")[0]
+    assert step["status"] == "error"
+
+
+async def test_orphaned_llm_call_emits_error_span_on_session_shutdown(agent):
+    """Orphaned pending LLM is flushed as an error span on session_shutdown too."""
+    sid = "pi-llm-orphan-shutdown"
+    await _post(agent, _session_start(sid))
+    await _post(agent, _agent_start(sid))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _session_shutdown(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    llms = _by_kind(session_spans, "llm")
+    assert len(llms) == 1
+    assert llms[0]["status"] == "error"
+
+
+async def test_continuation_agent_start_extends_trace(agent):
+    """A continuation agent_start (no user input) reuses the existing trace."""
+    sid = "pi-continuation"
+    await _post(agent, _session_start(sid))
+
+    # First (real) user turn.
+    await _post(agent, _agent_start(sid, prompt="do the thing"))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    root_before = next(s for s in session_spans if s["parent_id"] == "undefined")
+    trace_id = root_before["trace_id"]
+    root_span_id = root_before["span_id"]
+
+    # Continuation (e.g. after auto-compaction): no fresh user input.
+    await _post(agent, _agent_start(sid, prompt="", is_continuation=True))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+
+    # Exactly one trace and one root span — the continuation did NOT spawn a new one.
+    roots = [s for s in session_spans if s["parent_id"] == "undefined"]
+    assert len(roots) == 1
+    root = roots[0]
+    assert root["span_id"] == root_span_id
+    assert root["trace_id"] == trace_id
+    assert all(s["trace_id"] == trace_id for s in session_spans)
+
+    # User input is preserved on the single trace.
+    assert root["meta"]["input"]["value"] == "do the thing"
+    assert root["meta"]["metadata"].get("missing_user_input") is None
+
+    # Both inference cycles' steps live under the same trace/root.
+    steps = _by_kind(session_spans, "step")
+    assert len(steps) == 2
+    assert all(s["parent_id"] == root_span_id for s in steps)
+
+
+async def test_second_real_turn_still_rotates_trace(agent):
+    """A genuine second user turn (is_continuation=False) still starts a new trace."""
+    sid = "pi-two-real-turns"
+    await _post(agent, _session_start(sid))
+
+    await _post(agent, _agent_start(sid, prompt="first"))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    first_trace = next(s for s in session_spans if s["parent_id"] == "undefined")["trace_id"]
+
+    await _post(agent, _agent_start(sid, prompt="second"))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    roots = [s for s in session_spans if s["parent_id"] == "undefined"]
+    assert len(roots) == 2
+    trace_ids = {r["trace_id"] for r in roots}
+    assert len(trace_ids) == 2
+    assert first_trace in trace_ids
+    inputs = sorted(r["meta"]["input"]["value"] for r in roots)
+    assert inputs == ["first", "second"]

@@ -24,6 +24,10 @@ The test agent can be installed from PyPI:
     # HTTP on port 8126, OTLP HTTP on port 4318, OTLP GRPC on port 4317, with the web-ui enabled
     ddapm-test-agent --port=8126 --otlp-http-port=4318 --otlp-grpc-port=4317 --web-ui-port=8080
 
+The agent binds to `127.0.0.1` (loopback) by default. To accept connections from
+other hosts, pass `--host 0.0.0.0` or set `HOST=0.0.0.0`. The Docker image sets
+this for you so its published ports work.
+
 or from Docker:
 
     # Run the test agent and mount the snapshot directory
@@ -197,6 +201,18 @@ To ignore headers in recorded cassettes, you can use the `--vcr-ignore-headers` 
 
 To normalize JSON bodies in recorded cassettes, you can use the `--vcr-json-body-normalizers` flag or `VCR_JSON_BODY_NORMALIZERS` environment variable. The list should take the form of `json.path1,json.path2,json.path3`, and the values at those JSON paths will be replaced with a placeholder in the recorded cassettes. This is particularly useful for normalizing request bodies with dynamic values such as timestamps or ids.
 
+#### Normalizing request bodies with regex in recorded cassettes
+
+For non-JSON content (or for values embedded in JSON strings that aren't reachable via a path), use the `--vcr-body-regex-normalizers` flag or `VCR_BODY_REGEX_NORMALIZERS` environment variable. The list should take the form of `pattern1,pattern2,pattern3`. Each pattern is a Python regex; every match in the request body is replaced with `<normalized>` before the cassette hash is computed.
+
+```
+VCR_BODY_REGEX_NORMALIZERS=agentId: [a-f0-9]+,"client_timestamp":"[^"]+",cc_version=[^;]+
+```
+
+This is useful for masking volatile identifiers, timestamps, or telemetry fields that vary every run but should be collapsed to a single cassette. Anchor each pattern on a unique prefix or surrounding key so it does not match unrelated content.
+
+Regex normalizers run before JSON-path normalizers, and both can be configured at the same time.
+
 #### AWS Services
 AWS service proxying, specifically recording cassettes for the first time, requires a `AWS_SECRET_ACCESS_KEY` environment variable to be set for the container running the test agent. This is used to recalculate the AWS signature for the request, as the one generated client-side likely used `{test-agent-host}:{test-agent-port}/vcr/{aws-service}` as the host, and the signature will mismatch that on the actual AWS service.
 
@@ -319,6 +335,8 @@ ordering to be maintained.**
 - `DD_POOL_TRACE_CHECK_FAILURES` [`false`]: Set to `"true"` to pool Trace Check failures that occured within Test-Agent memory. These failures can be queried later using the `/test/trace_check/failures` endpoint. Can also be set using the `--pool-trace-check-failures=true` option.
 
 - `DD_DISABLE_ERROR_RESPONSES` [`false`]: Set to `"true"` to disable Test-Agent `<Response 400>` when a Trace Check fails, instead sending a valid `<Response 200>`. Recommended for use with the `DD_POOL_TRACE_CHECK_FAILURES` env variable. Can also be set using the `--disable-error-responses=true` option.
+
+- `DD_AGENT_EXTRA_INFO` [`{}`]: Json string with an object to merge with the default '/info' response content. Fields here take priority over the defaults.
 
 
 ## HTTP API

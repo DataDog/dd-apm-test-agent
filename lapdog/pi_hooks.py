@@ -27,7 +27,6 @@ Terminology mapping (pi → trajectory-dev proposal):
 
 import json
 import logging
-import os
 from typing import Any
 from typing import Dict
 from typing import List
@@ -38,23 +37,27 @@ from typing import cast
 from aiohttp import web
 from aiohttp.web import Request
 
+from ddapm_test_agent.cors import with_cors
+
+from . import pi_session_backfill
 from ._clock import monotonic_wall_ns
+from .app_names import PI_CODING_AGENT_ML_APP
+from .backfill_utils import has_backfilled_session
 from .claude_cost_tracker import compute_cost_metrics
 from .claude_cost_tracker import cost_from_provider_usage
 from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import PendingToolSpan
 from .claude_hooks import SessionState
-from .claude_hooks import _HOSTNAME
-from .claude_hooks import _USER_HANDLE
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
 from .codex_cost_tracker import compute_openai_cost_metrics
-from .llmobs_event_platform import with_cors
+from .coding_agent_metadata import apply_project_metadata_to_span
+
 
 log = logging.getLogger(__name__)
 
-_ML_APP = os.environ.get("DD_PI_CODING_AGENT_ML_APP", "pi-coding-agent")
+_ML_APP = PI_CODING_AGENT_ML_APP
 _AI_GATEWAY_COST_PROVIDERS = frozenset({"anthropic", "openai"})
 
 
@@ -156,6 +159,8 @@ class ActiveStepSpan:
         self.tool_use_ids: List[str] = []
         self.has_thinking = False
         self.stop_reason = ""
+        self.status = "ok"
+        self.error_message = ""
         self.span_ref: Optional[Dict[str, Any]] = None
 
 
@@ -307,7 +312,7 @@ class PiHooksAPI:
         return self._hooks_api._current_parent_id(session)
 
     def _append_span(self, span: Dict[str, Any]) -> None:
-        self._hooks_api._assembled_spans.append(span)
+        self._hooks_api._append_span(span)
 
     def _active_step_parent_id(self, session: SessionState) -> str:
         """Return active step span_id if one exists, else fall back to root/agent parent."""
@@ -335,18 +340,9 @@ class PiHooksAPI:
         span_id = _format_span_id()
         parent_id = self._current_parent_id(session)
 
-        tags = [
-            f"ml_app:{_ML_APP}",
-            f"session_id:{session.session_id}",
-            f"service:{_ML_APP}",
-            "env:local",
-            "source:pi-hooks",
-            "language:python",
-            f"hostname:{_HOSTNAME}",
-            "trajectory.semantic_type:agent_message",
+        tags = self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP) + [
+            "trajectory.semantic_type:agent_message"
         ]
-        if _USER_HANDLE:
-            tags.append(f"user_handle:{_USER_HANDLE}")
 
         step_span: Dict[str, Any] = {
             "span_id": span_id,
@@ -382,14 +378,76 @@ class PiHooksAPI:
         self._active_steps[sid] = active
         return active
 
-    def _finalize_active_step(self, session_id: str, end_ns: Optional[int] = None) -> None:
-        """Close the active step span, updating its metadata in-place."""
-        active = self._active_steps.pop(session_id, None)
-        if not active:
+    def _flush_orphaned_pending_llm(self, session_id: str, end_ns: Optional[int] = None) -> None:
+        """Emit an error LLM span for a pending call that never got ``message_end``.
+
+        When an LLM call raises (e.g. connection refused / auth failure) pi
+        unwinds without emitting ``message_end``/``turn_end``/``agent_end``, so
+        the ``PendingLLMSpan`` created in ``_handle_message_start`` is orphaned
+        and the step would otherwise render empty.  Emit a placeholder LLM span
+        marked as an error so the failure is visible.
+
+        The normal flow pops ``_pending_llm`` in ``_handle_message_end``, so any
+        entry still present here is a genuine orphan.
+        """
+        pending = self._pending_llm.pop(session_id, None)
+        if pending is None:
+            return
+        session = self._hooks_api._sessions.get(session_id)
+        if session is None:
             return
 
         if end_ns is None:
             end_ns = monotonic_wall_ns()
+
+        error_message = "LLM call did not complete"
+        span: Dict[str, Any] = {
+            "span_id": pending.span_id,
+            "trace_id": session.trace_id,
+            "parent_id": pending.parent_id,
+            "name": session.model or "unknown",
+            "status": "error",
+            "start_ns": pending.start_ns,
+            "duration": end_ns - pending.start_ns,
+            "ml_app": _ML_APP,
+            "service": _ML_APP,
+            "env": "local",
+            "session_id": session.session_id,
+            "tags": self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP),
+            "meta": {
+                "span": {"kind": "llm"},
+                "model_name": session.model,
+                "model_provider": session.model_provider,
+                "input": {"messages": pending.input_messages},
+                "output": {"messages": []},
+                "error": {"message": error_message},
+                "metadata": {"stop_reason": "error"},
+            },
+            "metrics": {},
+        }
+        self._append_span(span)
+
+        # Reflect the failure on the enclosing step so it is not empty.
+        active = self._active_steps.get(session_id)
+        if active is not None:
+            active.status = "error"
+            if not active.error_message:
+                active.error_message = error_message
+            if not active.stop_reason:
+                active.stop_reason = "error"
+
+    def _finalize_active_step(self, session_id: str, end_ns: Optional[int] = None) -> None:
+        """Close the active step span, updating its metadata in-place."""
+        if end_ns is None:
+            end_ns = monotonic_wall_ns()
+
+        # Emit an error span for any LLM call that never completed before the
+        # step is finalized so the step row reflects the failure.
+        self._flush_orphaned_pending_llm(session_id, end_ns=end_ns)
+
+        active = self._active_steps.pop(session_id, None)
+        if not active:
+            return
 
         ref = active.span_ref
         if ref is None:
@@ -397,6 +455,9 @@ class PiHooksAPI:
 
         ref["duration"] = end_ns - active.start_ns
         ref["meta"]["output"]["value"] = active.output_text
+        ref["status"] = active.status
+        if active.status == "error":
+            ref["meta"]["error"] = {"message": active.error_message or "step failed"}
 
         metadata = ref["meta"].setdefault("metadata", {})
         metadata["message_index"] = active.message_index
@@ -453,8 +514,32 @@ class PiHooksAPI:
 
         The root agent span represents the proposal's "turn" — the full agentic
         response to one user input.
+
+        A *continuation* agent_start (``is_continuation``) is emitted by
+        ``agent.continue()`` after auto-compaction or auto-retry. It has no
+        fresh user input and belongs to the same turn, so it must extend the
+        existing trace rather than spawn a new, input-less one.
         """
         session = self._get_or_create_session(session_id)
+        is_continuation = bool(body.get("is_continuation", False))
+        has_existing_trace = getattr(session, "_root_span_ref", None) is not None
+
+        if is_continuation and has_existing_trace:
+            # Same user turn resuming. Finalize any open step but keep the
+            # trace_id / root span / user_prompts intact, then reopen the trace
+            # so the next agent_end re-finalizes and re-forwards it.
+            self._finalize_active_step(session_id)
+            session.root_span_emitted = False
+            model_id = body.get("model_id", "") or body.get("model", "") or session.model
+            model_provider = body.get("model_provider", session.model_provider)
+            if model_id:
+                session.model = model_id
+                if not session.models or session.models[-1] != model_id:
+                    session.models.append(model_id)
+            if model_provider:
+                session.model_provider = model_provider
+            log.debug("Pi continuation agent_start for session %s (trace %s)", session_id, session.trace_id)
+            return
 
         # Finalize previous turn if it wasn't finalized
         if not session.root_span_emitted and getattr(session, "_root_span_ref", None) is not None:
@@ -495,18 +580,15 @@ class PiHooksAPI:
         if model_provider:
             session.model_provider = model_provider
 
-        tags = [
-            f"ml_app:{_ML_APP}",
-            f"session_id:{session.session_id}",
-            f"service:{_ML_APP}",
-            "env:local",
-            "source:pi-hooks",
-            "language:python",
-            f"hostname:{_HOSTNAME}",
-            "trajectory.semantic_type:turn",
-        ]
-        if _USER_HANDLE:
-            tags.append(f"user_handle:{_USER_HANDLE}")
+        tags = self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP) + ["trajectory.semantic_type:turn"]
+
+        root_metadata: Dict[str, Any] = {"models_used": session.models[:]}
+        # Defense-in-depth: a genuine user turn should always carry a prompt.
+        # If it doesn't (and this is not a continuation), flag it so the gap is
+        # diagnosable rather than silently producing an input-less trace.
+        if not prompt:
+            root_metadata["missing_user_input"] = True
+            log.warning("Pi agent_start for session %s has no user_prompt (trace %s)", session_id, session.trace_id)
 
         root_span: Dict[str, Any] = {
             "span_id": session.root_span_id,
@@ -527,10 +609,11 @@ class PiHooksAPI:
                 "output": {"value": ""},
                 "model_name": model_id,
                 "model_provider": model_provider,
-                "metadata": {"models_used": session.models[:]},
+                "metadata": root_metadata,
             },
             "metrics": {},
         }
+        apply_project_metadata_to_span(root_span, session.project_metadata)
         self._append_span(root_span)
         session._root_span_ref = root_span  # type: ignore[attr-defined]
 
@@ -581,6 +664,7 @@ class PiHooksAPI:
             root_span["meta"]["model_name"] = session.model
             root_span["meta"]["model_provider"] = session.model_provider
             root_span["meta"].setdefault("metadata", {})["models_used"] = session.models[:]
+            apply_project_metadata_to_span(root_span, session.project_metadata)
             # Do not roll token_usage up onto root_span["metrics"] —
             # production stores trace rollups in a separate `@trace.*`
             # document, not on the root span. Mirroring it here caused
@@ -599,18 +683,9 @@ class PiHooksAPI:
                 self._hooks_api._set_hidden_metadata(root_span, **dd_fields)
         else:
             # Fallback: create root span
-            tags = [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:pi-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-                "trajectory.semantic_type:turn",
+            tags = self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP) + [
+                "trajectory.semantic_type:turn"
             ]
-            if _USER_HANDLE:
-                tags.append(f"user_handle:{_USER_HANDLE}")
             root_span = {
                 "span_id": session.root_span_id,
                 "trace_id": session.trace_id,
@@ -634,6 +709,7 @@ class PiHooksAPI:
                 },
                 # Intentionally no "metrics" key — see comment above.
             }
+            apply_project_metadata_to_span(root_span, session.project_metadata)
             self._append_span(root_span)
 
         session.root_span_emitted = True
@@ -649,8 +725,20 @@ class PiHooksAPI:
 
     def _handle_turn_end(self, session_id: str, body: Dict[str, Any]) -> None:
         """Finalize the active step span (primary step finalization point)."""
+        active = self._active_steps.get(session_id)
+        turn_index = body.get("turn_index")
+        if active is not None and turn_index is not None and active.turn_index is not None:
+            if turn_index != active.turn_index:
+                log.debug(
+                    "Ignoring stale Pi turn_end for session %s: event turn_index=%s active turn_index=%s",
+                    session_id,
+                    turn_index,
+                    active.turn_index,
+                )
+                return
+
         self._finalize_active_step(session_id)
-        log.debug("Pi turn_end for session %s: turn_index=%s", session_id, body.get("turn_index"))
+        log.debug("Pi turn_end for session %s: turn_index=%s", session_id, turn_index)
 
     def _handle_message_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Begin tracking an LLM call.
@@ -723,6 +811,11 @@ class PiHooksAPI:
         model_provider = body.get("model_provider", session.model_provider)
         usage = body.get("usage") or {}
         stop_reason = body.get("stop_reason", "")
+        error_message = body.get("error_message", "") or ""
+        # pi reports failed LLM calls as an assistant message with
+        # stopReason "error" (and an errorMessage). Surface this as a real
+        # error span rather than an empty/ok span.
+        is_error = stop_reason == "error"
 
         # Extract tool calls and output text from the content array
         content = body.get("content", [])
@@ -743,6 +836,9 @@ class PiHooksAPI:
             active.tool_use_ids = tool_use_ids
             active.has_thinking = has_thinking
             active.stop_reason = stop_reason
+            if is_error:
+                active.status = "error"
+                active.error_message = error_message or "LLM call failed"
 
         # Build input/output messages in LLMObs format
         output_messages: List[Dict[str, Any]] = []
@@ -785,22 +881,14 @@ class PiHooksAPI:
             "trace_id": session.trace_id,
             "parent_id": parent_id,
             "name": model_id or "unknown",
-            "status": "ok",
+            "status": "error" if is_error else "ok",
             "start_ns": start_ns,
             "duration": duration,
             "ml_app": _ML_APP,
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:pi-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-            ],
+            "tags": self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP),
             "meta": {
                 "span": {"kind": "llm"},
                 "model_name": model_id,
@@ -821,6 +909,8 @@ class PiHooksAPI:
                 **cost_metrics,
             },
         }
+        if is_error:
+            span["meta"]["error"] = {"message": error_message or "LLM call failed"}
         self._append_span(span)
 
     def _handle_tool_execution_start(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -897,16 +987,8 @@ class PiHooksAPI:
             "service": _ML_APP,
             "env": "local",
             "session_id": session.session_id,
-            "tags": [
-                f"ml_app:{_ML_APP}",
-                f"session_id:{session.session_id}",
-                f"service:{_ML_APP}",
-                "env:local",
-                "source:pi-hooks",
-                "language:python",
-                f"hostname:{_HOSTNAME}",
-                f"tool_name:{actual_tool_name}",
-            ],
+            "tags": self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP)
+            + [f"tool_name:{actual_tool_name}"],
             "meta": {
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},
@@ -968,6 +1050,9 @@ class PiHooksAPI:
     def _dispatch(self, body: Dict[str, Any]) -> None:
         session_id = body.get("session_id", "")
         event_name = body.get("hook_event_name", "")
+        if session_id:
+            session = self._get_or_create_session(session_id)
+            self._hooks_api.update_session_project_metadata(session, body)
         handler_name = self._HANDLERS.get(event_name)
         if handler_name:
             handler = getattr(self, handler_name)
@@ -985,11 +1070,16 @@ class PiHooksAPI:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
 
         session_id = body.get("session_id", "")
         if not session_id:
             return web.json_response({"error": "missing session_id"}, status=400)
 
+        session_token = body.pop("lapdog_session_token", "")
+        if isinstance(session_token, str) and session_token:
+            self._hooks_api._register_session_token(session_token, session_id)
         self._raw_events.append(body)
         self._dispatch(body)
 
@@ -1006,9 +1096,52 @@ class PiHooksAPI:
         """Handle GET /pi/hooks/raw — return all raw received events for debugging."""
         return web.json_response({"events": self._raw_events})
 
+    async def handle_backfill_session(self, request: Request) -> web.Response:
+        """Ingest a historical pi/omp transcript as a batch of spans.
+
+        Body: ``{"session_id": str, "cwd": str, "entries": [pi-jsonl entries]}``.
+
+        The live pi pipeline assembles spans from a stream of lifecycle events
+        (session_start, message_start, tool_execution_*, etc.) plus model
+        usage that the extension reports separately. For backfill we have all
+        of that in the on-disk transcript already, so we convert the entries
+        directly into the same span shape and append them to
+        ``_assembled_spans``.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        session_id = body.get("session_id") or ""
+        cwd = body.get("cwd") or ""
+        entries = body.get("entries") or []
+        if not session_id or not isinstance(entries, list):
+            return web.json_response({"error": "session_id and entries required"}, status=400)
+
+        if has_backfilled_session(self._hooks_api._assembled_spans, session_id):
+            return web.json_response(
+                {
+                    "status": "skipped",
+                    "reason": "already_backfilled",
+                    "spans_created": 0,
+                    "traces_created": 0,
+                }
+            )
+
+        try:
+            spans = pi_session_backfill.session_to_spans(session_id, cwd, entries)
+        except Exception as exc:
+            log.warning("pi backfill_session failed for %s: %r", session_id, exc)
+            return web.json_response({"status": "error", "error": repr(exc)}, status=400)
+        self._hooks_api._assembled_spans.extend(spans)
+        traces = len({s.get("trace_id") for s in spans})
+        return web.json_response({"status": "ok", "spans_created": len(spans), "traces_created": traces})
+
     def get_routes(self) -> List[web.RouteDef]:
         """Return the routes for this API."""
         return [
             web.post("/pi/hooks", with_cors(self.handle_hook)),
+            web.post("/pi/hooks/backfill_session", with_cors(self.handle_backfill_session)),
             web.route("*", "/pi/hooks/raw", with_cors(self.handle_raw_events)),
         ]

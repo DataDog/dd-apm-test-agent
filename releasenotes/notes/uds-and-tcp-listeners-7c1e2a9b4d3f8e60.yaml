@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    The APM receiver now listens on its TCP port **and** the configured UDS socket simultaneously. Previously,
+    setting ``DD_APM_RECEIVER_SOCKET`` (or ``--trace-uds-socket``) replaced the TCP listener with a socket-only
+    listener, so clients and container healthchecks reaching the agent over the published port received "connection refused".
+    This restores the historical behavior where both transports are bound together.

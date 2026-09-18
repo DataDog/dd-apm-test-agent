@@ -7,6 +7,8 @@ import time
 import urllib.error
 import urllib.request
 
+import aiohttp
+from aiohttp import web
 import msgpack
 import pytest
 
@@ -657,6 +659,174 @@ async def test_evp_proxy_v2_api_v2_exposures(agent):
     assert len(reqs) == 1
 
 
+_LLMOBS_META_STRUCT_PAYLOAD = {
+    "trace_id": "11111111111111111111111111111111",
+    "parent_id": "00000000000000000000000000000001",
+    "name": "openai.chat.completion",
+    "meta": {
+        "span": {"kind": "llm"},
+        "input": {"value": "hi"},
+        "output": {"value": "hello"},
+        "model_name": "gpt-4",
+        "model_provider": "openai",
+    },
+    "metrics": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12},
+    "tags": {"env": "test", "service": "weblog"},
+}
+
+
+def _v04_trace_with_llmobs(llmobs_payload, span_id=1234, trace_id=4321):
+    return msgpack.packb(
+        [
+            [
+                {
+                    "name": "openai.request",
+                    "service": "weblog",
+                    "resource": "openai.chat.completion",
+                    "span_id": span_id,
+                    "trace_id": trace_id,
+                    "start": 1_700_000_000_000_000_000,
+                    "duration": 250_000_000,
+                    "error": 0,
+                    "meta": {},
+                    "meta_struct": {"_llmobs": msgpack.packb(llmobs_payload)},
+                }
+            ]
+        ]
+    )
+
+
+async def test_session_requests_synthesizes_llmobs_from_v04_meta_struct(
+    agent, v04_reference_http_trace_payload_headers
+):
+    import base64
+
+    resp = await agent.put(
+        "/v0.4/traces",
+        headers=v04_reference_http_trace_payload_headers,
+        data=_v04_trace_with_llmobs(_LLMOBS_META_STRUCT_PAYLOAD),
+    )
+    assert resp.status == 200, await resp.text()
+
+    resp = await agent.get("/test/session/requests")
+    reqs = await resp.json()
+    synthetic = [r for r in reqs if r["url"].endswith("/evp_proxy/v4/api/v2/llmobs")]
+    assert len(synthetic) == 1, reqs
+
+    # The synthesized body is a JSON array of event envelopes, mirroring a batched
+    # LLMObsSpanWriter flush (one request, N events).
+    events = json.loads(base64.b64decode(synthetic[0]["body"]))
+    assert isinstance(events, list)
+    assert len(events) == 1
+    event = events[0]["spans"][0]
+    assert event["span_id"] == "1234"
+    assert event["trace_id"] == _LLMOBS_META_STRUCT_PAYLOAD["trace_id"]
+    assert event["start_ns"] == 1_700_000_000_000_000_000
+    assert event["status"] == "ok"
+    assert event["meta"]["span"]["kind"] == "llm"
+
+
+async def test_session_requests_batches_multiple_llmobs_spans_into_one_request(
+    agent, v04_reference_http_trace_payload_headers
+):
+    import base64
+
+    # Two LLMObs-bearing spans in a single v0.4 POST must be synthesized as ONE EVP
+    # request carrying both events (matches prompt-caching: num=1 request, 2 spans).
+    payload = msgpack.packb(
+        [
+            [
+                {
+                    "name": "openai.request",
+                    "service": "weblog",
+                    "span_id": 1111,
+                    "trace_id": 4321,
+                    "start": 1_700_000_000_000_000_000,
+                    "duration": 1,
+                    "error": 0,
+                    "meta": {},
+                    "meta_struct": {"_llmobs": msgpack.packb(_LLMOBS_META_STRUCT_PAYLOAD)},
+                }
+            ],
+            [
+                {
+                    "name": "openai.request",
+                    "service": "weblog",
+                    "span_id": 2222,
+                    "trace_id": 8765,
+                    "start": 1_700_000_000_000_000_001,
+                    "duration": 1,
+                    "error": 0,
+                    "meta": {},
+                    "meta_struct": {"_llmobs": msgpack.packb(_LLMOBS_META_STRUCT_PAYLOAD)},
+                }
+            ],
+        ]
+    )
+    headers = dict(v04_reference_http_trace_payload_headers)
+    headers["X-Datadog-Trace-Count"] = "2"
+    resp = await agent.put("/v0.4/traces", headers=headers, data=payload)
+    assert resp.status == 200, await resp.text()
+
+    reqs = await (await agent.get("/test/session/requests")).json()
+    synthetic = [r for r in reqs if r["url"].endswith("/evp_proxy/v4/api/v2/llmobs")]
+    assert len(synthetic) == 1, reqs
+    events = json.loads(base64.b64decode(synthetic[0]["body"]))
+    assert {e["spans"][0]["span_id"] for e in events} == {"1111", "2222"}
+
+
+async def test_session_requests_no_synthesis_without_llmobs_meta_struct(
+    agent, v04_reference_http_trace_payload_headers
+):
+    payload = msgpack.packb([[{"name": "web", "span_id": 1, "trace_id": 2, "start": 1, "duration": 1, "meta": {}}]])
+    resp = await agent.put("/v0.4/traces", headers=v04_reference_http_trace_payload_headers, data=payload)
+    assert resp.status == 200, await resp.text()
+
+    reqs = await (await agent.get("/test/session/requests")).json()
+    assert not any(r["url"].endswith("/evp_proxy/v4/api/v2/llmobs") for r in reqs)
+
+
+async def test_session_requests_dedupes_real_evp_post_against_meta_struct(
+    agent, v04_reference_http_trace_payload_headers
+):
+    # Predicted-drop fallback: SDK posts directly to EVP for the same span that
+    # also rides via meta_struct. Synthesis must be suppressed to avoid duplicates.
+    real_envelope = {
+        "_dd.stage": "raw",
+        "event_type": "span",
+        "spans": [
+            {
+                "trace_id": _LLMOBS_META_STRUCT_PAYLOAD["trace_id"],
+                "span_id": "1234",
+                "start_ns": 1,
+                "duration": 1,
+                "status": "ok",
+                "meta": {},
+                "metrics": {},
+                "tags": [],
+                "_dd": {},
+            }
+        ],
+    }
+    resp = await agent.post(
+        "/evp_proxy/v4/api/v2/llmobs",
+        headers={"Content-Type": "application/msgpack"},
+        data=msgpack.packb(real_envelope),
+    )
+    assert resp.status == 200, await resp.text()
+
+    resp = await agent.put(
+        "/v0.4/traces",
+        headers=v04_reference_http_trace_payload_headers,
+        data=_v04_trace_with_llmobs(_LLMOBS_META_STRUCT_PAYLOAD),
+    )
+    assert resp.status == 200, await resp.text()
+
+    reqs = await (await agent.get("/test/session/requests")).json()
+    llmobs_entries = [r for r in reqs if r["url"].endswith("/evp_proxy/v4/api/v2/llmobs")]
+    assert len(llmobs_entries) == 1
+
+
 async def test_trace_v1(
     agent,
     v04_reference_http_trace_payload_headers,
@@ -676,8 +846,15 @@ async def test_trace_v1(
     assert len(result) == 1
     assert len(result[0]) == 1, result
     assert result[0][0]["trace_id"] == 8675
-    assert result[0][0]["meta"]["_dd.p.tid"] == "0x55"
+    assert result[0][0]["meta"]["_dd.p.tid"] == "0000000000000055"
     assert result[0][0]["service"] == "my-service"
+
+    requests_resp = await agent.get("/test/session/requests")
+    assert requests_resp.status == 200
+    requests = await requests_resp.json()
+    v1_requests = [request for request in requests if request["url"].endswith("/v1.0/traces")]
+    assert len(v1_requests) == 1
+    assert v1_requests[0]["headers"]["X-Datadog-Trace-Count"] == "1"
 
 
 async def test_trace_v1_basic():
@@ -734,7 +911,7 @@ async def test_trace_v1_basic():
         "component": "my-component",
         "span.kind": "internal",
         "some-global": "cool-value",
-        "_dd.p.tid": "0x55",
+        "_dd.p.tid": "0000000000000055",
         "_dd.p.dm": "-4",
         "_dd.origin": "rum",
     }
@@ -796,12 +973,65 @@ async def test_trace_v1_no_sampling_mechanism():
         "component": "my-component",
         "span.kind": "internal",
         "some-global": "cool-value",
-        "_dd.p.tid": "0x55",
+        "_dd.p.tid": "0000000000000055",
         "_dd.origin": "rum",
     }
     assert result_span["metrics"] == {"fooNum": 3.14, "_sampling_priority_v1": 1}
     assert result_span["type"] == "span-type"
     assert result_span["trace_id"] == 8675
+
+
+async def test_trace_v1_sampling_mechanism_only_on_first_span():
+    """sampling_mechanism (field 7) should set _dd.p.dm only on the first span in the chunk."""
+    data = msgpack.packb(
+        {
+            2: "hello",
+            11: [
+                {
+                    1: 1,
+                    4: [
+                        {
+                            # root span (first in chunk)
+                            1: "my-service",
+                            2: "root-span",
+                            3: 1,
+                            4: 1000,
+                            5: 0,
+                            6: 987,
+                            7: 150,
+                            8: False,
+                            9: [],
+                            10: "web",
+                        },
+                        {
+                            # child span (not first in chunk)
+                            1: "my-service",
+                            2: "child-span",
+                            3: 1,
+                            4: 2000,
+                            5: 1000,
+                            6: 990,
+                            7: 50,
+                            8: False,
+                            9: [],
+                            10: "web",
+                        },
+                    ],
+                    6: bytes([0x00] * 16),
+                    7: 1,
+                }
+            ],
+        }
+    )
+    result = decode_v1(data)
+    assert len(result) == 1
+    assert len(result[0]) == 2
+    first_span = result[0][0]
+    child_span = result[0][1]
+    assert first_span["meta"].get("_dd.p.dm") == "-1"
+    assert child_span["meta"].get("_dd.p.dm") is None, (
+        "non-first spans in a chunk should not have _dd.p.dm set from samplingMechanism"
+    )
 
 
 async def test_trace_v1_span_event():
@@ -1058,3 +1288,78 @@ async def test_traces_via_uds(
     assert resp.status == 200
     received_traces = await resp.json()
     assert received_traces == v04_reference_http_trace_payload_data_raw
+
+
+@pytest.mark.skipif(platform.system() == "Windows", reason="Unix domain sockets are not supported on Windows")
+async def test_tcp_available_when_uds_configured(
+    testagent,
+    testagent_port,
+    testagent_uds_socket_path,
+    v04_reference_http_trace_payload_headers,
+    v04_reference_http_trace_payload_data,
+    v04_reference_http_trace_payload_data_raw,
+):
+    """Configuring a UDS socket must not drop the TCP listener.
+
+    Regression test: setting DD_APM_RECEIVER_SOCKET used to replace the TCP
+    listener with a socket-only listener, so clients (and container
+    healthchecks) reaching the agent over the published port got connection
+    refused. The agent must bind both transports simultaneously.
+    """
+    assert testagent_uds_socket_path.exists(), f"UDS socket does not exist at {testagent_uds_socket_path}"
+
+    base_url = f"http://127.0.0.1:{testagent_port}"
+    async with aiohttp.ClientSession() as tcp_session:
+        resp = await tcp_session.put(
+            f"{base_url}/v0.4/traces",
+            headers=v04_reference_http_trace_payload_headers,
+            data=v04_reference_http_trace_payload_data,
+        )
+        assert resp.status == 200
+
+        resp = await tcp_session.get(f"{base_url}/test/traces")
+        assert resp.status == 200
+        received_traces = await resp.json()
+        assert received_traces == v04_reference_http_trace_payload_data_raw
+
+
+# Enough entries that the re-serialized body is longer than the compact upstream one.
+PROXIED_RATES = {f"service:svc{i:03d},env:": 1.0 for i in range(20)}
+
+
+class TestProxiedTraceResponse:
+    """Regression: _forward_request re-serializes the upstream body with json.dumps,
+    whose default separators make it longer than the agent's compact JSON. Relaying
+    the upstream Content-Length verbatim truncated it into invalid JSON.
+    """
+
+    @pytest.fixture
+    async def agent_url(self, aiohttp_server):
+        """Serve compact JSON from an upstream agent, as the real agent does."""
+        compact = json.dumps({"rate_by_service": PROXIED_RATES}, separators=(",", ":"))
+
+        async def handler(request):
+            return web.Response(body=compact.encode(), content_type="application/json")
+
+        app = web.Application()
+        app.router.add_route("*", "/v0.4/traces", handler)
+        server = await aiohttp_server(app)
+        yield f"http://127.0.0.1:{server.port}"
+
+    async def test_response_is_not_truncated(
+        self,
+        agent,
+        v04_reference_http_trace_payload_headers,
+        v04_reference_http_trace_payload_data,
+    ):
+        resp = await agent.put(
+            "/v0.4/traces",
+            headers=v04_reference_http_trace_payload_headers,
+            data=v04_reference_http_trace_payload_data,
+        )
+
+        assert resp.status == 200
+        body = await resp.read()
+        # The declared length must describe the body sent, so it stays parseable.
+        assert int(resp.headers["Content-Length"]) == len(body)
+        assert json.loads(body) == {"rate_by_service": PROXIED_RATES}
