@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Fix Codex missing session inputs in Lapdog.
+  - |
+    Prevent ``lapdog codex`` from capturing unrelated Codex sessions in the
+    same working directory.
