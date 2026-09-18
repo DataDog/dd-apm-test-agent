@@ -1167,7 +1167,7 @@ class CodexHooksAPI:
                 if turn.root_span_ref:
                     turn.root_span_ref["meta"]["output"]["value"] = message
                 self._set_step_output(turn, message)
-                return
+                return []
             self._begin_llm_in_step(session, turn, ns)
             if message:
                 _append_unique_message(turn.llm_output_messages, {"role": "assistant", "content": message})
