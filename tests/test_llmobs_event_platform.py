@@ -4,7 +4,7 @@ import time
 import msgpack
 import pytest
 
-from ddapm_test_agent.llmobs_event_platform import _resolve_span_kind
+from lapdog.llmobs_event_platform import _resolve_span_kind
 
 
 @pytest.fixture
