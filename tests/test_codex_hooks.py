@@ -186,6 +186,72 @@ async def test_codex_turn_llm_and_tool_spans(agent):
     assert llms[0]["metrics"]["estimated_total_cost"] == 1_310_000
 
 
+async def test_codex_response_item_user_message_sets_root_input(agent):
+    sid = "codex-response-item-user"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "message",
+            role="user",
+            content=[
+                {"type": "input_text", "text": "<image name=example.png>"},
+                {"type": "input_image", "image_url": "data:image/png;base64,example"},
+                {"type": "input_text", "text": "inspect this image"},
+            ],
+            internal_chat_message_metadata_passthrough={
+                "content_item_kinds": ["user.text", "user.image", "user.text"]
+            },
+        ),
+    )
+    await _post(agent, sid, _event("task_complete", last_agent_message="done"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    root = next(s for s in session_spans if s["parent_id"] == "undefined")
+
+    assert root["meta"]["input"]["value"] == "<image name=example.png>\n\ninspect this image"
+
+
+async def test_codex_response_item_ignores_injected_user_context_and_deduplicates_legacy_event(agent):
+    sid = "codex-response-item-user-filtering"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "message",
+            role="user",
+            content=[{"type": "input_text", "text": "# AGENTS.md instructions"}],
+            internal_chat_message_metadata_passthrough={
+                "content_item_kinds": ["agents_md.instructions"]
+            },
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "message",
+            role="user",
+            content=[{"type": "input_text", "text": "inspect this repo"}],
+            internal_chat_message_metadata_passthrough={"content_item_kinds": ["user.text"]},
+        ),
+    )
+    await _post(agent, sid, _event("user_message", message="inspect this repo"))
+    await _post(agent, sid, _event("task_complete", last_agent_message="done"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    roots = [s for s in session_spans if s["parent_id"] == "undefined"]
+
+    assert len(roots) == 1
+    assert roots[0]["meta"]["input"]["value"] == "inspect this repo"
+
+
 async def test_codex_session_tags_apply_to_existing_and_future_spans(agent):
     sid = "codex-custom-tags"
     session_token = "codex-launch-token"

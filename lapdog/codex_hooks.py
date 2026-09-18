@@ -80,6 +80,17 @@ def _content_text(content: Any) -> str:
     return "\n\n".join(parts)
 
 
+def _is_user_authored_message(payload: Dict[str, Any]) -> bool:
+    """Return whether a Codex ``role=user`` item contains human-authored input."""
+    metadata = payload.get("internal_chat_message_metadata_passthrough", {})
+    if not isinstance(metadata, dict):
+        return True
+    content_item_kinds = metadata.get("content_item_kinds")
+    if not isinstance(content_item_kinds, list):
+        return True
+    return any(str(kind).startswith("user.") for kind in content_item_kinds)
+
+
 def _copy_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     copied, _ = _copy_messages_with_limits(messages)
     return copied
@@ -1039,6 +1050,10 @@ class CodexHooksAPI:
         if event_type == "user_message":
             message = event.get("message", "")
             completed: List[CompletedTrace] = []
+            if message and session.user_prompts and _normalized_text(message) == _normalized_text(
+                session.user_prompts[-1]
+            ):
+                return []
             if message and session.active_turn is not None and not session.active_turn.closed and session.user_prompts:
                 completed = self._finalize_turn(session, status="ok")
             turn = self._active_turn(session, record)
@@ -1089,7 +1104,20 @@ class CodexHooksAPI:
         item_type = payload.get("type", "")
         self._update_last_ns(session, record)
 
-        if item_type == "function_call":
+        if item_type == "message" and payload.get("role") == "user" and _is_user_authored_message(payload):
+            message = _content_text(payload.get("content"))
+            if message and not (
+                session.user_prompts and _normalized_text(message) == _normalized_text(session.user_prompts[-1])
+            ):
+                turn = self._active_turn(session, record)
+                session.user_prompts.append(message)
+                turn.llm_input_messages.append({"role": "user", "content": message})
+                if turn.root_span_ref:
+                    turn.root_span_ref["meta"]["input"]["value"] = "\n\n".join(session.user_prompts)
+                if turn.step_span_ref:
+                    self._set_step_input(session, turn, turn.step_span_ref)
+                self._adopt_orphan_proxy_llm_spans(session, turn)
+        elif item_type == "function_call":
             self._handle_function_call(session, record)
         elif item_type == "function_call_output":
             self._handle_function_call_output(session, record)

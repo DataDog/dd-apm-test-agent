@@ -662,6 +662,157 @@ def test_proxy_watcher_ignores_existing_files_after_start(monkeypatch, tmp_path)
     assert posts == []
 
 
+def test_proxy_watcher_captures_only_its_first_new_top_level_session(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    owned_file = tmp_path / "rollout-owned.jsonl"
+    unrelated_file = tmp_path / "rollout-unrelated.jsonl"
+    poll_count = {"n": 0}
+
+    def fake_process_exists(pid, expected_start=None):
+        poll_count["n"] += 1
+        if poll_count["n"] == 1:
+            _append(
+                owned_file,
+                {
+                    "type": "session_meta",
+                    "payload": {"id": "sess-owned", "cwd": str(tmp_path), "thread_source": "user"},
+                },
+            )
+            return True
+        if poll_count["n"] == 2:
+            _append(
+                unrelated_file,
+                {
+                    "type": "session_meta",
+                    "payload": {"id": "sess-unrelated", "cwd": str(tmp_path), "thread_source": "user"},
+                },
+            )
+            return True
+        return False
+
+    monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
+
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=12345,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        ready_file=None,
+        proxy_session_key="proxy-key",
+        cursor_path=None,
+        discovery_interval=0.0,
+    )
+
+    assert {post["session_id"] for post in posts} == {"sess-owned"}
+
+
+def test_proxy_watcher_rejects_delayed_file_for_session_started_before_watcher(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    stale_file = tmp_path / "rollout-stale.jsonl"
+    owned_file = tmp_path / "rollout-owned.jsonl"
+    poll_count = {"n": 0}
+
+    def fake_process_exists(pid, expected_start=None):
+        poll_count["n"] += 1
+        if poll_count["n"] == 1:
+            _append(
+                stale_file,
+                {
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "sess-stale",
+                        "cwd": str(tmp_path),
+                        "thread_source": "user",
+                        "timestamp": "2000-01-01T00:00:00.000Z",
+                    },
+                },
+            )
+            return True
+        if poll_count["n"] == 2:
+            _append(
+                owned_file,
+                {
+                    "type": "session_meta",
+                    "payload": {"id": "sess-owned", "cwd": str(tmp_path), "thread_source": "user"},
+                },
+            )
+            return True
+        return False
+
+    monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
+
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=12345,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        ready_file=None,
+        proxy_session_key="proxy-key",
+        cursor_path=None,
+        discovery_interval=0.0,
+    )
+
+    assert {post["session_id"] for post in posts} == {"sess-owned"}
+
+
+def test_proxy_watcher_captures_subagent_of_owned_session(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    owned_file = tmp_path / "rollout-owned.jsonl"
+    child_file = tmp_path / "rollout-child.jsonl"
+    poll_count = {"n": 0}
+
+    def fake_process_exists(pid, expected_start=None):
+        poll_count["n"] += 1
+        if poll_count["n"] == 1:
+            _append(
+                owned_file,
+                {
+                    "type": "session_meta",
+                    "payload": {"id": "sess-owned", "cwd": str(tmp_path), "thread_source": "user"},
+                },
+            )
+            return True
+        if poll_count["n"] == 2:
+            _append(
+                child_file,
+                {
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "sess-child",
+                        "cwd": str(tmp_path),
+                        "thread_source": "subagent",
+                        "parent_thread_id": "sess-owned",
+                    },
+                },
+            )
+            return True
+        return False
+
+    monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
+
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=12345,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        ready_file=None,
+        proxy_session_key="proxy-key",
+        cursor_path=None,
+        discovery_interval=0.0,
+    )
+
+    assert {post["session_id"] for post in posts} == {"sess-owned", "sess-child"}
+
+
 def test_watch_codex_sessions_resumes_from_cursor(monkeypatch, tmp_path):
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
@@ -695,7 +846,7 @@ def test_watch_codex_sessions_resumes_from_cursor(monkeypatch, tmp_path):
     assert loaded.files.get(str(session_file)) == session_file.stat().st_size
 
 
-def test_proxy_watch_codex_sessions_resumes_initial_file_when_cursor_exists(monkeypatch, tmp_path):
+def test_proxy_watch_codex_sessions_ignores_initial_file_when_cursor_exists(monkeypatch, tmp_path):
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
@@ -718,8 +869,7 @@ def test_proxy_watch_codex_sessions_resumes_initial_file_when_cursor_exists(monk
         cursor_path=cursor_path,
     )
 
-    posted_types = [post["record"]["payload"]["type"] for post in posts if post["record"]["type"] == "event_msg"]
-    assert posted_types == ["user_message", "shutdown_complete"]
+    assert posts == []
 
 
 def test_app_watch_codex_sessions_replays_recent_nonmatching_file(monkeypatch, tmp_path):
