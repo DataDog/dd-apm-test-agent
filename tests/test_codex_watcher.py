@@ -688,6 +688,14 @@ def test_proxy_watcher_captures_only_its_first_new_top_level_session(monkeypatch
                     "payload": {"id": "sess-unrelated", "cwd": str(tmp_path), "thread_source": "user"},
                 },
             )
+            _append(
+                unrelated_file,
+                {"type": "event_msg", "payload": {"type": "user_message", "message": "unrelated"}},
+            )
+            _append(
+                unrelated_file,
+                {"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "done"}},
+            )
             return True
         return False
 

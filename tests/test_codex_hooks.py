@@ -252,6 +252,59 @@ async def test_codex_response_item_ignores_injected_user_context_and_deduplicate
     assert roots[0]["meta"]["input"]["value"] == "inspect this repo"
 
 
+async def test_codex_repeated_legacy_prompt_starts_a_new_trace(agent):
+    sid = "codex-repeated-legacy-prompt"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:01.000Z", message="continue"))
+    await _post(
+        agent,
+        sid,
+        _event("task_complete", timestamp="2026-05-11T17:00:02.000Z", last_agent_message="first done"),
+    )
+    await _post(agent, sid, _event("user_message", timestamp="2026-05-11T17:00:03.000Z", message="continue"))
+    await _post(
+        agent,
+        sid,
+        _event("task_complete", timestamp="2026-05-11T17:00:04.000Z", last_agent_message="second done"),
+    )
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    roots = [s for s in session_spans if s["parent_id"] == "undefined"]
+
+    assert len(roots) == 2
+    assert [root["meta"]["input"]["value"] for root in roots] == ["continue", "continue"]
+
+
+async def test_codex_repeated_response_item_prompt_starts_a_new_trace(agent):
+    sid = "codex-repeated-response-item-prompt"
+    prompt = {
+        "role": "user",
+        "content": [{"type": "input_text", "text": "continue"}],
+        "internal_chat_message_metadata_passthrough": {"content_item_kinds": ["user.text"]},
+    }
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _response_item("message", timestamp="2026-05-11T17:00:01.000Z", **prompt))
+    await _post(
+        agent,
+        sid,
+        _event("task_complete", timestamp="2026-05-11T17:00:02.000Z", last_agent_message="first done"),
+    )
+    await _post(agent, sid, _response_item("message", timestamp="2026-05-11T17:00:03.000Z", **prompt))
+    await _post(
+        agent,
+        sid,
+        _event("task_complete", timestamp="2026-05-11T17:00:04.000Z", last_agent_message="second done"),
+    )
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    roots = [s for s in session_spans if s["parent_id"] == "undefined"]
+
+    assert len(roots) == 2
+    assert [root["meta"]["input"]["value"] for root in roots] == ["continue", "continue"]
+
+
 async def test_codex_session_tags_apply_to_existing_and_future_spans(agent):
     sid = "codex-custom-tags"
     session_token = "codex-launch-token"

@@ -275,6 +275,8 @@ def _drain_file(
     include_all_cwds: bool = False,
     session_ownership: Optional[SessionOwnership] = None,
 ) -> Optional[str]:
+    if state.ignored:
+        return None
     try:
         size = path.stat().st_size
     except OSError:
@@ -388,7 +390,7 @@ def _drain_file(
                     state.buffer.clear()
                     state.buffer_ends.clear()
                     state.offset = line_end
-                    continue
+                    return posted_session_id
 
             if state.matches_cwd is None:
                 if len(state.buffer) >= MAX_BUFFER_RECORDS:
