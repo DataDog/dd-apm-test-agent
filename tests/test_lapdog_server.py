@@ -1,5 +1,13 @@
 """Tests for the boundary between the base test agent and the Lapdog server."""
 
+from unittest import mock
+
+import pytest
+
+from ddapm_test_agent import agent as test_agent
+from lapdog import server as lapdog_server
+
+
 LAPDOG_ROUTE_PATHS = {
     "/claude/hooks",
     "/lapdog/session/tags",
@@ -50,3 +58,20 @@ async def test_lapdog_and_base_apps_use_different_forwarding_extensions(agent, l
     assert base_agent.llmobs_payload_transform is not extended_agent.llmobs_payload_transform
     assert base_agent.llmobs_span_update_listener is None
     assert extended_agent.llmobs_span_update_listener is not None
+
+
+def test_deprecated_lapdog_mode_reenters_main_once_without_recurring(monkeypatch, capsys):
+    main_spy = mock.Mock(wraps=test_agent.main)
+    monkeypatch.setattr(test_agent, "main", main_spy)
+
+    with pytest.raises(SystemExit) as exc_info:
+        test_agent.main(["--lapdog-mode", "--version"])
+
+    assert exc_info.value.code == 0
+    assert main_spy.call_args_list == [
+        mock.call(["--lapdog-mode", "--version"]),
+        mock.call(args=["--version"], app_factory=lapdog_server.make_app),
+    ]
+    captured = capsys.readouterr()
+    assert "--lapdog-mode is deprecated" in captured.err
+    assert captured.out.strip()

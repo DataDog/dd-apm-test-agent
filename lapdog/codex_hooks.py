@@ -80,6 +80,17 @@ def _content_text(content: Any) -> str:
     return "\n\n".join(parts)
 
 
+def _is_user_authored_message(payload: Dict[str, Any]) -> bool:
+    """Return whether a Codex ``role=user`` item contains human-authored input."""
+    metadata = payload.get("internal_chat_message_metadata_passthrough", {})
+    if not isinstance(metadata, dict):
+        return True
+    content_item_kinds = metadata.get("content_item_kinds")
+    if not isinstance(content_item_kinds, list):
+        return True
+    return any(str(kind).startswith("user.") for kind in content_item_kinds)
+
+
 def _copy_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     copied, _ = _copy_messages_with_limits(messages)
     return copied
@@ -299,6 +310,11 @@ class CodexTurn:
         self.proxy_llm_spans_completed = 0
         self.proxy_llm_calls_failed = 0
         self.proxy_llm_usage_events_seen = 0
+        # Newer Codex versions write each user prompt twice: once as a
+        # response_item and once as a legacy user_message event. Remember only
+        # the first representation in the pair so repeated prompt text in a
+        # later occurrence is not discarded.
+        self.pending_user_prompt_duplicate: Optional[Tuple[str, str]] = None
 
 
 class CodexSession:
@@ -1039,6 +1055,16 @@ class CodexHooksAPI:
         if event_type == "user_message":
             message = event.get("message", "")
             completed: List[CompletedTrace] = []
+            active_turn = session.active_turn
+            normalized_message = _normalized_text(message)
+            if (
+                normalized_message
+                and active_turn is not None
+                and not active_turn.closed
+                and active_turn.pending_user_prompt_duplicate == ("response_item", normalized_message)
+            ):
+                active_turn.pending_user_prompt_duplicate = None
+                return []
             if message and session.active_turn is not None and not session.active_turn.closed and session.user_prompts:
                 completed = self._finalize_turn(session, status="ok")
             turn = self._active_turn(session, record)
@@ -1051,6 +1077,7 @@ class CodexHooksAPI:
                 if turn.step_span_ref:
                     self._set_step_input(session, turn, turn.step_span_ref)
                 self._adopt_orphan_proxy_llm_spans(session, turn)
+                turn.pending_user_prompt_duplicate = ("event_msg", normalized_message)
             return completed
 
         ns = self._update_last_ns(session, record)
@@ -1084,12 +1111,38 @@ class CodexHooksAPI:
 
         return []
 
-    def _handle_response_item(self, session: CodexSession, record: Dict[str, Any]) -> None:
+    def _handle_response_item(self, session: CodexSession, record: Dict[str, Any]) -> List[CompletedTrace]:
         payload = record.get("payload", {})
         item_type = payload.get("type", "")
         self._update_last_ns(session, record)
 
-        if item_type == "function_call":
+        if item_type == "message" and payload.get("role") == "user" and _is_user_authored_message(payload):
+            message = _content_text(payload.get("content"))
+            normalized_message = _normalized_text(message)
+            active_turn = session.active_turn
+            if (
+                normalized_message
+                and active_turn is not None
+                and not active_turn.closed
+                and active_turn.pending_user_prompt_duplicate == ("event_msg", normalized_message)
+            ):
+                active_turn.pending_user_prompt_duplicate = None
+                return []
+            completed: List[CompletedTrace] = []
+            if message and active_turn is not None and not active_turn.closed and session.user_prompts:
+                completed = self._finalize_turn(session, status="ok")
+            if message:
+                turn = self._active_turn(session, record)
+                session.user_prompts.append(message)
+                turn.llm_input_messages.append({"role": "user", "content": message})
+                if turn.root_span_ref:
+                    turn.root_span_ref["meta"]["input"]["value"] = "\n\n".join(session.user_prompts)
+                if turn.step_span_ref:
+                    self._set_step_input(session, turn, turn.step_span_ref)
+                self._adopt_orphan_proxy_llm_spans(session, turn)
+                turn.pending_user_prompt_duplicate = ("response_item", normalized_message)
+            return completed
+        elif item_type == "function_call":
             self._handle_function_call(session, record)
         elif item_type == "function_call_output":
             self._handle_function_call_output(session, record)
@@ -1114,7 +1167,7 @@ class CodexHooksAPI:
                 if turn.root_span_ref:
                     turn.root_span_ref["meta"]["output"]["value"] = message
                 self._set_step_output(turn, message)
-                return
+                return []
             self._begin_llm_in_step(session, turn, ns)
             if message:
                 _append_unique_message(turn.llm_output_messages, {"role": "assistant", "content": message})
@@ -1124,6 +1177,7 @@ class CodexHooksAPI:
                 if turn.last_llm_span_ref is not None and not turn.last_llm_span_ref["meta"]["output"].get("messages"):
                     turn.last_llm_span_ref["meta"]["output"]["messages"] = [{"role": "assistant", "content": message}]
                 self._emit_pending_llm_span(session, turn)
+        return []
 
     def _emit_pending_llm_span(self, session: CodexSession, turn: CodexTurn) -> None:
         usage = turn.pending_llm_usage
@@ -1913,7 +1967,7 @@ class CodexHooksAPI:
         elif record_type == "event_msg":
             return self._handle_event_msg(session, record)
         elif record_type == "response_item":
-            self._handle_response_item(session, record)
+            return self._handle_response_item(session, record)
         elif record_type == "compacted":
             self._update_last_ns(session, record)
             self._handle_compaction(session, record, trigger="compacted")

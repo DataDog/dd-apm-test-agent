@@ -1,6 +1,7 @@
 """Tail Codex session JSONL files and post records to Lapdog."""
 
 import argparse
+import datetime
 import json
 import os
 from pathlib import Path
@@ -50,6 +51,49 @@ class FileState:
         # buffer is flushed (or dropped on cwd mismatch).
         self.buffer_ends: List[int] = []
         self.ignored = False
+
+
+class SessionOwnership:
+    """Track the rollout tree owned by one ``lapdog codex`` invocation."""
+
+    def __init__(self, started_at: float) -> None:
+        self.started_at = started_at
+        self.root_session_id = ""
+        self.session_ids: Set[str] = set()
+
+    def _started_before_watcher(self, payload: Dict[str, Any]) -> bool:
+        timestamp = payload.get("timestamp")
+        if not isinstance(timestamp, str) or not timestamp:
+            return False
+        try:
+            started_at = datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return False
+        return started_at < self.started_at
+
+    def accepts(self, record: Dict[str, Any]) -> bool:
+        payload = record.get("payload", {})
+        if not isinstance(payload, dict):
+            return False
+        session_id = str(payload.get("id", ""))
+        if not session_id:
+            return False
+
+        thread_source = str(payload.get("thread_source", ""))
+        parent_session_id = str(payload.get("parent_thread_id", "") or payload.get("forked_from_id", ""))
+        if not self.root_session_id:
+            if (thread_source and thread_source != "user") or self._started_before_watcher(payload):
+                return False
+            self.root_session_id = session_id
+            self.session_ids.add(session_id)
+            return True
+
+        if session_id in self.session_ids:
+            return True
+        if parent_session_id and parent_session_id in self.session_ids:
+            self.session_ids.add(session_id)
+            return True
+        return False
 
 
 RECENT_SESSION_REPLAY_SECONDS = 300.0
@@ -229,7 +273,10 @@ def _drain_file(
     cwd: str,
     proxy_session_key: Optional[str] = None,
     include_all_cwds: bool = False,
+    session_ownership: Optional[SessionOwnership] = None,
 ) -> Optional[str]:
+    if state.ignored:
+        return None
     try:
         size = path.stat().st_size
     except OSError:
@@ -336,6 +383,14 @@ def _drain_file(
                     state.matches_cwd = True
                 else:
                     state.matches_cwd = _is_under(record_cwd, cwd)
+
+            if session_id and session_ownership is not None:
+                if state.matches_cwd is not True or not session_ownership.accepts(record):
+                    state.ignored = True
+                    state.buffer.clear()
+                    state.buffer_ends.clear()
+                    state.offset = line_end
+                    return posted_session_id
 
             if state.matches_cwd is None:
                 if len(state.buffer) >= MAX_BUFFER_RECORDS:
@@ -525,8 +580,13 @@ def _discover_new_files(
         cursor_offset = cursor.files.get(str(path))
         has_valid_cursor = cursor_offset is not None and cursor_offset <= stat.st_size
         has_truncated_cursor = cursor_offset is not None and cursor_offset > stat.st_size
-        ignore_initial_path = bool(proxy_session_key and path in initial_paths and cursor_offset is None)
-        if has_valid_cursor:
+        ignore_initial_path = bool(proxy_session_key and path in initial_paths)
+        if ignore_initial_path:
+            # A proxy watcher belongs to the Codex process it was launched
+            # with. Files that predate this watcher belong to other launches,
+            # even when a shared cursor contains a resumable offset for them.
+            initial_offset = stat.st_size
+        elif has_valid_cursor:
             # Resume from the persisted offset (crash-safe).
             initial_offset = cursor_offset or 0
         elif has_truncated_cursor:
@@ -534,11 +594,6 @@ def _discover_new_files(
             # Re-read it rather than treating it as an unrelated pre-existing
             # proxy-mode file.
             initial_offset = 0
-        elif ignore_initial_path:
-            # With proxy correlation, files present before this watcher
-            # starts belong to earlier Codex sessions. Keep advancing
-            # their offsets without posting later appends.
-            initial_offset = stat.st_size
         else:
             # First time seeing this file: replay recent rollouts to avoid
             # missing the session_meta/turn_context records.
@@ -575,6 +630,7 @@ def watch_codex_sessions(
     initial_paths: Set[Path] = set(_iter_jsonl_files(session_dir)) if proxy_session_key else set()
     parent_dead_at: Optional[float] = None
     cursor: CursorState = load_cursor(cursor_path) if cursor_path is not None else CursorState()
+    session_ownership = SessionOwnership(started_at) if proxy_session_key and not include_all_cwds else None
     last_cursor_save = 0.0
     last_discovery = 0.0
     if ready_file is not None:
@@ -627,6 +683,7 @@ def watch_codex_sessions(
                     cwd,
                     proxy_session_key=proxy_session_key,
                     include_all_cwds=include_all_cwds,
+                    session_ownership=session_ownership,
                 )
             except (KeyboardInterrupt, SystemExit):
                 raise
@@ -676,6 +733,7 @@ def watch_codex_sessions(
                 cwd,
                 proxy_session_key=proxy_session_key,
                 include_all_cwds=include_all_cwds,
+                session_ownership=session_ownership,
             )
             session_id = posted_session_id or state.session_id
             if session_id and not state.ignored and state.matches_cwd is not False:
