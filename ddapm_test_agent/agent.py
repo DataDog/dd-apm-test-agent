@@ -2299,6 +2299,20 @@ def main(
 ) -> None:
     if args is None:
         args = sys.argv[1:]
+
+    if "--lapdog-mode" in args:
+        # Deprecated compatibility path: import Lapdog lazily, then remove the
+        # legacy flag before lapdog.server re-enters this function with its app
+        # factory. Removing the flag prevents the delegation from recurring.
+        from lapdog import server as lapdog_server
+
+        print(
+            "WARNING: --lapdog-mode is deprecated; use `python -m lapdog.server` instead.",
+            file=sys.stderr,
+        )
+        lapdog_server.main(args=[arg for arg in args if arg != "--lapdog-mode"])
+        return
+
     parser = argparse.ArgumentParser(
         description="Datadog APM test agent",
         prog="ddapm-test-agent",
