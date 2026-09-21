@@ -1,0 +1,6 @@
+---
+deprecations:
+  - |
+    The ``ddapm-test-agent --lapdog-mode`` entry point is deprecated. 
+    Use ``python -m lapdog.server`` instead (including in Docker commands).
+    It remains available as a compatibility alias.
