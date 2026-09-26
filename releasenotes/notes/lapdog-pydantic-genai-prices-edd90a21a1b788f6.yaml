@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    Lapdog: Prices are now calculated based on the Pydantic GenAI model catalog: ``https://github.com/pydantic/genai-prices/blob/main/prices/new_data/v2/data_slim.json``.
+    These prices are applied on coding agent and any agentic application spans instrumented with ``lapdog``.
+    The pricing catalog is updated on every ``lapdog {{cmd}}`` invocation.
