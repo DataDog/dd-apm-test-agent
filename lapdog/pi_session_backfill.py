@@ -14,6 +14,7 @@ the toolCall and the matching toolResult.
 """
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import Any
 from typing import Dict
 from typing import List
@@ -27,9 +28,53 @@ from .backfill_utils import to_text
 from .claude_hooks import ClaudeHooksAPI
 from .coding_agent_metadata import CodingAgentProjectMetadata
 from .coding_agent_metadata import resolve_project_metadata
+from .model_pricing import compute_cost_metrics
 
 
 _TAGS_API = ClaudeHooksAPI()
+
+
+def _pi_cost_value(cost: Dict[str, Any], key: str) -> Optional[float]:
+    value = cost.get(key)
+    if type(value) not in (int, float):
+        return None
+    try:
+        if isfinite(value) and value >= 0:
+            return float(value)
+    except OverflowError:
+        pass
+    return None
+
+
+def has_pi_cost(cost: Any) -> bool:
+    """A Pi cost breakdown is present, including one containing only zeros."""
+    return isinstance(cost, dict) and any(
+        key in cost and _pi_cost_value(cost, key) is not None
+        for key in ("input", "output", "cacheRead", "cacheWrite", "total")
+    )
+
+
+def cost_from_pi_usage(cost: Dict[str, float]) -> Dict[str, int]:
+    """Convert Pi's own USD estimate to Lapdog's nanodollar metric shape."""
+
+    def to_nano(key: str) -> int:
+        value = _pi_cost_value(cost, key)
+        return int(round(value * 1_000_000_000)) if value is not None else 0
+
+    non_cached = to_nano("input")
+    cache_write = to_nano("cacheWrite")
+    cache_read = to_nano("cacheRead")
+    output = to_nano("output")
+    input_cost = non_cached + cache_write + cache_read
+    total = to_nano("total") if _pi_cost_value(cost, "total") is not None else input_cost + output
+    return {
+        "estimated_non_cached_input_cost": non_cached,
+        "estimated_cache_write_input_cost": cache_write,
+        "estimated_cache_read_input_cost": cache_read,
+        "estimated_input_cost": input_cost,
+        "estimated_output_cost": output,
+        "estimated_total_cost": total,
+    }
 
 
 @dataclass
@@ -163,7 +208,7 @@ def _new_turn(session_id: str, cwd: str, model: str, start_ns: int, prompt: str)
         "input_tokens": 0,
         "output_tokens": 0,
         "total_tokens": 0,
-        "total_cost_usd": 0.0,
+        "total_cost_nano": 0,
         "tools_used": set(),
         "model_set": bool(model),
         "step_count": 0,
@@ -239,8 +284,22 @@ def _build_llm_span(
     cache_read = int(usage.get("cacheRead", 0) or 0)
     cache_write = int(usage.get("cacheWrite", 0) or 0)
     total = int(usage.get("totalTokens", input_tokens + output_tokens + cache_read + cache_write) or 0)
-    cost = usage.get("cost") or {}
-    total_cost_usd = float(cost.get("total", 0) or 0)
+    cost = usage.get("cost")
+    provider = str(msg.get("provider") or "anthropic")
+    if has_pi_cost(cost):
+        cost_metrics = cost_from_pi_usage(cost)
+    else:
+        price_model = model.split("/", 1)[1] if model.startswith(("openai/", "anthropic/")) else model
+        price_provider = model.split("/", 1)[0] if model.startswith(("openai/", "anthropic/")) else provider
+        cost_metrics = compute_cost_metrics(
+            price_model,
+            price_provider,
+            input_tokens,
+            cache_write,
+            cache_read,
+            output_tokens,
+            start_ns,
+        ) or {}
     return {
         "span_id": format_span_id(),
         "trace_id": trace_id,
@@ -259,7 +318,7 @@ def _build_llm_span(
             "span": {"kind": "llm"},
             "kind": "llm",
             "model_name": model,
-            "model_provider": str(msg.get("provider") or "anthropic"),
+            "model_provider": provider,
             "input": {"messages": []},
             "output": {"messages": _format_output_messages(msg.get("content") or [])},
             "metadata": {
@@ -274,11 +333,7 @@ def _build_llm_span(
             "cache_read_input_tokens": cache_read,
             "cache_write_input_tokens": cache_write,
             "non_cached_input_tokens": input_tokens,
-            # pi's cost is in dollars; convert to nanodollars to match the
-            # convention used by ``claude_cost_tracker.compute_cost_metrics``
-            # so dashboards summing across sources don't need source-specific
-            # unit handling.
-            "estimated_total_cost": int(round(total_cost_usd * 1_000_000_000)),
+            **cost_metrics,
         },
         "span_links": [],
     }
@@ -353,8 +408,8 @@ def _finalize_turn(turn: Dict[str, Any]) -> None:
         root["metrics"]["input_tokens"] = turn["input_tokens"]
         root["metrics"]["output_tokens"] = turn["output_tokens"]
         root["metrics"]["total_tokens"] = turn["total_tokens"]
-        if turn["total_cost_usd"]:
-            root["metrics"]["estimated_total_cost"] = int(round(turn["total_cost_usd"] * 1_000_000_000))
+        if turn["total_cost_nano"]:
+            root["metrics"]["estimated_total_cost"] = turn["total_cost_nano"]
 
 
 def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -418,7 +473,7 @@ def session_to_spans(session_id: str, cwd: str, entries: List[Dict[str, Any]]) -
             current["input_tokens"] += metrics.get("input_tokens", 0)
             current["output_tokens"] += metrics.get("output_tokens", 0)
             current["total_tokens"] += metrics.get("total_tokens", 0)
-            current["total_cost_usd"] += float((msg.get("usage") or {}).get("cost", {}).get("total", 0) or 0)
+            current["total_cost_nano"] += metrics.get("estimated_total_cost", 0)
             current["end_ns"] = max(current["end_ns"], ts_ns)
             for block in content:
                 if not isinstance(block, dict):

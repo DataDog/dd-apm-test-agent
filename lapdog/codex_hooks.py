@@ -23,11 +23,11 @@ from .claude_hooks import SessionState
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
-from .codex_cost_tracker import compute_openai_cost_metrics
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .coding_agent_metadata import extract_agent_project_name
 from .coding_agent_metadata import extract_git_repository_url
 from .coding_agent_metadata import resolve_project_metadata
+from .model_pricing import compute_cost_metrics
 
 
 log = logging.getLogger(__name__)
@@ -1207,11 +1207,17 @@ class CodexHooksAPI:
             "cache_write_input_tokens": 0,
             "non_cached_input_tokens": non_cached_input_tokens,
             "reasoning_output_tokens": usage.get("reasoning_output_tokens", 0),
-            **compute_openai_cost_metrics(
-                model_id=session.model,
-                non_cached_input_tokens=non_cached_input_tokens,
-                cached_input_tokens=cached_input_tokens,
-                output_tokens=output_tokens,
+            **(
+                compute_cost_metrics(
+                    model_id=session.model,
+                    provider_id="openai",
+                    non_cached_input_tokens=non_cached_input_tokens,
+                    cache_write_tokens=0,
+                    cache_read_tokens=cached_input_tokens,
+                    output_tokens=output_tokens,
+                    when=llm_start_ns,
+                )
+                or {}
             ),
         }
         metadata: Dict[str, Any] = {"turn_id": turn.turn_id, "reasoning_effort": session.effort}

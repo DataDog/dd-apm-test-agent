@@ -1,9 +1,11 @@
 import gzip
+import json
 import time
 
 import msgpack
 import pytest
 
+from lapdog import model_pricing
 from lapdog.llmobs_event_platform import _resolve_span_kind
 
 
@@ -451,6 +453,80 @@ async def test_llmobs_list_returns_spans_v4(agent, llmobs_payload):
     data = await resp.json()
     assert data["status"] == "done"
     assert data["hitCount"] == 2
+
+
+@pytest.mark.parametrize("path", ["/evp_proxy/v2/api/v2/llmobs", "/evp_proxy/v4/api/v2/llmobs"])
+async def test_lapdog_estimates_generic_llm_spans_and_updates(agent, llmobs_payload, monkeypatch, tmp_path, path):
+    prices = [
+        {
+            "id": "openai",
+            "model_match": {"starts_with": "gpt-"},
+            "models": [{"id": "gpt-4", "match": {"equals": "gpt-4"}, "prices": {"input_mtok": 2, "output_mtok": 8}}],
+        }
+    ]
+    price_file = tmp_path / "prices.json"
+    price_file.write_bytes(json.dumps(prices).encode())
+    monkeypatch.setattr(model_pricing, "PRICE_FILE", price_file)
+    monkeypatch.setattr(model_pricing, "_catalog", None)
+    monkeypatch.setattr(model_pricing, "_catalog_stamp", None)
+
+    await _submit_llmobs_payload(agent, llmobs_payload, path=path)
+    api = agent.app["llmobs_event_platform_api"]
+    spans = api.get_llmobs_spans()
+    llm = next(span for span in spans if span["span_id"] == "span-child")
+    root = next(span for span in spans if span["span_id"] == "span-root")
+    assert llm["metrics"]["estimated_total_cost"] == 5 * 2000 + 10 * 8000
+    assert "estimated_total_cost" not in root["metrics"]
+
+    update = {"spans": [{"span_id": "span-child", "metrics": {"output_tokens": 20}}]}
+    assert api.update_spans(json.dumps(update).encode(), "application/json") == 1
+    assert llm["metrics"]["estimated_total_cost"] == 5 * 2000 + 20 * 8000
+
+    external = {"spans": [{"span_id": "span-child", "metrics": {"estimated_total_cost": 123}}]}
+    assert api.update_spans(json.dumps(external).encode(), "application/json") == 1
+    assert llm["metrics"]["estimated_total_cost"] == 123
+
+
+async def test_lapdog_estimates_synthetic_v04_llm_span(agent, monkeypatch, tmp_path):
+    prices = [
+        {
+            "id": "openai",
+            "model_match": {"starts_with": "gpt-"},
+            "models": [{"id": "gpt-4", "match": {"equals": "gpt-4"}, "prices": {"input_mtok": 2, "output_mtok": 8}}],
+        }
+    ]
+    price_file = tmp_path / "prices.json"
+    price_file.write_bytes(json.dumps(prices).encode())
+    monkeypatch.setattr(model_pricing, "PRICE_FILE", price_file)
+    monkeypatch.setattr(model_pricing, "_catalog", None)
+    monkeypatch.setattr(model_pricing, "_catalog_stamp", None)
+    payload = _v04_trace_with_llmobs_for_list_tests(
+        llmobs_overrides={"meta": {"span": {"kind": "llm"}, "model_name": "gpt-4", "model_provider": "openai"}}
+    )
+    resp = await agent.put("/v0.4/traces", headers=_V04_TRACE_HEADERS, data=payload)
+    assert resp.status == 200
+    spans = agent.app["llmobs_event_platform_api"].get_llmobs_spans()
+    assert spans[0]["metrics"]["estimated_total_cost"] == 5 * 2000 + 7 * 8000
+
+
+async def test_generic_span_is_priced_after_cache_becomes_available(agent, llmobs_payload, monkeypatch, tmp_path):
+    price_file = tmp_path / "prices.json"
+    monkeypatch.setattr(model_pricing, "PRICE_FILE", price_file)
+    monkeypatch.setattr(model_pricing, "_catalog", None)
+    monkeypatch.setattr(model_pricing, "_catalog_stamp", None)
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    api = agent.app["llmobs_event_platform_api"]
+    llm = next(span for span in api.get_llmobs_spans() if span["span_id"] == "span-child")
+    assert "estimated_total_cost" not in llm["metrics"]
+    prices = [
+        {
+            "id": "openai",
+            "models": [{"id": "gpt-4", "match": {"equals": "gpt-4"}, "prices": {"input_mtok": 2, "output_mtok": 8}}],
+        }
+    ]
+    price_file.write_bytes(json.dumps(prices).encode())
+    api.get_llmobs_spans()
+    assert llm["metrics"]["estimated_total_cost"] == 5 * 2000 + 10 * 8000
 
 
 _V04_TRACE_HEADERS = {

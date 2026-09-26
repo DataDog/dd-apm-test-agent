@@ -32,7 +32,6 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
-from typing import cast
 
 from aiohttp import web
 from aiohttp.web import Request
@@ -43,16 +42,14 @@ from . import pi_session_backfill
 from ._clock import monotonic_wall_ns
 from .app_names import PI_CODING_AGENT_ML_APP
 from .backfill_utils import has_backfilled_session
-from .claude_cost_tracker import compute_cost_metrics
-from .claude_cost_tracker import cost_from_provider_usage
 from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import PendingToolSpan
 from .claude_hooks import SessionState
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
-from .codex_cost_tracker import compute_openai_cost_metrics
 from .coding_agent_metadata import apply_project_metadata_to_span
+from .model_pricing import compute_cost_metrics
 
 
 log = logging.getLogger(__name__)
@@ -70,22 +67,6 @@ def _split_ai_gateway_model_id(model_id: str) -> Tuple[Optional[str], str]:
     return None, model_id
 
 
-def _looks_like_openai_model(model_id: str) -> bool:
-    return model_id.lower().startswith("gpt-")
-
-
-def _has_provider_cost(provider_cost: Any) -> bool:
-    if not isinstance(provider_cost, dict):
-        return False
-    for key in ("input", "output", "cacheRead", "cacheWrite", "total"):
-        value = provider_cost.get(key, 0)
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, (int, float)) and value > 0:
-            return True
-    return False
-
-
 def _compute_pi_cost_metrics(
     model_id: str,
     model_provider: str,
@@ -97,25 +78,12 @@ def _compute_pi_cost_metrics(
     cost_provider, pricing_model_id = _split_ai_gateway_model_id(model_id)
     provider = cost_provider or model_provider.lower()
 
-    if provider == "openai" or _looks_like_openai_model(pricing_model_id):
-        return compute_openai_cost_metrics(
-            model_id=pricing_model_id,
-            non_cached_input_tokens=non_cached_input_tokens + cache_write_tokens,
-            cached_input_tokens=cache_read_tokens,
-            output_tokens=output_tokens,
+    return (
+        compute_cost_metrics(
+            pricing_model_id, provider, non_cached_input_tokens, cache_write_tokens, cache_read_tokens, output_tokens
         )
-
-    anthropic_cost = compute_cost_metrics(
-        model_id=pricing_model_id,
-        non_cached_input_tokens=non_cached_input_tokens,
-        cache_write_tokens=cache_write_tokens,
-        cache_read_tokens=cache_read_tokens,
-        output_tokens=output_tokens,
+        or {}
     )
-    if anthropic_cost is not None:
-        return anthropic_cost
-
-    return {}
 
 
 class PendingLLMSpan:
@@ -861,11 +829,10 @@ class PiHooksAPI:
         cache_write = usage.get("cacheWrite", 0)
         total_tokens = usage.get("totalTokens", 0) or (input_tokens + output_tokens + cache_read + cache_write)
 
-        # Cost: prefer provider-reported cost, fall back to model-based estimate
-        provider_cost = usage.get("cost")
-        cost_metrics: Dict[str, int] = {}
-        if _has_provider_cost(provider_cost):
-            cost_metrics = cost_from_provider_usage(cast(Dict[str, float], provider_cost))
+        # Pi's cost breakdown wins; use the shared feed only when it is absent.
+        pi_cost = usage.get("cost")
+        if pi_session_backfill.has_pi_cost(pi_cost):
+            cost_metrics = pi_session_backfill.cost_from_pi_usage(pi_cost)
         else:
             cost_metrics = _compute_pi_cost_metrics(
                 model_id=model_id or "",

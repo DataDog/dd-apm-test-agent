@@ -2,6 +2,7 @@
 
 from unittest import mock
 
+import msgpack
 import pytest
 
 from ddapm_test_agent import agent as test_agent
@@ -58,6 +59,21 @@ async def test_lapdog_and_base_apps_use_different_forwarding_extensions(agent, l
     assert base_agent.llmobs_payload_transform is not extended_agent.llmobs_payload_transform
     assert base_agent.llmobs_span_update_listener is None
     assert extended_agent.llmobs_span_update_listener is not None
+
+
+async def test_lapdog_does_not_price_forwarded_llmobs_spans(agent, lapdog_agent):
+    span = {
+        "span_id": "1",
+        "meta": {"span": {"kind": "llm"}, "model_name": "gpt-5.5", "model_provider": "openai"},
+        "metrics": {"input_tokens": 100, "cache_read_input_tokens": 20, "output_tokens": 30},
+    }
+    raw = msgpack.packb({"ml_obs": {"spans": [span]}}, use_bin_type=True)
+    base = agent.app["agent"].llmobs_payload_transform(raw, "")
+    lapdog = lapdog_agent.app["agent"].llmobs_payload_transform(raw, "")
+    assert base == raw
+    forwarded = msgpack.unpackb(lapdog, raw=False)["ml_obs"]["spans"][0]
+    assert forwarded["metrics"] == span["metrics"]
+    assert "lapdog_forwarded:true" in forwarded["tags"]
 
 
 def test_deprecated_lapdog_mode_reenters_main_once_without_recurring(monkeypatch, capsys):

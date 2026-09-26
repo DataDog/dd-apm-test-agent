@@ -364,7 +364,7 @@ async def test_pi_project_metadata_from_extension_cwd(agent, tmp_path, monkeypat
     assert root["meta"]["metadata"]["git_repository_url"] == "github.com/DataDog/pi-project"
 
 
-async def test_ai_gateway_anthropic_model_id_gets_estimated_cost(agent):
+async def test_ai_gateway_anthropic_model_id_gets_estimated_cost(agent, pricing_catalog):
     """AI Gateway-style Anthropic model IDs still get local estimated costs."""
     sid = "pi-ai-gateway-anthropic-cost"
     model_id = "anthropic/claude-opus-4-7"
@@ -392,8 +392,8 @@ async def test_ai_gateway_anthropic_model_id_gets_estimated_cost(agent):
     assert metrics["estimated_total_cost"] == expected_input + expected_output
 
 
-async def test_ai_gateway_openai_model_id_gets_estimated_cost(agent):
-    """AI Gateway-style OpenAI model IDs are priced with the OpenAI cost table."""
+async def test_ai_gateway_openai_model_id_gets_estimated_cost(agent, pricing_catalog):
+    """AI Gateway-style OpenAI model IDs are priced with the cached feed."""
     sid = "pi-ai-gateway-openai-cost"
     model_id = "openai/gpt-5.5"
     usage = {"input": 80, "output": 30, "cacheRead": 20, "cacheWrite": 0, "totalTokens": 130}
@@ -416,22 +416,25 @@ async def test_ai_gateway_openai_model_id_gets_estimated_cost(agent):
     assert metrics["estimated_total_cost"] == 1_310_000
 
 
-async def test_provider_reported_cost_is_preferred_over_model_estimate(agent):
-    """Use cost sent by pi hooks when present, even if model-based pricing is also known."""
+@pytest.mark.parametrize(
+    "model_id,zero_cost",
+    [("openai/gpt-unknown", False), ("openai/gpt-5.5", False), ("openai/gpt-5.5", True)],
+)
+async def test_pi_cost_is_preferred_when_reported(agent, pricing_catalog, model_id, zero_cost):
+    """Pi's own cost wins even for a known model or an all-zero breakdown."""
     sid = "pi-provider-cost-preferred"
-    model_id = "openai/gpt-5.5"
+    pi_cost = (
+        {"total": 0}
+        if zero_cost
+        else {"input": 0.000001, "output": 0.000002, "cacheRead": 0.000003, "cacheWrite": 0.000004}
+    )
     usage = {
         "input": 80,
         "output": 30,
         "cacheRead": 20,
         "cacheWrite": 0,
         "totalTokens": 130,
-        "cost": {
-            "input": 0.000001,
-            "output": 0.000002,
-            "cacheRead": 0.000003,
-            "cacheWrite": 0.000004,
-        },
+        "cost": pi_cost,
     }
     await _post(agent, _session_start(sid, model_id=model_id, model_provider="ai-gateway"))
     await _post(agent, _agent_start(sid, model_id=model_id, model_provider="ai-gateway"))
@@ -446,11 +449,13 @@ async def test_provider_reported_cost_is_preferred_over_model_estimate(agent):
     llm = _by_kind([s for s in spans if s.get("session_id") == sid], "llm")[0]
 
     metrics = llm["metrics"]
+    assert metrics["estimated_total_cost"] == (0 if zero_cost else 10_000)
+    if zero_cost:
+        return
     assert metrics["estimated_non_cached_input_cost"] == 1_000
     assert metrics["estimated_output_cost"] == 2_000
     assert metrics["estimated_cache_read_input_cost"] == 3_000
     assert metrics["estimated_cache_write_input_cost"] == 4_000
-    assert metrics["estimated_total_cost"] == 10_000
 
 
 async def test_tools_parent_under_step(agent):

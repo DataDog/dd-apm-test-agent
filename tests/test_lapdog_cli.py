@@ -19,6 +19,14 @@ def test_tags_command_is_registered():
     assert "current instrumented coding-agent session" in cli.LAPDOG_USAGE
 
 
+def test_ensure_refreshes_prices_even_when_server_is_already_running():
+    with mock.patch("lapdog.cli.refresh_price_file") as refresh:
+        with mock.patch("lapdog.cli._lapdog_alive", return_value=True):
+            with mock.patch("lapdog.cli._read_pid_file", return_value=(1234, 8126)):
+                assert cli._ensure_lapdog_running() == 8126
+    refresh.assert_called_once_with()
+
+
 def test_cmd_codex_starts_watcher_and_execs_codex():
     with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126) as ensure:
         with mock.patch("lapdog.cli._start_codex_watcher") as start_watcher:
