@@ -68,7 +68,8 @@ def test_cached_prices_reload_without_restart(monkeypatch, tmp_path):
         == 2 * 7000 + 3 * 14000
     )
     providers = _feed()
-    providers[0]["models"][1]["prices"]["input_mtok"] = 8
+    # Change the encoded size too: Windows can report the same mtime for rapid writes.
+    providers[0]["models"][1]["prices"]["input_mtok"] = 8.0
     path.write_bytes(json.dumps(providers).encode())
     assert model_pricing.compute_cost_metrics("gpt-6-astra", "openai", 2, 0, 0, 0)["estimated_total_cost"] == 16000
 

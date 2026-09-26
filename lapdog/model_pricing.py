@@ -354,14 +354,14 @@ class PricingCatalog:
 
 
 _catalog: Optional[PricingCatalog] = None
-_catalog_stamp: Optional[Tuple[int, int]] = None
+_catalog_stamp: Optional[Tuple[int, int, int]] = None
 
 
 def _current_catalog() -> Optional[PricingCatalog]:
     global _catalog, _catalog_stamp
     try:
         stat = PRICE_FILE.stat()
-        stamp = (stat.st_mtime_ns, stat.st_size)
+        stamp = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
     except OSError:
         return _catalog
     if stamp != _catalog_stamp:
