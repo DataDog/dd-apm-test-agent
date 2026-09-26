@@ -43,6 +43,7 @@ from ddapm_test_agent.trace import Span
 from ddapm_test_agent.trace import Trace
 from ddapm_test_agent.trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
 from ddapm_test_agent.traces_otlp import TRACES_ENDPOINT
+from lapdog import model_pricing
 from lapdog.server import make_app as make_lapdog_app
 
 
@@ -50,6 +51,43 @@ from lapdog.server import make_app as make_lapdog_app
 config.service = ""
 
 pytest_plugins = "aiohttp.pytest_plugin"
+
+
+@pytest.fixture
+def pricing_catalog(monkeypatch, tmp_path):
+    """Install a small deterministic feed for Lapdog's cost integration tests."""
+    providers = [
+        {
+            "id": "openai",
+            "model_match": {"starts_with": "gpt-"},
+            "models": [
+                {
+                    "id": "gpt-5.5",
+                    "match": {"equals": "gpt-5.5"},
+                    "prices": {"input_mtok": 5, "cache_read_mtok": 0.5, "output_mtok": 30},
+                }
+            ],
+        },
+        {
+            "id": "anthropic",
+            "model_match": {"contains": "claude"},
+            "models": [
+                {
+                    "id": "claude-opus-4-7",
+                    "match": {"starts_with": "claude-opus-4-7"},
+                    "prices": {
+                        "input_mtok": 5,
+                        "cache_write_mtok": 6.25,
+                        "cache_read_mtok": 0.5,
+                        "output_mtok": 25,
+                    },
+                }
+            ],
+        },
+    ]
+    monkeypatch.setattr(model_pricing, "PRICE_FILE", tmp_path / "missing-prices.json")
+    monkeypatch.setattr(model_pricing, "_catalog", model_pricing.PricingCatalog(providers))
+    monkeypatch.setattr(model_pricing, "_catalog_stamp", None)
 
 
 @pytest.fixture
@@ -949,7 +987,9 @@ async def grpc_client_with_failure_type(agent_app, available_port, aiohttp_serve
     if service_type not in ["logs", "metrics", "traces"]:
         raise ValueError(f"service_type must be 'logs', 'metrics', or 'traces', got: {service_type}")
 
-    endpoint = LOGS_ENDPOINT if service_type == "logs" else METRICS_ENDPOINT if service_type == "metrics" else TRACES_ENDPOINT
+    endpoint = (
+        LOGS_ENDPOINT if service_type == "logs" else METRICS_ENDPOINT if service_type == "metrics" else TRACES_ENDPOINT
+    )
 
     http_handlers = {
         "http_400": lambda _: web.HTTPBadRequest(text="invalid"),
