@@ -19,6 +19,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import cast
 
 from .app_names import PI_CODING_AGENT_ML_APP as _ML_APP
 from .backfill_utils import backfill_metadata
@@ -36,7 +37,7 @@ _TAGS_API = ClaudeHooksAPI()
 
 def _pi_cost_value(cost: Dict[str, Any], key: str) -> Optional[float]:
     value = cost.get(key)
-    if type(value) not in (int, float):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     try:
         if isfinite(value) and value >= 0:
@@ -47,14 +48,14 @@ def _pi_cost_value(cost: Dict[str, Any], key: str) -> Optional[float]:
 
 
 def has_pi_cost(cost: Any) -> bool:
-    """A Pi cost breakdown is present, including one containing only zeros."""
+    """Return whether Pi supplied a cost breakdown, including all-zero costs."""
     return isinstance(cost, dict) and any(
         key in cost and _pi_cost_value(cost, key) is not None
         for key in ("input", "output", "cacheRead", "cacheWrite", "total")
     )
 
 
-def cost_from_pi_usage(cost: Dict[str, float]) -> Dict[str, int]:
+def cost_from_pi_usage(cost: Dict[str, Any]) -> Dict[str, int]:
     """Convert Pi's own USD estimate to Lapdog's nanodollar metric shape."""
 
     def to_nano(key: str) -> int:
@@ -287,7 +288,7 @@ def _build_llm_span(
     cost = usage.get("cost")
     provider = str(msg.get("provider") or "anthropic")
     if has_pi_cost(cost):
-        cost_metrics = cost_from_pi_usage(cost)
+        cost_metrics = cost_from_pi_usage(cast(Dict[str, Any], cost))
     else:
         price_model = model.split("/", 1)[1] if model.startswith(("openai/", "anthropic/")) else model
         price_provider = model.split("/", 1)[0] if model.startswith(("openai/", "anthropic/")) else provider

@@ -10,6 +10,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Set
 from typing import TYPE_CHECKING
 import uuid
 
@@ -1010,7 +1011,7 @@ class LLMObsEventPlatformAPI:
         self.agent = agent
         self._query_results: Dict[str, Dict[str, Any]] = {}
         self.decoded_llmobs_span_events: Dict[int, List[Dict[str, Any]]] = {}
-        self._locally_priced_spans = set()
+        self._locally_priced_spans: Set[int] = set()
         self._claude_hooks_api: Optional["ClaudeHooksAPI"] = None
 
     def set_claude_hooks_api(self, api: "ClaudeHooksAPI") -> None:

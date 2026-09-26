@@ -32,6 +32,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
+from typing import cast
 
 from aiohttp import web
 from aiohttp.web import Request
@@ -832,7 +833,7 @@ class PiHooksAPI:
         # Pi's cost breakdown wins; use the shared feed only when it is absent.
         pi_cost = usage.get("cost")
         if pi_session_backfill.has_pi_cost(pi_cost):
-            cost_metrics = pi_session_backfill.cost_from_pi_usage(pi_cost)
+            cost_metrics = pi_session_backfill.cost_from_pi_usage(cast(Dict[str, Any], pi_cost))
         else:
             cost_metrics = _compute_pi_cost_metrics(
                 model_id=model_id or "",

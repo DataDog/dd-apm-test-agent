@@ -55,7 +55,7 @@ pytest_plugins = "aiohttp.pytest_plugin"
 
 @pytest.fixture
 def pricing_catalog(monkeypatch, tmp_path):
-    """A small deterministic feed for Lapdog's cost integration tests."""
+    """Install a small deterministic feed for Lapdog's cost integration tests."""
     providers = [
         {
             "id": "openai",

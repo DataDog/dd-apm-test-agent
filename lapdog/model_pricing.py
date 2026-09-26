@@ -202,7 +202,7 @@ def _matches(rule: Dict[str, Any], value: str) -> bool:
     if operator == "regex":
         return re.search(expected, value) is not None
     actual = value.lower()
-    target = expected.lower()
+    target = str(expected).lower()
     if operator == "equals":
         return actual == target
     if operator == "starts_with":
