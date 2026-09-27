@@ -1,10 +1,3 @@
-"""Live, locally cached model prices for Lapdog's LLM spans.
-
-The v2 genai-prices feed is a versioned data contract.  Only the text-token
-units represented by LLMObs metrics are priced here; no package dependency or
-network request is needed while calculating a span's cost.
-"""
-
 from datetime import datetime
 from datetime import time
 from datetime import timedelta
@@ -28,14 +21,15 @@ from typing import Union
 import urllib.error
 import urllib.request
 
-from .paths import LAPDOG_DIR
+from .paths import ETAG_FILE
+from .paths import PRICE_FILE
 
 
 log = logging.getLogger(__name__)
 
 PRICES_URL = "https://raw.githubusercontent.com/pydantic/genai-prices/refs/heads/main/prices/new_data/v2/data_slim.json"
-PRICE_FILE = Path(LAPDOG_DIR) / "pydantic-genai-pricing-slim.json"
-ETAG_FILE = Path(LAPDOG_DIR) / "pydantic-genai-pricing-slim.etag"
+PRICE_PATH = Path(PRICE_FILE)
+ETAG_PATH = Path(ETAG_FILE)
 MAX_PRICE_BYTES = 5_000_000
 
 COST_METRIC_KEYS = frozenset(
@@ -157,7 +151,7 @@ def refresh_price_file() -> bool:
     """Conditionally download prices; return True only if the local data changed."""
     headers = {"User-Agent": "lapdog-model-pricing", "Accept": "application/json"}
     try:
-        old_data = PRICE_FILE.read_bytes()
+        old_data = PRICE_PATH.read_bytes()
         parse_price_data(old_data)
         valid_cache = True
     except (OSError, ValueError):
@@ -165,7 +159,7 @@ def refresh_price_file() -> bool:
         valid_cache = False
     if valid_cache:
         try:
-            etag = ETAG_FILE.read_text().strip()
+            etag = ETAG_PATH.read_text().strip()
             if etag:
                 headers["If-None-Match"] = etag
         except OSError:
@@ -180,9 +174,9 @@ def refresh_price_file() -> bool:
             new_etag = response.headers.get("ETag")
         changed = hashlib.sha256(data).digest() != hashlib.sha256(old_data).digest()
         if changed:
-            _atomic_write(PRICE_FILE, data)
+            _atomic_write(PRICE_PATH, data)
         if new_etag:
-            _atomic_write(ETAG_FILE, new_etag.encode("utf-8"))
+            _atomic_write(ETAG_PATH, new_etag.encode("utf-8"))
         return changed
     except urllib.error.HTTPError as exc:
         if exc.code == 304:
@@ -360,13 +354,13 @@ _catalog_stamp: Optional[Tuple[int, int, int]] = None
 def _current_catalog() -> Optional[PricingCatalog]:
     global _catalog, _catalog_stamp
     try:
-        stat = PRICE_FILE.stat()
+        stat = PRICE_PATH.stat()
         stamp = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
     except OSError:
         return _catalog
     if stamp != _catalog_stamp:
         try:
-            candidate = PricingCatalog(parse_price_data(PRICE_FILE.read_bytes()))
+            candidate = PricingCatalog(parse_price_data(PRICE_PATH.read_bytes()))
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             log.warning("Unable to load Lapdog model prices: %s", exc)
             return _catalog

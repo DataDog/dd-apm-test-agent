@@ -466,7 +466,7 @@ async def test_lapdog_estimates_generic_llm_spans_and_updates(agent, llmobs_payl
     ]
     price_file = tmp_path / "prices.json"
     price_file.write_bytes(json.dumps(prices).encode())
-    monkeypatch.setattr(model_pricing, "PRICE_FILE", price_file)
+    monkeypatch.setattr(model_pricing, "PRICE_PATH", price_file)
     monkeypatch.setattr(model_pricing, "_catalog", None)
     monkeypatch.setattr(model_pricing, "_catalog_stamp", None)
 
@@ -497,7 +497,7 @@ async def test_lapdog_estimates_synthetic_v04_llm_span(agent, monkeypatch, tmp_p
     ]
     price_file = tmp_path / "prices.json"
     price_file.write_bytes(json.dumps(prices).encode())
-    monkeypatch.setattr(model_pricing, "PRICE_FILE", price_file)
+    monkeypatch.setattr(model_pricing, "PRICE_PATH", price_file)
     monkeypatch.setattr(model_pricing, "_catalog", None)
     monkeypatch.setattr(model_pricing, "_catalog_stamp", None)
     payload = _v04_trace_with_llmobs_for_list_tests(
@@ -511,7 +511,7 @@ async def test_lapdog_estimates_synthetic_v04_llm_span(agent, monkeypatch, tmp_p
 
 async def test_generic_span_is_priced_after_cache_becomes_available(agent, llmobs_payload, monkeypatch, tmp_path):
     price_file = tmp_path / "prices.json"
-    monkeypatch.setattr(model_pricing, "PRICE_FILE", price_file)
+    monkeypatch.setattr(model_pricing, "PRICE_PATH", price_file)
     monkeypatch.setattr(model_pricing, "_catalog", None)
     monkeypatch.setattr(model_pricing, "_catalog_stamp", None)
     await _submit_llmobs_payload(agent, llmobs_payload)

@@ -54,8 +54,8 @@ def _feed():
 def _install_feed(monkeypatch, tmp_path):
     path = tmp_path / "prices.json"
     path.write_bytes(json.dumps(_feed()).encode())
-    monkeypatch.setattr(model_pricing, "PRICE_FILE", path)
-    monkeypatch.setattr(model_pricing, "ETAG_FILE", tmp_path / "prices.etag")
+    monkeypatch.setattr(model_pricing, "PRICE_PATH", path)
+    monkeypatch.setattr(model_pricing, "ETAG_PATH", tmp_path / "prices.etag")
     monkeypatch.setattr(model_pricing, "_catalog", None)
     monkeypatch.setattr(model_pricing, "_catalog_stamp", None)
     return path
@@ -113,7 +113,7 @@ def test_unmatched_model_or_missing_file_has_no_estimate(monkeypatch, tmp_path):
     assert model_pricing.compute_cost_metrics("unknown", "anthropic", 1, 0, 0, 0) is None
     monkeypatch.setattr(model_pricing, "_catalog", None)
     monkeypatch.setattr(model_pricing, "_catalog_stamp", None)
-    monkeypatch.setattr(model_pricing, "PRICE_FILE", tmp_path / "missing.json")
+    monkeypatch.setattr(model_pricing, "PRICE_PATH", tmp_path / "missing.json")
     assert model_pricing.compute_cost_metrics("claude-sonnet-5", "anthropic", 1, 0, 0, 0) is None
 
 
@@ -143,8 +143,8 @@ class _Response(io.BytesIO):
 def test_refresh_uses_etag_and_does_not_rewrite_unchanged_data(monkeypatch, tmp_path):
     path = tmp_path / "prices.json"
     etag = tmp_path / "prices.etag"
-    monkeypatch.setattr(model_pricing, "PRICE_FILE", path)
-    monkeypatch.setattr(model_pricing, "ETAG_FILE", etag)
+    monkeypatch.setattr(model_pricing, "PRICE_PATH", path)
+    monkeypatch.setattr(model_pricing, "ETAG_PATH", etag)
     body = json.dumps(_feed()).encode()
     requests = []
 
@@ -177,7 +177,7 @@ def test_invalid_refresh_keeps_last_valid_file(monkeypatch, tmp_path):
 def test_corrupt_cache_does_not_send_etag(monkeypatch, tmp_path):
     path = _install_feed(monkeypatch, tmp_path)
     path.write_bytes(b"broken")
-    model_pricing.ETAG_FILE.write_text('"stale"')
+    model_pricing.ETAG_PATH.write_text('"stale"')
     requests = []
 
     def fetch(request, timeout):

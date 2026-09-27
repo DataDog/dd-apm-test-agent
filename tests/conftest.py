@@ -85,7 +85,7 @@ def pricing_catalog(monkeypatch, tmp_path):
             ],
         },
     ]
-    monkeypatch.setattr(model_pricing, "PRICE_FILE", tmp_path / "missing-prices.json")
+    monkeypatch.setattr(model_pricing, "PRICE_PATH", tmp_path / "missing-prices.json")
     monkeypatch.setattr(model_pricing, "_catalog", model_pricing.PricingCatalog(providers))
     monkeypatch.setattr(model_pricing, "_catalog_stamp", None)
 
