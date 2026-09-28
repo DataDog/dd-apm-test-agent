@@ -16,7 +16,7 @@ pipeline does, so backfilled sessions are indistinguishable in the UI:
     file with N user turns becomes N traces, matching live behavior where
     each UserPromptSubmit opens a new trace).
   * One LLM span per ``type=assistant`` entry, with model + token usage +
-    cost computed via ``claude_cost_tracker.compute_cost_metrics``.
+    cost computed from Lapdog's cached model pricing data.
   * One tool span per tool_use / tool_result pair, parented to the step span
     for that inference cycle. Claude Code ``Task`` tool uses become child
     agent spans parented to the same step span, so backfilled subagents are
@@ -45,7 +45,7 @@ from .backfill_utils import backfill_metadata
 from .backfill_utils import format_span_id
 from .backfill_utils import format_trace_id
 from .backfill_utils import to_text
-from .claude_cost_tracker import compute_cost_metrics
+from .model_pricing import compute_cost_metrics
 
 
 _HOSTNAME = socket.gethostname()
@@ -264,10 +264,12 @@ def _build_llm_span(
     cost_metrics = (
         compute_cost_metrics(
             model_id=model,
+            provider_id="anthropic",
             non_cached_input_tokens=raw_input,
             cache_write_tokens=cache_creation,
             cache_read_tokens=cache_read,
             output_tokens=output,
+            when=start_ns,
         )
         or {}
     )

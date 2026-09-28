@@ -10,6 +10,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Set
 from typing import TYPE_CHECKING
 import uuid
 
@@ -21,6 +22,8 @@ from ddapm_test_agent.llmobs_trace import decode_llmobs_payload
 
 from . import llmobs_query_parser
 from ._clock import monotonic_wall_ns
+from .model_pricing import COST_METRIC_KEYS
+from .model_pricing import estimate_span_cost
 
 
 if TYPE_CHECKING:
@@ -1008,6 +1011,7 @@ class LLMObsEventPlatformAPI:
         self.agent = agent
         self._query_results: Dict[str, Dict[str, Any]] = {}
         self.decoded_llmobs_span_events: Dict[int, List[Dict[str, Any]]] = {}
+        self._locally_priced_spans: Set[int] = set()
         self._claude_hooks_api: Optional["ClaudeHooksAPI"] = None
 
     def set_claude_hooks_api(self, api: "ClaudeHooksAPI") -> None:
@@ -1031,6 +1035,9 @@ class LLMObsEventPlatformAPI:
                         self.decoded_llmobs_span_events[req_id] = spans
                     else:
                         spans = self.decoded_llmobs_span_events[req_id]
+                    for span in spans:
+                        if estimate_span_cost(span):
+                            self._locally_priced_spans.add(id(span))
                     all_spans.extend(spans)
                 except Exception as e:
                     log.warning(f"Failed to extract spans from request: {e}")
@@ -1055,7 +1062,15 @@ class LLMObsEventPlatformAPI:
             sid = update.get("span_id")
             existing = span_index.get(sid)
             if existing:
+                local_estimate = id(existing) in self._locally_priced_spans
+                if local_estimate:
+                    for key in COST_METRIC_KEYS:
+                        existing.get("metrics", {}).pop(key, None)
                 _deep_merge(update, existing)
+                if any(key in (update.get("metrics") or {}) for key in COST_METRIC_KEYS):
+                    self._locally_priced_spans.discard(id(existing))
+                elif estimate_span_cost(existing):
+                    self._locally_priced_spans.add(id(existing))
                 updated += 1
         return updated
 

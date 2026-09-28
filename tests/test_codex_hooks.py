@@ -113,7 +113,7 @@ def _response_item(item_type, timestamp="2026-05-11T17:00:03.000Z", **kwargs):
     }
 
 
-async def test_codex_turn_llm_and_tool_spans(agent):
+async def test_codex_turn_llm_and_tool_spans(agent, pricing_catalog):
     sid = "codex-basic"
     await _post(agent, sid, _session_meta(sid))
     await _post(agent, sid, _turn_context())
@@ -1463,7 +1463,7 @@ async def test_codex_list_rewriter_returns_posted_message_spans(agent):
     assert root["meta"]["output"]["value"] == "list rewriter output"
 
 
-async def test_codex_tui_task_complete_finalizes_single_turn(agent):
+async def test_codex_tui_task_complete_finalizes_single_turn(agent, pricing_catalog):
     sid = "codex-tui-hello"
     await _post(agent, sid, _session_meta(sid))
     await _post(agent, sid, _turn_context())
