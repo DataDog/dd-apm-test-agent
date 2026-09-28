@@ -18,12 +18,12 @@ from ddapm_test_agent.cors import with_cors
 from ._clock import monotonic_wall_ns
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
-from .codex_cost_tracker import compute_openai_cost_metrics
 from .codex_hooks import CodexHooksAPI
 from .codex_hooks import _canonical_tool_status
 from .codex_hooks import _copy_messages
 from .codex_hooks import _copy_reasoning_items
 from .codex_hooks import _extract_reasoning_metadata
+from .model_pricing import compute_cost_metrics
 
 
 log = logging.getLogger(__name__)
@@ -245,11 +245,16 @@ def _usage_metrics(model: str, usage: Dict[str, Any]) -> Dict[str, Any]:
         "cache_write_input_tokens": 0,
         "non_cached_input_tokens": non_cached_input_tokens,
         "reasoning_output_tokens": reasoning_output_tokens,
-        **compute_openai_cost_metrics(
-            model_id=model,
-            non_cached_input_tokens=non_cached_input_tokens,
-            cached_input_tokens=cached_input_tokens,
-            output_tokens=output_tokens,
+        **(
+            compute_cost_metrics(
+                model_id=model,
+                provider_id="openai",
+                non_cached_input_tokens=non_cached_input_tokens,
+                cache_write_tokens=0,
+                cache_read_tokens=cached_input_tokens,
+                output_tokens=output_tokens,
+            )
+            or {}
         ),
     }
 

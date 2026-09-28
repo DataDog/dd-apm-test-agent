@@ -61,7 +61,8 @@ def test_session_to_spans_full_turn():
             },
         },
     ]
-    spans = pi_backfill.session_to_spans("sess-1", "/p", entries)
+    with mock.patch.object(pi_backfill, "compute_cost_metrics", side_effect=AssertionError("Pi cost should win")):
+        spans = pi_backfill.session_to_spans("sess-1", "/p", entries)
     by_kind = {s["meta"]["span"]["kind"]: s for s in spans}
     assert set(by_kind) == {"agent", "step", "llm", "tool"}
     agent, step, llm, tool = by_kind["agent"], by_kind["step"], by_kind["llm"], by_kind["tool"]
@@ -78,6 +79,20 @@ def test_session_to_spans_full_turn():
     # Cost converted to nanodollars (0.006 USD * 1e9)
     assert llm["metrics"]["estimated_total_cost"] == 6_000_000
     assert llm["metrics"]["total_tokens"] == 125
+
+
+def test_backfill_uses_model_pricing_only_without_pi_cost(pricing_catalog):
+    span = pi_backfill._build_llm_span(
+        "sess-1",
+        "trace-1",
+        "parent-1",
+        {"provider": "openai", "usage": {"input": 80, "output": 30, "cacheRead": 20}},
+        "gpt-5.5",
+        1778932800000 * 1_000_000,
+        1,
+        "/p",
+    )
+    assert span["metrics"]["estimated_total_cost"] == 1_310_000
 
 
 def test_session_to_spans_multiple_user_prompts_create_multiple_traces():

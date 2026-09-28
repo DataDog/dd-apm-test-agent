@@ -20,7 +20,7 @@ def _ts(s: str) -> Dict[str, Any]:
     return {"timestamp": s}
 
 
-def test_session_to_spans_one_user_one_turn():
+def test_session_to_spans_one_user_one_turn(pricing_catalog):
     entries = [
         {
             "type": "user",

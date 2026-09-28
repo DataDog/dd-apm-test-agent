@@ -27,6 +27,7 @@ from lapdog import codex_args
 from lapdog import tracer_inject
 from lapdog.lapdog_ascii_art import build_running_banner
 from lapdog.lapdog_ascii_art import build_status_banner
+from lapdog.model_pricing import refresh_price_file
 from lapdog.paths import CODEX_APP_CURSOR_FILE
 from lapdog.paths import LAPDOG_DIR
 from lapdog.paths import LOG_FILE
@@ -216,6 +217,7 @@ def _process_exists(pid: int) -> bool:
 
 def _ensure_lapdog_running(forward_data: bool = False, detached: bool = False) -> Optional[int]:
     """Start lapdog in background if it is not already running. Exits if the port is taken."""
+    refresh_price_file()
     if _lapdog_alive():
         _, port = _read_pid_file()
         return port
@@ -346,6 +348,7 @@ def _run_claude(
 
 def cmd_start(sub_cmd_args: List[str], forward_data: bool) -> None:
     """Start lapdog in background with Claude hooks enabled."""
+    refresh_price_file()
     if _lapdog_alive():
         pid, port = _read_pid_file()
         url = _url_for_port(port) if port else None

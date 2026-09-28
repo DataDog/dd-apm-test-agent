@@ -27,7 +27,6 @@ from aiohttp.web import Request
 from ddapm_test_agent.cors import with_cors
 
 from ._clock import monotonic_wall_ns
-from .claude_cost_tracker import compute_cost_metrics
 from .claude_hooks import ClaudeHooksAPI
 from .claude_hooks import SessionState
 from .claude_hooks import _ML_APP
@@ -37,6 +36,7 @@ from .claude_hooks import _get_context_limit
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_link_tracker import SpanLink
 from .coding_agent_metadata import apply_project_metadata_to_span
+from .model_pricing import compute_cost_metrics
 
 
 log = logging.getLogger(__name__)
@@ -640,6 +640,7 @@ class ClaudeProxyAPI:
                 **(
                     compute_cost_metrics(
                         model_id=model,
+                        provider_id="anthropic",
                         non_cached_input_tokens=raw_input_tokens,
                         cache_write_tokens=cache_creation,
                         cache_read_tokens=cache_read,

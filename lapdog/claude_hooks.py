@@ -33,7 +33,6 @@ from . import claude_session_backfill
 from ._clock import monotonic_wall_ns
 from .app_names import CLAUDE_CODE_ML_APP
 from .backfill_utils import has_backfilled_session
-from .claude_cost_tracker import COST_METRIC_KEYS
 from .claude_link_tracker import ClaudeLinkTracker
 from .coding_agent_metadata import CodingAgentProjectMetadata
 from .coding_agent_metadata import apply_project_metadata_to_span
@@ -42,6 +41,7 @@ from .coding_agent_metadata import extract_git_repository_url
 from .coding_agent_metadata import git_commit_sha_tags
 from .coding_agent_metadata import project_metadata_tags
 from .coding_agent_metadata import resolve_project_metadata
+from .model_pricing import COST_METRIC_KEYS
 
 
 log = logging.getLogger(__name__)
