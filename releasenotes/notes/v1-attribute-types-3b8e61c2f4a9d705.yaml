@@ -1,0 +1,12 @@
+---
+fixes:
+  - |
+    v1 traces: array, key-value list and bytes attribute values are now decoded instead of failing every
+    ``/test/session/traces`` request of the session with a 400. Arrays and key-value lists are flattened
+    into dotted keys (``key.0``, ``key.member``) on spans, span links and chunk/payload attributes, as in
+    the v0.4 format; key-value lists on span events are flattened the same way. Bytes values go to
+    ``meta_struct`` on spans.
+  - |
+    v1 traces: the payload-level ``_dd.git.commit.sha`` and ``_dd.git.repository_url`` attributes are now
+    applied to the local root span of each chunk only, and ``_dd.tags.process`` to the first span of each
+    chunk only, instead of to every span.

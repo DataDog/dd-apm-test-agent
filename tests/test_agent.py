@@ -1100,7 +1100,8 @@ async def test_trace_v1_span_event():
 
 async def test_trace_v1_payload_attributes():
     # Payload-level attributes at key 10 (e.g. `_dd.apm_mode`, `_dd.git.commit.sha`)
-    # should be decoded and propagated to every span across all chunks.
+    # should be decoded and propagated to every span across all chunks, except git
+    # metadata, which only goes on the local root of each chunk.
     data = msgpack.packb(
         {
             10: [
@@ -1161,7 +1162,7 @@ async def test_trace_v1_payload_attributes():
     # First chunk, second span — sets `_dd.apm_mode` itself, must win over payload-level.
     span_a2 = result[0][1]
     assert span_a2["meta"]["_dd.apm_mode"] == "on"
-    assert span_a2["meta"]["_dd.git.commit.sha"] == "abc123"
+    assert "_dd.git.commit.sha" not in span_a2["meta"]
     assert span_a2["metrics"]["payload_num"] == 7
     # Second chunk also receives payload-level attrs.
     span_b = result[1][0]
