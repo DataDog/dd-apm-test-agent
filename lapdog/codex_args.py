@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import List
 from typing import Optional
+from typing import Tuple
+import uuid
 
 _CODEX_FLAGS_WITH_VALUES = {
     "-a",
@@ -79,6 +81,35 @@ def _command_index(args: List[str]) -> Optional[int]:
 def is_app_command(args: List[str]) -> bool:
     command_idx = _command_index(args)
     return command_idx is not None and args[command_idx] == "app"
+
+
+def resume_options(args: List[str]) -> Tuple[bool, Optional[str], bool]:
+    """Return whether Codex resumes, its selected ID, and whether --all is set."""
+    command_idx = _command_index(args)
+    if command_idx is None or args[command_idx] != "resume":
+        return False, None, False
+    resume_args = args[command_idx + 1 :]
+    resume_all_cwds = "--all" in resume_args
+    selection: Optional[str] = None
+    idx = 0
+    while idx < len(resume_args):
+        arg = resume_args[idx]
+        if arg in _CODEX_FLAGS_WITH_VALUES or arg in ("-i", "--image"):
+            idx += 2
+            continue
+        if arg.startswith("-"):
+            idx += 1
+            continue
+        selection = arg
+        break
+    if selection is None:
+        return True, None, resume_all_cwds
+    try:
+        session_id = str(uuid.UUID(selection))
+    except ValueError:
+        # A session name has no rollout ID until Codex resolves it.
+        return True, None, True
+    return True, session_id, resume_all_cwds
 
 
 def _resolve_app_cwd(args: List[str]) -> Optional[str]:
