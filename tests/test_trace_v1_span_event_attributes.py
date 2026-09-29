@@ -1,3 +1,5 @@
+import json
+
 import msgpack
 import pytest
 
@@ -142,3 +144,15 @@ def test_convert_v1_array_value_rejects_odd_length():
 def test_convert_v1_array_value_rejects_unknown_item_type():
     with pytest.raises(TypeError):
         _convert_v1_array_value([V1AnyValueKeys.KEY_VALUE_LIST, 0], [""])
+
+
+def test_event_attribute_bytes_is_base64_string():
+    attrs = ["b", V1AnyValueKeys.BYTES, b"hi"]
+    assert _decode_single_event_attributes(attrs) == {"b": {"type": 0, "string_value": "aGk="}}
+
+
+def test_event_attribute_key_value_list_is_json_string():
+    attrs = ["kv", V1AnyValueKeys.KEY_VALUE_LIST, ["n", V1AnyValueKeys.INT, 1, "s", V1AnyValueKeys.STRING, "x"]]
+    decoded = _decode_single_event_attributes(attrs)["kv"]
+    assert decoded["type"] == 0
+    assert json.loads(decoded["string_value"]) == {"n": 1, "s": "x"}

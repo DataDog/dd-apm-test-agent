@@ -1,5 +1,6 @@
 """Tracing specific functions and types"""
 
+import base64
 from enum import IntEnum
 import json
 from typing import Any
@@ -1043,7 +1044,7 @@ def _convert_v1_span_link_attributes(attr: Any, string_table: List[str]) -> Dict
         elif value_type == V1AnyValueKeys.INT:
             v4_attributes[key] = str(value)
         elif value_type == V1AnyValueKeys.BYTES:
-            raise NotImplementedError("Bytes values are not supported yet.")
+            v4_attributes[key] = _convert_v1_bytes(value)
         elif value_type in (V1AnyValueKeys.ARRAY, V1AnyValueKeys.KEY_VALUE_LIST):
             v4_attributes[key] = json.dumps(_convert_v1_any_value(value_type, value, string_table))
         else:
@@ -1091,9 +1092,13 @@ def _convert_v1_span_event_attributes(attr: Any, string_table: List[str]) -> Dic
         elif value_type == V1AnyValueKeys.ARRAY:
             attributes[key] = {"type": 4, "array_value": _convert_v1_array_value(value, string_table)}
         elif value_type == V1AnyValueKeys.BYTES:
-            raise NotImplementedError("Bytes values are not supported yet.")
+            # v0.4 span events have no bytes/key-value types, so these are exposed as string values
+            attributes[key] = {"type": 0, "string_value": _convert_v1_bytes(value)}
         elif value_type == V1AnyValueKeys.KEY_VALUE_LIST:
-            raise NotImplementedError("Key value list values are not supported yet.")
+            attributes[key] = {
+                "type": 0,
+                "string_value": json.dumps(_convert_v1_any_value(value_type, value, string_table)),
+            }
         else:
             raise TypeError("Unknown attribute value type %r." % value_type)
     return attributes
@@ -1128,9 +1133,17 @@ def _convert_v1_array_value(value: Any, string_table: List[str]) -> Dict[str, Li
     return {"values": values}
 
 
+def _convert_v1_bytes(value: Any) -> str:
+    """v0.4 has no bytes attribute type, so bytes values are exposed as base64 strings."""
+    if not isinstance(value, (bytes, bytearray)):
+        raise TypeError("Bytes value must be bytes, got type %r." % type(value))
+    return base64.b64encode(bytes(value)).decode("ascii")
+
+
 def _convert_v1_any_value(value_type: Any, value: Any, string_table: List[str]) -> Any:
     """Recursively convert a v1 wire AnyValue into a native Python value.
 
+    - BYTES becomes a base64 ``str``.
     - ARRAY is a flat list of ``[type, value]`` pairs and becomes a ``list``.
     - KEY_VALUE_LIST is a flat list of ``[key, type, value]`` triplets (same layout as the top-level
       attribute map) and becomes a ``dict``.
@@ -1142,7 +1155,7 @@ def _convert_v1_any_value(value_type: Any, value: Any, string_table: List[str]) 
     elif value_type in (V1AnyValueKeys.INT, V1AnyValueKeys.DOUBLE):
         return value
     elif value_type == V1AnyValueKeys.BYTES:
-        raise NotImplementedError("Bytes values are not supported yet.")
+        return _convert_v1_bytes(value)
     elif value_type == V1AnyValueKeys.ARRAY:
         if not isinstance(value, list):
             raise TypeError("Array value must be a list, got type %r." % type(value))
@@ -1182,7 +1195,7 @@ def _convert_v1_attributes(
         elif value_type == V1AnyValueKeys.INT:
             metrics[key] = value
         elif value_type == V1AnyValueKeys.BYTES:
-            raise NotImplementedError("Bytes values are not supported yet.")
+            meta[key] = _convert_v1_bytes(value)
         elif value_type in (V1AnyValueKeys.ARRAY, V1AnyValueKeys.KEY_VALUE_LIST):
             # v0.4 meta only holds strings, so complex values are stored as their JSON representation
             meta[key] = json.dumps(_convert_v1_any_value(value_type, value, string_table))

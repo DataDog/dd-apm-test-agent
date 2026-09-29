@@ -88,3 +88,29 @@ def test_span_link_attributes_containers_are_json():
     decoded = _convert_v1_span_link_attributes(attrs, [])
     assert json.loads(decoded["l"]) == ["a"]
     assert json.loads(decoded["m"]) == {"k": True}
+
+
+def test_span_attribute_bytes_is_base64():
+    meta, _ = _decode_meta(["b", V1AnyValueKeys.BYTES, b"\x00\xffab"])
+    assert meta["b"] == "AP9hYg=="
+
+
+def test_span_attribute_bytes_nested_in_containers():
+    attrs = ["l", V1AnyValueKeys.ARRAY, [V1AnyValueKeys.BYTES, b"hi"]]
+    meta, _ = _decode_meta(attrs)
+    assert json.loads(meta["l"]) == ["aGk="]
+
+
+def test_span_attribute_bytes_rejects_non_bytes():
+    with pytest.raises(TypeError):
+        _decode_meta(["b", V1AnyValueKeys.BYTES, "str"])
+
+
+def test_span_link_attributes_bytes_is_base64():
+    assert _convert_v1_span_link_attributes(["b", V1AnyValueKeys.BYTES, b"hi"], []) == {"b": "aGk="}
+
+
+def test_chunk_and_payload_attributes_share_span_decoder():
+    # chunk/payload level attributes go through _convert_v1_attributes as well
+    meta, _ = _decode_meta(["k", V1AnyValueKeys.KEY_VALUE_LIST, ["a", V1AnyValueKeys.BYTES, b"hi"]])
+    assert json.loads(meta["k"]) == {"a": "aGk="}
