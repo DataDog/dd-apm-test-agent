@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    v1: Decode ``List`` and ``KeyValue`` attribute values on spans and span links. They are stored in ``meta`` as JSON strings.

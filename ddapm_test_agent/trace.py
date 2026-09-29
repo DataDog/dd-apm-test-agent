@@ -1044,10 +1044,8 @@ def _convert_v1_span_link_attributes(attr: Any, string_table: List[str]) -> Dict
             v4_attributes[key] = str(value)
         elif value_type == V1AnyValueKeys.BYTES:
             raise NotImplementedError("Bytes values are not supported yet.")
-        elif value_type == V1AnyValueKeys.ARRAY:
-            raise NotImplementedError("Array of values are not supported yet.")
-        elif value_type == V1AnyValueKeys.KEY_VALUE_LIST:
-            raise NotImplementedError("Key value list values are not supported yet.")
+        elif value_type in (V1AnyValueKeys.ARRAY, V1AnyValueKeys.KEY_VALUE_LIST):
+            v4_attributes[key] = json.dumps(_convert_v1_any_value(value_type, value, string_table))
         else:
             raise TypeError("Unknown attribute value type %r." % value_type)
     return v4_attributes
@@ -1130,6 +1128,39 @@ def _convert_v1_array_value(value: Any, string_table: List[str]) -> Dict[str, Li
     return {"values": values}
 
 
+def _convert_v1_any_value(value_type: Any, value: Any, string_table: List[str]) -> Any:
+    """Recursively convert a v1 wire AnyValue into a native Python value.
+
+    - ARRAY is a flat list of ``[type, value]`` pairs and becomes a ``list``.
+    - KEY_VALUE_LIST is a flat list of ``[key, type, value]`` triplets (same layout as the top-level
+      attribute map) and becomes a ``dict``.
+    """
+    if value_type == V1AnyValueKeys.STRING:
+        return _get_and_add_string(string_table, value)
+    elif value_type == V1AnyValueKeys.BOOL:
+        return bool(value)
+    elif value_type in (V1AnyValueKeys.INT, V1AnyValueKeys.DOUBLE):
+        return value
+    elif value_type == V1AnyValueKeys.BYTES:
+        raise NotImplementedError("Bytes values are not supported yet.")
+    elif value_type == V1AnyValueKeys.ARRAY:
+        if not isinstance(value, list):
+            raise TypeError("Array value must be a list, got type %r." % type(value))
+        if len(value) % 2 != 0:
+            raise TypeError("Array value list must have a multiple of 2 elements, got %r." % len(value))
+        return [_convert_v1_any_value(value[i], value[i + 1], string_table) for i in range(0, len(value), 2)]
+    elif value_type == V1AnyValueKeys.KEY_VALUE_LIST:
+        if not isinstance(value, list):
+            raise TypeError("Key value list value must be a list, got type %r." % type(value))
+        if len(value) % 3 != 0:
+            raise TypeError("Key value list must have a multiple of 3 elements, got %r." % len(value))
+        return {
+            _get_and_add_string(string_table, value[i]): _convert_v1_any_value(value[i + 1], value[i + 2], string_table)
+            for i in range(0, len(value), 3)
+        }
+    raise TypeError("Unknown attribute value type %r." % value_type)
+
+
 def _convert_v1_attributes(
     attr: Any, meta: Dict[str, str], metrics: Dict[str, MetricType], string_table: List[str]
 ) -> None:
@@ -1152,10 +1183,9 @@ def _convert_v1_attributes(
             metrics[key] = value
         elif value_type == V1AnyValueKeys.BYTES:
             raise NotImplementedError("Bytes values are not supported yet.")
-        elif value_type == V1AnyValueKeys.ARRAY:
-            raise NotImplementedError("Array of strings values are not supported yet.")
-        elif value_type == V1AnyValueKeys.KEY_VALUE_LIST:
-            raise NotImplementedError("Key value list values are not supported yet.")
+        elif value_type in (V1AnyValueKeys.ARRAY, V1AnyValueKeys.KEY_VALUE_LIST):
+            # v0.4 meta only holds strings, so complex values are stored as their JSON representation
+            meta[key] = json.dumps(_convert_v1_any_value(value_type, value, string_table))
         else:
             raise TypeError("Unknown attribute value type %r." % value_type)
 
