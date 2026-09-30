@@ -822,8 +822,10 @@ def test_main_routes_tags_command(monkeypatch):
     cmd_tags.assert_called_once_with(["set", "iteration:2"])
 
 
-def test_run_claude_injects_lapdog_session_context(monkeypatch):
+def test_run_claude_injects_lapdog_session_context(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/claude")
+    debug_log = tmp_path / "claude-code-debug.log"
+    monkeypatch.setenv("DDAPM_CLAUDE_DEBUG_LOG", str(debug_log))
     monkeypatch.setenv("CODEX_THREAD_ID", "outer-codex-thread")
     monkeypatch.setenv("PI_SESSION_ID", "outer-pi-session")
     monkeypatch.setenv("LAPDOG_SESSION_TOKEN", "outer-launch-token")
@@ -841,6 +843,8 @@ def test_run_claude_injects_lapdog_session_context(monkeypatch):
     assert env["DDAPM_GATEWAY_URL"] == "http://localhost:9126/claude/proxy"
     assert env["TEST_AGENT_URL"] == "http://localhost:9126/info"
     assert env["LAPDOG_SESSION_TOKEN"] == "launch-token"
+    assert env["DDAPM_CLAUDE_DEBUG_LOG"] == str(debug_log)
+    assert "launcher exec preload=" in debug_log.read_text()
     assert "CODEX_THREAD_ID" not in env
     assert "PI_SESSION_ID" not in env
 

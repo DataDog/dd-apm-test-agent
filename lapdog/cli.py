@@ -366,6 +366,7 @@ def _run_claude(
         env.pop(variable, None)
     existing = env.get("BUN_OPTIONS", "")
     env["BUN_OPTIONS"] = f"--preload {mjs_path} {existing}".strip()
+    debug_log = env.setdefault("DDAPM_CLAUDE_DEBUG_LOG", os.path.expanduser("~/.lapdop/claude-code-debug.log"))
     if port is not None:
         lapdog_url = f"http://localhost:{port}"
         env["LAPDOG_URL"] = lapdog_url
@@ -373,6 +374,17 @@ def _run_claude(
         env["TEST_AGENT_URL"] = f"{lapdog_url}/info"
     if session_token:
         env["LAPDOG_SESSION_TOKEN"] = session_token
+    try:
+        os.makedirs(os.path.dirname(debug_log) or ".", mode=0o700, exist_ok=True)
+        fd = os.open(debug_log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as log_file:
+            log_file.write(
+                f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+                f"pid={os.getpid()} launcher exec preload={mjs_path} claude={claude_bin}\n"
+            )
+    except OSError:
+        # Diagnostics must not prevent Claude Code from starting.
+        pass
     _run(bin_path=claude_bin, argv=([claude_bin] + args), env=env)
 
 
