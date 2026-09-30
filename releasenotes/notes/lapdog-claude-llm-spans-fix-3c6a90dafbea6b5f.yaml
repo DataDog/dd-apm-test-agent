@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Lapdog: Claude Code sessions observed with ``lapdog`` now have their LLM calls properly recorded in Lapdog.
