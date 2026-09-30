@@ -1,4 +1,7 @@
 ---
+features:
+  - |
+    Lapdog: instrumented Claude Code sessions via ``lapdog`` now dump debug logs in ``~/.lapdog/claude-code-debug.log``, configurable via ``DDAPM_CLAUDE_DEBUG_LOG``.
 fixes:
   - |
     Lapdog: Claude Code sessions observed with ``lapdog`` now have their LLM calls properly recorded in Lapdog.
