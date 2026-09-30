@@ -114,3 +114,22 @@ def test_chunk_and_payload_attributes_share_span_decoder():
     # chunk/payload level attributes go through _convert_v1_attributes as well
     meta, _ = _decode_meta(["k", V1AnyValueKeys.KEY_VALUE_LIST, ["a", V1AnyValueKeys.BYTES, b"hi"]])
     assert json.loads(meta["k"]) == {"a": "aGk="}
+
+
+def test_streaming_string_table_follows_libdatadog_write_order():
+    # libdatadog interns keys and string values in write order: first occurrence is the string,
+    # later occurrences are the table index (key, then type, then value, depth first).
+    attrs = [
+        "outer",  # idx 0
+        V1AnyValueKeys.KEY_VALUE_LIST,
+        [
+            "inner",  # idx 1
+            V1AnyValueKeys.ARRAY,
+            [V1AnyValueKeys.STRING, "v", V1AnyValueKeys.STRING, 2],  # "v" idx 2, then reference to it
+            0,  # reference to "outer"
+            V1AnyValueKeys.STRING,
+            1,  # reference to "inner"
+        ],
+    ]
+    meta, _ = _decode_meta(attrs)
+    assert json.loads(meta["outer"]) == {"inner": ["v", "v"], "outer": "inner"}

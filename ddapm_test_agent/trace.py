@@ -1127,8 +1127,10 @@ def _convert_v1_array_value(value: Any, string_table: List[str]) -> Dict[str, Li
         item_value = value[i + 1]
         v4_item = _convert_v1_scalar_any_value(item_type, item_value, string_table)
         if v4_item is None:
-            # TraceMapperV1 only emits scalar array items (no nested arrays/bytes/key-value lists).
-            raise TypeError("Unsupported v1 array item value type %r." % item_type)
+            # v0.4 array items can only be scalars, but other v1 encoders (e.g. libdatadog) can emit
+            # bytes, nested arrays and key-value lists. Expose them as string values (base64 / JSON).
+            converted = _convert_v1_any_value(item_type, item_value, string_table)
+            v4_item = {"type": 0, "string_value": converted if isinstance(converted, str) else json.dumps(converted)}
         values.append(v4_item)
     return {"values": values}
 
