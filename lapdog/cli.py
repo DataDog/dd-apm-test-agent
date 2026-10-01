@@ -920,6 +920,9 @@ def _start_codex_watcher(
     parent_pid: Optional[int] = None,
     singleton_key: Optional[str] = None,
     include_all_cwds: bool = False,
+    resume_mode: bool = False,
+    resume_session_id: Optional[str] = None,
+    resume_all_cwds: bool = False,
 ) -> None:
     """Start the bundled Codex JSONL watcher for this working directory."""
     watcher_cwd = os.path.abspath(cwd or os.getcwd())
@@ -980,6 +983,12 @@ def _start_codex_watcher(
         args += ["--proxy-session-key", proxy_session_key]
     if include_all_cwds:
         args += ["--include-all-cwds", "--cursor-path", CODEX_APP_CURSOR_FILE]
+    if resume_mode:
+        args += ["--resume"]
+        if resume_session_id:
+            args += ["--resume-session-id", resume_session_id]
+        if resume_all_cwds:
+            args += ["--resume-all-cwds"]
     with open(log_path, "a") as log_file:
         popen_kwargs: Dict[str, Any] = {
             "stdin": subprocess.DEVNULL,
@@ -1070,6 +1079,7 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = Fals
         print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
         sys.exit(1)
     app_mode = codex_args.is_app_command(sub_cmd_args)
+    resume_mode, resume_session_id, resume_all_cwds = codex_args.resume_options(sub_cmd_args)
     session_token = uuid.uuid4().hex
     proxy_session_key = None if app_mode else session_token
     parent_pid = os.getpid()
@@ -1079,14 +1089,20 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = Fals
     codex_cwd = codex_args.resolve_cwd(sub_cmd_args)
     if app_mode:
         _stop_legacy_codex_app_watchers(port, parent_pid, codex_args.app_watcher_key(port))
-    _start_codex_watcher(
-        port,
-        proxy_session_key=proxy_session_key,
-        cwd=codex_cwd,
-        parent_pid=parent_pid,
-        singleton_key=codex_args.app_watcher_key(port) if app_mode else None,
-        include_all_cwds=app_mode,
-    )
+    watcher_kwargs: Dict[str, Any] = {
+        "proxy_session_key": proxy_session_key,
+        "cwd": codex_cwd,
+        "parent_pid": parent_pid,
+        "singleton_key": codex_args.app_watcher_key(port) if app_mode else None,
+        "include_all_cwds": app_mode,
+    }
+    if resume_mode:
+        watcher_kwargs.update(
+            resume_mode=True,
+            resume_session_id=resume_session_id,
+            resume_all_cwds=resume_all_cwds,
+        )
+    _start_codex_watcher(port, **watcher_kwargs)
 
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
     _run_codex(

@@ -90,6 +90,33 @@ def test_cmd_codex_starts_watcher_with_forwarded_cd(monkeypatch, tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    "args, session_id, all_cwds",
+    [
+        (["resume"], None, False),
+        (["resume", "--last"], None, False),
+        (["resume", "123e4567-e89b-12d3-a456-426614174000"], "123e4567-e89b-12d3-a456-426614174000", False),
+        (["resume", "--all"], None, True),
+    ],
+)
+def test_cmd_codex_resume_starts_resume_watcher(args, session_id, all_cwds):
+    with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
+        with mock.patch("lapdog.cli._start_codex_watcher") as start_watcher:
+            with mock.patch("lapdog.cli._run_codex"):
+                with mock.patch("lapdog.cli.build_running_banner", return_value="banner"):
+                    cli.cmd_codex(args, forward_data=False)
+
+    assert start_watcher.call_args.kwargs["resume_mode"] is True
+    assert start_watcher.call_args.kwargs["resume_session_id"] == session_id
+    assert start_watcher.call_args.kwargs["resume_all_cwds"] is all_cwds
+
+
+def test_resume_options_skip_flag_values_and_handle_session_names():
+    session_id = "123e4567-e89b-12d3-a456-426614174000"
+    assert codex_args.resume_options(["resume", "-c", "model=o3", session_id]) == (True, session_id, False)
+    assert codex_args.resume_options(["resume", "named-session"]) == (True, None, True)
+
+
 def test_cmd_codex_app_starts_watcher_with_app_path_and_lapdog_pid(monkeypatch, tmp_path):
     wrapper_cwd = tmp_path / "wrapper"
     target_cwd = tmp_path / "target"
@@ -224,12 +251,22 @@ def test_start_codex_watcher_waits_for_ready_file(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_log_file_path", lambda: str(tmp_path / "lapdog.log"))
     monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
 
-    cli._start_codex_watcher(8126, proxy_session_key="proxy-key", cwd=str(tmp_path))
+    cli._start_codex_watcher(
+        8126,
+        proxy_session_key="proxy-key",
+        cwd=str(tmp_path),
+        resume_mode=True,
+        resume_session_id="123e4567-e89b-12d3-a456-426614174000",
+        resume_all_cwds=True,
+    )
 
     assert ready_paths
     assert "--proxy-session-key" in popen_args[0]
     assert popen_args[0][popen_args[0].index("--proxy-session-key") + 1] == "proxy-key"
     assert popen_args[0][popen_args[0].index("--cwd") + 1] == str(tmp_path)
+    assert "--resume" in popen_args[0]
+    assert popen_args[0][popen_args[0].index("--resume-session-id") + 1] == "123e4567-e89b-12d3-a456-426614174000"
+    assert "--resume-all-cwds" in popen_args[0]
 
 
 def test_start_codex_watcher_uses_parent_pid(tmp_path, monkeypatch):
