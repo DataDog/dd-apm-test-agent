@@ -42,6 +42,7 @@ class FileState:
         # those records are flushed (or dropped).
         self.scan_offset = offset
         self.session_id = ""
+        self.session_meta: Optional[Dict[str, Any]] = None
         self.matches_cwd: Optional[bool] = None
         # Holds parsed records whose cwd disposition is still unknown. The
         # bytes for these records live between ``offset`` and ``scan_offset``.
@@ -51,6 +52,8 @@ class FileState:
         # buffer is flushed (or dropped on cwd mismatch).
         self.buffer_ends: List[int] = []
         self.ignored = False
+        self.resume_candidate = False
+        self.resume_meta_posted = False
 
 
 class SessionOwnership:
@@ -94,6 +97,13 @@ class SessionOwnership:
             self.session_ids.add(session_id)
             return True
         return False
+
+    def claim_resumed(self, session_id: str) -> bool:
+        if not session_id or (self.root_session_id and self.root_session_id != session_id):
+            return False
+        self.root_session_id = session_id
+        self.session_ids.add(session_id)
+        return True
 
 
 RECENT_SESSION_REPLAY_SECONDS = 300.0
@@ -292,6 +302,7 @@ def _drain_file(
         state.offset = 0
         state.scan_offset = 0
         state.session_id = ""
+        state.session_meta = None
         state.matches_cwd = None
         state.buffer.clear()
         state.buffer_ends.clear()
@@ -376,6 +387,7 @@ def _drain_file(
             session_id = _record_session_id(record)
             if session_id:
                 state.session_id = session_id
+                state.session_meta = record
 
             record_cwd = _record_cwd(record)
             if record_cwd and state.matches_cwd is None:
@@ -463,6 +475,7 @@ def _prime_file_state(
     cwd: str,
     up_to: int,
     include_all_cwds: bool = False,
+    stop_after_meta: bool = False,
 ) -> None:
     """Read old records only to learn session id and cwd; do not post them.
 
@@ -490,12 +503,15 @@ def _prime_file_state(
                 session_id = _record_session_id(record)
                 if session_id:
                     state.session_id = session_id
+                    state.session_meta = record
                 record_cwd = _record_cwd(record)
                 if record_cwd and state.matches_cwd is None:
                     if include_all_cwds:
                         state.matches_cwd = True
                     else:
                         state.matches_cwd = _is_under(record_cwd, cwd)
+                if stop_after_meta and state.session_id and state.matches_cwd is not None:
+                    break
     except OSError:
         return
 
@@ -563,11 +579,12 @@ def _discover_new_files(
     states: Dict[Path, FileState],
     cwd: str,
     cursor: CursorState,
-    initial_paths: Set[Path],
+    initial_offsets: Dict[Path, int],
     proxy_session_key: Optional[str],
     started_at: float,
     replay_recent_seconds: float,
     include_all_cwds: bool = False,
+    resume_mode: bool = False,
 ) -> None:
     """Glob the session dir and seed FileState for any new rollouts."""
     for path in _iter_jsonl_files(session_dir):
@@ -580,12 +597,13 @@ def _discover_new_files(
         cursor_offset = cursor.files.get(str(path))
         has_valid_cursor = cursor_offset is not None and cursor_offset <= stat.st_size
         has_truncated_cursor = cursor_offset is not None and cursor_offset > stat.st_size
-        ignore_initial_path = bool(proxy_session_key and path in initial_paths)
-        if ignore_initial_path:
+        initial_path = bool(proxy_session_key and path in initial_offsets)
+        ignore_initial_path = initial_path and not resume_mode
+        if initial_path:
             # A proxy watcher belongs to the Codex process it was launched
-            # with. Files that predate this watcher belong to other launches,
-            # even when a shared cursor contains a resumable offset for them.
-            initial_offset = stat.st_size
+            # with. For resume, keep the startup size so records written
+            # before the first discovery pass are not lost or replayed.
+            initial_offset = initial_offsets[path]
         elif has_valid_cursor:
             # Resume from the persisted offset (crash-safe).
             initial_offset = cursor_offset or 0
@@ -604,10 +622,81 @@ def _discover_new_files(
                 replay_recent_seconds=replay_recent_seconds,
             )
         states[path] = FileState(offset=initial_offset)
+        states[path].resume_candidate = bool(initial_path and resume_mode)
         if ignore_initial_path:
             states[path].ignored = True
         if initial_offset and not states[path].ignored:
-            _prime_file_state(path, states[path], cwd, initial_offset, include_all_cwds=include_all_cwds)
+            _prime_file_state(
+                path,
+                states[path],
+                cwd,
+                initial_offset,
+                include_all_cwds=include_all_cwds,
+                stop_after_meta=states[path].resume_candidate,
+            )
+
+
+def _prepare_resumed_file(
+    path: Path,
+    state: FileState,
+    lapdog_url: str,
+    session_ownership: Optional[SessionOwnership],
+    proxy_session_key: Optional[str],
+    resume_session_id: Optional[str],
+    resume_all_cwds: bool,
+) -> bool:
+    """Claim one old rollout after it grows, then send only its metadata."""
+    if not state.resume_candidate or state.ignored:
+        return True
+    if session_ownership is None:
+        return False
+    if state.resume_meta_posted:
+        return True
+    try:
+        if path.stat().st_size <= state.offset:
+            return False
+    except OSError:
+        return False
+    if not resume_session_id:
+        # The picker does not expose its selection to Lapdog. Codex writes
+        # this event to the selected rollout when it opens that session.
+        try:
+            with path.open("rb") as f:
+                f.seek(state.offset)
+                first_new_line = f.readline(MAX_LINE_BYTES + 1)
+        except OSError:
+            return False
+        if not first_new_line.endswith(b"\n"):
+            return False
+        try:
+            first_new_record = json.loads(first_new_line)
+        except json.JSONDecodeError:
+            state.ignored = True
+            return False
+        if not isinstance(first_new_record, dict) or not isinstance(first_new_record.get("payload"), dict):
+            state.ignored = True
+            return False
+        if not (
+            first_new_record.get("type") == "event_msg"
+            and first_new_record.get("payload", {}).get("type") == "thread_settings_applied"
+        ):
+            state.ignored = True
+            return False
+    if (
+        not state.session_meta
+        or (resume_session_id and state.session_id != resume_session_id)
+        or (not resume_session_id and not resume_all_cwds and state.matches_cwd is not True)
+        or not session_ownership.claim_resumed(state.session_id)
+    ):
+        state.ignored = True
+        return False
+    if resume_session_id or resume_all_cwds:
+        state.matches_cwd = True
+    if not state.resume_meta_posted:
+        if not _post_record(lapdog_url, state.session_id, state.session_meta, path, proxy_session_key):
+            return False
+        state.resume_meta_posted = True
+    return True
 
 
 def watch_codex_sessions(
@@ -624,10 +713,19 @@ def watch_codex_sessions(
     discovery_interval: float = 1.0,
     parent_start_time: Optional[float] = None,
     include_all_cwds: bool = False,
+    resume_mode: bool = False,
+    resume_session_id: Optional[str] = None,
+    resume_all_cwds: bool = False,
 ) -> None:
     states: Dict[Path, FileState] = {}
     started_at = time.time()
-    initial_paths: Set[Path] = set(_iter_jsonl_files(session_dir)) if proxy_session_key else set()
+    initial_offsets: Dict[Path, int] = {}
+    if proxy_session_key:
+        for path in _iter_jsonl_files(session_dir):
+            try:
+                initial_offsets[path] = path.stat().st_size
+            except OSError:
+                continue
     parent_dead_at: Optional[float] = None
     cursor: CursorState = load_cursor(cursor_path) if cursor_path is not None else CursorState()
     session_ownership = SessionOwnership(started_at) if proxy_session_key and not include_all_cwds else None
@@ -655,11 +753,12 @@ def watch_codex_sessions(
                 states=states,
                 cwd=cwd,
                 cursor=cursor,
-                initial_paths=initial_paths,
+                initial_offsets=initial_offsets,
                 proxy_session_key=proxy_session_key,
                 started_at=started_at,
                 replay_recent_seconds=replay_recent_seconds,
                 include_all_cwds=include_all_cwds,
+                resume_mode=resume_mode,
             )
             last_discovery = now
 
@@ -676,6 +775,16 @@ def watch_codex_sessions(
                     else:
                         state.offset = stat.st_size
                         continue
+                if not _prepare_resumed_file(
+                    path,
+                    state,
+                    lapdog_url,
+                    session_ownership,
+                    proxy_session_key,
+                    resume_session_id,
+                    resume_all_cwds,
+                ):
+                    continue
                 _drain_file(
                     path,
                     states[path],
@@ -717,15 +826,26 @@ def watch_codex_sessions(
         states=states,
         cwd=cwd,
         cursor=cursor,
-        initial_paths=initial_paths,
+        initial_offsets=initial_offsets,
         proxy_session_key=proxy_session_key,
         started_at=started_at,
         replay_recent_seconds=replay_recent_seconds,
         include_all_cwds=include_all_cwds,
+        resume_mode=resume_mode,
     )
     shutdown_sessions: Dict[str, Path] = {}
     for path, state in list(states.items()):
         try:
+            if state.ignored or not _prepare_resumed_file(
+                path,
+                state,
+                lapdog_url,
+                session_ownership,
+                proxy_session_key,
+                resume_session_id,
+                resume_all_cwds,
+            ):
+                continue
             posted_session_id = _drain_file(
                 path,
                 state,
@@ -779,6 +899,9 @@ def main() -> None:
     )
     parser.add_argument("--ready-file")
     parser.add_argument("--proxy-session-key")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--resume-session-id")
+    parser.add_argument("--resume-all-cwds", action="store_true")
     parser.add_argument(
         "--include-all-cwds",
         action="store_true",
@@ -802,6 +925,9 @@ def main() -> None:
         discovery_interval=args.discovery_interval,
         parent_start_time=args.parent_start_time,
         include_all_cwds=args.include_all_cwds,
+        resume_mode=args.resume,
+        resume_session_id=args.resume_session_id,
+        resume_all_cwds=args.resume_all_cwds,
     )
 
 
