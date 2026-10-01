@@ -10,6 +10,10 @@ def _lapdog_bootstrap_dir() -> str:
     return os.path.join(os.path.dirname(__file__), "bootstrap")
 
 
+def _lapdog_nodejs_import() -> str:
+    return os.path.join(os.path.dirname(__file__), "lapdog-initialize.mjs")
+
+
 def _lapdog_ddtrace_site_packages() -> Optional[str]:
     """Return the site-packages dir containing lapdog's own ddtrace, or None if not installed."""
     spec = importlib.util.find_spec("ddtrace")
@@ -25,15 +29,22 @@ def build_instrumented_env(
     """Return a copy of base_env with tracer env vars injected for Python processes."""
     env = dict(base_env if base_env is not None else os.environ)
 
+    env["DD_TRACE_STARTUP_LOGS"] = "false"
     env["DD_TRACE_AGENT_URL"] = f"http://127.0.0.1:{port}"
     env["DD_TRACE_AGENT_HOST"] = "127.0.0.1"
     env["DD_TRACE_AGENT_PORT"] = str(port)
     env["DD_LLMOBS_ENABLED"] = "true"
     env["DD_LLMOBS_AGENTLESS_ENABLED"] = "false"
 
+    # python ssi for ddtrace
     bootstrap = _lapdog_bootstrap_dir()
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{bootstrap}{os.pathsep}{existing}" if existing else bootstrap
+
+    # node.js ssi for dd-trace
+    import_path = _lapdog_nodejs_import()
+    existing = env.get("NODE_OPTIONS", "")
+    env["NODE_OPTIONS"] = f"{existing} --import {import_path}"
 
     lapdog_sp = _lapdog_ddtrace_site_packages()
     if lapdog_sp:
