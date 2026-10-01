@@ -455,6 +455,89 @@ async def test_llmobs_list_returns_spans_v4(agent, llmobs_payload):
     assert data["hitCount"] == 2
 
 
+@pytest.mark.parametrize("span_count", [4, 5])
+async def test_llmobs_list_paging_for_session_spans(agent, llmobs_payload, span_count):
+    llmobs_payload["spans"] = [
+        {
+            "name": f"span-{i}",
+            "span_id": f"span-{i}",
+            "trace_id": "trace-1",
+            "start_ns": 1_700_000_000_000_000_000 + (i // 2),
+            "tags": ["session_id:session-1"],
+        }
+        for i in range(span_count)
+    ]
+    llmobs_payload["spans"].append(
+        {
+            "name": "other-session",
+            "span_id": "other-session",
+            "trace_id": "trace-2",
+            "start_ns": 1_700_000_000_000_000_010,
+            "tags": ["session_id:session-2"],
+        }
+    )
+    await _submit_llmobs_payload(agent, llmobs_payload)
+
+    paging = None
+    seen = []
+    while True:
+        resp = await agent.post(
+            "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+            json={
+                "list": {
+                    "search": {"query": "@event_type:span AND @session_id:session-1"},
+                    "limit": 2,
+                    "paging": paging,
+                }
+            },
+        )
+        assert resp.status == 200
+        result = (await resp.json())["result"]
+        seen.extend(event["id"] for event in result["events"])
+        paging = result.get("paging")
+        if not paging:
+            break
+
+    assert len(seen) == span_count
+    assert len(set(seen)) == span_count
+    assert set(seen) == {f"span-{i}" for i in range(span_count)}
+
+
+async def test_llmobs_list_paging_ascending_and_from(agent, llmobs_payload):
+    llmobs_payload["spans"] = [
+        {"span_id": f"span-{i}", "trace_id": "trace-1", "start_ns": 1_700_000_000_000_000_000 + i} for i in range(3)
+    ]
+    await _submit_llmobs_payload(agent, llmobs_payload)
+
+    body = {"list": {"limit": 2, "sorts": [{"time": {"order": "asc"}}]}}
+    first = (await (await agent.post("/api/unstable/llm-obs-query-rewriter/list?type=llmobs", json=body)).json())[
+        "result"
+    ]
+    assert [event["id"] for event in first["events"]] == ["span-0", "span-1"]
+
+    body["list"]["paging"] = first["paging"]
+    second = (await (await agent.post("/api/unstable/llm-obs-query-rewriter/list?type=llmobs", json=body)).json())[
+        "result"
+    ]
+    assert [event["id"] for event in second["events"]] == ["span-2"]
+    assert "paging" not in second
+
+    body["list"]["paging"] = {"from": first["paging"]["after"]}
+    inclusive = (await (await agent.post("/api/unstable/llm-obs-query-rewriter/list?type=llmobs", json=body)).json())[
+        "result"
+    ]
+    assert [event["id"] for event in inclusive["events"]] == ["span-1", "span-2"]
+
+
+@pytest.mark.parametrize("paging", [{"after": "not-a-cursor"}, "not-an-object"])
+async def test_llmobs_list_rejects_bad_paging_cursor(agent, paging):
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/list?type=llmobs",
+        json={"list": {"limit": 2, "paging": paging}},
+    )
+    assert resp.status == 400
+
+
 @pytest.mark.parametrize("path", ["/evp_proxy/v2/api/v2/llmobs", "/evp_proxy/v4/api/v2/llmobs"])
 async def test_lapdog_estimates_generic_llm_spans_and_updates(agent, llmobs_payload, monkeypatch, tmp_path, path):
     prices = [
@@ -919,8 +1002,38 @@ async def test_llmobs_aggregate_group_by_session_id(agent):
     # latest = span with the largest start_ns
     assert session_a_entry["metrics"]["@trace_id:latest"] == "trace-a2"
 
-    paging_sessions = data["result"]["paging"]["after"]["@session_id"]
-    assert set(paging_sessions) == {"session-a", "session-b"}
+    assert "paging" not in data["result"]
+
+
+async def test_llmobs_aggregate_paging_for_session_groups(agent, llmobs_payload):
+    llmobs_payload["spans"] = [
+        {
+            "span_id": f"span-{i}",
+            "trace_id": f"trace-{i}",
+            "session_id": f"session-{i}",
+            "start_ns": 1_700_000_000_000_000_000 + i,
+        }
+        for i in range(5)
+    ]
+    await _submit_llmobs_payload(agent, llmobs_payload)
+
+    body = {
+        "aggregate": {
+            "groupBy": [{"field": {"id": "@session_id", "output": "@session_id", "limit": 2}}],
+            "compute": [{"total": {"metric": "count", "output": "count", "aggregation": "count"}}],
+        }
+    }
+    seen = []
+    while True:
+        resp = await agent.post("/api/unstable/llm-obs-query-rewriter/aggregate?type=llmobs", json=body)
+        assert resp.status == 200
+        result = (await resp.json())["result"]
+        seen.extend(value["by"]["@session_id"] for value in result["values"])
+        if "paging" not in result:
+            break
+        body["aggregate"]["paging"] = result["paging"]
+
+    assert seen == [f"session-{i}" for i in reversed(range(5))]
 
 
 async def test_llmobs_cors_headers(agent):
