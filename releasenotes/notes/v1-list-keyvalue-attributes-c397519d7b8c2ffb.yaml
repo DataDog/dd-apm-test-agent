@@ -1,4 +1,4 @@
 ---
 features:
   - |
-    v1: Decode ``List``, ``KeyValue`` and ``Bytes`` attribute values on spans, span links and span events. ``List`` and ``KeyValue`` are stored as JSON strings and ``Bytes`` as base64 strings.
+    v1: Decode ``List``, ``KeyValue`` and ``Bytes`` attribute values. On spans and span links, lists and key-value lists are flattened to ``key.N`` / ``key.member`` (strings in ``meta``, numbers and booleans in ``metrics``, string leaves on links). ``Bytes`` values are decoded as msgpack into ``meta_struct`` or, if not msgpack, as ASCII strings. On span events, key-value lists are stored as JSON string values.

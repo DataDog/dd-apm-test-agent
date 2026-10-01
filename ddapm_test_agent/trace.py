@@ -1,6 +1,5 @@
 """Tracing specific functions and types"""
 
-import base64
 from enum import IntEnum
 import json
 from typing import Any
@@ -788,6 +787,7 @@ def _convert_v1_payload(data: Any) -> v04TracePayload:
     v04Payload: List[List[Span]] = []
     payload_meta: Dict[str, str] = {}
     payload_metrics: Dict[str, MetricType] = {}
+    payload_meta_struct: Dict[str, Dict[str, Any]] = {}
 
     for k, v in data.items():
         if k == 1:
@@ -801,7 +801,7 @@ def _convert_v1_payload(data: Any) -> v04TracePayload:
             # triplet array, same encoding as chunk/span attributes.
             if not isinstance(v, list):
                 raise TypeError("Trace payload 'attributes' (10) must be a list, got type %r." % type(v))
-            _convert_v1_attributes(v, payload_meta, payload_metrics, string_table)
+            _convert_v1_attributes(v, payload_meta, payload_metrics, string_table, payload_meta_struct)
         elif k == 11:
             if not isinstance(v, list):
                 raise TypeError("Trace payload 'chunks' (11) must be a list.")
@@ -810,9 +810,12 @@ def _convert_v1_payload(data: Any) -> v04TracePayload:
         else:
             raise TypeError("Unknown key %r in v1 trace payload" % k)
 
-    if payload_meta or payload_metrics:
+    if payload_meta or payload_metrics or payload_meta_struct:
         for chunk_spans in v04Payload:
             for span in chunk_spans:
+                if payload_meta_struct:
+                    for ms_key, ms_value in payload_meta_struct.items():
+                        span.setdefault("meta_struct", {}).setdefault(ms_key, ms_value)
                 for meta_key, meta_value in payload_meta.items():
                     span["meta"].setdefault(meta_key, meta_value)
                 for metric_key, metric_value in payload_metrics.items():
@@ -828,6 +831,7 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
     trace_id, trace_id_high = 0, 0
     meta: Dict[str, str] = {}
     metrics: Dict[str, MetricType] = {}
+    meta_struct: Dict[str, Dict[str, Any]] = {}
     spans: List[Span] = []
     for k, v in chunk.items():
         if k == V1ChunkKeys.PRIORITY:
@@ -837,7 +841,7 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
         elif k == V1ChunkKeys.ATTRIBUTES:
             if not isinstance(v, list):
                 raise TypeError("Chunk Attributes must be a list, got type %r." % type(v))
-            _convert_v1_attributes(v, meta, metrics, string_table)
+            _convert_v1_attributes(v, meta, metrics, string_table, meta_struct)
         elif k == V1ChunkKeys.SPANS:
             if not isinstance(v, list):
                 raise TypeError("Chunk 'spans'(4) must be a list.")
@@ -875,6 +879,8 @@ def _convert_v1_chunk(chunk: Any, string_table: List[str]) -> List[Span]:
             span["meta"][k] = v
         for k, v in metrics.items():
             span["metrics"][k] = v
+        if meta_struct:
+            span.setdefault("meta_struct", {}).update(meta_struct)
     return spans
 
 
@@ -910,9 +916,12 @@ def _convert_v1_span(span: Any, string_table: List[str]) -> Span:
                 raise TypeError("Attributes must be a list, got type %r." % type(v))
             meta: Dict[str, str] = {}
             metrics: Dict[str, MetricType] = {}
-            _convert_v1_attributes(v, meta, metrics, string_table)
+            span_meta_struct: Dict[str, Dict[str, Any]] = {}
+            _convert_v1_attributes(v, meta, metrics, string_table, span_meta_struct)
             v4Span["meta"] = meta
             v4Span["metrics"] = metrics
+            if span_meta_struct:
+                v4Span["meta_struct"] = span_meta_struct
         elif k == V1SpanKeys.TYPE:
             v4Span["type"] = _get_and_add_string(string_table, v)
         elif k == V1SpanKeys.SPAN_LINKS:
@@ -1031,6 +1040,10 @@ def _convert_v1_span_link_attributes(attr: Any, string_table: List[str]) -> Dict
     if len(attr) % 3 != 0:
         raise TypeError("Attribute list must have a multiple of 3 elements, got %r." % len(attr))
     v4_attributes: Dict[str, str] = {}
+
+    def emit_link_leaf(k: str, leaf: Any) -> None:
+        v4_attributes[k] = ("true" if leaf else "false") if isinstance(leaf, bool) else str(leaf)
+
     for i in range(0, len(attr), 3):
         key = _get_and_add_string(string_table, attr[i])
         value_type = attr[i + 1]
@@ -1043,10 +1056,9 @@ def _convert_v1_span_link_attributes(attr: Any, string_table: List[str]) -> Dict
             v4_attributes[key] = str(value)
         elif value_type == V1AnyValueKeys.INT:
             v4_attributes[key] = str(value)
-        elif value_type == V1AnyValueKeys.BYTES:
-            v4_attributes[key] = _convert_v1_bytes(value)
-        elif value_type in (V1AnyValueKeys.ARRAY, V1AnyValueKeys.KEY_VALUE_LIST):
-            v4_attributes[key] = json.dumps(_convert_v1_any_value(value_type, value, string_table))
+        elif value_type in (V1AnyValueKeys.BYTES, V1AnyValueKeys.ARRAY, V1AnyValueKeys.KEY_VALUE_LIST):
+            # Span link attributes are string-only: flatten containers into string leaves
+            _flatten_v1_value(key, _convert_v1_any_value(value_type, value, string_table), emit_link_leaf)
         else:
             raise TypeError("Unknown attribute value type %r." % value_type)
     return v4_attributes
@@ -1093,7 +1105,10 @@ def _convert_v1_span_event_attributes(attr: Any, string_table: List[str]) -> Dic
             attributes[key] = {"type": 4, "array_value": _convert_v1_array_value(value, string_table)}
         elif value_type == V1AnyValueKeys.BYTES:
             # v0.4 span events have no bytes/key-value types, so these are exposed as string values
-            attributes[key] = {"type": 0, "string_value": _convert_v1_bytes(value)}
+            decoded = _decode_v1_bytes(value)
+            if not isinstance(decoded, str):
+                raise NotImplementedError("Structured bytes values are not supported in span event attributes.")
+            attributes[key] = {"type": 0, "string_value": decoded}
         elif value_type == V1AnyValueKeys.KEY_VALUE_LIST:
             attributes[key] = {
                 "type": 0,
@@ -1135,17 +1150,44 @@ def _convert_v1_array_value(value: Any, string_table: List[str]) -> Dict[str, Li
     return {"values": values}
 
 
-def _convert_v1_bytes(value: Any) -> str:
-    """v0.4 has no bytes attribute type, so bytes values are exposed as base64 strings."""
+def _decode_v1_bytes(value: Any) -> Any:
+    """Decode a v1 ``Bytes`` attribute the way system-tests does: msgpack first (like ``meta_struct``
+    in v0.4), then ASCII."""
     if not isinstance(value, (bytes, bytearray)):
         raise TypeError("Bytes value must be bytes, got type %r." % type(value))
-    return base64.b64encode(bytes(value)).decode("ascii")
+    raw = bytes(value)
+    try:
+        unpacked = msgpack.unpackb(raw, unicode_errors="replace", strict_map_key=False)
+        # A lone ASCII byte (e.g. b"A") is also a valid msgpack int: only keep structured results
+        if isinstance(unpacked, (dict, list, str)):
+            return unpacked
+    except Exception:
+        pass
+    try:
+        return raw.decode("ascii")
+    except UnicodeDecodeError as e:
+        raise ValueError("Error decoding v1 bytes attribute") from e
+
+
+def _flatten_v1_value(key: str, value: Any, emit: Callable[[str, Any], None]) -> None:
+    """Flatten a decoded v1 ``List``/``KeyValue`` into dotted-key leaves (``key.0``, ``key.member``),
+    like libdatadog's v0.4 fallback. Empty containers emit nothing."""
+    if isinstance(value, list):
+        for i, item in enumerate(value):
+            _flatten_v1_value("%s.%d" % (key, i), item, emit)
+    elif isinstance(value, dict):
+        for k, item in value.items():
+            _flatten_v1_value("%s.%s" % (key, k), item, emit)
+    elif isinstance(value, (str, bool, int, float)):
+        emit(key, value)
+    else:
+        raise TypeError("Unsupported value %r nested in a v1 list/key-value list." % type(value))
 
 
 def _convert_v1_any_value(value_type: Any, value: Any, string_table: List[str]) -> Any:
     """Recursively convert a v1 wire AnyValue into a native Python value.
 
-    - BYTES becomes a base64 ``str``.
+    - BYTES is decoded with ``_decode_v1_bytes`` (msgpack, else ASCII).
     - ARRAY is a flat list of ``[type, value]`` pairs and becomes a ``list``.
     - KEY_VALUE_LIST is a flat list of ``[key, type, value]`` triplets (same layout as the top-level
       attribute map) and becomes a ``dict``.
@@ -1157,7 +1199,7 @@ def _convert_v1_any_value(value_type: Any, value: Any, string_table: List[str]) 
     elif value_type in (V1AnyValueKeys.INT, V1AnyValueKeys.DOUBLE):
         return value
     elif value_type == V1AnyValueKeys.BYTES:
-        return _convert_v1_bytes(value)
+        return _decode_v1_bytes(value)
     elif value_type == V1AnyValueKeys.ARRAY:
         if not isinstance(value, list):
             raise TypeError("Array value must be a list, got type %r." % type(value))
@@ -1177,7 +1219,11 @@ def _convert_v1_any_value(value_type: Any, value: Any, string_table: List[str]) 
 
 
 def _convert_v1_attributes(
-    attr: Any, meta: Dict[str, str], metrics: Dict[str, MetricType], string_table: List[str]
+    attr: Any,
+    meta: Dict[str, str],
+    metrics: Dict[str, MetricType],
+    string_table: List[str],
+    meta_struct: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> None:
     if not isinstance(attr, list):
         raise TypeError("Attribute must be a list, got type %r." % type(attr))
@@ -1197,10 +1243,23 @@ def _convert_v1_attributes(
         elif value_type == V1AnyValueKeys.INT:
             metrics[key] = value
         elif value_type == V1AnyValueKeys.BYTES:
-            meta[key] = _convert_v1_bytes(value)
+            decoded = _decode_v1_bytes(value)
+            if isinstance(decoded, str):
+                meta[key] = decoded
+            elif isinstance(decoded, dict) and meta_struct is not None:
+                # msgpack payloads are the v1 equivalent of v0.4 ``meta_struct``
+                meta_struct[key] = decoded
+            else:
+                raise TypeError("Unsupported v1 bytes attribute %r: decoded to %r." % (key, type(decoded)))
         elif value_type in (V1AnyValueKeys.ARRAY, V1AnyValueKeys.KEY_VALUE_LIST):
-            # v0.4 meta only holds strings, so complex values are stored as their JSON representation
-            meta[key] = json.dumps(_convert_v1_any_value(value_type, value, string_table))
+            # Flatten like libdatadog's v0.4 fallback: strings in meta, numbers/bools in metrics
+            def emit(k: str, leaf: Any) -> None:
+                if isinstance(leaf, str):
+                    meta[k] = leaf
+                else:
+                    metrics[k] = int(leaf) if isinstance(leaf, bool) else leaf
+
+            _flatten_v1_value(key, _convert_v1_any_value(value_type, value, string_table), emit)
         else:
             raise TypeError("Unknown attribute value type %r." % value_type)
 
