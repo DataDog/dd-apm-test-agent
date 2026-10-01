@@ -853,11 +853,17 @@ def build_event_platform_list_response(
     limit: int = 100,
     all_spans: Optional[List[Dict[str, Any]]] = None,
     paging: Optional[Dict[str, str]] = None,
+    hit_count: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build Event Platform list response from spans."""
     _all_spans = all_spans if all_spans is not None else spans
     trace_aggregates = _build_trace_aggregates(_all_spans)
-    children_map = compute_children_ids(spans[:limit])
+    spans_by_trace: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for span in _all_spans:
+        spans_by_trace[span.get("trace_id", "")].append(span)
+    children_by_trace = {
+        trace_id: compute_children_ids(trace_spans) for trace_id, trace_spans in spans_by_trace.items()
+    }
     events = []
 
     for span in spans[:limit]:
@@ -875,7 +881,7 @@ def build_event_platform_list_response(
         ml_app = span.get("ml_app", span.get("_ui_ml_app", "unknown"))
         service = span.get("service", "")
         env = span.get("env", "")
-        children_ids = children_map.get(span_id, [])
+        children_ids = children_by_trace.get(trace_id, {}).get(span_id, [])
         span_links = span.get("span_links", [])
         tag_obj = _tags_to_dict(tags)
         # Ensure session_id is always in the tag dict for the web-ui
@@ -1003,12 +1009,31 @@ def build_event_platform_list_response(
 
     return {
         "elapsed": 23,
-        "hitCount": len(events),
+        "hitCount": hit_count if hit_count is not None else len(events),
         "requestId": request_id,
         "result": result,
         "status": "done",
         "type": "status",
     }
+
+
+def _decode_list_cursor(value: str) -> Tuple[int, str, str, int]:
+    """Decode and validate an opaque list paging cursor."""
+    try:
+        parts = json.loads(base64.urlsafe_b64decode(value.encode("ascii")).decode("utf-8"))
+        if (
+            not isinstance(parts, list)
+            or len(parts) != 4
+            or type(parts[0]) is not int
+            or not isinstance(parts[1], str)
+            or not isinstance(parts[2], str)
+            or type(parts[3]) is not int
+            or parts[3] < 0
+        ):
+            raise ValueError
+        return parts[0], parts[1], parts[2], parts[3]
+    except (ValueError, UnicodeError, binascii.Error) as exc:
+        raise ValueError("Invalid list paging cursor") from exc
 
 
 def _list_page(
@@ -1028,23 +1053,6 @@ def _list_page(
         ordered.append(((*identity, occurrence), span))
     ordered.sort(key=lambda item: item[0], reverse=sort_order != "asc")
 
-    def decode_cursor(value: str) -> Tuple[int, str, str, int]:
-        try:
-            parts = json.loads(base64.urlsafe_b64decode(value.encode("ascii")).decode("utf-8"))
-            if (
-                not isinstance(parts, list)
-                or len(parts) != 4
-                or type(parts[0]) is not int
-                or not isinstance(parts[1], str)
-                or not isinstance(parts[2], str)
-                or type(parts[3]) is not int
-                or parts[3] < 0
-            ):
-                raise ValueError
-            return parts[0], parts[1], parts[2], parts[3]
-        except (ValueError, UnicodeError, binascii.Error) as exc:
-            raise ValueError("Invalid list paging cursor") from exc
-
     if paging is not None and not isinstance(paging, dict):
         raise ValueError("Invalid list paging cursor")
     if paging:
@@ -1056,7 +1064,7 @@ def _list_page(
         if cursor:
             if not isinstance(cursor, str):
                 raise ValueError("Invalid list paging cursor")
-            key = decode_cursor(cursor)
+            key = _decode_list_cursor(cursor)
             if sort_order == "asc":
                 ordered = [item for item in ordered if item[0] > key or (from_cursor and item[0] == key)]
             else:
@@ -1180,7 +1188,7 @@ class LLMObsEventPlatformAPI:
 
             request_id = str(uuid.uuid4())
             response = build_event_platform_list_response(
-                page_spans, request_id, limit, all_spans=all_spans, paging=next_paging
+                page_spans, request_id, limit, all_spans=all_spans, paging=next_paging, hit_count=len(spans)
             )
             self._query_results[request_id] = response
 
