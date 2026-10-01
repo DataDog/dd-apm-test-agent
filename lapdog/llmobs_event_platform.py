@@ -14,6 +14,7 @@ from typing import List
 from typing import Optional
 from typing import Set
 from typing import TYPE_CHECKING
+from typing import Tuple
 import uuid
 
 from aiohttp import web
@@ -1012,13 +1013,13 @@ def build_event_platform_list_response(
 
 def _list_page(
     spans: List[Dict[str, Any]], limit: int, paging: Optional[Dict[str, Any]], sort_order: str
-) -> tuple[List[Dict[str, Any]], Optional[Dict[str, str]]]:
+) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, str]]]:
     """Page spans by a stable time, trace, and span order.
 
     The cursor is opaque to web-ui. An occurrence number distinguishes spans
     with identical time and IDs, such as repeated intake payloads.
     """
-    occurrences: Dict[tuple[int, str, str], int] = defaultdict(int)
+    occurrences: Dict[Tuple[int, str, str], int] = defaultdict(int)
     ordered = []
     for span in spans:
         identity = (int(span.get("start_ns", 0)), str(span.get("trace_id", "")), str(span.get("span_id", "")))
@@ -1027,7 +1028,7 @@ def _list_page(
         ordered.append(((*identity, occurrence), span))
     ordered.sort(key=lambda item: item[0], reverse=sort_order != "asc")
 
-    def decode_cursor(value: str) -> tuple[int, str, str, int]:
+    def decode_cursor(value: str) -> Tuple[int, str, str, int]:
         try:
             parts = json.loads(base64.urlsafe_b64decode(value.encode("ascii")).decode("utf-8"))
             if (
@@ -1169,8 +1170,9 @@ class LLMObsEventPlatformAPI:
 
             # Handle sort order (default is descending by start_ns from get_llmobs_spans)
             sorts = list_params.get("sorts") or [list_params.get("sort", {})]
-            time_sort = next((sort.get("time") for sort in sorts if isinstance(sort, dict) and "time" in sort), {})
-            sort_order = time_sort.get("order", "desc") if isinstance(time_sort, dict) else "desc"
+            sort_value = next((sort.get("time") for sort in sorts if isinstance(sort, dict) and "time" in sort), None)
+            time_sort: Dict[str, Any] = sort_value if isinstance(sort_value, dict) else {}
+            sort_order = time_sort.get("order", "desc")
             try:
                 page_spans, next_paging = _list_page(spans, limit, list_params.get("paging"), sort_order)
             except ValueError as exc:
@@ -1327,17 +1329,17 @@ class LLMObsEventPlatformAPI:
                     pass
                 values.append({"by": {group_by_output or group_by_field or "": by_val}, "metrics": metrics})
 
+            result: Dict[str, Any] = {"values": values}
+            if has_more and group_by_output:
+                result["paging"] = {"after": {group_by_output: [*seen_groups, *group_order]}}
+
             response = {
                 "elapsed": 50,
                 "requestId": str(uuid.uuid4()),
-                "result": {
-                    "values": values,
-                },
+                "result": result,
                 "status": "done",
                 "type": "aggregate",
             }
-            if has_more and group_by_output:
-                response["result"]["paging"] = {"after": {group_by_output: [*seen_groups, *group_order]}}
             return web.json_response(response)
         except Exception as e:
             log.error(f"Error handling aggregate: {e}")
