@@ -1,4 +1,5 @@
 import asyncio
+import itertools
 import json
 import os
 from pathlib import Path
@@ -30,8 +31,6 @@ from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import Me
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import TraceServiceStub
 import pytest
 
-from ddapm_test_agent.agent import DEFAULT_OTLP_GRPC_PORT
-from ddapm_test_agent.agent import DEFAULT_OTLP_HTTP_PORT
 from ddapm_test_agent.agent import _parse_csv
 from ddapm_test_agent.agent import make_app
 from ddapm_test_agent.agent import make_otlp_grpc_server_async
@@ -767,13 +766,45 @@ def do_reference_v2_http_apmtelemetry(
     yield fn
 
 
+_PORTS_PER_WORKER = 500
+_port_counter = itertools.count()
+
+
+def _free_port() -> str:
+    """Return a TCP port that is currently free.
+
+    Ports come from a block reserved for the current pytest-xdist worker, below the ephemeral
+    range the OS uses for ``bind(("", 0))`` (32768+ on Linux, 49152+ on macOS/Windows). This
+    stops another worker, or a server bound to port 0, from taking the port between this check
+    and the test agent binding it.
+    """
+    worker = int(os.environ.get("PYTEST_XDIST_WORKER", "gw0")[2:])
+    base = 20000 + (worker % 24) * _PORTS_PER_WORKER
+    for _ in range(_PORTS_PER_WORKER):
+        port = base + next(_port_counter) % _PORTS_PER_WORKER
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("", port))
+            except OSError:
+                continue
+        return str(port)
+    raise RuntimeError("No free port in range %d-%d" % (base, base + _PORTS_PER_WORKER - 1))
+
+
 @pytest.fixture
 def available_port() -> str:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("", 0))  # Bind to a free port provided by the host.
-    port = s.getsockname()[1]  # Get the port number assigned.
-    s.close()  # Release the socket.
-    return str(port)
+    return _free_port()
+
+
+# Use free ports rather than the OTLP defaults so tests can run in parallel (pytest-xdist).
+@pytest.fixture
+def otlp_http_port() -> str:
+    return _free_port()
+
+
+@pytest.fixture
+def otlp_grpc_port() -> str:
+    return _free_port()
 
 
 @pytest.fixture
@@ -816,6 +847,8 @@ def test_agent_env(testagent_connection_type, testagent_uds_socket_path):
 async def testagent(
     loop,
     testagent_port,
+    otlp_http_port,
+    otlp_grpc_port,
     testagent_snapshot_ci_mode,
     test_agent_env,
     testagent_connection_type,
@@ -824,6 +857,8 @@ async def testagent(
     test_agent_env.update(
         {
             "PORT": testagent_port,
+            "OTLP_HTTP_PORT": otlp_http_port,
+            "OTLP_GRPC_PORT": otlp_grpc_port,
             "SNAPSHOT_CI": "1" if testagent_snapshot_ci_mode else "0",
             "SNAPSHOT_DIR": os.path.join(os.path.dirname(__file__), "integration_snapshots"),
         }
@@ -905,9 +940,9 @@ def host_name():
 
 # OTLP Infrastructure Fixtures
 @pytest.fixture
-def otlp_http_url(testagent_url):
+def otlp_http_url(testagent_url, otlp_http_port):
     parsed_url = urlparse(testagent_url)
-    return f"{parsed_url.scheme}://{parsed_url.hostname}:{DEFAULT_OTLP_HTTP_PORT}"
+    return f"{parsed_url.scheme}://{parsed_url.hostname}:{otlp_http_port}"
 
 
 @pytest.fixture
@@ -922,9 +957,9 @@ def otlp_test_client(otlp_http_url):
 
 
 @pytest.fixture(params=["logs", "metrics", "traces"])
-async def otlp_grpc_client(request):
+async def otlp_grpc_client(request, otlp_grpc_port):
     """GRPC client that can connect to logs, metrics, or traces service."""
-    channel = grpc_aio.insecure_channel(f"127.0.0.1:{DEFAULT_OTLP_GRPC_PORT}")
+    channel = grpc_aio.insecure_channel(f"127.0.0.1:{otlp_grpc_port}")
 
     if request.param == "logs":
         stub = LogsServiceStub(channel)
@@ -941,9 +976,9 @@ async def otlp_grpc_client(request):
 
 
 @pytest.fixture
-async def otlp_logs_grpc_client():
+async def otlp_logs_grpc_client(otlp_grpc_port):
     """GRPC client specifically for logs service."""
-    channel = grpc_aio.insecure_channel(f"127.0.0.1:{DEFAULT_OTLP_GRPC_PORT}")
+    channel = grpc_aio.insecure_channel(f"127.0.0.1:{otlp_grpc_port}")
     stub = LogsServiceStub(channel)
 
     yield stub
@@ -952,9 +987,9 @@ async def otlp_logs_grpc_client():
 
 
 @pytest.fixture
-async def otlp_metrics_grpc_client():
+async def otlp_metrics_grpc_client(otlp_grpc_port):
     """GRPC client specifically for metrics service."""
-    channel = grpc_aio.insecure_channel(f"127.0.0.1:{DEFAULT_OTLP_GRPC_PORT}")
+    channel = grpc_aio.insecure_channel(f"127.0.0.1:{otlp_grpc_port}")
     stub = MetricsServiceStub(channel)
 
     yield stub
@@ -963,9 +998,9 @@ async def otlp_metrics_grpc_client():
 
 
 @pytest.fixture
-async def otlp_traces_grpc_client():
+async def otlp_traces_grpc_client(otlp_grpc_port):
     """GRPC client specifically for traces service."""
-    channel = grpc_aio.insecure_channel(f"127.0.0.1:{DEFAULT_OTLP_GRPC_PORT}")
+    channel = grpc_aio.insecure_channel(f"127.0.0.1:{otlp_grpc_port}")
     stub = TraceServiceStub(channel)
 
     yield stub
