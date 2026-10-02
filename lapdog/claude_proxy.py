@@ -37,7 +37,7 @@ from .claude_link_tracker import ClaudeLinkTracker
 from .claude_link_tracker import SpanLink
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .model_pricing import compute_cost_metrics
-
+from .utils import set_hidden_metadata
 
 log = logging.getLogger(__name__)
 
@@ -625,9 +625,6 @@ class ClaudeProxyAPI:
                 "metadata": {
                     "stop_reason": response_data.get("stop_reason", ""),
                     "stream": request_body.get("stream", False),
-                    "_dd": {
-                        "context_breakdown": context_breakdown,
-                    },
                 },
             },
             "metrics": {
@@ -651,6 +648,7 @@ class ClaudeProxyAPI:
             },
             "span_links": [link.to_dict() for link in span_links],
         }
+        set_hidden_metadata(span, context_breakdown=context_breakdown)
         return span
 
     async def handle_proxy(self, request: Request) -> web.StreamResponse:
