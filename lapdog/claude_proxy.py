@@ -147,10 +147,15 @@ def _extract_response_from_sse(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     stop_reason = ""
     content_blocks: List[Dict[str, Any]] = []
     block_builders: Dict[int, Dict[str, Any]] = {}
+    safeguard_results: List[Any] = []
 
     for evt in events:
         event_type = evt.get("event", "")
         data = evt.get("data", {})
+        if isinstance(data, dict):
+            for source in (data, data.get("message"), data.get("delta")):
+                if isinstance(source, dict) and "safeguard_results" in source:
+                    safeguard_results.append(source["safeguard_results"])
 
         if event_type == "message_start":
             msg = data.get("message", {})
@@ -238,6 +243,7 @@ def _extract_response_from_sse(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "model": model,
         "content": content_blocks,
+        "safeguard_results": safeguard_results,
         "stop_reason": stop_reason,
         "usage": {
             "input_tokens": input_tokens,
@@ -246,6 +252,57 @@ def _extract_response_from_sse(events: List[Dict[str, Any]]) -> Dict[str, Any]:
             "output_tokens": output_tokens,
         },
     }
+
+
+def _approved_auto_reviews(request_body: Dict[str, Any], response_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Keep only evaluated, not-flagged auto mode tool verdicts."""
+    safeguards = request_body.get("safeguards")
+    if not isinstance(safeguards, list) or not any(
+        isinstance(item, dict) and item.get("type") == "dangerous_tool_use" for item in safeguards
+    ):
+        return []
+
+    results = response_data.get("safeguard_results")
+    if results is None:
+        log.info("Claude auto mode request returned tool calls without safeguard results")
+        return []
+    approvals: Dict[str, Dict[str, Any]] = {}
+
+    def visit(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict) or value.get("type") != "dangerous_tool_use":
+            return
+        status = value.get("status")
+        if not isinstance(status, dict) or status.get("type") != "available":
+            return
+        tool_uses = status.get("tool_uses")
+        if not isinstance(tool_uses, dict):
+            return
+        for tool_id, verdict in tool_uses.items():
+            if not isinstance(tool_id, str) or not isinstance(verdict, dict):
+                continue
+            if verdict.get("type") != "evaluated" or verdict.get("outcome") != "not_flagged":
+                continue
+            explanation = verdict.get("explanation") or ""
+            approvals[tool_id] = {
+                "outcome": "allow",
+                "risk_level": "",
+                "explanation": explanation if isinstance(explanation, str) else "",
+                "usage": {
+                    "estimated_total_cost": None,
+                    "estimated_total_cost_usd": None,
+                    "estimated_cost_model": None,
+                },
+                "tool_id": tool_id,
+            }
+
+    visit(results)
+    if not approvals:
+        log.info("Claude auto mode returned safeguard results without a matched allow verdict")
+    return list(approvals.values())
 
 
 def _extract_tool_results_from_request(body: Dict[str, Any]) -> List[str]:
@@ -734,6 +791,8 @@ class ClaudeProxyAPI:
                     log.info("Buffered orphan LLM span %s (no session yet)", span["span_id"])
                 else:
                     self._hooks_api._append_span(span)
+                for review in _approved_auto_reviews(request_body, response_data):
+                    self._hooks_api.record_claude_auto_review(review)
                 log.info(
                     "LLM span %s: model=%s tokens=%d+%d duration=%.1fs",
                     span["span_id"],
@@ -769,6 +828,8 @@ class ClaudeProxyAPI:
                     log.info("Buffered orphan LLM span %s (no session yet)", span["span_id"])
                 else:
                     self._hooks_api._append_span(span)
+                for review in _approved_auto_reviews(request_body, response_data):
+                    self._hooks_api.record_claude_auto_review(review)
                 log.info(
                     "LLM span %s: model=%s tokens=%d+%d duration=%.1fs",
                     span["span_id"],

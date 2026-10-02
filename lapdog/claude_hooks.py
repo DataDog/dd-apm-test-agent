@@ -337,6 +337,7 @@ class ClaudeHooksAPI:
         self._pending_tags_by_token: Dict[str, Dict[str, str]] = {}
         self._tag_update_sequence = 0
         self._assembled_spans: List[Dict[str, Any]] = []
+        self._pending_claude_auto_reviews: Dict[str, Dict[str, Any]] = {}
         self._raw_events: List[Dict[str, Any]] = []
         self._link_tracker = link_tracker
         self._app: Optional[web.Application] = None
@@ -428,6 +429,17 @@ class ClaudeHooksAPI:
             self._assembled_spans.append(span)
         else:
             self._assembled_spans.insert(index, span)
+
+    def record_claude_auto_review(self, entry: Dict[str, Any]) -> None:
+        """Attach a confirmed allow verdict to its tool, even if the hook ran first."""
+        tool_id = entry["tool_id"]
+        for span in reversed(self._assembled_spans):
+            metadata = span.get("meta", {}).get("metadata", {})
+            if span.get("ml_app") == _ML_APP and span.get("meta", {}).get("span", {}).get("kind") == "tool":
+                if metadata.get("tool_id") == tool_id:
+                    set_hidden_metadata(span, auto_reviews=[entry])
+                    return
+        self._pending_claude_auto_reviews[tool_id] = entry
 
     def _get_or_create_session(self, session_id: str) -> SessionState:
         """Get existing session or create a new one."""
@@ -1069,6 +1081,9 @@ class ClaudeHooksAPI:
         }
         if estimated_permission_wait_ms is not None:
             set_hidden_metadata(span, estimated_permission_wait_ms=estimated_permission_wait_ms)
+        review = self._pending_claude_auto_reviews.pop(tool_use_id, None)
+        if review is not None:
+            set_hidden_metadata(span, auto_reviews=[review])
         self._append_span(span)
 
     def _handle_subagent_start(self, session_id: str, body: Dict[str, Any]) -> None:
