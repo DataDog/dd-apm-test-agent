@@ -499,9 +499,9 @@ class CodexHooksAPI:
             cached_tokens = usage.get("cached_input_tokens", 0)
             cache_write_tokens = usage.get("cache_write_input_tokens", 0)
             output_tokens = usage.get("output_tokens", 0)
-            cost_model = str(review.get("model") or session.model)
+            review_model = str(review.get("model") or "")
             cost = compute_cost_metrics(
-                model_id=cost_model,
+                model_id=review_model,
                 provider_id="openai",
                 non_cached_input_tokens=max(input_tokens - cached_tokens - cache_write_tokens, 0),
                 cache_write_tokens=cache_write_tokens,
@@ -509,20 +509,9 @@ class CodexHooksAPI:
                 output_tokens=output_tokens,
                 when=review["start_ns"],
             )
-            if cost is None and session.model and cost_model != session.model:
-                cost_model = session.model
-                cost = compute_cost_metrics(
-                    model_id=cost_model,
-                    provider_id="openai",
-                    non_cached_input_tokens=max(input_tokens - cached_tokens - cache_write_tokens, 0),
-                    cache_write_tokens=cache_write_tokens,
-                    cache_read_tokens=cached_tokens,
-                    output_tokens=output_tokens,
-                    when=review["start_ns"],
-                )
             usage["estimated_total_cost"] = cost["estimated_total_cost"] if cost else None
             usage["estimated_total_cost_usd"] = cost["estimated_total_cost"] / 1_000_000_000 if cost else None
-            usage["estimated_cost_model"] = cost_model
+            usage["estimated_cost_model"] = review_model if cost else None
             entry = {
                 "outcome": review.get("outcome", ""),
                 "risk_level": review.get("risk_level", ""),
@@ -530,6 +519,8 @@ class CodexHooksAPI:
                 "usage": usage,
                 "tool_id": tool_id,
             }
+            if review_model:
+                entry["model"] = review_model
             if pending is not None:
                 session.auto_reviews_by_tool_id.setdefault(tool_id, []).append(entry)
                 pending.start_ns = max(pending.start_ns, review["end_ns"])

@@ -1284,7 +1284,7 @@ async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_
         await _post(agent, review_sid, _event("task_started", timestamp=started, turn_id=f"review-{index}"))
         context = _turn_context(f"review-{index}")
         context["timestamp"] = started
-        context["payload"]["model"] = "codex-auto-review"
+        context["payload"]["model"] = "codex-auto-review" if index == 1 else "gpt-5.5"
         await _post(agent, review_sid, context)
         await _post(
             agent,
@@ -1355,14 +1355,21 @@ async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_
     for index, tool in enumerate(tools, 1):
         review = tool["meta"]["metadata"]["_dd"]["auto_reviews"][0]
         assert "auto_reviews" not in tool["meta"]["metadata"]
-        assert set(review) == {"outcome", "risk_level", "explanation", "usage", "tool_id"}
+        assert set(review) == {"outcome", "risk_level", "explanation", "usage", "tool_id", "model"}
         assert review["tool_id"] == f"exec-{index}"
         assert review["outcome"] == "allow"
         assert review["explanation"] == "The command only checks JavaScript syntax."
         assert review["usage"]["input_tokens"] == 100 + index
-        assert review["usage"]["estimated_cost_model"] == "gpt-5.5"
-        assert review["usage"]["estimated_total_cost"] == (100 + index) * 5000 + 10 * 30000
-        assert review["usage"]["estimated_total_cost_usd"] == review["usage"]["estimated_total_cost"] / 1e9
+        if index == 1:
+            assert review["model"] == "codex-auto-review"
+            assert review["usage"]["estimated_cost_model"] is None
+            assert review["usage"]["estimated_total_cost"] is None
+            assert review["usage"]["estimated_total_cost_usd"] is None
+        else:
+            assert review["model"] == "gpt-5.5"
+            assert review["usage"]["estimated_cost_model"] == "gpt-5.5"
+            assert review["usage"]["estimated_total_cost"] == (100 + index) * 5000 + 10 * 30000
+            assert review["usage"]["estimated_total_cost_usd"] == review["usage"]["estimated_total_cost"] / 1e9
         step = next(s for s in spans if s["span_id"] == tool["parent_id"])
         assert "auto_reviews" not in step["meta"]["metadata"].get("_dd", {})
 
@@ -1485,6 +1492,9 @@ async def test_codex_guardian_review_resume_without_session_meta(agent, include_
     review = tool["meta"]["metadata"]["_dd"]["auto_reviews"][0]
     assert review["tool_id"] == "exec-1"
     assert review["explanation"] == ""
+    if not include_context:
+        assert "model" not in review
+        assert review["usage"]["estimated_total_cost"] is None
     assert _by_kind(spans, "task") == []
 
 
