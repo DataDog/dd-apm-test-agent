@@ -1312,7 +1312,15 @@ async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_
                 "message",
                 timestamp=finished,
                 role="assistant",
-                content=[{"type": "output_text", "text": '{"outcome":"allow","risk_level":"low"}'}],
+                content=[
+                    {
+                        "type": "output_text",
+                        "text": (
+                            '{"outcome":"allow","risk_level":"low",'
+                            '"rationale":"The command only checks JavaScript syntax."}'
+                        ),
+                    }
+                ],
             ),
         )
         await _post(
@@ -1347,9 +1355,10 @@ async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_
     for index, tool in enumerate(tools, 1):
         review = tool["meta"]["metadata"]["_dd"]["auto_reviews"][0]
         assert "auto_reviews" not in tool["meta"]["metadata"]
-        assert set(review) == {"outcome", "risk_level", "usage", "tool_id"}
+        assert set(review) == {"outcome", "risk_level", "explanation", "usage", "tool_id"}
         assert review["tool_id"] == f"exec-{index}"
         assert review["outcome"] == "allow"
+        assert review["explanation"] == "The command only checks JavaScript syntax."
         assert review["usage"]["input_tokens"] == 100 + index
         assert review["usage"]["estimated_cost_model"] == "gpt-5.5"
         assert review["usage"]["estimated_total_cost"] == (100 + index) * 5000 + 10 * 30000
@@ -1475,6 +1484,7 @@ async def test_codex_guardian_review_resume_without_session_meta(agent, include_
     tool = next(span for span in _by_kind(spans, "tool") if span.get("session_id") == parent_sid)
     review = tool["meta"]["metadata"]["_dd"]["auto_reviews"][0]
     assert review["tool_id"] == "exec-1"
+    assert review["explanation"] == ""
     assert _by_kind(spans, "task") == []
 
 

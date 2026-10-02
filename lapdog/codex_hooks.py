@@ -436,6 +436,7 @@ class CodexHooksAPI:
                 if isinstance(decision, dict):
                     review["outcome"] = decision.get("outcome", "")
                     review["risk_level"] = decision.get("risk_level", "")
+                    review["explanation"] = decision.get("rationale") or decision.get("explanation") or ""
         elif record_type == "event_msg" and event_type == "token_count":
             info = payload.get("info") or {}
             usage = info.get("last_token_usage") if isinstance(info, dict) else None
@@ -525,6 +526,7 @@ class CodexHooksAPI:
             entry = {
                 "outcome": review.get("outcome", ""),
                 "risk_level": review.get("risk_level", ""),
+                "explanation": review.get("explanation", ""),
                 "usage": usage,
                 "tool_id": tool_id,
             }
