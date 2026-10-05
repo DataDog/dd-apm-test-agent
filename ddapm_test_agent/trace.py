@@ -1152,7 +1152,8 @@ def _convert_v1_array_value(value: Any, string_table: List[str]) -> Dict[str, Li
 
 def _decode_v1_bytes(value: Any) -> Any:
     """Decode a v1 ``Bytes`` attribute the way system-tests does: msgpack first (like ``meta_struct``
-    in v0.4), then ASCII."""
+    in v0.4), then ASCII.
+    """
     if not isinstance(value, (bytes, bytearray)):
         raise TypeError("Bytes value must be bytes, got type %r." % type(value))
     raw = bytes(value)
@@ -1171,7 +1172,8 @@ def _decode_v1_bytes(value: Any) -> Any:
 
 def _flatten_v1_value(key: str, value: Any, emit: Callable[[str, Any], None]) -> None:
     """Flatten a decoded v1 ``List``/``KeyValue`` into dotted-key leaves (``key.0``, ``key.member``),
-    like libdatadog's v0.4 fallback. Empty containers emit nothing."""
+    like libdatadog's v0.4 fallback. Empty containers emit nothing.
+    """
     if isinstance(value, list):
         for i, item in enumerate(value):
             _flatten_v1_value("%s.%d" % (key, i), item, emit)
