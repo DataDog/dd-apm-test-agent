@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Lapdog: support ``lapdog {{app_cmd}}`` for node.js applications by properly injecting the ``dd-trace`` startup initialization package.
