@@ -23,6 +23,9 @@ from .claude_hooks import SessionState
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
+from .codex_exec import display_tool_name
+from .codex_exec import extract_exec_calls
+from .codex_exec import extract_exec_results
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .coding_agent_metadata import extract_agent_project_name
 from .coding_agent_metadata import extract_git_repository_url
@@ -52,6 +55,7 @@ _ERROR_TOOL_STATUSES = {
     "timed_out",
     "timeout",
 }
+_EXEC_WRAPPER_NAMES = {"exec", "functions.exec"}
 
 
 def _timestamp_to_ns(timestamp: str) -> int:
@@ -335,6 +339,7 @@ class CodexSession:
         self.pending_tool_ids_by_span_id: Dict[str, str] = {}
         self.pending_tool_statuses: Dict[str, str] = {}
         self.pending_tool_reasoning: Dict[str, List[Dict[str, Any]]] = {}
+        self.shell_sessions: Dict[str, Dict[str, Any]] = {}
         self.active_turn: Optional[CodexTurn] = None
         self.completed_turns: List[str] = []
         self.seen_records: Set[str] = set()
@@ -935,7 +940,8 @@ class CodexHooksAPI:
             tool_id = session.pending_tool_ids_by_span_id.get(pending.span_id, pending.span_id)
             session.pending_tool_statuses[tool_id] = "failed"
             self._update_tool_call_status(turn, tool_id, "failed")
-            self._emit_tool_span(session, pending, end_ns, output_value="", is_error=True)
+            if pending.tool_name not in _EXEC_WRAPPER_NAMES:
+                self._emit_tool_span(session, pending, end_ns, output_value="", is_error=True)
         session.pending_tools.clear()
         session.pending_tool_ids_by_span_id.clear()
         session.pending_tool_statuses.clear()
@@ -1644,8 +1650,9 @@ class CodexHooksAPI:
         session.tool_use_id_map[call_id] = unique_id
         normalized_status = _canonical_tool_status(status)
         tool_name = tool_name or "unknown_tool"
-        session.tools_used.add(tool_name)
-        self._update_agent_manifest(session)
+        if tool_name not in _EXEC_WRAPPER_NAMES:
+            session.tools_used.add(tool_name)
+            self._update_agent_manifest(session)
         start_ns = _timestamp_to_ns(record.get("timestamp", ""))
 
         matched_step_id, matched_llm_span = self._find_llm_step_for_tool_call(turn, unique_id, tool_name, tool_input)
@@ -1679,11 +1686,7 @@ class CodexHooksAPI:
             reasoning = _copy_reasoning_items(turn.reasoning_items)
             tool_call["reasoning"] = reasoning
             session.pending_tool_reasoning[unique_id] = reasoning
-        tool_call_message = {
-            "role": "assistant",
-            "content": _to_json_str(tool_input),
-            "tool_calls": [tool_call],
-        }
+        tool_call_message = {"role": "assistant", "content": _to_json_str(tool_input), "tool_calls": [tool_call]}
         llm_span = turn.last_llm_span_ref
         if appending_to_existing_llm and llm_span is not None:
             output_messages = llm_span["meta"]["output"].setdefault("messages", [])
@@ -1730,7 +1733,13 @@ class CodexHooksAPI:
         end_ns: int,
         output_value: str,
         is_error: bool,
-    ) -> None:
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if pending.tool_name in _EXEC_WRAPPER_NAMES:
+            tool_id = session.pending_tool_ids_by_span_id.pop(pending.span_id, pending.span_id)
+            session.pending_tool_statuses.pop(tool_id, None)
+            session.pending_tool_reasoning.pop(tool_id, None)
+            return None
         tool_id = session.pending_tool_ids_by_span_id.pop(pending.span_id, pending.span_id)
         tool_status = _canonical_tool_status(session.pending_tool_statuses.pop(tool_id, ""), is_error=is_error)
         if not tool_status:
@@ -1751,6 +1760,8 @@ class CodexHooksAPI:
                 }
             },
         }
+        if extra_metadata:
+            metadata.update(extra_metadata)
         reasoning = session.pending_tool_reasoning.pop(tool_id, [])
         if reasoning:
             metadata["reasoning"] = _copy_reasoning_items(reasoning)
@@ -1766,7 +1777,11 @@ class CodexHooksAPI:
             "span_id": pending.span_id,
             "trace_id": session.active_turn.trace_id if session.active_turn else _format_trace_id(),
             "parent_id": pending.parent_id,
-            "name": pending.tool_name,
+            "name": (
+                display_tool_name(pending.tool_name, pending.tool_input)
+                if pending.tool_name == "exec_command"
+                else pending.tool_name
+            ),
             "status": "error" if is_error else "ok",
             "start_ns": pending.start_ns,
             "duration": max(end_ns - pending.start_ns, 0),
@@ -1796,6 +1811,47 @@ class CodexHooksAPI:
         turn = session.active_turn
         if turn is not None:
             self._update_step_end(turn, pending.parent_id, end_ns)
+        return span
+
+    def _merge_shell_poll(
+        self, session: CodexSession, arguments: Any, value: Any, end_ns: int, result_error: bool = False
+    ) -> bool:
+        if not isinstance(arguments, dict) or arguments.get("chars") or not isinstance(value, dict):
+            return False
+        session_id = arguments.get("session_id")
+        if session_id is None:
+            return False
+        entry = session.shell_sessions.get(str(session_id))
+        if entry is None:
+            return False
+        span = entry["span"]
+        previous = entry["result"]
+        merged = dict(previous)
+        merged.update(value)
+        merged["output"] = str(previous.get("output") or "") + str(value.get("output") or "")
+        prior_tokens = previous.get("original_token_count")
+        new_tokens = value.get("original_token_count")
+        if isinstance(prior_tokens, int) and isinstance(new_tokens, int):
+            merged["original_token_count"] = prior_tokens + new_tokens
+        entry["result"] = merged
+        output_value, truncated = _truncate_text(_to_json_str(merged), MAX_TOOL_VALUE_CHARS)
+        span["meta"]["output"]["value"] = output_value
+        span["duration"] = max(int(span["duration"]), end_ns - int(span["start_ns"]))
+        metadata = span["meta"]["metadata"]
+        metadata["poll_count"] = metadata.get("poll_count", 0) + 1
+        if truncated:
+            metadata["_dd"].update(truncated_output=True, max_value_chars=MAX_TOOL_VALUE_CHARS)
+        exit_code = value.get("exit_code")
+        if result_error or value.get("isError") or (isinstance(exit_code, int) and exit_code != 0):
+            span["status"] = "error"
+            metadata["status"] = "failed"
+            span["meta"]["error"] = {"message": str(value.get("output") or f"Exit code {exit_code}")}
+        if isinstance(exit_code, int) or result_error or value.get("isError"):
+            session.shell_sessions.pop(str(session_id), None)
+        turn = session.active_turn
+        if turn is not None and turn.trace_id == span.get("trace_id"):
+            self._update_step_end(turn, str(span["parent_id"]), end_ns)
+        return True
 
     def _handle_function_call_output(self, session: CodexSession, record: Dict[str, Any]) -> None:
         payload = record.get("payload", {})
@@ -1821,13 +1877,87 @@ class CodexHooksAPI:
             session.active_turn.pending_llm_input_messages.append(tool_message)
         elif session.active_turn is not None:
             session.active_turn.llm_input_messages.append(tool_message)
-        self._emit_tool_span(
-            session=session,
-            pending=pending,
-            end_ns=end_ns,
-            output_value=output_value,
-            is_error=_tool_status_is_error(final_status),
-        )
+        if pending.tool_name in _EXEC_WRAPPER_NAMES:
+            calls = extract_exec_calls(pending.tool_input) if isinstance(pending.tool_input, str) else []
+            if calls:
+                self._emit_exec_tool_spans(session, pending, unique_id, end_ns, output, final_status, calls)
+            else:
+                session.pending_tool_ids_by_span_id.pop(pending.span_id, None)
+                session.pending_tool_statuses.pop(unique_id, None)
+                session.pending_tool_reasoning.pop(unique_id, None)
+            return
+        self._emit_tool_span(session, pending, end_ns, output_value, _tool_status_is_error(final_status))
+
+    def _emit_exec_tool_spans(
+        self,
+        session: CodexSession,
+        pending: PendingToolSpan,
+        outer_id: str,
+        end_ns: int,
+        output: Any,
+        outer_status: str,
+        calls: List[Dict[str, Any]],
+    ) -> None:
+        """Replace a JavaScript exec wrapper with its directly invoked tools."""
+        session.pending_tool_ids_by_span_id.pop(pending.span_id, None)
+        session.pending_tool_statuses.pop(outer_id, None)
+        reasoning = session.pending_tool_reasoning.pop(outer_id, [])
+        results = extract_exec_results(output, len(calls))
+        for index, call in enumerate(calls):
+            raw_name = call["name"]
+            result = results.get(index)
+            value = result.get("value", "") if result is not None else ""
+            if isinstance(value, str):
+                try:
+                    parsed_value = json.loads(value)
+                except (ValueError, TypeError):
+                    parsed_value = None
+                if isinstance(parsed_value, dict):
+                    value = parsed_value
+            if raw_name == "write_stdin" and self._merge_shell_poll(
+                session, call["arguments"], value, end_ns, result_error=bool(result and result.get("error"))
+            ):
+                continue
+            display_name = display_tool_name(raw_name, call["arguments"])
+            session.tools_used.add(raw_name)
+            child_id = f"{outer_id}:{index}"
+            child = PendingToolSpan(
+                span_id=_format_span_id(),
+                tool_name=display_name,
+                tool_input=call["arguments"],
+                parent_id=pending.parent_id,
+                start_ns=pending.start_ns,
+            )
+            session.pending_tool_ids_by_span_id[child.span_id] = child_id
+            result_error = bool(result and result.get("error"))
+            if isinstance(value, dict):
+                result_error = result_error or bool(value.get("isError"))
+                if raw_name == "exec_command" and isinstance(value.get("exit_code"), int):
+                    result_error = result_error or value["exit_code"] != 0
+            is_error = _tool_status_is_error(outer_status) or result_error
+            session.pending_tool_statuses[child_id] = "failed" if is_error else "completed"
+            if index == 0:
+                if reasoning:
+                    session.pending_tool_reasoning[child_id] = reasoning
+            span = self._emit_tool_span(
+                session,
+                child,
+                end_ns,
+                _to_json_str(value) if result is not None else "",
+                is_error,
+                extra_metadata={
+                    "raw_tool_name": raw_name,
+                    "exec_call_id": outer_id,
+                    "result_matched": result is not None,
+                    "timing": "exec_envelope",
+                },
+            )
+            if raw_name == "exec_command" and span is not None and isinstance(value, dict):
+                shell_session_id = value.get("session_id")
+                if shell_session_id is not None:
+                    session.shell_sessions[str(shell_session_id)] = {"span": span, "result": value}
+                    span["meta"]["metadata"]["shell_session_id"] = shell_session_id
+        self._update_agent_manifest(session)
 
     def _handle_custom_tool_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
         payload = record.get("payload", {})
