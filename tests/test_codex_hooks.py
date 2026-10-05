@@ -176,6 +176,10 @@ async def test_codex_turn_llm_and_tool_spans(agent, pricing_catalog):
     assert llms[0]["parent_id"] == steps[0]["span_id"]
     assert tools[0]["parent_id"] == steps[0]["span_id"]
     assert tools[0]["name"] == "List"
+    assert "tool_name:List" in tools[0]["tags"]
+    assert "tool_name:exec_command" not in tools[0]["tags"]
+    assert llms[0]["meta"]["output"]["messages"][-1]["tool_calls"][0]["name"] == "List"
+    assert root["meta"]["metadata"]["_dd"]["agent_manifest"]["tools"] == [{"name": "List"}]
     assert tools[0]["meta"]["input"]["value"] == '{"cmd": "rg codex"}'
     assert tools[0]["meta"]["output"]["value"] == "matches"
     assert llms[0]["metrics"]["input_tokens"] == 100
@@ -210,11 +214,14 @@ def test_codex_exec_resolves_simple_patch_literal():
 @pytest.mark.parametrize(
     "command,expected",
     [
+        ("cat README.md", "Read"),
         ("sed -n '1,20p' file.py", "Read"),
         ("/usr/bin/sed -n 1p file.py", "Read"),
         ("rg -n 'pattern' .", "List"),
         ("find . -name '*.py'", "List"),
+        ("ls -la", "List"),
         ("cd /repo && rg pattern .", "List"),
+        ("curl -fsS https://example.com", "Web"),
         ("echo sed", "Ran"),
         ("yarn lint", "Ran"),
     ],
@@ -258,7 +265,7 @@ async def test_codex_exec_emits_nested_tool_spans(agent):
     tools = [span for span in _by_kind(spans, "tool") if span.get("session_id") == sid]
     assert [span["name"] for span in tools] == ["Ran", "Web"]
     root = next(span for span in spans if span.get("session_id") == sid and span["parent_id"] == "undefined")
-    assert root["meta"]["metadata"]["tools"] == ["exec_command", "web__run"]
+    assert root["meta"]["metadata"]["tools"] == ["Ran", "Web"]
     assert [span["meta"]["metadata"]["raw_tool_name"] for span in tools] == ["exec_command", "web__run"]
     assert [span["meta"]["metadata"]["tool_id"] for span in tools] == ["program-1:0", "program-1:1"]
     assert json.loads(tools[0]["meta"]["input"]["value"]) == {"cmd": "pwd"}
@@ -1228,7 +1235,7 @@ async def test_codex_creates_step_and_llm_span_per_model_call(agent):
             "tool_calls": [
                 {
                     "id": "call-1",
-                    "name": "exec_command",
+                    "name": "Ran",
                     "arguments": {"cmd": "pwd"},
                     "status": "completed",
                 }
@@ -1242,7 +1249,7 @@ async def test_codex_creates_step_and_llm_span_per_model_call(agent):
             "tool_calls": [
                 {
                     "id": "call-1",
-                    "name": "exec_command",
+                    "name": "Ran",
                     "arguments": {"cmd": "pwd"},
                     "status": "completed",
                 }
@@ -1311,7 +1318,7 @@ async def test_codex_orders_tool_call_llm_before_tool_when_usage_arrives_late(ag
             "tool_calls": [
                 {
                     "id": "call-1",
-                    "name": "exec_command",
+                    "name": "List",
                     "arguments": {"cmd": "rg --files"},
                     "status": "completed",
                 }
@@ -1381,7 +1388,7 @@ async def test_codex_late_tool_call_stays_in_completed_llm_step(agent):
             "tool_calls": [
                 {
                     "id": "call-1",
-                    "name": "exec_command",
+                    "name": "List",
                     "arguments": {"cmd": "rg --files"},
                     "status": "completed",
                 }
@@ -1781,7 +1788,7 @@ async def test_codex_only_uses_own_ml_app_override(codex_env_overrides, agent):
     assert manifest["model"] == "gpt-5.5"
     assert manifest["model_provider"] == "openai"
     assert manifest["model_settings"]["reasoning_effort"] == "medium"
-    assert manifest["tools"] == [{"name": "exec_command"}]
+    assert manifest["tools"] == [{"name": "Ran"}]
 
 
 async def test_codex_duplicate_call_id_emits_distinct_tool_spans(agent):

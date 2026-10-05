@@ -1650,8 +1650,11 @@ class CodexHooksAPI:
         session.tool_use_id_map[call_id] = unique_id
         normalized_status = _canonical_tool_status(status)
         tool_name = tool_name or "unknown_tool"
+        display_name = (
+            display_tool_name(tool_name, tool_input) if tool_name == "exec_command" else tool_name
+        )
         if tool_name not in _EXEC_WRAPPER_NAMES:
-            session.tools_used.add(tool_name)
+            session.tools_used.add(display_name)
             self._update_agent_manifest(session)
         start_ns = _timestamp_to_ns(record.get("timestamp", ""))
 
@@ -1678,7 +1681,7 @@ class CodexHooksAPI:
             self._mark_llm_start(session, turn, start_ns)
         self._update_step_end(turn, turn.step_span_id, start_ns)
 
-        tool_call: Dict[str, Any] = {"id": unique_id, "name": tool_name, "arguments": tool_input}
+        tool_call: Dict[str, Any] = {"id": unique_id, "name": display_name, "arguments": tool_input}
         if normalized_status:
             tool_call["status"] = normalized_status
             session.pending_tool_statuses[unique_id] = normalized_status
@@ -1773,15 +1776,16 @@ class CodexHooksAPI:
                     "max_value_chars": MAX_TOOL_VALUE_CHARS,
                 }
             )
+        display_name = (
+            display_tool_name(pending.tool_name, pending.tool_input)
+            if pending.tool_name == "exec_command"
+            else pending.tool_name
+        )
         span: Dict[str, Any] = {
             "span_id": pending.span_id,
             "trace_id": session.active_turn.trace_id if session.active_turn else _format_trace_id(),
             "parent_id": pending.parent_id,
-            "name": (
-                display_tool_name(pending.tool_name, pending.tool_input)
-                if pending.tool_name == "exec_command"
-                else pending.tool_name
-            ),
+            "name": display_name,
             "status": "error" if is_error else "ok",
             "start_ns": pending.start_ns,
             "duration": max(end_ns - pending.start_ns, 0),
@@ -1795,7 +1799,7 @@ class CodexHooksAPI:
                 ml_app=self._config.ml_app,
                 user_handle=self._config.user_handle,
             )
-            + [f"tool_name:{pending.tool_name}"],
+            + [f"tool_name:{display_name}"],
             "meta": {
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},
@@ -1919,7 +1923,7 @@ class CodexHooksAPI:
             ):
                 continue
             display_name = display_tool_name(raw_name, call["arguments"])
-            session.tools_used.add(raw_name)
+            session.tools_used.add(display_name)
             child_id = f"{outer_id}:{index}"
             child = PendingToolSpan(
                 span_id=_format_span_id(),

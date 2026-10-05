@@ -19,6 +19,15 @@ TOOL_DISPLAY_NAMES = {
     "image_gen__imagegen": "Generate image",
 }
 
+SHELL_COMMAND_DISPLAY_NAMES = {
+    "cat": "Read",
+    "curl": "Web",
+    "sed": "Read",
+    "find": "List",
+    "ls": "List",
+    "rg": "List",
+}
+
 
 def _shell_command_name(arguments: Any) -> str:
     if not isinstance(arguments, dict) or not isinstance(arguments.get("cmd"), str):
@@ -42,11 +51,7 @@ def _shell_command_name(arguments: Any) -> str:
             index += 1
             continue
         command = os.path.basename(token)
-        if command == "sed":
-            return "Read"
-        if command in ("find", "rg"):
-            return "List"
-        return "Ran"
+        return SHELL_COMMAND_DISPLAY_NAMES.get(command, "Ran")
     return "Ran"
 
 
