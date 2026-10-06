@@ -599,6 +599,37 @@ async def test_post_unknown_settings(
     assert "dummy_setting" not in agent.app
 
 
+@pytest.mark.parametrize("dd_api_key_validation_response", [(200, {"valid": True})])
+async def test_info_authenticated_with_valid_api_key(agent, dd_api_key_validation_requests):
+    resp = await agent.get("/info")
+    assert resp.status == 200
+    assert (await resp.json())["authenticated"] is True
+    assert dd_api_key_validation_requests == [
+        {"url": "https://api.datadoghq.com/api/v1/validate", "headers": {"DD-API-KEY": "1234567890"}}
+    ]
+
+
+async def test_post_settings_rejects_invalid_api_key(agent):
+    resp = await agent.post("/test/settings", data='{ "dd_api_key": "bad-key" }')
+    assert resp.status == 422
+    assert await resp.text() == "Incorrect DD API key and site combination to update"
+    assert agent.app["dd_api_key"] == "1234567890"
+    assert agent.app["authenticated"] is False
+
+
+@pytest.mark.parametrize("dd_api_key_validation_response", [(200, {"valid": True})])
+async def test_post_settings_accepts_valid_api_key(agent, dd_api_key_validation_requests):
+    resp = await agent.post("/test/settings", data='{ "dd_api_key": "good-key", "dd_site": "datadoghq.eu" }')
+    assert resp.status == 202, await resp.text()
+    assert agent.app["dd_api_key"] == "good-key"
+    assert agent.app["dd_site"] == "datadoghq.eu"
+    assert agent.app["authenticated"] is True
+    assert dd_api_key_validation_requests[-1] == {
+        "url": "https://api.datadoghq.eu/api/v1/validate",
+        "headers": {"DD-API-KEY": "good-key"},
+    }
+
+
 async def test_evp_proxy_v4_api_v2_errorsintake(agent):
     resp = await agent.post("/evp_proxy/v4/api/v2/errorsintake", data='{"key": "value"}')
     assert resp.status == 200, await resp.text()

@@ -5,6 +5,7 @@ from pathlib import Path
 import random
 import socket
 import subprocess
+from typing import Any
 from typing import Awaitable
 from typing import Dict
 from typing import Generator
@@ -12,6 +13,7 @@ from typing import List
 from typing import Literal
 from typing import Optional
 from typing import Set
+from typing import Tuple
 from typing import cast
 from urllib.parse import urlparse
 
@@ -29,6 +31,7 @@ from opentelemetry.proto.collector.logs.v1.logs_service_pb2_grpc import LogsServ
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2_grpc import MetricsServiceStub
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import TraceServiceStub
 import pytest
+import requests
 
 from ddapm_test_agent.agent import DEFAULT_OTLP_GRPC_PORT
 from ddapm_test_agent.agent import DEFAULT_OTLP_HTTP_PORT
@@ -200,6 +203,35 @@ def dd_api_key() -> Generator[str, None, None]:
 @pytest.fixture
 def disable_llmobs_data_forwarding() -> Generator[bool, None, None]:
     yield True
+
+
+@pytest.fixture
+def dd_api_key_validation_response() -> Tuple[int, Dict[str, Any]]:
+    # What api.datadoghq.com/api/v1/validate returns for the fake default dd_api_key.
+    return 403, {"errors": ["Forbidden"]}
+
+
+@pytest.fixture(autouse=True)
+def dd_api_key_validation_requests(
+    monkeypatch: pytest.MonkeyPatch, dd_api_key_validation_response: Tuple[int, Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Answer API key validation locally so tests never depend on the live Datadog API."""
+    calls: List[Dict[str, Any]] = []
+    real_get = requests.get
+
+    def fake_get(url: str, **kwargs: Any) -> requests.Response:
+        if not url.endswith("/api/v1/validate"):
+            return real_get(url, **kwargs)
+        calls.append({"url": url, **kwargs})
+        status, body = dd_api_key_validation_response
+        resp = requests.Response()
+        resp.status_code = status
+        resp.headers["Content-Type"] = "application/json"
+        resp._content = json.dumps(body).encode()
+        return resp
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    return calls
 
 
 @pytest.fixture
