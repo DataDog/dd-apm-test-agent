@@ -18,6 +18,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Set
 from typing import cast
 
 import aiohttp
@@ -40,6 +41,49 @@ from .model_pricing import compute_cost_metrics
 from .utils import set_hidden_metadata
 
 log = logging.getLogger(__name__)
+
+
+def _is_session_naming_request(request_body: Dict[str, Any]) -> bool:
+    """Recognize Claude's tool-free, single-message session naming call."""
+    messages = request_body.get("messages")
+    if request_body.get("tools") or not isinstance(messages, list) or len(messages) != 1:
+        return False
+    message = messages[0]
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    content = message.get("content", "")
+    if isinstance(content, list):
+        if any(not isinstance(block, dict) or block.get("type") != "text" for block in content):
+            return False
+        content = "\n".join(block.get("text", "") for block in content)
+    if not isinstance(content, str) or not content.lstrip().startswith("<session>") or "</session>" not in content:
+        return False
+
+    config = request_body.get("output_config")
+    output_format = config.get("format") if isinstance(config, dict) else None
+    if output_format is None:
+        output_format = request_body.get("output_format")
+    if output_format is not None:
+        # Claude requests exactly one required string field, not arbitrary JSON.
+        if not isinstance(output_format, dict) or output_format.get("type") != "json_schema":
+            return False
+        schema = output_format.get("schema")
+        return isinstance(schema, dict) and schema == {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
+            "additionalProperties": False,
+        }
+
+    # Claude retries without output_config.format on providers that reject it.
+    # Only use the prompt fallback with the request structure checked above.
+    system = request_body.get("system", "")
+    if isinstance(system, list):
+        system = "\n".join(block.get("text", "") for block in system if isinstance(block, dict))
+    return isinstance(system, str) and any(
+        line.startswith("You are naming a coding session") for line in system.splitlines()
+    )
+
 
 _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
@@ -404,6 +448,7 @@ class ClaudeProxyAPI:
         self._http_session: Optional[aiohttp.ClientSession] = None
         # Spans created before any session existed; re-parented when a session appears.
         self._orphan_spans: List[Dict[str, Any]] = []
+        self._orphan_naming_spans: Set[str] = set()
 
     async def _get_http_session(self) -> aiohttp.ClientSession:
         if self._http_session is None or self._http_session.closed:
@@ -459,6 +504,13 @@ class ClaudeProxyAPI:
             span["trace_id"] = session.trace_id
             span["parent_id"] = session.root_span_id
             span["session_id"] = session.session_id
+            messages = span.get("meta", {}).get("output", {}).get("messages", [])
+            self._extract_conversation_title(
+                session,
+                [{"type": "text", "text": message.get("content", "")} for message in messages],
+                naming_request=span["span_id"] in self._orphan_naming_spans,
+            )
+            self._orphan_naming_spans.discard(span["span_id"])
             existing_tags = list(span.get("tags") or [])
             existing_keys = {t.split(":", 1)[0] for t in existing_tags if ":" in t}
             for tag in session_scoped_tags:
@@ -470,9 +522,10 @@ class ClaudeProxyAPI:
         log.info("Re-parented %d orphan LLM spans into trace %s", len(self._orphan_spans), session.trace_id)
         self._orphan_spans.clear()
 
-    @staticmethod
-    def _extract_conversation_title(session: SessionState, content_blocks: List[Dict[str, Any]]) -> None:
-        """Detect the haiku summarization response and store the title on the session."""
+    def _extract_conversation_title(
+        self, session: SessionState, content_blocks: List[Dict[str, Any]], naming_request: bool
+    ) -> None:
+        """Read legacy topic responses and dedicated session-naming responses."""
         for block in content_blocks:
             if block.get("type") != "text":
                 continue
@@ -483,10 +536,14 @@ class ClaudeProxyAPI:
                 data = json.loads(text)
             except (json.JSONDecodeError, ValueError):
                 continue
-            if "title" in data and "isNewTopic" in data:
+            if not isinstance(data, dict):
+                continue
+            legacy_topic = set(data) == {"title", "isNewTopic"} and isinstance(data["isNewTopic"], bool)
+            if legacy_topic or (naming_request and set(data) == {"title"}):
                 title = data["title"]
-                if isinstance(title, str) and title:
-                    session.conversation_title = title
+                if isinstance(title, str) and title.strip():
+                    session.conversation_title = title.strip()
+                    self._hooks_api._set_session_name(session, title)
                     log.info("Conversation title: %s", title)
                 return
 
@@ -636,9 +693,11 @@ class ClaudeProxyAPI:
         input_messages = _format_input_messages(request_body)
         output_messages = _format_output_messages(content_blocks)
 
-        # Detect haiku summarization call and extract conversation title
+        naming_request = _is_session_naming_request(request_body)
         if session:
-            self._extract_conversation_title(session, content_blocks)
+            self._extract_conversation_title(session, content_blocks, naming_request)
+        elif naming_request:
+            self._orphan_naming_spans.add(span_id)
 
         # Attach session_id so LLM spans can be grouped with the session
         session_id = session.session_id if session else ""

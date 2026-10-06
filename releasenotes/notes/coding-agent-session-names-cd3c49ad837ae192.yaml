@@ -1,0 +1,6 @@
+features:
+  - |
+    Lapdog: Add session_name metadata to Claude Code and Codex session spans when a
+    name is available. Read Claude naming responses and Codex's session name
+    index, update stored spans on name changes, and use the parent session's
+    name for grouped Codex child sessions.

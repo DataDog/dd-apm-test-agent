@@ -12,6 +12,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Set
+from typing import Tuple
 
 import requests
 
@@ -54,6 +55,61 @@ class FileState:
         self.ignored = False
         self.resume_candidate = False
         self.resume_meta_posted = False
+        self.session_name = ""
+
+
+class SessionNames:
+    """Read Codex's append-only name index when it changes."""
+
+    def __init__(self, session_dir: Path) -> None:
+        self.path = session_dir.parent / "session_index.jsonl"
+        self.names: Dict[str, str] = {}
+        self._signature: Optional[Tuple[int, int]] = None
+
+    def refresh(self) -> Dict[str, str]:
+        try:
+            stat = self.path.stat()
+            signature = (stat.st_mtime_ns, stat.st_size)
+            if signature == self._signature:
+                return self.names
+            names: Dict[str, str] = {}
+            with self.path.open(encoding="utf-8", errors="replace") as source:
+                for line in source:
+                    if not line.endswith("\n"):
+                        break  # Retry a partially written record on the next poll.
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    session_id, name = entry.get("id"), entry.get("thread_name")
+                    if isinstance(session_id, str) and isinstance(name, str) and name.strip():
+                        names[session_id] = name.strip()
+            self.names = names
+            self._signature = signature
+        except OSError:
+            pass  # Names are optional; rollout capture must still work.
+        return self.names
+
+
+def _post_session_name(lapdog_url: str, session_id: str, name: str, path: Path, *, is_backfill: bool = False) -> bool:
+    return _post_record(
+        lapdog_url,
+        session_id,
+        {"type": "event_msg", "payload": {"type": "session_name", "name": name}},
+        path,
+        is_backfill=is_backfill,
+    )
+
+
+def _sync_session_name(lapdog_url: str, path: Path, state: FileState, names: Optional[Dict[str, str]]) -> None:
+    if not names or state.ignored or state.matches_cwd is not True:
+        return
+    name = names.get(state.session_id)
+    if name and name != state.session_name:
+        if _post_session_name(lapdog_url, state.session_id, name, path):
+            state.session_name = name
 
 
 class SessionOwnership:
@@ -284,6 +340,7 @@ def _drain_file(
     proxy_session_key: Optional[str] = None,
     include_all_cwds: bool = False,
     session_ownership: Optional[SessionOwnership] = None,
+    session_names: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
     if state.ignored:
         return None
@@ -436,6 +493,7 @@ def _drain_file(
                 continue
 
             if state.session_id:
+                _sync_session_name(lapdog_url, path, state, session_names)
                 if state.buffer:
                     aborted = False
                     for buffered, buffered_end in zip(state.buffer, state.buffer_ends):
@@ -466,6 +524,7 @@ def _drain_file(
     finally:
         f.close()
 
+    _sync_session_name(lapdog_url, path, state, session_names)
     return posted_session_id
 
 
@@ -718,6 +777,7 @@ def watch_codex_sessions(
     resume_all_cwds: bool = False,
 ) -> None:
     states: Dict[Path, FileState] = {}
+    session_names = SessionNames(session_dir)
     started_at = time.time()
     initial_offsets: Dict[Path, int] = {}
     if proxy_session_key:
@@ -745,6 +805,7 @@ def watch_codex_sessions(
 
     while True:
         now = time.time()
+        names = session_names.refresh()
         # Re-glob only periodically — file system enumeration is expensive
         # compared to the per-file readline drain.
         if now - last_discovery >= discovery_interval:
@@ -793,6 +854,7 @@ def watch_codex_sessions(
                     proxy_session_key=proxy_session_key,
                     include_all_cwds=include_all_cwds,
                     session_ownership=session_ownership,
+                    session_names=names,
                 )
             except (KeyboardInterrupt, SystemExit):
                 raise
@@ -834,6 +896,7 @@ def watch_codex_sessions(
         resume_mode=resume_mode,
     )
     shutdown_sessions: Dict[str, Path] = {}
+    names = session_names.refresh()
     for path, state in list(states.items()):
         try:
             if state.ignored or not _prepare_resumed_file(
@@ -854,6 +917,7 @@ def watch_codex_sessions(
                 proxy_session_key=proxy_session_key,
                 include_all_cwds=include_all_cwds,
                 session_ownership=session_ownership,
+                session_names=names,
             )
             session_id = posted_session_id or state.session_id
             if session_id and not state.ignored and state.matches_cwd is not False:
