@@ -2151,7 +2151,9 @@ def make_app(
     app["dd_api_key"] = dd_api_key
     app["org_prop_marker"] = org_prop_marker
 
-    valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site) if dd_api_key and dd_site else False
+    valid_auth = bool(agent_url) or (
+        _is_valid_api_key_and_site_combination(dd_api_key, dd_site) if dd_api_key and dd_site else False
+    )
     app["authenticated"] = valid_auth
     if not disable_llmobs_data_forwarding and not valid_auth:
         log.warning("Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding.")

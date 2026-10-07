@@ -609,6 +609,16 @@ async def test_info_authenticated_with_valid_api_key(agent, dd_api_key_validatio
     ]
 
 
+@pytest.mark.parametrize("agent_url", ["http://127.0.0.1:9876"])
+@pytest.mark.parametrize("dd_api_key", [""])
+@pytest.mark.parametrize("disable_llmobs_data_forwarding", [False])
+async def test_agent_url_authorizes_llmobs_forwarding_without_a_key(agent, dd_api_key_validation_requests):
+    assert agent.app["authenticated"] is True
+    assert agent.app["disable_llmobs_data_forwarding"] is False
+    # The agent at agent_url holds the key, so no local key is validated.
+    assert dd_api_key_validation_requests == []
+
+
 async def test_post_settings_rejects_invalid_api_key(agent):
     resp = await agent.post("/test/settings", data='{ "dd_api_key": "bad-key" }')
     assert resp.status == 422
