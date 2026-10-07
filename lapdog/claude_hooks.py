@@ -42,7 +42,7 @@ from .coding_agent_metadata import git_commit_sha_tags
 from .coding_agent_metadata import project_metadata_tags
 from .coding_agent_metadata import resolve_project_metadata
 from .model_pricing import COST_METRIC_KEYS
-
+from .utils import set_hidden_metadata
 
 log = logging.getLogger(__name__)
 
@@ -337,6 +337,7 @@ class ClaudeHooksAPI:
         self._pending_tags_by_token: Dict[str, Dict[str, str]] = {}
         self._tag_update_sequence = 0
         self._assembled_spans: List[Dict[str, Any]] = []
+        self._pending_claude_auto_reviews: Dict[str, Dict[str, Any]] = {}
         self._raw_events: List[Dict[str, Any]] = []
         self._link_tracker = link_tracker
         self._app: Optional[web.Application] = None
@@ -429,6 +430,17 @@ class ClaudeHooksAPI:
         else:
             self._assembled_spans.insert(index, span)
 
+    def record_claude_auto_review(self, entry: Dict[str, Any]) -> None:
+        """Attach a confirmed allow verdict to its tool, even if the hook ran first."""
+        tool_id = entry["tool_id"]
+        for span in reversed(self._assembled_spans):
+            metadata = span.get("meta", {}).get("metadata", {})
+            if span.get("ml_app") == _ML_APP and span.get("meta", {}).get("span", {}).get("kind") == "tool":
+                if metadata.get("tool_id") == tool_id:
+                    set_hidden_metadata(span, auto_reviews=[entry])
+                    return
+        self._pending_claude_auto_reviews[tool_id] = entry
+
     def _get_or_create_session(self, session_id: str) -> SessionState:
         """Get existing session or create a new one."""
         if session_id not in self._sessions:
@@ -480,10 +492,6 @@ class ClaudeHooksAPI:
         if session.agent_span_stack:
             return session.agent_span_stack[-1].get("_span_ref")
         return getattr(session, "_root_span_ref", None)
-
-    def _set_hidden_metadata(self, span: Dict[str, Any], **kwargs: Any) -> None:
-        """Merge key-value pairs into span['meta']['metadata']['_dd'], preserving existing values."""
-        span["meta"].setdefault("metadata", {}).setdefault("_dd", {}).update(kwargs)
 
     def update_session_project_metadata(self, session: SessionState, body: Dict[str, Any]) -> None:
         previous_cwd = session.cwd
@@ -1003,7 +1011,7 @@ class ClaudeHooksAPI:
                 span_ref["meta"]["output"] = {"value": output_str}
                 span_ref["span_links"] = span_links
                 if context_delta:
-                    self._set_hidden_metadata(span_ref, context_delta=context_delta)
+                    set_hidden_metadata(span_ref, context_delta=context_delta)
             else:
                 # Fallback: no preliminary span — append a new one
                 span = {
@@ -1029,7 +1037,7 @@ class ClaudeHooksAPI:
                     "span_links": span_links,
                 }
                 if context_delta:
-                    self._set_hidden_metadata(span, context_delta=context_delta)
+                    set_hidden_metadata(span, context_delta=context_delta)
                 self._append_span(span)
             return
 
@@ -1072,7 +1080,10 @@ class ClaudeHooksAPI:
             "span_links": span_links,
         }
         if estimated_permission_wait_ms is not None:
-            self._set_hidden_metadata(span, estimated_permission_wait_ms=estimated_permission_wait_ms)
+            set_hidden_metadata(span, estimated_permission_wait_ms=estimated_permission_wait_ms)
+        review = self._pending_claude_auto_reviews.pop(tool_use_id, None)
+        if review is not None:
+            set_hidden_metadata(span, auto_reviews=[review])
         self._append_span(span)
 
     def _handle_subagent_start(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -1216,7 +1227,7 @@ class ClaudeHooksAPI:
             if span_ref:
                 span_ref["duration"] = duration
                 if estimated_perm_wait > 0:
-                    self._set_hidden_metadata(span_ref, estimated_permission_wait_ms=estimated_perm_wait)
+                    set_hidden_metadata(span_ref, estimated_permission_wait_ms=estimated_perm_wait)
             session.deferred_agent_spans[task_tool_use_id] = {
                 "span_id": agent_info["span_id"],
                 "trace_id": session.trace_id,
@@ -1238,7 +1249,7 @@ class ClaudeHooksAPI:
                 if estimated_perm_wait > 0:
                     dd_fields["estimated_permission_wait_ms"] = estimated_perm_wait
                 if dd_fields:
-                    self._set_hidden_metadata(span_ref, **dd_fields)
+                    set_hidden_metadata(span_ref, **dd_fields)
             else:
                 # Fallback: no preliminary span (shouldn't happen)
                 span = {
@@ -1263,7 +1274,7 @@ class ClaudeHooksAPI:
                     "metrics": {},
                 }
                 if context_delta:
-                    self._set_hidden_metadata(span, context_delta=context_delta)
+                    set_hidden_metadata(span, context_delta=context_delta)
                 self._append_span(span)
 
     def _compute_token_usage(self, trace_id: str) -> Dict[str, int]:
@@ -1460,7 +1471,7 @@ class ClaudeHooksAPI:
                 self._set_permission_wait_critical_evaluation(root_span, estimated_permission_wait_ms)
             if tool_usage:
                 dd_fields["tool_usage"] = tool_usage
-            self._set_hidden_metadata(root_span, **dd_fields)
+            set_hidden_metadata(root_span, **dd_fields)
             # See comment above: skip the root-span metrics rollup to
             # avoid double-counting in `_build_trace_aggregates`.
         else:
@@ -1502,7 +1513,7 @@ class ClaudeHooksAPI:
             if tool_usage:
                 dd_fields["tool_usage"] = tool_usage
             apply_project_metadata_to_span(root_span, session.project_metadata)
-            self._set_hidden_metadata(root_span, **dd_fields)
+            set_hidden_metadata(root_span, **dd_fields)
             self._append_span(root_span)
 
         session.root_span_emitted = True
@@ -1621,7 +1632,7 @@ class ClaudeHooksAPI:
         if is_interrupt:
             span["meta"]["error"]["type"] = "interrupt"
         if estimated_permission_wait_ms is not None:
-            self._set_hidden_metadata(span, estimated_permission_wait_ms=estimated_permission_wait_ms)
+            set_hidden_metadata(span, estimated_permission_wait_ms=estimated_permission_wait_ms)
         self._append_span(span)
 
     def _handle_pre_compact(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -1640,12 +1651,10 @@ class ClaudeHooksAPI:
         log.info("span_ref: %s", span_ref)
         if span_ref is None:
             return
-        dd = span_ref.setdefault("meta", {}).setdefault("metadata", {}).setdefault("_dd", {})
-        dd.setdefault("compactions", []).append(
-            {
-                "trigger": trigger,
-                "custom_instructions": custom_instructions,
-            }
+        compactions = span_ref.get("meta", {}).get("metadata", {}).get("_dd", {}).get("compactions", [])
+        set_hidden_metadata(
+            span_ref,
+            compactions=[*compactions, {"trigger": trigger, "custom_instructions": custom_instructions}],
         )
         log.info("set compaction event on span %s", span_ref["span_id"])
 

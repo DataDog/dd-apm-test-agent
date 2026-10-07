@@ -46,7 +46,7 @@ from .backfill_utils import format_span_id
 from .backfill_utils import format_trace_id
 from .backfill_utils import to_text
 from .model_pricing import compute_cost_metrics
-
+from .utils import set_hidden_metadata
 
 _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
@@ -158,20 +158,16 @@ def _new_turn(session_id: str, cwd: str, model: str, start_ns: int, prompt: str)
             "output": {"value": ""},
             "model_name": model,
             "model_provider": "anthropic",
-            "metadata": {
-                "_dd": {
-                    **backfill_metadata(),
-                    "agent_manifest": {
-                        "name": _ML_APP,
-                        "model": model,
-                        "model_provider": "anthropic",
-                    },
-                },
-            },
+            "metadata": {},
         },
         "metrics": {},
         "span_links": [],
     }
+    set_hidden_metadata(
+        root_span,
+        **backfill_metadata(),
+        agent_manifest={"name": _ML_APP, "model": model, "model_provider": "anthropic"},
+    )
     return {
         "trace_id": trace_id,
         "root_span_id": root_span_id,
@@ -206,10 +202,7 @@ def _build_step_span(
         for block in content
         if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id")
     ]
-    metadata: Dict[str, Any] = {
-        "message_index": index,
-        "_dd": backfill_metadata(),
-    }
+    metadata: Dict[str, Any] = {"message_index": index}
     if stop_reason:
         metadata["stop_reason"] = stop_reason
     if tool_use_ids:
@@ -217,7 +210,7 @@ def _build_step_span(
     if any(isinstance(block, dict) and block.get("type") == "thinking" for block in content):
         metadata["has_thinking"] = True
 
-    return {
+    span = {
         "span_id": format_span_id(),
         "trace_id": trace_id,
         "parent_id": parent_span_id,
@@ -242,6 +235,8 @@ def _build_step_span(
         "metrics": {},
         "span_links": [],
     }
+    set_hidden_metadata(span, **backfill_metadata())
+    return span
 
 
 def _build_llm_span(
@@ -274,7 +269,7 @@ def _build_llm_span(
         or {}
     )
 
-    return {
+    span = {
         "span_id": format_span_id(),
         "trace_id": trace_id,
         "parent_id": parent_span_id,
@@ -300,7 +295,6 @@ def _build_llm_span(
             "output": {"messages": _format_output_messages(content)},
             "metadata": {
                 "stop_reason": msg.get("stop_reason", ""),
-                "_dd": backfill_metadata(input_messages_unavailable=True),
             },
         },
         "metrics": {
@@ -314,6 +308,8 @@ def _build_llm_span(
         },
         "span_links": [],
     }
+    set_hidden_metadata(span, **backfill_metadata(input_messages_unavailable=True))
+    return span
 
 
 def _tool_result_text(tool_result_block: Dict[str, Any]) -> str:
@@ -366,7 +362,7 @@ def _build_subagent_span(
     if agent_id:
         subagent_meta["agent_id"] = agent_id
 
-    return {
+    span = {
         "span_id": format_span_id(),
         "trace_id": trace_id,
         "parent_id": pending.get("parent_span_id", pending["llm_span_id"]),
@@ -387,13 +383,14 @@ def _build_subagent_span(
             "output": {"value": output_value},
             "metadata": {
                 "subagent": subagent_meta,
-                "_dd": backfill_metadata(),
             },
             **({"error": {"message": output_value}} if is_error else {}),
         },
         "metrics": {},
         "span_links": [],
     }
+    set_hidden_metadata(span, **backfill_metadata())
+    return span
 
 
 def _build_tool_span(
@@ -409,7 +406,7 @@ def _build_tool_span(
     duration = _closed_duration_ns(start_ns, end_ns)
     is_error = bool(tool_result_block.get("is_error", False))
     output_value = _tool_result_text(tool_result_block)
-    return {
+    span = {
         "span_id": format_span_id(),
         "trace_id": trace_id,
         "parent_id": pending.get("parent_span_id", pending["llm_span_id"]),
@@ -431,13 +428,14 @@ def _build_tool_span(
             "metadata": {
                 "tool_name": tool_name,
                 "tool_use_id": pending.get("id", ""),
-                "_dd": backfill_metadata(),
             },
             **({"error": {"message": output_value}} if is_error else {}),
         },
         "metrics": {},
         "span_links": [],
     }
+    set_hidden_metadata(span, **backfill_metadata())
+    return span
 
 
 def _set_turn_model(turn: Dict[str, Any], model: str) -> None:
@@ -445,7 +443,8 @@ def _set_turn_model(turn: Dict[str, Any], model: str) -> None:
         return
     root = turn["root_span"]
     root["meta"]["model_name"] = model
-    root["meta"]["metadata"]["_dd"]["agent_manifest"]["model"] = model
+    manifest = root["meta"]["metadata"]["_dd"]["agent_manifest"]
+    set_hidden_metadata(root, agent_manifest={**manifest, "model": model})
     turn["model_set"] = True
 
 
@@ -461,9 +460,11 @@ def _finalize_turn(turn: Dict[str, Any]) -> None:
         if turn["total_cost"]:
             root["metrics"]["estimated_total_cost"] = turn["total_cost"]
     if turn["tools_used"]:
-        root["meta"]["metadata"]["_dd"]["agent_manifest"]["tools"] = [
-            {"name": name} for name in sorted(turn["tools_used"])
-        ]
+        manifest = root["meta"]["metadata"]["_dd"]["agent_manifest"]
+        set_hidden_metadata(
+            root,
+            agent_manifest={**manifest, "tools": [{"name": name} for name in sorted(turn["tools_used"])]},
+        )
 
 
 def _norm_prompt(prompt: Any) -> str:
@@ -849,7 +850,7 @@ def session_to_spans(
         root = _new_turn(session_id, cwd, "", start_ns, _subagent_prompt(orphan_entries))["root_span"]
         agent_id = orphan.get("agent_id") or ""
         if agent_id:
-            root["meta"]["metadata"]["_dd"]["agent_id"] = agent_id
+            set_hidden_metadata(root, agent_id=agent_id)
         spans.append(root)
         spans.extend(
             _subagent_to_spans(session_id, root, root["trace_id"], orphan_entries, subagent_index, standalone=True)

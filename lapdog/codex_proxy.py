@@ -25,7 +25,6 @@ from .codex_hooks import _copy_reasoning_items
 from .codex_hooks import _extract_reasoning_metadata
 from .model_pricing import compute_cost_metrics
 
-
 log = logging.getLogger(__name__)
 
 OPENAI_API_BASE = os.environ.get("DD_CODEX_OPENAI_API_BASE", "https://api.openai.com")
@@ -226,6 +225,16 @@ def _has_output_messages(messages: List[Dict[str, Any]]) -> bool:
     return any(message.get("content") or message.get("tool_calls") for message in messages)
 
 
+def _is_auto_review_request(body: Dict[str, Any]) -> bool:
+    if body.get("model") == "codex-auto-review":
+        return True
+    return any(
+        "Reviewed Codex session id:" in str(message.get("content", ""))
+        and "APPROVAL REQUEST START" in str(message.get("content", ""))
+        for message in _format_input_messages(body)
+    )
+
+
 def _usage_metrics(model: str, usage: Dict[str, Any]) -> Dict[str, Any]:
     input_tokens = int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
     output_tokens = int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
@@ -340,7 +349,8 @@ class CodexProxyAPI:
             pass
 
         start_ns = monotonic_wall_ns()
-        maybe_session_id = self._hooks_api.begin_proxy_llm_call(proxy_session_key, start_ns)
+        capture_span = not _is_auto_review_request(request_body)
+        maybe_session_id = self._hooks_api.begin_proxy_llm_call(proxy_session_key, start_ns) if capture_span else None
         headers = {key: value for key, value in request.headers.items() if key.lower() not in SKIP_REQUEST_HEADERS}
         http_session = await self._get_http_session()
 
@@ -353,11 +363,14 @@ class CodexProxyAPI:
             ) as upstream_resp:
                 if request_body.get("stream", False):
                     return await self._handle_streaming(
-                        request, upstream_resp, request_body, maybe_session_id, start_ns
+                        request, upstream_resp, request_body, maybe_session_id, start_ns, capture_span
                     )
-                return await self._handle_non_streaming(upstream_resp, request_body, maybe_session_id, start_ns)
+                return await self._handle_non_streaming(
+                    upstream_resp, request_body, maybe_session_id, start_ns, capture_span
+                )
         except Exception as exc:
-            self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
+            if capture_span:
+                self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
             if _is_client_disconnect_error(exc):
                 log.debug("Codex proxy client disconnected while forwarding to %s: %s", target_url, exc)
                 return web.Response(status=499)
@@ -371,6 +384,7 @@ class CodexProxyAPI:
         request_body: Dict[str, Any],
         maybe_session_id: Optional[str],
         start_ns: int,
+        capture_span: bool = True,
     ) -> web.StreamResponse:
         response = web.StreamResponse(status=upstream_resp.status)
         for key, value in upstream_resp.headers.items():
@@ -392,7 +406,8 @@ class CodexProxyAPI:
                 break
             buffered_chunks.append(chunk)
         if downstream_closed:
-            self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
+            if capture_span:
+                self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
             return response
         if not downstream_closed:
             try:
@@ -402,6 +417,8 @@ class CodexProxyAPI:
                     raise
                 log.debug("Codex proxy client disconnected before stream EOF: %s", exc)
 
+        if not capture_span:
+            return response
         if upstream_resp.status == 200:
             end_ns = monotonic_wall_ns()
             raw = b"".join(buffered_chunks)
@@ -426,9 +443,10 @@ class CodexProxyAPI:
         request_body: Dict[str, Any],
         maybe_session_id: Optional[str],
         start_ns: int,
+        capture_span: bool = True,
     ) -> web.Response:
         body = await upstream_resp.read()
-        if upstream_resp.status == 200:
+        if capture_span and upstream_resp.status == 200:
             end_ns = monotonic_wall_ns()
             try:
                 response_data = json.loads(body)
@@ -440,7 +458,7 @@ class CodexProxyAPI:
             except Exception as exc:
                 self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
                 log.error("Failed to create Codex LLM span: %s", exc, exc_info=True)
-        else:
+        elif capture_span:
             self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
 
         response = web.Response(body=body, status=upstream_resp.status)
