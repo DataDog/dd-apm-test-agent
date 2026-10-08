@@ -15,6 +15,7 @@ from typing import Iterable
 from typing import List
 from typing import Optional
 from typing import Pattern
+from typing import Tuple
 
 from google.protobuf.json_format import MessageToDict
 from google.protobuf.json_format import ParseDict
@@ -133,19 +134,21 @@ def _renumber_ids(doc: OtlpDocument) -> None:
         ordered_traces.append(([order(r) for r in roots], trace_id, bfs))
     ordered_traces.sort(key=lambda t: t[0])
 
+    # Span ids are only unique within a trace, so they are mapped by trace id and span id.
     trace_id_map: Dict[str, str] = {}
-    span_id_map: Dict[str, str] = {}
+    span_id_map: Dict[Tuple[str, str], str] = {}
     for _, trace_id, bfs in ordered_traces:
         trace_id_map[trace_id] = f"{len(trace_id_map) + 1:032x}"
         for s in bfs:
-            span_id_map[s.get("spanId", "")] = f"{len(span_id_map) + 1:016x}"
+            span_id_map[(trace_id, s.get("spanId", ""))] = f"{len(span_id_map) + 1:016x}"
 
     for span in _iter_spans(doc):
         for obj in [span, *span.get("links", [])]:
-            obj["traceId"] = trace_id_map.get(obj.get("traceId", ""), obj.get("traceId", ""))
+            trace_id = obj.get("traceId", "")
+            obj["traceId"] = trace_id_map.get(trace_id, trace_id)
             for key in ("spanId", "parentSpanId"):
                 if key in obj:
-                    obj[key] = span_id_map.get(obj[key], obj[key])
+                    obj[key] = span_id_map.get((trace_id, obj[key]), obj[key])
 
     # The new ids are zero-padded, so sorting by them puts the document in trace order.
     for resource_spans in doc["resourceSpans"]:
@@ -159,8 +162,10 @@ def _renumber_ids(doc: OtlpDocument) -> None:
 
 def canonicalize(payloads: List[Dict[str, Any]]) -> OtlpDocument:
     """Combine the OTLP trace payloads received in a session into a single OTLP/JSON document."""
-    doc = _merge([_to_otlp_json(p) for p in payloads])
-    _sort_attributes(doc)
+    docs = [_to_otlp_json(p) for p in payloads]
+    # Sort before merging so resources and scopes with the same attributes in a different order are grouped.
+    _sort_attributes(docs)
+    doc = _merge(docs)
     _renumber_ids(doc)
     return doc
 

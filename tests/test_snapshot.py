@@ -901,7 +901,6 @@ TRACE_A = "0123456789abcdef0123456789abcdef"
 TRACE_B = "fedcba9876543210fedcba9876543210"
 ROOT = "aaaaaaaaaaaaaaaa"
 CHILD = "bbbbbbbbbbbbbbbb"
-OTHER_ROOT = "cccccccccccccccc"
 EXTERNAL = "dddddddddddddddd"
 
 
@@ -969,7 +968,8 @@ def _otlp_to_protobuf_dict(spec_payload):
 def test_otlp_canonicalize_renumbers_ids_in_trace_and_parent_order():
     payload = _otlp_payload(
         [
-            _otlp_span(TRACE_B, OTHER_ROOT, "second", 300),
+            # Span ids are only unique within a trace.
+            _otlp_span(TRACE_B, ROOT, "second", 300),
             _otlp_span(TRACE_A, CHILD, "child", 200, parent=ROOT),
             _otlp_span(TRACE_A, ROOT, "root", 100),
         ]
@@ -1011,7 +1011,11 @@ def test_otlp_canonicalize_protobuf_and_json_payloads_match():
 
 def test_otlp_canonicalize_merges_a_trace_split_across_exports():
     first = _otlp_payload([_otlp_span(TRACE_A, CHILD, "child", 200, parent=ROOT)])
-    second = _otlp_payload([_otlp_span(TRACE_A, ROOT, "root", 100)])
+    # The same resource attributes in a different order.
+    second = _otlp_payload(
+        [_otlp_span(TRACE_A, ROOT, "root", 100)],
+        resource_attrs=[_otlp_attr("telemetry.sdk.version", "1.0.0"), _otlp_attr("service.name", "svc")],
+    )
     doc = otlp_trace_snapshot.canonicalize([first, second])
     assert len(doc["resourceSpans"]) == 1
     assert len(doc["resourceSpans"][0]["scopeSpans"]) == 1
