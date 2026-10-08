@@ -169,6 +169,7 @@ class SessionState:
         # Currently active agents keyed by span_id, for concurrent subagent resolution.
         self.active_agents: Dict[str, Dict[str, Any]] = {}
         self.conversation_title: str = ""
+        self.session_name: str = ""
         self.cwd: str = ""
         self.custom_tags: Dict[str, str] = {}
         self.custom_tag_sequences: Dict[str, int] = {}
@@ -347,6 +348,8 @@ class ClaudeHooksAPI:
         self._app = app
 
     def _apply_session_tags(self, span: Dict[str, Any], session: SessionState) -> None:
+        if session.session_name:
+            span.setdefault("meta", {}).setdefault("metadata", {})["session_name"] = session.session_name
         if not session.custom_tags:
             return
         span_tags = span.get("tags")
@@ -360,6 +363,17 @@ class ClaudeHooksAPI:
         ]
         span_tags.extend(f"{key}:{value}" for key, value in session.custom_tags.items())
         span["tags"] = span_tags
+
+    def _set_session_name(self, session: SessionState, name: str) -> None:
+        """Apply a discovered name to all stored and future spans in the session."""
+        if not isinstance(name, str) or not name.strip():
+            return
+        for candidate in self._sessions.values():
+            if candidate.session_id == session.session_id:
+                candidate.session_name = name.strip()
+        for span in self._assembled_spans:
+            if span.get("session_id") == session.session_id:
+                span.setdefault("meta", {}).setdefault("metadata", {})["session_name"] = name.strip()
 
     def _set_session_tags(self, session: SessionState, tags: Dict[str, str]) -> None:
         self._tag_update_sequence += 1

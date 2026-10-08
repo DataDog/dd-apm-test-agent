@@ -19,10 +19,12 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
+from lapdog.codex_watcher import SessionNames
 from lapdog.codex_watcher import _default_session_dir
 from lapdog.codex_watcher import _is_under
 from lapdog.codex_watcher import _iter_jsonl_files
 from lapdog.codex_watcher import _post_record
+from lapdog.codex_watcher import _post_session_name
 from lapdog.codex_watcher import _post_shutdown_complete
 from lapdog.codex_watcher import _record_cwd
 from lapdog.codex_watcher import _record_session_id
@@ -33,7 +35,9 @@ from lapdog.codex_watcher import _record_session_id
 _DEFAULT_CWD: Any = object()
 
 
-def _backfill_one(lapdog_url: str, path: Path, cwd_filter: Optional[str]) -> bool:
+def _backfill_one(
+    lapdog_url: str, path: Path, cwd_filter: Optional[str], session_names: Optional[Dict[str, str]] = None
+) -> bool:
     """Read a single rollout file and post every record.
 
     When ``cwd_filter`` is set, records read before the first ``cwd`` is
@@ -48,6 +52,7 @@ def _backfill_one(lapdog_url: str, path: Path, cwd_filter: Optional[str]) -> boo
     matches_cwd: Optional[bool] = None if cwd_filter else True
     pending: List[Dict[str, Any]] = []
     posted_any = False
+    name_posted = False
     try:
         with path.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -80,6 +85,10 @@ def _backfill_one(lapdog_url: str, path: Path, cwd_filter: Optional[str]) -> boo
                     continue
 
                 # Flush any buffered records first.
+                if not name_posted and session_names and session_id in session_names:
+                    name_posted = _post_session_name(
+                        lapdog_url, session_id, session_names[session_id], path, is_backfill=True
+                    )
                 if pending:
                     for buffered in pending:
                         if _post_record(lapdog_url, session_id, buffered, path, is_backfill=True):
@@ -124,8 +133,9 @@ def backfill(
         return 0
 
     posted_sessions = 0
+    session_names = SessionNames(dir_path).refresh()
     for path in files:
-        if _backfill_one(lapdog_url, path, cwd_filter):
+        if _backfill_one(lapdog_url, path, cwd_filter, session_names):
             posted_sessions += 1
     print(
         f"lapdog backfill codex: scanned {len(files)} file(s), forwarded {posted_sessions} session(s)",

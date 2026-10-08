@@ -567,6 +567,14 @@ class CodexHooksAPI:
         shared_session = self._hooks_api._sessions.get(raw_session_id)
         if shared_session is not None:
             shared_session.session_id = group_session_id
+            parent_session = self._hooks_api._sessions.get(group_session_id)
+            if parent_session and parent_session.session_name:
+                self._hooks_api._set_session_name(parent_session, parent_session.session_name)
+            else:
+                shared_session.session_name = ""
+                for span in self._hooks_api._assembled_spans:
+                    if span.get("session_id") == group_session_id:
+                        span.get("meta", {}).get("metadata", {}).pop("session_name", None)
             self._hooks_api._synchronize_session_tags(group_session_id)
 
     def _get_or_create_session(self, session_id: str, start_ns: int) -> CodexSession:
@@ -2271,6 +2279,14 @@ class CodexHooksAPI:
         if session_id in self._ignored_session_ids:
             return []
         session = self._get_or_create_session(session_id, start_ns=start_ns)
+        if record.get("type") == "event_msg" and record.get("payload", {}).get("type") == "session_name":
+            # A grouped child must not rename the parent session. Handle before
+            # record deduplication so a rename back to an earlier name works.
+            if session.session_id == session_id:
+                name = record["payload"].get("name")
+                if isinstance(name, str):
+                    self._hooks_api._set_session_name(self._hooks_api._sessions[session_id], name)
+            return []
         if proxy_session_key:
             session.proxy_session_keys.add(proxy_session_key)
             self._hooks_api._register_session_token(proxy_session_key, session_id)
