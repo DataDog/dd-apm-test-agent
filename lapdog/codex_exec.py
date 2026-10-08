@@ -7,6 +7,7 @@ import re
 import shlex
 from typing import Any
 from typing import Dict
+from typing import Iterator
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -235,7 +236,59 @@ def _prints_calls_in_order(source: str, call_count: int) -> bool:
     return count == call_count
 
 
-def extract_exec_results(output: Any, call_count: int, source: str = "") -> Dict[int, Dict[str, Any]]:
+def _decode_exec_output(blocks: List[str]) -> Iterator[Any]:
+    # New transcripts can combine several JSON results in one text block.
+    decoder = json.JSONDecoder()
+    for block in blocks:
+        remaining = block.strip()
+        if remaining.startswith("Warning: truncated output"):
+            # Read intact labelled records independently; a damaged record
+            # must not hide the valid results that follow it.
+            for line in remaining.splitlines():
+                try:
+                    yield json.loads(line)
+                except ValueError:
+                    pass
+            continue
+        while remaining:
+            try:
+                parsed, end = decoder.raw_decode(remaining)
+            except ValueError:
+                break
+            yield parsed
+            remaining = remaining[end:].lstrip()
+
+
+def _normalize_exec_result(parsed: Dict[str, Any]) -> Optional[Tuple[Any, Any, Dict[str, Any]]]:
+    """Return the index/name label and result from the supported output forms."""
+    if set(parsed) == {"current_time"} and isinstance(parsed["current_time"], str):
+        return None, "clock__curr_time", {"value": parsed}
+    if set(parsed) == {"goal", "remainingTokens", "completionBudgetReport"}:
+        return None, "get_goal", {"value": parsed}
+    # Tool descriptions have names too, but contain no result.
+    if not any(key in parsed for key in ("value", "result", "reason", "error")):
+        return None
+    value = parsed.get("value", parsed.get("result", parsed.get("reason", parsed.get("error"))))
+    status = parsed.get("status")
+    if "value" not in parsed and isinstance(value, dict) and value.get("status") in ("fulfilled", "rejected"):
+        status = value["status"]
+        value = value.get("value", value.get("reason"))
+    if (
+        isinstance(parsed.get("name"), str)
+        and isinstance(value, dict)
+        and value.get("name") == parsed["name"]
+        and "result" in value
+    ):
+        value = value["result"]
+    result = {"value": value}
+    if status == "rejected":
+        result["error"] = True
+    return parsed.get("i"), parsed.get("name", parsed.get("tool")), result
+
+
+def extract_exec_results(
+    output: Any, call_count: int, source: str = "", calls: Optional[List[Dict[str, Any]]] = None
+) -> Dict[int, Dict[str, Any]]:
     """Match indexed results, direct sequential prints, or a sole call's output."""
     if call_count == 0:
         return {}
@@ -250,7 +303,8 @@ def extract_exec_results(output: Any, call_count: int, source: str = "") -> Dict
     if blocks and re.match(r"^Script (completed|failed|running)(?:\n|$)", blocks[0]):
         blocks = blocks[1:]
     indexed: Dict[int, Dict[str, Any]] = {}
-    calls = extract_exec_calls(source)
+    if calls is None:
+        calls = extract_exec_calls(source)
     names: Dict[str, List[int]] = {}
     for index, call in enumerate(calls):
         name = call["name"]
@@ -259,69 +313,18 @@ def extract_exec_results(output: Any, call_count: int, source: str = "") -> Dict
             aliases.add(name[len("mcp__") :].replace("__", "."))
         for alias in aliases:
             names.setdefault(alias, []).append(index)
-    # New transcripts can combine several JSON results in one text block.
-    decoded: List[Any] = []
-    decoder = json.JSONDecoder()
-    for block in blocks:
-        remaining = block.strip()
-        if remaining.startswith("Warning: truncated output"):
-            # Read intact labelled records independently; a damaged record
-            # must not hide the valid results that follow it.
-            for line in remaining.splitlines():
-                try:
-                    decoded.append(json.loads(line))
-                except ValueError:
-                    pass
+    for parsed in _decode_exec_output(blocks):
+        normalized = _normalize_exec_result(parsed) if isinstance(parsed, dict) else None
+        if normalized is None:
             continue
-        while remaining:
-            try:
-                parsed, end = decoder.raw_decode(remaining)
-            except ValueError:
-                break
-            decoded.append(parsed)
-            remaining = remaining[end:].lstrip()
-    for parsed in decoded:
-        if not isinstance(parsed, dict):
-            continue
-        # These native tools also print unlabelled objects. Their distinct
-        # result fields let us match them even alongside unrelated text().
-        native_name = None
-        if set(parsed) == {"current_time"} and isinstance(parsed["current_time"], str):
-            native_name = "clock__curr_time"
-        elif set(parsed) == {"goal", "remainingTokens", "completionBudgetReport"}:
-            native_name = "get_goal"
-        if native_name is not None:
-            matches = names.get(native_name, [])
-            if len(matches) == 1:
-                indexed.setdefault(matches[0], {"value": parsed})
-            continue
-        # A printed tool description is not a result, even if its name matches.
-        if not any(key in parsed for key in ("value", "result", "reason", "error")):
-            continue
-        call_index = parsed.get("i")
+        call_index, name, result = normalized
         if type(call_index) is not int:
-            name = parsed.get("name", parsed.get("tool"))
             matches = names.get(name, []) if isinstance(name, str) else []
             if len(matches) != 1:
                 continue
             call_index = matches[0]
-        if not 0 <= call_index < call_count or call_index in indexed:
-            continue
-        value = parsed.get("value", parsed.get("result", parsed.get("reason", parsed.get("error"))))
-        status = parsed.get("status")
-        if "value" not in parsed and isinstance(value, dict) and value.get("status") in ("fulfilled", "rejected"):
-            status = value["status"]
-            value = value.get("value", value.get("reason"))
-        if (
-            isinstance(parsed.get("name"), str)
-            and isinstance(value, dict)
-            and value.get("name") == parsed["name"]
-            and "result" in value
-        ):
-            value = value["result"]
-        indexed[call_index] = {"value": value}
-        if status == "rejected":
-            indexed[call_index]["error"] = True
+        if 0 <= call_index < call_count and call_index not in indexed:
+            indexed[call_index] = result
     if _prints_calls_in_order(source, call_count):
         if len(blocks) == call_count:
             return {**{index: {"value": block} for index, block in enumerate(blocks)}, **indexed}

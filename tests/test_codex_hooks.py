@@ -444,17 +444,29 @@ def test_codex_exec_does_not_assign_arbitrary_prints_by_position(script):
     assert extract_exec_results(output, 2, source=script) == {}
 
 
+async def _start_exec_session(agent, sid):
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="inspect"))
+
+
+async def _exec_call(agent, sid, **kwargs):
+    await _post(agent, sid, _response_item("custom_tool_call", name="exec", **kwargs))
+
+
+async def _exec_output(agent, sid, **kwargs):
+    await _post(agent, sid, _response_item("custom_tool_call_output", **kwargs))
+
+
 @pytest.mark.parametrize("exit_code", [0, 1])
 @pytest.mark.parametrize("late", [False, True])
 async def test_codex_exec_uses_command_completion_outputs_in_reverse_order(agent, exit_code, late):
     sid = "codex-command-completions"
-    await _post(agent, sid, _session_meta(sid))
-    await _post(agent, sid, _turn_context())
-    await _post(agent, sid, _event("user_message", message="inspect"))
+    await _start_exec_session(agent, sid)
     script = 'await Promise.all([tools.exec_command({cmd:"cat README.md"}), tools.exec_command({cmd:"pwd"})]);'
-    await _post(agent, sid, _response_item("custom_tool_call", name="exec", call_id="program", input=script))
+    await _exec_call(agent, sid, call_id="program", input=script)
     if late:
-        await _post(agent, sid, _response_item("custom_tool_call_output", call_id="program", output="summary"))
+        await _exec_output(agent, sid, call_id="program", output="summary")
     for command, output in [("pwd", "/repo\n"), ("cat README.md", "file contents\n")]:
         await _post(
             agent,
@@ -472,7 +484,7 @@ async def test_codex_exec_uses_command_completion_outputs_in_reverse_order(agent
             ),
         )
     if not late:
-        await _post(agent, sid, _response_item("custom_tool_call_output", call_id="program", output="summary"))
+        await _exec_output(agent, sid, call_id="program", output="summary")
     await _post(agent, sid, _event("task_complete"))
     tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
     assert [span["name"] for span in tools] == ["Read", "Ran"]
@@ -485,13 +497,11 @@ async def test_codex_exec_uses_command_completion_outputs_in_reverse_order(agent
 @pytest.mark.parametrize("resource", [False, True])
 async def test_codex_exec_uses_mcp_completion_output(agent, resource):
     sid = "codex-mcp-completion"
-    await _post(agent, sid, _session_meta(sid))
-    await _post(agent, sid, _turn_context())
-    await _post(agent, sid, _event("user_message", message="inspect"))
+    await _start_exec_session(agent, sid)
     tool_name = "read_mcp_resource" if resource else "mcp__example__lookup"
     inputs = [{"server": "example", "uri": f"example://{i}"} if resource else {"id": i} for i in (1, 2)]
     script = "await Promise.all([" + ",".join(f"tools.{tool_name}({json.dumps(args)})" for args in inputs) + "]);"
-    await _post(agent, sid, _response_item("custom_tool_call", name="exec", call_id="program", input=script))
+    await _exec_call(agent, sid, call_id="program", input=script)
     for index in (2, 1):
         await _post(
             agent,
@@ -509,7 +519,7 @@ async def test_codex_exec_uses_mcp_completion_output(agent, resource):
                 },
             ),
         )
-    await _post(agent, sid, _response_item("custom_tool_call_output", call_id="program", output="summary"))
+    await _exec_output(agent, sid, call_id="program", output="summary")
     await _post(agent, sid, _event("task_complete"))
     tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
     assert len(tools) == 2
@@ -521,11 +531,9 @@ async def test_codex_exec_uses_mcp_completion_output(agent, resource):
 
 async def test_codex_exec_does_not_assign_ambiguous_completion(agent):
     sid = "codex-ambiguous-completion"
-    await _post(agent, sid, _session_meta(sid))
-    await _post(agent, sid, _turn_context())
-    await _post(agent, sid, _event("user_message", message="inspect"))
+    await _start_exec_session(agent, sid)
     script = 'await Promise.all([tools.exec_command({cmd:"pwd"}), tools.exec_command({cmd:"pwd"})]);'
-    await _post(agent, sid, _response_item("custom_tool_call", name="exec", call_id="program", input=script))
+    await _exec_call(agent, sid, call_id="program", input=script)
     await _post(
         agent,
         sid,
@@ -540,7 +548,7 @@ async def test_codex_exec_does_not_assign_ambiguous_completion(agent):
             },
         ),
     )
-    await _post(agent, sid, _response_item("custom_tool_call_output", call_id="program", output="summary"))
+    await _exec_output(agent, sid, call_id="program", output="summary")
     await _post(agent, sid, _event("task_complete"))
     tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
     assert len(tools) == 2
@@ -551,31 +559,22 @@ async def test_codex_exec_does_not_assign_ambiguous_completion(agent):
 @pytest.mark.parametrize("exit_code", [0, 1])
 async def test_codex_running_command_completes_without_poll(agent, partial, exit_code):
     sid = "codex-unpolled-command"
-    await _post(agent, sid, _session_meta(sid))
-    await _post(agent, sid, _turn_context())
-    await _post(agent, sid, _event("user_message", message="run checks"))
+    await _start_exec_session(agent, sid)
     # Identical commands must still match their own process, not each other.
     for process_id in (123, 456):
-        await _post(
+        await _exec_call(
             agent,
             sid,
-            _response_item(
-                "custom_tool_call",
-                timestamp="2026-05-11T17:00:03.000Z",
-                name="exec",
-                call_id=str(process_id),
-                input='text(await tools.exec_command({cmd:"check"}));',
-            ),
+            timestamp="2026-05-11T17:00:03.000Z",
+            call_id=str(process_id),
+            input='text(await tools.exec_command({cmd:"check"}));',
         )
-        await _post(
+        await _exec_output(
             agent,
             sid,
-            _response_item(
-                "custom_tool_call_output",
-                timestamp="2026-05-11T17:00:04.000Z",
-                call_id=str(process_id),
-                output=json.dumps({"session_id": process_id, "output": partial, "exit_code": None}),
-            ),
+            timestamp="2026-05-11T17:00:04.000Z",
+            call_id=str(process_id),
+            output=json.dumps({"session_id": process_id, "output": partial, "exit_code": None}),
         )
     await _post(
         agent,
@@ -603,25 +602,8 @@ async def test_codex_running_command_completes_without_poll(agent, partial, exit
     assert completed["status"] == ("error" if exit_code else "ok")
     assert completed["duration"] == 4_000_000_000
     # Polling after completion must not duplicate output or emit another span.
-    await _post(
-        agent,
-        sid,
-        _response_item(
-            "custom_tool_call",
-            name="exec",
-            call_id="poll",
-            input='text(await tools.write_stdin({session_id:456,chars:""}));',
-        ),
-    )
-    await _post(
-        agent,
-        sid,
-        _response_item(
-            "custom_tool_call_output",
-            call_id="poll",
-            output=json.dumps({"output": "finished\n", "exit_code": exit_code}),
-        ),
-    )
+    await _exec_call(agent, sid, call_id="poll", input='text(await tools.write_stdin({session_id:456,chars:""}));')
+    await _exec_output(agent, sid, call_id="poll", output=json.dumps({"output": "finished\n", "exit_code": exit_code}))
     spans = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
     assert len(spans) == 2
     assert spans[1]["meta"]["output"]["value"] == "started\nfinished\n"
