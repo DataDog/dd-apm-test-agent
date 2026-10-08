@@ -208,8 +208,35 @@ def extract_exec_calls(source: str) -> List[Dict[str, Any]]:
     return calls
 
 
-def extract_exec_results(output: Any, call_count: int) -> Dict[int, Dict[str, Any]]:
-    """Use only explicit result indexes, or the sole call's whole output."""
+def _prints_calls_in_order(source: str, call_count: int) -> bool:
+    """Accept only a sequence of direct text(await tools.method(...)) calls."""
+    index = 0
+    count = 0
+    while index < len(source):
+        if source[index].isspace() or source[index] == ";":
+            index += 1
+            continue
+        skipped = _skip_comment(source, index)
+        if skipped != index:
+            index = skipped
+            continue
+        match = re.match(r"text\(\s*await\s+tools\.[A-Za-z_$][\w$]*\s*\(", source[index:])
+        if not match:
+            return False
+        parsed = _call_arguments(source, index + match.end() - 1)
+        if parsed is None:
+            return False
+        _, index = parsed
+        closing = re.match(r"\s*\)", source[index:])
+        if not closing:
+            return False
+        index += closing.end()
+        count += 1
+    return count == call_count
+
+
+def extract_exec_results(output: Any, call_count: int, source: str = "") -> Dict[int, Dict[str, Any]]:
+    """Match indexed results, direct sequential prints, or a sole call's output."""
     if call_count == 0:
         return {}
     if not isinstance(output, list):
@@ -223,19 +250,98 @@ def extract_exec_results(output: Any, call_count: int) -> Dict[int, Dict[str, An
     if blocks and re.match(r"^Script (completed|failed|running)(?:\n|$)", blocks[0]):
         blocks = blocks[1:]
     indexed: Dict[int, Dict[str, Any]] = {}
+    calls = extract_exec_calls(source)
+    names: Dict[str, List[int]] = {}
+    for index, call in enumerate(calls):
+        name = call["name"]
+        aliases = {name, name.replace("__", ".")}
+        if name.startswith("mcp__"):
+            aliases.add(name[len("mcp__") :].replace("__", "."))
+        for alias in aliases:
+            names.setdefault(alias, []).append(index)
+    # New transcripts can combine several JSON results in one text block.
+    decoded: List[Any] = []
+    decoder = json.JSONDecoder()
     for block in blocks:
-        try:
-            parsed = json.loads(block)
-        except (ValueError, TypeError):
+        remaining = block.strip()
+        if remaining.startswith("Warning: truncated output"):
+            # Read intact labelled records independently; a damaged record
+            # must not hide the valid results that follow it.
+            for line in remaining.splitlines():
+                try:
+                    decoded.append(json.loads(line))
+                except ValueError:
+                    pass
             continue
-        if not isinstance(parsed, dict) or type(parsed.get("i")) is not int:
+        while remaining:
+            try:
+                parsed, end = decoder.raw_decode(remaining)
+            except ValueError:
+                break
+            decoded.append(parsed)
+            remaining = remaining[end:].lstrip()
+    for parsed in decoded:
+        if not isinstance(parsed, dict):
             continue
-        call_index = parsed["i"]
+        # These native tools also print unlabelled objects. Their distinct
+        # result fields let us match them even alongside unrelated text().
+        native_name = None
+        if set(parsed) == {"current_time"} and isinstance(parsed["current_time"], str):
+            native_name = "clock__curr_time"
+        elif set(parsed) == {"goal", "remainingTokens", "completionBudgetReport"}:
+            native_name = "get_goal"
+        if native_name is not None:
+            matches = names.get(native_name, [])
+            if len(matches) == 1:
+                indexed.setdefault(matches[0], {"value": parsed})
+            continue
+        # A printed tool description is not a result, even if its name matches.
+        if not any(key in parsed for key in ("value", "result", "reason", "error")):
+            continue
+        call_index = parsed.get("i")
+        if type(call_index) is not int:
+            name = parsed.get("name", parsed.get("tool"))
+            matches = names.get(name, []) if isinstance(name, str) else []
+            if len(matches) != 1:
+                continue
+            call_index = matches[0]
         if not 0 <= call_index < call_count or call_index in indexed:
             continue
-        indexed[call_index] = {"value": parsed.get("value", parsed.get("reason", ""))}
-        if parsed.get("status") == "rejected":
+        value = parsed.get("value", parsed.get("result", parsed.get("reason", parsed.get("error"))))
+        status = parsed.get("status")
+        if "value" not in parsed and isinstance(value, dict) and value.get("status") in ("fulfilled", "rejected"):
+            status = value["status"]
+            value = value.get("value", value.get("reason"))
+        if (
+            isinstance(parsed.get("name"), str)
+            and isinstance(value, dict)
+            and value.get("name") == parsed["name"]
+            and "result" in value
+        ):
+            value = value["result"]
+        indexed[call_index] = {"value": value}
+        if status == "rejected":
             indexed[call_index]["error"] = True
+    if _prints_calls_in_order(source, call_count):
+        if len(blocks) == call_count:
+            return {**{index: {"value": block} for index, block in enumerate(blocks)}, **indexed}
+        if len(blocks) == 1:
+            lines = blocks[0].splitlines()
+            # A truncated combined block keeps its original line count. Match
+            # intact JSON lines only when no lines have been removed.
+            if lines and lines[0].startswith("Warning: truncated output"):
+                if len(lines) < 4 or lines[1] != f"Total output lines: {call_count}" or lines[2]:
+                    return indexed
+                lines = lines[3:]
+            if len(lines) == call_count:
+                sequential = {}
+                for index, line in enumerate(lines):
+                    try:
+                        value = json.loads(line)
+                    except ValueError:
+                        continue
+                    sequential[index] = {"value": value}
+                return {**sequential, **indexed}
     if indexed:
         return indexed
     if call_count == 1:

@@ -10,6 +10,7 @@ import pytest
 from lapdog.claude_hooks import ClaudeHooksAPI
 from lapdog.codex_exec import display_tool_name
 from lapdog.codex_exec import extract_exec_calls
+from lapdog.codex_exec import extract_exec_results
 
 
 @pytest.fixture
@@ -299,6 +300,233 @@ async def test_codex_exec_does_not_guess_which_parallel_call_owns_unindexed_outp
     assert len(tools) == 2
     assert [span["meta"]["metadata"]["result_matched"] for span in tools] == [False, False]
     assert [span["meta"]["output"]["value"] for span in tools] == ["", ""]
+
+
+@pytest.mark.parametrize("combined", [False, True])
+def test_codex_exec_sequential_outputs(combined):
+    script = "text(await tools.clock__curr_time({})); text(await tools.get_goal({}));"
+    values = [{"current_time": "2026-10-08 19:33:25 UTC"}, {"goal": None}]
+    blocks = [json.dumps(value) for value in values]
+    if combined:
+        blocks = ["\n".join(blocks)]
+    output = [{"type": "input_text", "text": "Script completed\nOutput:\n"}]
+    output.extend({"type": "input_text", "text": block} for block in blocks)
+    results = extract_exec_results(output, 2, source=script)
+    assert [json.loads(r["value"]) if isinstance(r["value"], str) else r["value"] for r in results.values()] == values
+
+
+def test_codex_exec_combined_indexed_outputs():
+    output = [{"type": "input_text", "text": '{"i":1,"value":"second"}\n{"i":0,"value":"first"}'}]
+    assert extract_exec_results(output, 2) == {0: {"value": "first"}, 1: {"value": "second"}}
+
+
+def test_codex_exec_named_parallel_outputs_survive_truncated_neighbor():
+    script = """const calls = [
+        ["clock.curr_time", () => tools.clock__curr_time({})],
+        ["get_goal", () => tools.get_goal({})],
+        ["list_mcp_resources", () => tools.list_mcp_resources({})],
+        ["chrome_devtools.list_pages", () => tools.mcp__chrome_devtools__list_pages({})]
+    ];"""
+    output = [
+        {
+            "type": "input_text",
+            "text": (
+                "Warning: truncated output (original token count: 13039)\nTotal output lines: 4\n\n"
+                '{"name":"clock.curr_time","status":"fulfilled","value":{"name":"clock.curr_time","result":{"current_time":"now"}}}\n'
+                '{"name":"list_mcp_resources","status":"fulfilled","value": …truncated…}\n'
+                '{"name":"get_goal","status":"fulfilled","value":{"name":"get_goal","result":{"goal":null}}}\n'
+                '{"name":"chrome_devtools.list_pages","status":"rejected","reason":"unavailable"}'
+            ),
+        }
+    ]
+    assert extract_exec_results(output, 4, source=script) == {
+        0: {"value": {"current_time": "now"}},
+        1: {"value": {"goal": None}},
+        3: {"value": "unavailable", "error": True},
+    }
+
+
+@pytest.mark.parametrize(
+    "status,key,value", [("fulfilled", "value", "web output"), ("rejected", "reason", "web error")]
+)
+def test_codex_exec_tool_label_with_nested_settled_result(status, key, value):
+    source = 'tools.read_mcp_resource({server:"trajectory",uri:"trajectory://sqlite/schema"}); tools.web__run({});'
+    output = [
+        {
+            "type": "input_text",
+            "text": (
+                "Warning: truncated output (original token count: 14349)\nTotal output lines: 2\n\n"
+                '{"tool":"read_mcp_resource","result": …truncated…}\n'
+                + json.dumps({"tool": "web.run", "result": {"status": status, key: value}})
+            ),
+        }
+    ]
+    expected = {"value": value}
+    if status == "rejected":
+        expected["error"] = True
+    assert extract_exec_results(output, 2, source=source) == {1: expected}
+
+
+def test_codex_exec_named_output_does_not_guess_between_repeated_tools():
+    script = 'tools.exec_command({cmd:"pwd"}); tools.exec_command({cmd:"ls"});'
+    output = [{"type": "input_text", "text": '{"name":"exec_command","value":"ambiguous"}'}]
+    assert extract_exec_results(output, 2, source=script) == {}
+
+
+@pytest.mark.parametrize("field", ["value", "result"])
+def test_codex_exec_named_top_level_result(field):
+    source = "tools.clock__curr_time({}); tools.get_goal({});"
+    values = [{"current_time": "now"}, {"goal": None, "remainingTokens": None, "completionBudgetReport": None}]
+    output = [
+        {"type": "input_text", "text": json.dumps({"name": name, "status": "fulfilled", field: json.dumps(value)})}
+        for name, value in zip(("clock__curr_time", "get_goal"), values)
+    ]
+    assert [json.loads(r["value"]) for r in extract_exec_results(output, 2, source=source).values()] == values
+
+
+def test_codex_exec_native_results_with_unrelated_prints():
+    source = "text(ALL_TOOLS); text(await tools.clock__curr_time({})); text(await tools.get_goal({}));"
+    goal = {"goal": None, "remainingTokens": None, "completionBudgetReport": None}
+    output = [
+        {"type": "input_text", "text": json.dumps(value)}
+        for value in (
+            {"name": "clock__curr_time", "description": "Tool description"},
+            {"current_time": "now"},
+            goal,
+        )
+    ]
+    assert extract_exec_results(output, 2, source=source) == {0: {"value": {"current_time": "now"}}, 1: {"value": goal}}
+
+
+def test_codex_exec_truncated_sequential_outputs_keep_intact_lines():
+    script = "text(await tools.clock__curr_time({})); text(await tools.list_mcp_resources({})); text(await tools.get_goal({}));"
+    output = [
+        {
+            "type": "input_text",
+            "text": (
+                "Warning: truncated output (original token count: 12000)\nTotal output lines: 3\n\n"
+                '{"current_time":"now"}\n{"resources":[…truncated…]}\n{"goal":null}'
+            ),
+        }
+    ]
+    assert extract_exec_results(output, 3, source=script) == {
+        0: {"value": {"current_time": "now"}},
+        2: {"value": {"goal": None}},
+    }
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        'await Promise.all([tools.a({}), tools.b({})]); text("first"); text("second");',
+        'text(await tools.a({})); text("extra"); text(await tools.b({}));',
+    ],
+)
+def test_codex_exec_does_not_assign_arbitrary_prints_by_position(script):
+    output = [{"type": "input_text", "text": '"first"\n"second"'}]
+    assert extract_exec_results(output, 2, source=script) == {}
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+@pytest.mark.parametrize("late", [False, True])
+async def test_codex_exec_uses_command_completion_outputs_in_reverse_order(agent, exit_code, late):
+    sid = "codex-command-completions"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="inspect"))
+    script = 'await Promise.all([tools.exec_command({cmd:"cat README.md"}), tools.exec_command({cmd:"pwd"})]);'
+    await _post(agent, sid, _response_item("custom_tool_call", name="exec", call_id="program", input=script))
+    if late:
+        await _post(agent, sid, _response_item("custom_tool_call_output", call_id="program", output="summary"))
+    for command, output in [("pwd", "/repo\n"), ("cat README.md", "file contents\n")]:
+        await _post(
+            agent,
+            sid,
+            _event(
+                "item_completed",
+                item={
+                    "type": "CommandExecution",
+                    "id": command,
+                    "command": ["/bin/zsh", "-lc", command],
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                    "status": "completed",
+                },
+            ),
+        )
+    if not late:
+        await _post(agent, sid, _response_item("custom_tool_call_output", call_id="program", output="summary"))
+    await _post(agent, sid, _event("task_complete"))
+    tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
+    assert [span["name"] for span in tools] == ["Read", "Ran"]
+    assert [json.loads(span["meta"]["output"]["value"])["output"] for span in tools] == ["file contents\n", "/repo\n"]
+    assert all(span["meta"]["metadata"]["result_source"] == "item_completed" for span in tools)
+    assert all(span["status"] == ("error" if exit_code else "ok") for span in tools)
+
+
+@pytest.mark.parametrize("resource", [False, True])
+async def test_codex_exec_uses_mcp_completion_output(agent, resource):
+    sid = "codex-mcp-completion"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="inspect"))
+    tool_name = "read_mcp_resource" if resource else "mcp__example__lookup"
+    inputs = [{"server": "example", "uri": f"example://{i}"} if resource else {"id": i} for i in (1, 2)]
+    script = "await Promise.all([" + ",".join(f"tools.{tool_name}({json.dumps(args)})" for args in inputs) + "]);"
+    await _post(agent, sid, _response_item("custom_tool_call", name="exec", call_id="program", input=script))
+    for index in (2, 1):
+        await _post(
+            agent,
+            sid,
+            _event(
+                "item_completed",
+                item={
+                    "type": "McpToolCall",
+                    "id": str(index),
+                    "server": "example",
+                    "tool": "read_mcp_resource" if resource else "lookup",
+                    "arguments": inputs[index - 1],
+                    "status": "completed",
+                    "result": {"content": [{"type": "text", "text": f"result {index}"}], "isError": False},
+                },
+            ),
+        )
+    await _post(agent, sid, _response_item("custom_tool_call_output", call_id="program", output="summary"))
+    await _post(agent, sid, _event("task_complete"))
+    tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
+    assert len(tools) == 2
+    assert [json.loads(span["meta"]["output"]["value"])["content"][0]["text"] for span in tools] == [
+        "result 1",
+        "result 2",
+    ]
+
+
+async def test_codex_exec_does_not_assign_ambiguous_completion(agent):
+    sid = "codex-ambiguous-completion"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="inspect"))
+    script = 'await Promise.all([tools.exec_command({cmd:"pwd"}), tools.exec_command({cmd:"pwd"})]);'
+    await _post(agent, sid, _response_item("custom_tool_call", name="exec", call_id="program", input=script))
+    await _post(
+        agent,
+        sid,
+        _event(
+            "item_completed",
+            item={
+                "type": "CommandExecution",
+                "command": ["/bin/zsh", "-lc", "pwd"],
+                "aggregated_output": "/repo\n",
+                "exit_code": 0,
+                "status": "completed",
+            },
+        ),
+    )
+    await _post(agent, sid, _response_item("custom_tool_call_output", call_id="program", output="summary"))
+    await _post(agent, sid, _event("task_complete"))
+    tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
+    assert len(tools) == 2
+    assert all(span["meta"]["metadata"]["result_matched"] is False for span in tools)
 
 
 async def test_codex_shell_poll_updates_original_command_span(agent):
@@ -1461,7 +1689,8 @@ async def test_codex_task_started_keeps_parent_turn_when_child_replays_same_turn
     assert [s for s in spans if s.get("session_id") == child_sid] == []
 
 
-async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_catalog):
+@pytest.mark.parametrize("batched", [False, True])
+async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_catalog, batched):
     parent_sid = "codex-parent-with-reviews"
     review_sid = "codex-guardian-review"
     await _post(agent, parent_sid, _session_meta(parent_sid))
@@ -1471,6 +1700,10 @@ async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_
     review_meta["payload"].update({"thread_source": "guardian_review", "parent_thread_id": parent_sid})
     await _post(agent, review_sid, review_meta)
 
+    command = "node --check my-agent.js" if not batched else "node --check my-agent.js\nprintf 'done'"
+    script = "tools.exec_command(" + json.dumps({"cmd": command}) + ")"
+    if batched:
+        script = "tools.clock__curr_time({}); " + script
     for index, minute in enumerate(("00", "01"), 1):
         call_id = f"exec-{index}"
         requested = f"2026-05-11T17:{minute}:03.000Z"
@@ -1485,7 +1718,7 @@ async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_
                 timestamp=requested,
                 call_id=call_id,
                 name="exec",
-                input='tools.exec_command({cmd:"node --check my-agent.js"})',
+                input=script,
             ),
         )
         await _post(agent, review_sid, _event("task_started", timestamp=started, turn_id=f"review-{index}"))
@@ -1506,7 +1739,7 @@ async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_
                         "text": (
                             "Reviewed Codex session id: " + parent_sid + "\n"
                             "APPROVAL REQUEST START\nPlanned action JSON:\n"
-                            '{"command":["/bin/zsh","-lc","node --check my-agent.js"]}'
+                            + json.dumps({"command": ["/bin/zsh", "-lc", command]})
                         ),
                     }
                 ],
@@ -1557,7 +1790,10 @@ async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_
     assert not [s for s in spans if s.get("session_id") == review_sid]
     assert not [s for s in _by_kind(spans, "llm") if s.get("name") == "codex-auto-review"]
     assert _by_kind(spans, "task") == []
-    tools = [s for s in _by_kind(spans, "tool") if s.get("session_id") == parent_sid]
+    tools = [s for s in _by_kind(spans, "tool") if s.get("session_id") == parent_sid and s["name"] == "Ran"]
+    for span in _by_kind(spans, "tool"):
+        if span["name"] == "Curr time":
+            assert "auto_reviews" not in span["meta"]["metadata"].get("_dd", {})
     assert len(tools) == 2
     for index, tool in enumerate(tools, 1):
         review = tool["meta"]["metadata"]["_dd"]["auto_reviews"][0]
@@ -1581,9 +1817,14 @@ async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_
         assert "auto_reviews" not in step["meta"]["metadata"].get("_dd", {})
 
 
-async def test_codex_guardian_review_arriving_after_tool_output(agent):
+@pytest.mark.parametrize("batched", [False, True])
+async def test_codex_guardian_review_arriving_after_tool_output(agent, batched):
     parent_sid = "codex-parent-late-review"
     review_sid = "codex-late-guardian"
+    command = "node --check my-agent.js" if not batched else "node --check my-agent.js\nprintf 'done'"
+    script = "tools.exec_command(" + json.dumps({"cmd": command}) + ")"
+    if batched:
+        script = "tools.clock__curr_time({}); " + script
     await _post(agent, parent_sid, _session_meta(parent_sid))
     await _post(agent, parent_sid, _turn_context("parent-turn"))
     await _post(
@@ -1594,7 +1835,7 @@ async def test_codex_guardian_review_arriving_after_tool_output(agent):
             timestamp="2026-05-11T17:00:03.000Z",
             call_id="exec-1",
             name="exec",
-            input='tools.exec_command({cmd:"node --check my-agent.js"})',
+            input=script,
         ),
     )
     await _post(
@@ -1624,7 +1865,7 @@ async def test_codex_guardian_review_arriving_after_tool_output(agent):
                     "text": (
                         "Reviewed Codex session id: " + parent_sid + "\n"
                         "APPROVAL REQUEST START\nPlanned action JSON:\n"
-                        '{"command":["/bin/zsh","-lc","node --check my-agent.js"]}'
+                        + json.dumps({"command": ["/bin/zsh", "-lc", command]})
                     ),
                 }
             ],
@@ -1635,7 +1876,10 @@ async def test_codex_guardian_review_arriving_after_tool_output(agent):
 
     resp = await agent.get("/claude/hooks/spans")
     spans = _spans(await resp.json())
-    tool = next(s for s in _by_kind(spans, "tool") if s.get("session_id") == parent_sid)
+    tool = next(s for s in _by_kind(spans, "tool") if s.get("session_id") == parent_sid and s["name"] == "Ran")
+    for span in _by_kind(spans, "tool"):
+        if span["name"] == "Curr time":
+            assert "auto_reviews" not in span["meta"]["metadata"].get("_dd", {})
     assert tool["meta"]["metadata"]["_dd"]["auto_reviews"][0]["tool_id"] == "exec-1"
     assert len(tool["meta"]["metadata"]["_dd"]["auto_reviews"]) == 1
     assert not [s for s in spans if s.get("session_id") == review_sid]
