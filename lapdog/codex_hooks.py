@@ -273,6 +273,20 @@ def _normalized_text(value: Any) -> str:
     return " ".join(str(value).split())
 
 
+def _shell_tool_result(value: Any) -> Tuple[str, Dict[str, Any]]:
+    """Separate command output from execution details."""
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            value = parsed
+    if isinstance(value, dict) and "output" in value:
+        return _to_json_str(value["output"]), {key: item for key, item in value.items() if key != "output"}
+    return _to_json_str(value), {}
+
+
 def _canonical_json_value(value: Any) -> str:
     if isinstance(value, str):
         try:
@@ -1939,9 +1953,14 @@ class CodexHooksAPI:
         if not tool_status:
             tool_status = "failed" if is_error else "completed"
         is_error = is_error or _tool_status_is_error(tool_status)
+        result_metadata: Dict[str, Any] = {}
+        raw_name = (extra_metadata or {}).get("raw_tool_name", pending.tool_name)
+        if raw_name in ("exec_command", "write_stdin"):
+            output_value, result_metadata = _shell_tool_result(output_value)
         input_value, input_truncated = _truncate_text(_to_json_str(pending.tool_input), MAX_TOOL_VALUE_CHARS)
         output_value, output_truncated = _truncate_text(output_value, MAX_TOOL_VALUE_CHARS)
         metadata: Dict[str, Any] = {
+            **result_metadata,
             "tool_id": tool_id,
             "status": tool_status,
             "input_format": "json" if not isinstance(pending.tool_input, str) else "text",
@@ -2031,10 +2050,12 @@ class CodexHooksAPI:
         if isinstance(prior_tokens, int) and isinstance(new_tokens, int):
             merged["original_token_count"] = prior_tokens + new_tokens
         entry["result"] = merged
-        output_value, truncated = _truncate_text(_to_json_str(merged), MAX_TOOL_VALUE_CHARS)
+        output_value, result_metadata = _shell_tool_result(merged)
+        output_value, truncated = _truncate_text(output_value, MAX_TOOL_VALUE_CHARS)
         span["meta"]["output"]["value"] = output_value
         span["duration"] = max(int(span["duration"]), end_ns - int(span["start_ns"]))
         metadata = span["meta"]["metadata"]
+        metadata.update(result_metadata)
         metadata["poll_count"] = metadata.get("poll_count", 0) + 1
         if truncated:
             metadata["_dd"].update(truncated_output=True, max_value_chars=MAX_TOOL_VALUE_CHARS)
@@ -2149,9 +2170,14 @@ class CodexHooksAPI:
             entry = emitted[0]
             session.unmatched_exec_tools.remove(entry)
             span = entry["span"]
-            output_value, truncated = _truncate_text(_to_json_str(value), MAX_TOOL_VALUE_CHARS)
+            if item_type == "CommandExecution":
+                output_value, result_metadata = _shell_tool_result(value)
+            else:
+                output_value, result_metadata = _to_json_str(value), {}
+            output_value, truncated = _truncate_text(output_value, MAX_TOOL_VALUE_CHARS)
             span["meta"]["output"]["value"] = output_value
             metadata = span["meta"]["metadata"]
+            metadata.update(result_metadata)
             metadata.update(result_matched=True, result_source="item_completed")
             if truncated:
                 set_hidden_metadata(span, truncated_output=True, max_value_chars=MAX_TOOL_VALUE_CHARS)

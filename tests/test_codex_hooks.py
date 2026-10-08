@@ -251,7 +251,19 @@ async def test_codex_exec_emits_nested_tool_spans(agent):
         {"type": "input_text", "text": "Script completed\nWall time 1.2 seconds\nOutput:\n"},
         {
             "type": "input_text",
-            "text": json.dumps({"i": 0, "status": "fulfilled", "value": {"exit_code": 0, "output": "/repo"}}),
+            "text": json.dumps(
+                {
+                    "i": 0,
+                    "status": "fulfilled",
+                    "value": {
+                        "exit_code": 0,
+                        "output": "/repo",
+                        "chunk_id": "chunk-1",
+                        "wall_time_seconds": 0.25,
+                        "original_token_count": 3,
+                    },
+                }
+            ),
         },
         {
             "type": "input_text",
@@ -271,7 +283,12 @@ async def test_codex_exec_emits_nested_tool_spans(agent):
     assert [span["meta"]["metadata"]["tool_id"] for span in tools] == ["program-1:0", "program-1:1"]
     assert json.loads(tools[0]["meta"]["input"]["value"]) == {"cmd": "pwd"}
     assert json.loads(tools[1]["meta"]["input"]["value"]) == {"search_query": [{"q": "example"}]}
-    assert json.loads(tools[0]["meta"]["output"]["value"])["output"] == "/repo"
+    assert tools[0]["meta"]["output"]["value"] == "/repo"
+    assert tools[0]["meta"]["metadata"]["exit_code"] == 0
+    assert tools[0]["meta"]["metadata"]["chunk_id"] == "chunk-1"
+    assert tools[0]["meta"]["metadata"]["wall_time_seconds"] == 0.25
+    assert tools[0]["meta"]["metadata"]["original_token_count"] == 3
+    assert "output" not in tools[0]["meta"]["metadata"]
     assert tools[1]["meta"]["metadata"]["result_matched"] is True
 
 
@@ -459,7 +476,8 @@ async def test_codex_exec_uses_command_completion_outputs_in_reverse_order(agent
     await _post(agent, sid, _event("task_complete"))
     tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
     assert [span["name"] for span in tools] == ["Read", "Ran"]
-    assert [json.loads(span["meta"]["output"]["value"])["output"] for span in tools] == ["file contents\n", "/repo\n"]
+    assert [span["meta"]["output"]["value"] for span in tools] == ["file contents\n", "/repo\n"]
+    assert all(span["meta"]["metadata"]["exit_code"] == exit_code for span in tools)
     assert all(span["meta"]["metadata"]["result_source"] == "item_completed" for span in tools)
     assert all(span["status"] == ("error" if exit_code else "ok") for span in tools)
 
@@ -598,7 +616,9 @@ async def test_codex_shell_poll_updates_original_command_span(agent):
     assert len(tools) == 1
     assert tools[0]["name"] == "Ran"
     assert json.loads(tools[0]["meta"]["input"]["value"]) == {"cmd": "yarn lint"}
-    assert json.loads(tools[0]["meta"]["output"]["value"])["output"] == "started\nlint passed\n"
+    assert tools[0]["meta"]["output"]["value"] == "started\nlint passed\n"
+    assert tools[0]["meta"]["metadata"]["session_id"] == 74738
+    assert tools[0]["meta"]["metadata"]["exit_code"] == 0
     assert tools[0]["meta"]["metadata"]["poll_count"] == 1
     assert tools[0]["duration"] == 4_000_000_000
 
