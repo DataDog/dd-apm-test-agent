@@ -173,16 +173,17 @@ def canonicalize(payloads: List[Dict[str, Any]]) -> OtlpDocument:
 def _drop_keys(doc: OtlpDocument, keys: Iterable[str]) -> None:
     """Drop keys given in the native snapshot syntax.
 
-    meta.X and metrics.X refer to the attribute X of resources, spans, events and links, and keys without a
-    dot to span and event fields. Other native keys, such as span_id, have no OTLP equivalent and are no-ops.
+    meta.X and metrics.X refer to the attribute X of resources, scopes, spans, events and links, and keys without
+    a dot to span and event fields. Other native keys, such as span_id, have no OTLP equivalent and are no-ops.
     """
     attributes = {k.split(".", 1)[1] for k in keys if k.startswith(("meta.", "metrics."))}
     fields = {k for k in keys if "." not in k}
     for resource_spans in doc.get("resourceSpans", []):
-        resource = resource_spans.get("resource", {})
-        objects = [resource]
-        for span in _iter_spans({"resourceSpans": [resource_spans]}):
-            objects.extend([span, *span.get("events", []), *span.get("links", [])])
+        objects = [resource_spans.get("resource", {})]
+        for scope_spans in resource_spans.get("scopeSpans", []):
+            objects.append(scope_spans.get("scope", {}))
+            for span in scope_spans.get("spans", []):
+                objects.extend([span, *span.get("events", []), *span.get("links", [])])
         for obj in objects:
             for field in fields:
                 obj.pop(field, None)

@@ -1084,12 +1084,15 @@ def test_otlp_generate_applies_removes_and_regex_placeholders():
             )
         ]
     )
+    scope = doc["resourceSpans"][0]["scopeSpans"][0]["scope"]
+    scope["attributes"] = [_otlp_attr("x", "1")]
     generated = json.loads(
         otlp_trace_snapshot.generate(
             doc, removed=["meta.x"], attribute_regex_replaces={"{port}": re.compile(r"(?<=:)\d+(?=/)")}
         )
     )
     assert _otlp_spans(generated)[0]["attributes"] == [_otlp_attr("url", "http://localhost:{port}/")]
+    assert "attributes" not in generated["resourceSpans"][0]["scopeSpans"][0]["scope"]
 
 
 def test_fmt_formats_otlp_trace_snapshots(tmp_path):
