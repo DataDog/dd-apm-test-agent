@@ -558,6 +558,9 @@ class CodexHooksAPI:
                 "usage": usage,
                 "tool_id": review_tool_id,
             }
+            justification = action.get("justification") if isinstance(action, dict) else None
+            if isinstance(justification, str):
+                entry["justification"] = justification
             if review_model:
                 entry["model"] = review_model
             if pending is not None:

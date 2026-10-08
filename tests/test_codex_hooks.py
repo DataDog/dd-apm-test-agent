@@ -1710,7 +1710,8 @@ async def test_codex_task_started_keeps_parent_turn_when_child_replays_same_turn
 
 
 @pytest.mark.parametrize("batched", [False, True])
-async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_catalog, batched):
+@pytest.mark.parametrize("justification", [None, "Check the file syntax outside the sandbox."])
+async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_catalog, batched, justification):
     parent_sid = "codex-parent-with-reviews"
     review_sid = "codex-guardian-review"
     await _post(agent, parent_sid, _session_meta(parent_sid))
@@ -1721,6 +1722,9 @@ async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_
     await _post(agent, review_sid, review_meta)
 
     command = "node --check my-agent.js" if not batched else "node --check my-agent.js\nprintf 'done'"
+    action = {"command": ["/bin/zsh", "-lc", command]}
+    if justification is not None:
+        action["justification"] = justification
     script = "tools.exec_command(" + json.dumps({"cmd": command}) + ")"
     if batched:
         script = "tools.clock__curr_time({}); " + script
@@ -1758,8 +1762,7 @@ async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_
                         "type": "input_text",
                         "text": (
                             "Reviewed Codex session id: " + parent_sid + "\n"
-                            "APPROVAL REQUEST START\nPlanned action JSON:\n"
-                            + json.dumps({"command": ["/bin/zsh", "-lc", command]})
+                            "APPROVAL REQUEST START\nPlanned action JSON:\n" + json.dumps(action)
                         ),
                     }
                 ],
@@ -1818,7 +1821,11 @@ async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_
     for index, tool in enumerate(tools, 1):
         review = tool["meta"]["metadata"]["_dd"]["auto_reviews"][0]
         assert "auto_reviews" not in tool["meta"]["metadata"]
-        assert set(review) == {"outcome", "risk_level", "explanation", "usage", "tool_id", "model"}
+        expected_keys = {"outcome", "risk_level", "explanation", "usage", "tool_id", "model"}
+        if justification is not None:
+            expected_keys.add("justification")
+            assert review["justification"] == justification
+        assert set(review) == expected_keys
         assert review["tool_id"] == f"exec-{index}"
         assert review["outcome"] == "allow"
         assert review["explanation"] == "The command only checks JavaScript syntax."
@@ -1838,10 +1845,14 @@ async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_
 
 
 @pytest.mark.parametrize("batched", [False, True])
-async def test_codex_guardian_review_arriving_after_tool_output(agent, batched):
+@pytest.mark.parametrize("justification", [None, "Check the file syntax outside the sandbox."])
+async def test_codex_guardian_review_arriving_after_tool_output(agent, batched, justification):
     parent_sid = "codex-parent-late-review"
     review_sid = "codex-late-guardian"
     command = "node --check my-agent.js" if not batched else "node --check my-agent.js\nprintf 'done'"
+    action = {"command": ["/bin/zsh", "-lc", command]}
+    if justification is not None:
+        action["justification"] = justification
     script = "tools.exec_command(" + json.dumps({"cmd": command}) + ")"
     if batched:
         script = "tools.clock__curr_time({}); " + script
@@ -1884,8 +1895,7 @@ async def test_codex_guardian_review_arriving_after_tool_output(agent, batched):
                     "type": "input_text",
                     "text": (
                         "Reviewed Codex session id: " + parent_sid + "\n"
-                        "APPROVAL REQUEST START\nPlanned action JSON:\n"
-                        + json.dumps({"command": ["/bin/zsh", "-lc", command]})
+                        "APPROVAL REQUEST START\nPlanned action JSON:\n" + json.dumps(action)
                     ),
                 }
             ],
@@ -1902,6 +1912,11 @@ async def test_codex_guardian_review_arriving_after_tool_output(agent, batched):
             assert "auto_reviews" not in span["meta"]["metadata"].get("_dd", {})
     assert tool["meta"]["metadata"]["_dd"]["auto_reviews"][0]["tool_id"] == "exec-1"
     assert len(tool["meta"]["metadata"]["_dd"]["auto_reviews"]) == 1
+    review = tool["meta"]["metadata"]["_dd"]["auto_reviews"][0]
+    if justification is None:
+        assert "justification" not in review
+    else:
+        assert review["justification"] == justification
     assert not [s for s in spans if s.get("session_id") == review_sid]
     assert _by_kind(spans, "task") == []
 
