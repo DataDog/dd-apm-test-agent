@@ -1,0 +1,8 @@
+---
+features:
+  - |
+    Allow LLM Observability forwarding through a configured agent URL
+    (`--agent-url` / `DD_AGENT_URL`) without a local DD_API_KEY. The
+    forwarding handlers already prefer the agent URL over the key; the
+    startup gate now treats a configured agent URL as authorized instead
+    of force-disabling forwarding when no Datadog-valid key is present.
