@@ -7,6 +7,7 @@ import re
 import shlex
 from typing import Any
 from typing import Dict
+from typing import Iterator
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -208,8 +209,90 @@ def extract_exec_calls(source: str) -> List[Dict[str, Any]]:
     return calls
 
 
-def extract_exec_results(output: Any, call_count: int) -> Dict[int, Dict[str, Any]]:
-    """Use only explicit result indexes, or the sole call's whole output."""
+def _prints_calls_in_order(source: str, call_count: int) -> bool:
+    """Accept only a sequence of direct text(await tools.method(...)) calls."""
+    index = 0
+    count = 0
+    while index < len(source):
+        if source[index].isspace() or source[index] == ";":
+            index += 1
+            continue
+        skipped = _skip_comment(source, index)
+        if skipped != index:
+            index = skipped
+            continue
+        match = re.match(r"text\(\s*await\s+tools\.[A-Za-z_$][\w$]*\s*\(", source[index:])
+        if not match:
+            return False
+        parsed = _call_arguments(source, index + match.end() - 1)
+        if parsed is None:
+            return False
+        _, index = parsed
+        closing = re.match(r"\s*\)", source[index:])
+        if not closing:
+            return False
+        index += closing.end()
+        count += 1
+    return count == call_count
+
+
+def _decode_exec_output(blocks: List[str]) -> Iterator[Any]:
+    # New transcripts can combine several JSON results in one text block.
+    decoder = json.JSONDecoder()
+    for block in blocks:
+        remaining = block.strip()
+        if remaining.startswith("Warning: truncated output"):
+            # Read intact labelled records independently; a damaged record
+            # must not hide the valid results that follow it.
+            for line in remaining.splitlines():
+                try:
+                    yield json.loads(line)
+                except ValueError:
+                    pass
+            continue
+        while remaining:
+            try:
+                parsed, end = decoder.raw_decode(remaining)
+            except ValueError:
+                break
+            yield parsed
+            remaining = remaining[end:].lstrip()
+
+
+def _normalize_exec_result(parsed: Dict[str, Any]) -> Optional[Tuple[Any, Any, Dict[str, Any]]]:
+    """Return the index/name label and result from the supported output forms."""
+    if set(parsed) == {"current_time"} and isinstance(parsed["current_time"], str):
+        return None, "clock__curr_time", {"value": parsed}
+    if set(parsed) == {"goal", "remainingTokens", "completionBudgetReport"}:
+        return None, "get_goal", {"value": parsed}
+    # Tool descriptions have names too, but contain no result.
+    if type(parsed.get("i")) is not int and not any(key in parsed for key in ("value", "result", "reason", "error")):
+        return None
+    value = parsed.get("value", parsed.get("result", parsed.get("reason", parsed.get("error", ""))))
+    status = parsed.get("status")
+    if "value" not in parsed and isinstance(value, dict) and value.get("status") in ("fulfilled", "rejected"):
+        status = value["status"]
+        value = value.get("value", value.get("reason"))
+    if (
+        isinstance(parsed.get("name"), str)
+        and isinstance(value, dict)
+        and value.get("name") == parsed["name"]
+        and "result" in value
+    ):
+        value = value["result"]
+    result = {"value": value}
+    if status == "rejected":
+        result["error"] = True
+    return parsed.get("i"), parsed.get("name", parsed.get("tool")), result
+
+
+def extract_exec_results(
+    output: Any, call_count: int, source: str = "", calls: Optional[List[Dict[str, Any]]] = None
+) -> Dict[int, Dict[str, Any]]:
+    """Match indexed results, direct sequential prints, or a sole call's output.
+
+    calls caches name matching; source is still required for sequential matching.
+    """
     if call_count == 0:
         return {}
     if not isinstance(output, list):
@@ -220,22 +303,65 @@ def extract_exec_results(output: Any, call_count: int) -> Dict[int, Dict[str, An
         if isinstance(item, dict) and item.get("type") in ("input_text", "output_text")
     ]
     blocks: List[str] = [block for block in raw_blocks if isinstance(block, str)]
+    failed = bool(blocks and blocks[0].startswith("Script failed\n"))
     if blocks and re.match(r"^Script (completed|failed|running)(?:\n|$)", blocks[0]):
         blocks = blocks[1:]
     indexed: Dict[int, Dict[str, Any]] = {}
-    for block in blocks:
-        try:
-            parsed = json.loads(block)
-        except (ValueError, TypeError):
+    if calls is None:
+        calls = extract_exec_calls(source)
+    names: Dict[str, List[int]] = {}
+    for index, call in enumerate(calls):
+        name = call["name"]
+        aliases = {name, name.replace("__", ".")}
+        if name.startswith("mcp__"):
+            aliases.add(name[len("mcp__") :].replace("__", "."))
+        for alias in aliases:
+            names.setdefault(alias, []).append(index)
+    for parsed in _decode_exec_output(blocks):
+        normalized = _normalize_exec_result(parsed) if isinstance(parsed, dict) else None
+        if normalized is None:
             continue
-        if not isinstance(parsed, dict) or type(parsed.get("i")) is not int:
-            continue
-        call_index = parsed["i"]
-        if not 0 <= call_index < call_count or call_index in indexed:
-            continue
-        indexed[call_index] = {"value": parsed.get("value", parsed.get("reason", ""))}
-        if parsed.get("status") == "rejected":
-            indexed[call_index]["error"] = True
+        call_index, name, result = normalized
+        if type(call_index) is not int:
+            matches = names.get(name, []) if isinstance(name, str) else []
+            if len(matches) != 1:
+                continue
+            call_index = matches[0]
+        if 0 <= call_index < call_count and call_index not in indexed:
+            indexed[call_index] = result
+    if failed:
+        # A direct sequence stops at its first exception. Later calls did not run.
+        if (
+            _prints_calls_in_order(source, call_count)
+            and 0 < len(blocks) <= call_count
+            and blocks[-1].startswith("Script error:")
+        ):
+            sequential: Dict[int, Dict[str, Any]] = {index: {"value": block} for index, block in enumerate(blocks)}
+            sequential[len(blocks) - 1]["error"] = True
+            return {**sequential, **indexed}
+        if indexed or call_count != 1:
+            return indexed
+        return {0: {"value": blocks[0] if len(blocks) == 1 else blocks, "error": True}}
+    if _prints_calls_in_order(source, call_count):
+        if len(blocks) == call_count:
+            return {**{index: {"value": block} for index, block in enumerate(blocks)}, **indexed}
+        if len(blocks) == 1:
+            lines = blocks[0].splitlines()
+            # A truncated combined block keeps its original line count. Match
+            # intact JSON lines only when no lines have been removed.
+            if lines and lines[0].startswith("Warning: truncated output"):
+                if len(lines) < 4 or lines[1] != f"Total output lines: {call_count}" or lines[2]:
+                    return indexed
+                lines = lines[3:]
+            if len(lines) == call_count:
+                sequential = {}
+                for index, line in enumerate(lines):
+                    try:
+                        value = json.loads(line)
+                    except ValueError:
+                        continue
+                    sequential[index] = {"value": value}
+                return {**sequential, **indexed}
     if indexed:
         return indexed
     if call_count == 1:

@@ -1,0 +1,19 @@
+---
+fixes:
+  - |
+    Lapdog: Restores missing Codex tool outputs from command and MCP completion events,
+    including commands that finish after the JavaScript exec wrapper returns.
+    Supports combined and name-labelled result blocks while preserving existing
+    tool names and older transcript formats. Attaches automatic approval metadata
+    to the reviewed command in a batch, including multiline commands.
+features:
+  - |
+    Lapdog: Includes the tool request's justification in hidden Codex approval
+    metadata, separate from the reviewer's explanation.
+  - |
+    Lapdog: Codex shell tool spans show command output directly and store execution details
+    such as exit codes, chunk IDs, and token counts in tool metadata.
+  - |
+    Lapdog: Codex tool values and LLM messages are no longer truncated by default.
+    Set ``DD_CODEX_MAX_TOOL_VALUE_CHARS`` or ``DD_CODEX_MAX_LLM_MESSAGE_CHARS`` to retain
+    an explicit character limit.
