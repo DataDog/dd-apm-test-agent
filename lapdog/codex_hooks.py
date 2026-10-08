@@ -521,10 +521,10 @@ class CodexHooksAPI:
                     except ValueError:
                         pass
                 if isinstance(tool_input, dict) and "cmd" in tool_input:
-                    return tool_input["cmd"] == command_text
+                    return bool(tool_input["cmd"] == command_text)
                 return command_text in str(tool_input)
 
-            candidates = []
+            candidates: List[Tuple[str, PendingToolSpan, str]] = []
             if turn is not None and not turn.closed:
                 for outer_id, candidate in session.pending_tools.items():
                     if candidate.start_ns > review["start_ns"]:
@@ -2188,6 +2188,7 @@ class CodexHooksAPI:
         if not isinstance(item, dict):
             return
         item_type = item.get("type")
+        value: Any
         if item_type == "CommandExecution":
             command = item.get("command")
             if not isinstance(command, list) or not command or not isinstance(command[-1], str):
@@ -2291,6 +2292,7 @@ class CodexHooksAPI:
         reviews = session.auto_reviews_by_tool_id.pop(outer_id, [])
         reasoning = session.pending_tool_reasoning.pop(outer_id, [])
         results = extract_exec_results(output, len(calls), source=pending.tool_input, calls=calls)
+        result: Optional[Dict[str, Any]]
         for index, result in session.exec_tool_results.pop(outer_id, {}).items():
             previous = results.get(index, {}).get("value")
             if isinstance(previous, str):

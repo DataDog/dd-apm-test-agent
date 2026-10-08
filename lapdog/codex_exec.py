@@ -336,7 +336,7 @@ def extract_exec_results(
             and 0 < len(blocks) <= call_count
             and blocks[-1].startswith("Script error:")
         ):
-            sequential = {index: {"value": block} for index, block in enumerate(blocks)}
+            sequential: Dict[int, Dict[str, Any]] = {index: {"value": block} for index, block in enumerate(blocks)}
             sequential[len(blocks) - 1]["error"] = True
             return {**sequential, **indexed}
         if indexed or call_count != 1:
