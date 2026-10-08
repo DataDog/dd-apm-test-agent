@@ -984,14 +984,17 @@ def test_otlp_canonicalize_renumbers_ids_in_trace_and_parent_order():
     assert spans[0]["startTimeUnixNano"] == "100"
 
 
-def test_otlp_canonicalize_keeps_ids_outside_the_payload():
-    link = {"traceId": TRACE_B, "spanId": EXTERNAL}
-    doc = otlp_trace_snapshot.canonicalize(
-        [_otlp_payload([_otlp_span(TRACE_A, ROOT, "root", 100, parent=EXTERNAL, links=[link])])]
-    )
-    (span,) = _otlp_spans(doc)
+def test_otlp_canonicalize_keeps_ids_outside_the_payload(check_trace):
+    def doc(trace_id, span_id):
+        link = {"traceId": trace_id, "spanId": span_id}
+        span = _otlp_span(TRACE_A, ROOT, "root", 100, parent=span_id, links=[link])
+        return otlp_trace_snapshot.canonicalize([_otlp_payload([span])])
+
+    (span,) = _otlp_spans(doc(TRACE_B, EXTERNAL))
     assert span["parentSpanId"] == EXTERNAL
     assert span["links"][0] == {"traceId": TRACE_B, "spanId": EXTERNAL}
+    # External ids are random, so they are not compared.
+    otlp_trace_snapshot.snapshot(doc(TRACE_B, EXTERNAL), doc(TRACE_A[::-1], CHILD), [], {})
 
 
 def test_otlp_canonicalize_protobuf_and_json_payloads_match():
@@ -1047,24 +1050,16 @@ def test_otlp_snapshot_fails_on_missing_spans(check_trace):
 
 
 def test_otlp_snapshot_ignores_use_the_native_syntax(check_trace):
-    def doc(value, start, sdk_version):
+    def doc(value, start, sdk_version, span_attributes):
         payload = _otlp_payload(
-            [
-                _otlp_span(
-                    TRACE_A,
-                    ROOT,
-                    "root",
-                    start,
-                    attributes=[_otlp_attr("runtime-id", value), _otlp_attr("kept", "1")],
-                    traceState=f"dd=p:{value}",
-                )
-            ],
+            [_otlp_span(TRACE_A, ROOT, "root", start, attributes=span_attributes, traceState=f"dd=p:{value}")],
             resource_attrs=[_otlp_attr("runtime-id", value), _otlp_attr("telemetry.sdk.version", sdk_version)],
         )
         return otlp_trace_snapshot.canonicalize([payload])
 
-    expected = doc("one", 100, "1.0.0")
-    received = doc("two", 500, "2.0.0")
+    expected = doc("one", 100, "1.0.0", [_otlp_attr("runtime-id", "one")])
+    # Ignoring the only attribute matches a span without attributes.
+    received = doc("two", 500, "2.0.0", [])
     with pytest.raises(AssertionError):
         otlp_trace_snapshot.snapshot(expected, received, ignored=[], attribute_regex_replaces={})
     # telemetry.sdk.version and traceState are always ignored; meta.X matches span and resource attributes.

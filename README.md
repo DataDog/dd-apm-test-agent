@@ -156,7 +156,7 @@ OTLP traces are normalized and output in OTLP JSON format to a file. The followi
 - Parent ids are overwritten using the normalized span ids, unless the parent is not in the trace.
 - Attributes are ordered alphanumerically.
 
-Timestamps, `telemetry.sdk.version` and `traceState` are ignored when comparing since they change between runs.
+Timestamps, `telemetry.sdk.version`, `traceState` and the ids of spans outside the payload are ignored when comparing since they change between runs.
 
 
 #### Web UI

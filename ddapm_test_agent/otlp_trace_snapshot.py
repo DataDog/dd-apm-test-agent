@@ -188,6 +188,23 @@ def _drop_keys(doc: OtlpDocument, keys: Iterable[str]) -> None:
                 obj.pop(field, None)
             if "attributes" in obj:
                 obj["attributes"] = [kv for kv in obj["attributes"] if kv["key"] not in attributes]
+                # OTLP/JSON omits empty attribute lists.
+                if not obj["attributes"]:
+                    del obj["attributes"]
+
+
+def _mask_external_ids(doc: OtlpDocument) -> None:
+    """Replace ids of spans outside the payload, such as the parent of a distributed trace, which are random."""
+    trace_ids = {s.get("traceId") for s in _iter_spans(doc)}
+    span_ids = {(s.get("traceId"), s.get("spanId")) for s in _iter_spans(doc)}
+    for span in _iter_spans(doc):
+        if "parentSpanId" in span and (span.get("traceId"), span["parentSpanId"]) not in span_ids:
+            span["parentSpanId"] = "<external>"
+        for link in span.get("links", []):
+            if (link.get("traceId"), link.get("spanId")) not in span_ids:
+                link["spanId"] = "<external>"
+            if link.get("traceId") not in trace_ids:
+                link["traceId"] = "<external>"
 
 
 def generate(
@@ -211,6 +228,7 @@ def snapshot(
     normed_received = copy.deepcopy(received)
     _walk_span_attributes_with_regex_replaces(normed_received, attribute_regex_replaces)
     for doc in (normed_expected, normed_received):
+        _mask_external_ids(doc)
         _drop_keys(doc, list(ignored) + DEFAULT_OTLP_IGNORES)
     with CheckTrace.add_frame(
         f"compare of {span_count(normed_expected)} expected to {span_count(normed_received)} received OTLP span(s)"
