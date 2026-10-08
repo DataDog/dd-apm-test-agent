@@ -75,6 +75,9 @@ def _sort_attributes(obj: Any) -> None:
     if isinstance(obj, dict):
         if isinstance(obj.get("attributes"), list):
             obj["attributes"].sort(key=lambda kv: kv["key"])
+        # Map values have unique keys, so unlike array values their order is not meaningful.
+        if isinstance(obj.get("kvlistValue"), dict):
+            obj["kvlistValue"].get("values", []).sort(key=lambda kv: kv["key"])
         for val in obj.values():
             _sort_attributes(val)
     elif isinstance(obj, list):

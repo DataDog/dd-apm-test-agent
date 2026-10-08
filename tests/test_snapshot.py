@@ -998,10 +998,11 @@ def test_otlp_canonicalize_keeps_ids_outside_the_payload(check_trace):
 
 
 def test_otlp_canonicalize_protobuf_and_json_payloads_match():
+    map_value = {"kvlistValue": {"values": [_otlp_attr("b", "2"), _otlp_attr("a", "1")]}}
     payload = _otlp_payload(
         [
             _otlp_span(TRACE_A, ROOT, "root", 100, attributes=[_otlp_attr("b", "2"), _otlp_attr("a", "1")]),
-            _otlp_span(TRACE_A, CHILD, "child", 200, parent=ROOT),
+            _otlp_span(TRACE_A, CHILD, "child", 200, parent=ROOT, attributes=[{"key": "map", "value": map_value}]),
         ]
     )
     from_json = otlp_trace_snapshot.canonicalize([payload])
@@ -1009,6 +1010,10 @@ def test_otlp_canonicalize_protobuf_and_json_payloads_match():
     assert from_json == from_protobuf
     # Attributes are sorted by key and enums are rendered as integers.
     assert [a["key"] for a in _otlp_spans(from_json)[0]["attributes"]] == ["a", "b"]
+    assert [a["key"] for a in _otlp_spans(from_json)[1]["attributes"][0]["value"]["kvlistValue"]["values"]] == [
+        "a",
+        "b",
+    ]
     assert _otlp_spans(from_json)[0]["kind"] == 3
 
 
