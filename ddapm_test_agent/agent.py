@@ -50,6 +50,7 @@ import requests
 from yarl import URL
 
 from . import _get_version
+from . import otlp_trace_snapshot
 from . import trace_snapshot
 from . import tracestats_snapshot
 from .apmtelemetry import TelemetryEvent
@@ -1408,17 +1409,19 @@ class Agent:
             else:
                 snap_file = os.path.join(snap_dir, token)
 
-            # The logic from here is mostly duplicated for traces and trace stats.
+            # The logic from here is mostly duplicated for traces, trace stats and OTLP traces.
             # If another data type is to be snapshotted then it probably makes sense to abstract away
             # the required pieces of snapshotting (loading, generating and comparing).
 
             # For backwards compatibility traces don't have a postfix of `_trace.json`
             trace_snap_file = f"{snap_file}.json"
             tracestats_snap_file = f"{snap_file}_tracestats.json"
+            otlp_trace_snap_file = f"{snap_file}_otlp_traces.json"
 
             frame.add_item(f"Trace File: {trace_snap_file}")
             frame.add_item(f"Stats File: {tracestats_snap_file}")
-            log.info("using snapshot files %r and %r", trace_snap_file, tracestats_snap_file)
+            frame.add_item(f"OTLP Trace File: {otlp_trace_snap_file}")
+            log.info("using snapshot files %r, %r and %r", trace_snap_file, tracestats_snap_file, otlp_trace_snap_file)
 
             trace_snap_path_exists = os.path.exists(trace_snap_file)
 
@@ -1477,6 +1480,44 @@ class Agent:
                     "wrote new tracestats snapshot to %r",
                     os.path.abspath(tracestats_snap_file),
                 )
+
+            # Only decode OTLP requests when there is something to snapshot so native snapshots are unaffected.
+            otlp_trace_snap_path_exists = os.path.exists(otlp_trace_snap_file)
+            received_otlp_requests = any(
+                req.match_info.handler == self.handle_v1_traces_otlp for req in self._requests_by_session(token)
+            )
+            if received_otlp_requests or otlp_trace_snap_path_exists:
+                received_otlp_traces = otlp_trace_snapshot.canonicalize(await self._traces_otlp_by_session(token))
+            else:
+                received_otlp_traces = {"resourceSpans": []}
+            received_otlp_spans = otlp_trace_snapshot.span_count(received_otlp_traces) > 0
+            if snap_ci_mode and received_otlp_spans and not otlp_trace_snap_path_exists:
+                raise AssertionError(
+                    f"OTLP trace snapshot file '{otlp_trace_snap_file}' not found. "
+                    "Perhaps the file was not checked into source control? "
+                    "The snapshot file is automatically generated when the test agent is not in CI mode."
+                )
+            elif otlp_trace_snap_path_exists:
+                # Do the snapshot comparison
+                with open(otlp_trace_snap_file, mode="r") as f:
+                    raw_snapshot = json.load(f)
+                otlp_trace_snapshot.snapshot(
+                    expected=raw_snapshot,
+                    received=received_otlp_traces,
+                    ignored=span_ignores,
+                    attribute_regex_replaces=attribute_regex_replaces,
+                )
+            elif received_otlp_spans:
+                # Create a new snapshot for the data received
+                with open(otlp_trace_snap_file, mode="w") as f:
+                    f.write(
+                        otlp_trace_snapshot.generate(
+                            received_otlp_traces,
+                            removed=span_removes,
+                            attribute_regex_replaces=attribute_regex_replaces,
+                        )
+                    )
+                log.info("wrote new OTLP trace snapshot to %r", os.path.abspath(otlp_trace_snap_file))
         return web.HTTPOk()
 
     async def handle_session_traces(self, request: Request) -> web.Response:
@@ -1977,9 +2018,7 @@ def make_otlp_http_app(agent: Agent) -> web.Application:
     return app
 
 
-async def make_otlp_grpc_server_async(
-    agent: Agent, http_port: int, grpc_port: int, host: str = "127.0.0.1"
-) -> Any:
+async def make_otlp_grpc_server_async(agent: Agent, http_port: int, grpc_port: int, host: str = "127.0.0.1") -> Any:
     """Create and start a separate GRPC server for OTLP endpoints that forwards to HTTP server."""
     # Define the servicer class only when GRPC is available
     server = grpc_aio.server()
@@ -2154,7 +2193,9 @@ def make_app(
     valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site) if dd_api_key and dd_site else False
     app["authenticated"] = valid_auth
     if not disable_llmobs_data_forwarding and not valid_auth:
-        log.warning("Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding.")
+        log.warning(
+            "Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding."
+        )
         disable_llmobs_data_forwarding = True
 
     app["disable_llmobs_data_forwarding"] = disable_llmobs_data_forwarding

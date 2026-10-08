@@ -1,10 +1,15 @@
+import base64
 import json
 import os
+import re
 
 import pytest
 
+from ddapm_test_agent import fmt
+from ddapm_test_agent import otlp_trace_snapshot
 from ddapm_test_agent import trace_snapshot
 from ddapm_test_agent import tracestats_snapshot
+from ddapm_test_agent.checks import start_trace
 from ddapm_test_agent.trace import add_span_event
 from ddapm_test_agent.trace import add_span_link
 from ddapm_test_agent.trace import copy_span
@@ -885,3 +890,223 @@ async def test_removed_attributes_fails_span_id(agent, tmp_path, snapshot_remove
     resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test_case"})
     assert resp.status == 400
     assert "Cannot remove 'span_id' from spans" in await resp.text()
+
+
+@pytest.fixture
+def check_trace():
+    start_trace("test")
+
+
+TRACE_A = "0123456789abcdef0123456789abcdef"
+TRACE_B = "fedcba9876543210fedcba9876543210"
+ROOT = "aaaaaaaaaaaaaaaa"
+CHILD = "bbbbbbbbbbbbbbbb"
+EXTERNAL = "dddddddddddddddd"
+
+
+def _otlp_attr(key, value):
+    return {"key": key, "value": {"stringValue": value}}
+
+
+def _otlp_span(trace_id, span_id, name, start, parent=None, attributes=None, **extra):
+    span = {
+        "traceId": trace_id,
+        "spanId": span_id,
+        "name": name,
+        "kind": 3,
+        "startTimeUnixNano": str(start),
+        "endTimeUnixNano": str(start + 10),
+        "attributes": attributes or [],
+    }
+    if parent:
+        span["parentSpanId"] = parent
+    span.update(extra)
+    return span
+
+
+def _otlp_payload(spans, resource_attrs=None):
+    return {
+        "resourceSpans": [
+            {
+                "resource": {
+                    "attributes": resource_attrs
+                    or [_otlp_attr("service.name", "svc"), _otlp_attr("telemetry.sdk.version", "1.0.0")]
+                },
+                "scopeSpans": [{"scope": {"name": "datadog"}, "spans": spans}],
+            }
+        ]
+    }
+
+
+def _otlp_spans(doc):
+    return [s for rs in doc["resourceSpans"] for ss in rs["scopeSpans"] for s in ss["spans"]]
+
+
+def _otlp_to_protobuf_dict(spec_payload):
+    """Render an OTLP/JSON spec payload the way decode_traces_request renders protobuf payloads."""
+    snake = json.loads(
+        json.dumps(spec_payload)
+        .replace("resourceSpans", "resource_spans")
+        .replace("scopeSpans", "scope_spans")
+        .replace("traceId", "trace_id")
+        .replace("parentSpanId", "parent_span_id")
+        .replace("spanId", "span_id")
+        .replace("startTimeUnixNano", "start_time_unix_nano")
+        .replace("endTimeUnixNano", "end_time_unix_nano")
+        .replace("stringValue", "string_value")
+    )
+    for rs in snake["resource_spans"]:
+        for ss in rs["scope_spans"]:
+            for span in ss["spans"]:
+                for key in ("trace_id", "span_id", "parent_span_id"):
+                    if key in span:
+                        span[key] = base64.b64encode(bytes.fromhex(span[key])).decode()
+                span["kind"] = "SPAN_KIND_CLIENT"
+    return snake
+
+
+def test_otlp_canonicalize_renumbers_ids_in_trace_and_parent_order():
+    payload = _otlp_payload(
+        [
+            # Span ids are only unique within a trace.
+            _otlp_span(TRACE_B, ROOT, "second", 300),
+            _otlp_span(TRACE_A, CHILD, "child", 200, parent=ROOT),
+            _otlp_span(TRACE_A, ROOT, "root", 100),
+        ]
+    )
+    doc = otlp_trace_snapshot.canonicalize([payload])
+    spans = _otlp_spans(doc)
+    assert [s["name"] for s in spans] == ["root", "child", "second"]
+    assert [s["traceId"] for s in spans] == [f"{1:032x}", f"{1:032x}", f"{2:032x}"]
+    assert [s["spanId"] for s in spans] == [f"{1:016x}", f"{2:016x}", f"{3:016x}"]
+    assert spans[1]["parentSpanId"] == f"{1:016x}"
+    # Timestamps are kept as received.
+    assert spans[0]["startTimeUnixNano"] == "100"
+
+
+def test_otlp_canonicalize_keeps_ids_outside_the_payload(check_trace):
+    def doc(trace_id, span_id):
+        link = {"traceId": trace_id, "spanId": span_id}
+        span = _otlp_span(TRACE_A, ROOT, "root", 100, parent=span_id, links=[link])
+        return otlp_trace_snapshot.canonicalize([_otlp_payload([span])])
+
+    (span,) = _otlp_spans(doc(TRACE_B, EXTERNAL))
+    assert span["parentSpanId"] == EXTERNAL
+    assert span["links"][0] == {"traceId": TRACE_B, "spanId": EXTERNAL}
+    # External ids are random, so they are not compared.
+    otlp_trace_snapshot.snapshot(doc(TRACE_B, EXTERNAL), doc(TRACE_A[::-1], CHILD), [], {})
+
+
+def test_otlp_canonicalize_protobuf_and_json_payloads_match():
+    map_value = {"kvlistValue": {"values": [_otlp_attr("b", "2"), _otlp_attr("a", "1")]}}
+    payload = _otlp_payload(
+        [
+            _otlp_span(TRACE_A, ROOT, "root", 100, attributes=[_otlp_attr("b", "2"), _otlp_attr("a", "1")]),
+            _otlp_span(TRACE_A, CHILD, "child", 200, parent=ROOT, attributes=[{"key": "map", "value": map_value}]),
+        ]
+    )
+    from_json = otlp_trace_snapshot.canonicalize([payload])
+    from_protobuf = otlp_trace_snapshot.canonicalize([_otlp_to_protobuf_dict(payload)])
+    assert from_json == from_protobuf
+    # Attributes are sorted by key and enums are rendered as integers.
+    assert [a["key"] for a in _otlp_spans(from_json)[0]["attributes"]] == ["a", "b"]
+    assert [a["key"] for a in _otlp_spans(from_json)[1]["attributes"][0]["value"]["kvlistValue"]["values"]] == [
+        "a",
+        "b",
+    ]
+    assert _otlp_spans(from_json)[0]["kind"] == 3
+
+
+def test_otlp_canonicalize_merges_a_trace_split_across_exports():
+    first = _otlp_payload([_otlp_span(TRACE_A, CHILD, "child", 200, parent=ROOT)])
+    # The same resource attributes in a different order.
+    second = _otlp_payload(
+        [_otlp_span(TRACE_A, ROOT, "root", 100)],
+        resource_attrs=[_otlp_attr("telemetry.sdk.version", "1.0.0"), _otlp_attr("service.name", "svc")],
+    )
+    doc = otlp_trace_snapshot.canonicalize([first, second])
+    assert len(doc["resourceSpans"]) == 1
+    assert len(doc["resourceSpans"][0]["scopeSpans"]) == 1
+    assert [s["name"] for s in _otlp_spans(doc)] == ["root", "child"]
+    assert doc == otlp_trace_snapshot.canonicalize([second, first])
+
+
+def test_otlp_generate_round_trips_through_snapshot(check_trace):
+    doc = otlp_trace_snapshot.canonicalize([_otlp_payload([_otlp_span(TRACE_A, ROOT, "root", 100)])])
+    expected = json.loads(otlp_trace_snapshot.generate(doc))
+    otlp_trace_snapshot.snapshot(expected, doc, ignored=[], attribute_regex_replaces={})
+
+
+def test_otlp_snapshot_fails_on_attribute_change(check_trace):
+    expected = otlp_trace_snapshot.canonicalize(
+        [_otlp_payload([_otlp_span(TRACE_A, ROOT, "root", 100, attributes=[_otlp_attr("a", "1")])])]
+    )
+    received = otlp_trace_snapshot.canonicalize(
+        [_otlp_payload([_otlp_span(TRACE_A, ROOT, "root", 100, attributes=[_otlp_attr("a", "2")])])]
+    )
+    with pytest.raises(AssertionError, match="do not match the snapshot"):
+        otlp_trace_snapshot.snapshot(expected, received, ignored=[], attribute_regex_replaces={})
+
+
+def test_otlp_snapshot_fails_on_missing_spans(check_trace):
+    expected = otlp_trace_snapshot.canonicalize([_otlp_payload([_otlp_span(TRACE_A, ROOT, "root", 100)])])
+    with pytest.raises(AssertionError):
+        otlp_trace_snapshot.snapshot(expected, {"resourceSpans": []}, ignored=[], attribute_regex_replaces={})
+
+
+def test_otlp_snapshot_ignores_use_the_native_syntax(check_trace):
+    def doc(value, start, sdk_version, span_attributes):
+        payload = _otlp_payload(
+            [_otlp_span(TRACE_A, ROOT, "root", start, attributes=span_attributes, traceState=f"dd=p:{value}")],
+            resource_attrs=[_otlp_attr("runtime-id", value), _otlp_attr("telemetry.sdk.version", sdk_version)],
+        )
+        return otlp_trace_snapshot.canonicalize([payload])
+
+    expected = doc("one", 100, "1.0.0", [_otlp_attr("runtime-id", "one")])
+    # Ignoring the only attribute matches a span without attributes.
+    received = doc("two", 500, "2.0.0", [])
+    with pytest.raises(AssertionError):
+        otlp_trace_snapshot.snapshot(expected, received, ignored=[], attribute_regex_replaces={})
+    # telemetry.sdk.version and traceState are always ignored; meta.X matches span and resource attributes.
+    otlp_trace_snapshot.snapshot(
+        expected, received, ignored=["meta.runtime-id", "start", "duration"], attribute_regex_replaces={}
+    )
+
+
+def test_otlp_generate_applies_removes_and_regex_placeholders():
+    doc = otlp_trace_snapshot.canonicalize(
+        [
+            _otlp_payload(
+                [
+                    _otlp_span(
+                        TRACE_A,
+                        ROOT,
+                        "root",
+                        100,
+                        attributes=[_otlp_attr("url", "http://localhost:1234/"), _otlp_attr("x", "1")],
+                    )
+                ]
+            )
+        ]
+    )
+    scope = doc["resourceSpans"][0]["scopeSpans"][0]["scope"]
+    scope["attributes"] = [_otlp_attr("x", "1")]
+    generated = json.loads(
+        otlp_trace_snapshot.generate(
+            doc, removed=["meta.x"], attribute_regex_replaces={"{port}": re.compile(r"(?<=:)\d+(?=/)")}
+        )
+    )
+    assert _otlp_spans(generated)[0]["attributes"] == [_otlp_attr("url", "http://localhost:{port}/")]
+    assert "attributes" not in generated["resourceSpans"][0]["scopeSpans"][0]["scope"]
+
+
+def test_fmt_formats_otlp_trace_snapshots(tmp_path):
+    doc = otlp_trace_snapshot.canonicalize([_otlp_payload([_otlp_span(TRACE_A, ROOT, "root", 100)])])
+    snapshot_file = tmp_path / "token_otlp_traces.json"
+    snapshot_file.write_text(json.dumps(doc))
+
+    with pytest.raises(SystemExit):
+        fmt.main(["--check", str(tmp_path)])
+    fmt.main([str(tmp_path)])
+    assert snapshot_file.read_text() == otlp_trace_snapshot.generate(doc)
+    fmt.main(["--check", str(tmp_path)])

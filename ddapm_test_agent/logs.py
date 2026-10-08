@@ -50,8 +50,9 @@ class OTLPLogsGRPCServicer(LogsServiceServicer):
             protobuf_data = request.SerializeToString()
             headers = {"Content-Type": "application/x-protobuf"}
             metadata = dict(context.invocation_metadata())
-            if "session-token" in metadata:
-                headers["Session-Token"] = metadata["session-token"]
+            token = metadata.get("x-datadog-test-session-token", metadata.get("session-token"))
+            if token is not None:
+                headers["X-Datadog-Test-Session-Token"] = token
             async with ClientSession(self.http_url) as session:
                 async with session.post(LOGS_ENDPOINT, headers=headers, data=protobuf_data) as resp:
                     context.set_trailing_metadata([("http-status", str(resp.status))])
