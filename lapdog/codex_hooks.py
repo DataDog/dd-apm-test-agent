@@ -2052,6 +2052,14 @@ class CodexHooksAPI:
         if entry is None:
             return False
         span = entry["span"]
+        if entry.get("completed"):
+            # The completion event already supplied the full output. A later
+            # poll only consumes the remaining shell buffer, not new output.
+            metadata = span["meta"]["metadata"]
+            metadata["poll_count"] = metadata.get("poll_count", 0) + 1
+            if isinstance(value.get("exit_code"), int) or result_error or value.get("isError"):
+                session.shell_sessions.pop(str(session_id), None)
+            return True
         previous = entry["result"]
         merged = dict(previous)
         merged.update(value)
@@ -2167,6 +2175,22 @@ class CodexHooksAPI:
                 if matches(call):
                     candidates.append((outer_id, index))
         emitted = [entry for entry in session.unmatched_exec_tools if matches(entry["call"])]
+        if item_type == "CommandExecution":
+            process_id = item.get("process_id")
+            identified = session.shell_sessions.get(str(process_id)) if process_id is not None else None
+            if identified is not None:
+                if identified.get("completed"):
+                    return
+                # Process identity takes precedence over command text, which
+                # can be identical for concurrent commands.
+                candidates = []
+                emitted = [identified]
+            elif process_id is None:
+                emitted.extend(
+                    entry
+                    for entry in session.shell_sessions.values()
+                    if not entry.get("completed") and matches(entry["call"])
+                )
         # Parallel calls can complete in any order. Do not assign by position.
         if len(candidates) + len(emitted) != 1:
             return
@@ -2179,7 +2203,11 @@ class CodexHooksAPI:
             }
         else:
             entry = emitted[0]
-            session.unmatched_exec_tools.remove(entry)
+            if "result" in entry:
+                entry["result"] = {**entry["result"], **value}
+                entry["completed"] = True
+            else:
+                session.unmatched_exec_tools.remove(entry)
             span = entry["span"]
             if item_type == "CommandExecution":
                 output_value, result_metadata = _shell_tool_result(value)
@@ -2284,7 +2312,12 @@ class CodexHooksAPI:
             if raw_name == "exec_command" and span is not None and isinstance(value, dict):
                 shell_session_id = value.get("session_id")
                 if shell_session_id is not None:
-                    session.shell_sessions[str(shell_session_id)] = {"span": span, "result": value}
+                    session.shell_sessions[str(shell_session_id)] = {
+                        "span": span,
+                        "result": value,
+                        "call": call,
+                        "completed": result is not None and result.get("source") == "item_completed",
+                    }
                     span["meta"]["metadata"]["shell_session_id"] = shell_session_id
         self._update_agent_manifest(session)
 

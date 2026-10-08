@@ -547,6 +547,86 @@ async def test_codex_exec_does_not_assign_ambiguous_completion(agent):
     assert all(span["meta"]["metadata"]["result_matched"] is False for span in tools)
 
 
+@pytest.mark.parametrize("partial", ["", "started\n"])
+@pytest.mark.parametrize("exit_code", [0, 1])
+async def test_codex_running_command_completes_without_poll(agent, partial, exit_code):
+    sid = "codex-unpolled-command"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(agent, sid, _event("user_message", message="run checks"))
+    # Identical commands must still match their own process, not each other.
+    for process_id in (123, 456):
+        await _post(
+            agent,
+            sid,
+            _response_item(
+                "custom_tool_call",
+                timestamp="2026-05-11T17:00:03.000Z",
+                name="exec",
+                call_id=str(process_id),
+                input='text(await tools.exec_command({cmd:"check"}));',
+            ),
+        )
+        await _post(
+            agent,
+            sid,
+            _response_item(
+                "custom_tool_call_output",
+                timestamp="2026-05-11T17:00:04.000Z",
+                call_id=str(process_id),
+                output=json.dumps({"session_id": process_id, "output": partial, "exit_code": None}),
+            ),
+        )
+    await _post(
+        agent,
+        sid,
+        _event(
+            "item_completed",
+            timestamp="2026-05-11T17:00:07.000Z",
+            item={
+                "type": "CommandExecution",
+                "process_id": "456",
+                "command": ["/bin/zsh", "-lc", "check"],
+                "aggregated_output": "started\nfinished\n",
+                "exit_code": exit_code,
+                "status": "completed",
+            },
+        ),
+    )
+    spans = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
+    assert len(spans) == 2
+    assert spans[0]["meta"]["output"]["value"] == partial
+    completed = spans[1]
+    assert completed["meta"]["output"]["value"] == "started\nfinished\n"
+    assert completed["meta"]["metadata"]["exit_code"] == exit_code
+    assert completed["meta"]["metadata"]["result_source"] == "item_completed"
+    assert completed["status"] == ("error" if exit_code else "ok")
+    assert completed["duration"] == 4_000_000_000
+    # Polling after completion must not duplicate output or emit another span.
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "custom_tool_call",
+            name="exec",
+            call_id="poll",
+            input='text(await tools.write_stdin({session_id:456,chars:""}));',
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "custom_tool_call_output",
+            call_id="poll",
+            output=json.dumps({"output": "finished\n", "exit_code": exit_code}),
+        ),
+    )
+    spans = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
+    assert len(spans) == 2
+    assert spans[1]["meta"]["output"]["value"] == "started\nfinished\n"
+
+
 async def test_codex_shell_poll_updates_original_command_span(agent):
     sid = "codex-shell-poll"
     await _post(agent, sid, _session_meta(sid))
