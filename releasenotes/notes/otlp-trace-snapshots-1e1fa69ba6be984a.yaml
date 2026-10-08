@@ -1,0 +1,11 @@
+---
+features:
+  - |
+    Snapshot OTLP traces received on ``/v1/traces`` to ``<token>_otlp_traces.json`` as part of ``/test/session/snapshot``.
+    The snapshot is an OTLP/JSON document, and the ``ignores``, ``removes`` and ``regex_placeholders`` parameters use the
+    same key syntax as native trace snapshots.
+    ``ddapm-test-agent-fmt`` formats ``_otlp_traces.json`` snapshot files.
+fixes:
+  - |
+    Associate OTLP logs, metrics and traces sent over GRPC with the session token passed in the
+    ``x-datadog-test-session-token`` metadata key.
