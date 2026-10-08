@@ -978,7 +978,10 @@ async def test_codex_project_metadata_uses_cwd_basename_without_git(agent, tmp_p
     assert "git_repository_url" not in root["meta"]["metadata"]
 
 
-async def test_codex_tool_status_reasoning_and_large_output_are_tracked_safely(agent):
+@pytest.mark.parametrize("max_chars", [None, 8192])
+async def test_codex_tool_status_reasoning_and_large_output_are_tracked_safely(agent, monkeypatch, max_chars):
+    monkeypatch.setattr("lapdog.codex_hooks.MAX_TOOL_VALUE_CHARS", max_chars)
+    monkeypatch.setattr("lapdog.codex_hooks.MAX_LLM_MESSAGE_CHARS", max_chars)
     sid = "codex-status-reasoning"
     large_output = "x" * 9000
     await _post(agent, sid, _session_meta(sid))
@@ -1078,14 +1081,21 @@ async def test_codex_tool_status_reasoning_and_large_output_are_tracked_safely(a
     assert tool["meta"]["metadata"]["reasoning"][0]["text"] == "Need shell output"
     assert tool["meta"]["metadata"]["output_format"] == "verbatim"
     assert tool["meta"]["metadata"]["_dd"]["display"]["output"] == "code"
-    assert "[truncated " in tool["meta"]["output"]["value"]
-    assert len(tool["meta"]["output"]["value"]) < len(large_output)
+    if max_chars is None:
+        assert tool["meta"]["output"]["value"] == large_output
+        assert not tool["meta"]["metadata"]["_dd"].get("truncated_output")
+    else:
+        assert "[truncated " in tool["meta"]["output"]["value"]
+        assert len(tool["meta"]["output"]["value"]) < len(large_output)
 
     tool_input_message = llms[1]["meta"]["input"]["messages"][-1]
     assert tool_input_message["role"] == "tool"
     assert tool_input_message["status"] == "failed"
-    assert "[truncated " in tool_input_message["content"]
-    assert len(tool_input_message["content"]) < len(large_output)
+    if max_chars is None:
+        assert tool_input_message["content"] == large_output
+    else:
+        assert "[truncated " in tool_input_message["content"]
+        assert len(tool_input_message["content"]) < len(large_output)
 
 
 async def test_codex_active_turn_keeps_root_duration_zero_for_live_badge(agent):

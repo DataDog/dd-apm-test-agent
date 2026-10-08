@@ -39,8 +39,12 @@ log = logging.getLogger(__name__)
 CompletedTrace = Tuple[str, str]
 OrphanProxySpan = Tuple[Optional[str], Dict[str, Any]]
 
-MAX_LLM_MESSAGE_CHARS = int(os.environ.get("DD_CODEX_MAX_LLM_MESSAGE_CHARS", "8192"))
-MAX_TOOL_VALUE_CHARS = int(os.environ.get("DD_CODEX_MAX_TOOL_VALUE_CHARS", "8192"))
+MAX_LLM_MESSAGE_CHARS = (
+    int(os.environ["DD_CODEX_MAX_LLM_MESSAGE_CHARS"]) if os.environ.get("DD_CODEX_MAX_LLM_MESSAGE_CHARS") else None
+)
+MAX_TOOL_VALUE_CHARS = (
+    int(os.environ["DD_CODEX_MAX_TOOL_VALUE_CHARS"]) if os.environ.get("DD_CODEX_MAX_TOOL_VALUE_CHARS") else None
+)
 
 _OK_TOOL_STATUSES = {"", "ok", "success", "succeeded", "completed", "complete"}
 _IN_FLIGHT_TOOL_STATUSES = {"pending", "queued", "running", "in_progress", "started"}
@@ -101,7 +105,9 @@ def _copy_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return copied
 
 
-def _truncate_text(value: str, max_chars: int) -> Tuple[str, bool]:
+def _truncate_text(value: str, max_chars: Optional[int]) -> Tuple[str, bool]:
+    if max_chars is None:
+        return value, False
     if max_chars <= 0:
         return "", bool(value)
     if len(value) <= max_chars:
@@ -110,7 +116,9 @@ def _truncate_text(value: str, max_chars: int) -> Tuple[str, bool]:
     return f"{value[:max_chars]}\n\n[truncated {omitted} chars]", True
 
 
-def _truncate_display_value(value: Any, max_chars: int) -> Tuple[Any, bool]:
+def _truncate_display_value(value: Any, max_chars: Optional[int]) -> Tuple[Any, bool]:
+    if max_chars is None:
+        return value, False
     if isinstance(value, str):
         return _truncate_text(value, max_chars)
     if value is None:
