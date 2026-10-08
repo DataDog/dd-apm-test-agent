@@ -408,9 +408,7 @@ async def test_codex_response_item_user_message_sets_root_input(agent):
                 {"type": "input_image", "image_url": "data:image/png;base64,example"},
                 {"type": "input_text", "text": "inspect this image"},
             ],
-            internal_chat_message_metadata_passthrough={
-                "content_item_kinds": ["user.text", "user.image", "user.text"]
-            },
+            internal_chat_message_metadata_passthrough={"content_item_kinds": ["user.text", "user.image", "user.text"]},
         ),
     )
     await _post(agent, sid, _event("task_complete", last_agent_message="done"))
@@ -433,9 +431,7 @@ async def test_codex_response_item_ignores_injected_user_context_and_deduplicate
             "message",
             role="user",
             content=[{"type": "input_text", "text": "# AGENTS.md instructions"}],
-            internal_chat_message_metadata_passthrough={
-                "content_item_kinds": ["agents_md.instructions"]
-            },
+            internal_chat_message_metadata_passthrough={"content_item_kinds": ["agents_md.instructions"]},
         ),
     )
     await _post(
@@ -1463,6 +1459,250 @@ async def test_codex_task_started_keeps_parent_turn_when_child_replays_same_turn
     assert parent_roots[0]["meta"]["input"]["value"] == "review"
     assert parent_roots[0]["meta"]["output"]["value"] == "done"
     assert [s for s in spans if s.get("session_id") == child_sid] == []
+
+
+async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_catalog):
+    parent_sid = "codex-parent-with-reviews"
+    review_sid = "codex-guardian-review"
+    await _post(agent, parent_sid, _session_meta(parent_sid))
+    await _post(agent, parent_sid, _turn_context("parent-turn"))
+    await _post(agent, parent_sid, _event("user_message", message="check the file"))
+    review_meta = _session_meta(review_sid)
+    review_meta["payload"].update({"thread_source": "guardian_review", "parent_thread_id": parent_sid})
+    await _post(agent, review_sid, review_meta)
+
+    for index, minute in enumerate(("00", "01"), 1):
+        call_id = f"exec-{index}"
+        requested = f"2026-05-11T17:{minute}:03.000Z"
+        started = f"2026-05-11T17:{minute}:03.100Z"
+        finished = f"2026-05-11T17:{minute}:04.000Z"
+        returned = f"2026-05-11T17:{minute}:05.000Z"
+        await _post(
+            agent,
+            parent_sid,
+            _response_item(
+                "custom_tool_call",
+                timestamp=requested,
+                call_id=call_id,
+                name="exec",
+                input='tools.exec_command({cmd:"node --check my-agent.js"})',
+            ),
+        )
+        await _post(agent, review_sid, _event("task_started", timestamp=started, turn_id=f"review-{index}"))
+        context = _turn_context(f"review-{index}")
+        context["timestamp"] = started
+        context["payload"]["model"] = "codex-auto-review" if index == 1 else "gpt-5.5"
+        await _post(agent, review_sid, context)
+        await _post(
+            agent,
+            review_sid,
+            _response_item(
+                "message",
+                timestamp=started,
+                role="user",
+                content=[
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "Reviewed Codex session id: " + parent_sid + "\n"
+                            "APPROVAL REQUEST START\nPlanned action JSON:\n"
+                            '{"command":["/bin/zsh","-lc","node --check my-agent.js"]}'
+                        ),
+                    }
+                ],
+            ),
+        )
+        await _post(
+            agent,
+            review_sid,
+            _response_item(
+                "message",
+                timestamp=finished,
+                role="assistant",
+                content=[
+                    {
+                        "type": "output_text",
+                        "text": (
+                            '{"outcome":"allow","risk_level":"low",'
+                            '"rationale":"The command only checks JavaScript syntax."}'
+                        ),
+                    }
+                ],
+            ),
+        )
+        await _post(
+            agent,
+            review_sid,
+            _event(
+                "token_count",
+                timestamp=finished,
+                info={"last_token_usage": {"input_tokens": 100 + index, "output_tokens": 10}},
+            ),
+        )
+        await _post(agent, review_sid, _event("task_complete", timestamp=finished, turn_id=f"review-{index}"))
+        await _post(
+            agent,
+            parent_sid,
+            _response_item(
+                "custom_tool_call_output",
+                timestamp=returned,
+                call_id=call_id,
+                output="ok",
+            ),
+        )
+
+    await _post(agent, parent_sid, _event("task_complete", timestamp="2026-05-11T17:01:06.000Z"))
+    resp = await agent.get("/claude/hooks/spans")
+    spans = _spans(await resp.json())
+    assert not [s for s in spans if s.get("session_id") == review_sid]
+    assert not [s for s in _by_kind(spans, "llm") if s.get("name") == "codex-auto-review"]
+    assert _by_kind(spans, "task") == []
+    tools = [s for s in _by_kind(spans, "tool") if s.get("session_id") == parent_sid]
+    assert len(tools) == 2
+    for index, tool in enumerate(tools, 1):
+        review = tool["meta"]["metadata"]["_dd"]["auto_reviews"][0]
+        assert "auto_reviews" not in tool["meta"]["metadata"]
+        assert set(review) == {"outcome", "risk_level", "explanation", "usage", "tool_id", "model"}
+        assert review["tool_id"] == f"exec-{index}"
+        assert review["outcome"] == "allow"
+        assert review["explanation"] == "The command only checks JavaScript syntax."
+        assert review["usage"]["input_tokens"] == 100 + index
+        if index == 1:
+            assert review["model"] == "codex-auto-review"
+            assert review["usage"]["estimated_cost_model"] is None
+            assert review["usage"]["estimated_total_cost"] is None
+            assert review["usage"]["estimated_total_cost_usd"] is None
+        else:
+            assert review["model"] == "gpt-5.5"
+            assert review["usage"]["estimated_cost_model"] == "gpt-5.5"
+            assert review["usage"]["estimated_total_cost"] == (100 + index) * 5000 + 10 * 30000
+            assert review["usage"]["estimated_total_cost_usd"] == review["usage"]["estimated_total_cost"] / 1e9
+        step = next(s for s in spans if s["span_id"] == tool["parent_id"])
+        assert "auto_reviews" not in step["meta"]["metadata"].get("_dd", {})
+
+
+async def test_codex_guardian_review_arriving_after_tool_output(agent):
+    parent_sid = "codex-parent-late-review"
+    review_sid = "codex-late-guardian"
+    await _post(agent, parent_sid, _session_meta(parent_sid))
+    await _post(agent, parent_sid, _turn_context("parent-turn"))
+    await _post(
+        agent,
+        parent_sid,
+        _response_item(
+            "custom_tool_call",
+            timestamp="2026-05-11T17:00:03.000Z",
+            call_id="exec-1",
+            name="exec",
+            input='tools.exec_command({cmd:"node --check my-agent.js"})',
+        ),
+    )
+    await _post(
+        agent,
+        parent_sid,
+        _response_item(
+            "custom_tool_call_output",
+            timestamp="2026-05-11T17:00:05.000Z",
+            call_id="exec-1",
+            output="ok",
+        ),
+    )
+    meta = _session_meta(review_sid)
+    meta["payload"].update({"thread_source": "guardian_review", "parent_thread_id": parent_sid})
+    await _post(agent, review_sid, meta)
+    await _post(agent, review_sid, _event("task_started", timestamp="2026-05-11T17:00:03.100Z"))
+    await _post(
+        agent,
+        review_sid,
+        _response_item(
+            "message",
+            timestamp="2026-05-11T17:00:03.200Z",
+            role="user",
+            content=[
+                {
+                    "type": "input_text",
+                    "text": (
+                        "Reviewed Codex session id: " + parent_sid + "\n"
+                        "APPROVAL REQUEST START\nPlanned action JSON:\n"
+                        '{"command":["/bin/zsh","-lc","node --check my-agent.js"]}'
+                    ),
+                }
+            ],
+        ),
+    )
+    await _post(agent, review_sid, _event("task_complete", timestamp="2026-05-11T17:00:04.000Z"))
+    await _post(agent, review_sid, _event("task_complete", timestamp="2026-05-11T17:00:04.000Z"))
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = _spans(await resp.json())
+    tool = next(s for s in _by_kind(spans, "tool") if s.get("session_id") == parent_sid)
+    assert tool["meta"]["metadata"]["_dd"]["auto_reviews"][0]["tool_id"] == "exec-1"
+    assert len(tool["meta"]["metadata"]["_dd"]["auto_reviews"]) == 1
+    assert not [s for s in spans if s.get("session_id") == review_sid]
+    assert _by_kind(spans, "task") == []
+
+
+@pytest.mark.parametrize("include_context", [True, False])
+async def test_codex_guardian_review_resume_without_session_meta(agent, include_context):
+    parent_sid = "codex-parent-resumed-review"
+    review_sid = "codex-review-without-meta"
+    await _post(agent, parent_sid, _session_meta(parent_sid))
+    await _post(agent, parent_sid, _turn_context("parent-turn"))
+    await _post(
+        agent,
+        parent_sid,
+        _response_item(
+            "custom_tool_call",
+            timestamp="2026-05-11T17:00:03.000Z",
+            call_id="exec-1",
+            name="exec",
+            input='tools.exec_command({cmd:"node --check my-agent.js"})',
+        ),
+    )
+    await _post(agent, review_sid, _event("thread_settings_applied", timestamp="2026-05-11T17:00:03.100Z"))
+    await _post(agent, review_sid, _event("task_started", timestamp="2026-05-11T17:00:03.200Z"))
+    context = _turn_context("review-turn")
+    context["timestamp"] = "2026-05-11T17:00:03.300Z"
+    context["payload"]["model"] = "codex-auto-review"
+    if include_context:
+        await _post(agent, review_sid, context)
+    await _post(
+        agent,
+        review_sid,
+        _response_item(
+            "message",
+            timestamp="2026-05-11T17:00:03.400Z",
+            role="user",
+            content=[
+                {
+                    "type": "input_text",
+                    "text": (
+                        f"Reviewed Codex session id: {parent_sid}\n"
+                        "APPROVAL REQUEST START\nPlanned action JSON:\n"
+                        '{"command":["/bin/zsh","-lc","node --check my-agent.js"]}'
+                    ),
+                }
+            ],
+        ),
+    )
+    await _post(agent, review_sid, _event("task_complete", timestamp="2026-05-11T17:00:04.000Z"))
+    await _post(
+        agent,
+        parent_sid,
+        _response_item("custom_tool_call_output", timestamp="2026-05-11T17:00:05.000Z", call_id="exec-1", output="ok"),
+    )
+
+    resp = await agent.get("/claude/hooks/spans")
+    spans = _spans(await resp.json())
+    assert not [span for span in spans if span.get("session_id") == review_sid]
+    tool = next(span for span in _by_kind(spans, "tool") if span.get("session_id") == parent_sid)
+    review = tool["meta"]["metadata"]["_dd"]["auto_reviews"][0]
+    assert review["tool_id"] == "exec-1"
+    assert review["explanation"] == ""
+    if not include_context:
+        assert "model" not in review
+        assert review["usage"]["estimated_total_cost"] is None
+    assert _by_kind(spans, "task") == []
 
 
 async def test_codex_user_message_starts_new_trace_without_turn_context(agent):
