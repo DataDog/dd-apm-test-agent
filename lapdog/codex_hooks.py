@@ -61,6 +61,23 @@ _ERROR_TOOL_STATUSES = {
     "timed_out",
     "timeout",
 }
+# Execution details may change on a poll; span identity and bookkeeping must not.
+_RESERVED_TOOL_METADATA = {
+    "tool_id",
+    "status",
+    "exec_call_id",
+    "raw_tool_name",
+    "result_matched",
+    "result_source",
+    "timing",
+    "input_format",
+    "output_format",
+    "output_mime_type",
+    "reasoning",
+    "_dd",
+    "poll_count",
+    "shell_session_id",
+}
 _EXEC_WRAPPER_NAMES = {"exec", "functions.exec"}
 
 
@@ -515,16 +532,19 @@ class CodexHooksAPI:
                     if isinstance(candidate, PendingExecSpan):
                         calls = candidate.calls
                         matching = [index for index, call in enumerate(calls) if matches_input(call["arguments"])]
-                        if len(matching) == 1:
-                            child_id = f"{outer_id}:{matching[0]}"
+                        for index in matching:
+                            child_id = f"{outer_id}:{index}"
                             if child_id not in session.auto_reviews_by_tool_id:
                                 candidates.append((child_id, candidate, outer_id))
                     elif outer_id not in session.auto_reviews_by_tool_id and matches_input(candidate.tool_input):
                         candidates.append((outer_id, candidate, outer_id))
             pending = None
             tool_span = None
+            if len(candidates) > 1:
+                remaining.append(review)
+                continue
             if candidates:
-                tool_id, pending, review_tool_id = max(candidates, key=lambda item: item[1].start_ns)
+                tool_id, pending, review_tool_id = candidates[0]
                 parent_id = pending.parent_id
             else:
                 completed = [
@@ -537,10 +557,10 @@ class CodexHooksAPI:
                     and not span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("auto_reviews")
                     and matches_input(span.get("meta", {}).get("input", {}).get("value", ""))
                 ]
-                if not completed:
+                if len(completed) != 1:
                     remaining.append(review)
                     continue
-                tool_span = max(completed, key=lambda span: span["start_ns"])
+                tool_span = completed[0]
                 tool_id = str(tool_span["meta"]["metadata"]["tool_id"])
                 review_tool_id = tool_span["meta"]["metadata"].get("exec_call_id", tool_id)
                 parent_id = str(tool_span["parent_id"])
@@ -1959,23 +1979,32 @@ class CodexHooksAPI:
         end_ns: int,
         is_error: bool,
         shell: bool = False,
-        error_message: Optional[str] = None,
+        authoritative: bool = False,
     ) -> bool:
         """Apply an initial result or a later update using the same display rules."""
         output, details = _shell_tool_result(value) if shell else (_to_json_str(value), {})
         output, truncated = _truncate_text(output, MAX_TOOL_VALUE_CHARS)
         span["meta"]["output"] = {"value": output}
         metadata = span["meta"]["metadata"]
-        metadata.update(details)
+        metadata.update({key: value for key, value in details.items() if key not in _RESERVED_TOOL_METADATA})
         if truncated:
             set_hidden_metadata(span, truncated_output=True, max_value_chars=MAX_TOOL_VALUE_CHARS)
         if is_error:
             if span["status"] != "error":
                 metadata["status"] = "failed"
             span["status"] = "error"
-            span["meta"]["error"] = {
-                "message": error_message if error_message is not None else output or metadata["status"]
-            }
+            exit_code = details.get("exit_code")
+            message = (
+                (f"Exit code {exit_code}" if exit_code is not None else "Tool execution failed")
+                if shell
+                else output or metadata["status"]
+            )
+            span["meta"]["error"] = {"message": message}
+        elif authoritative:
+            # A completion describes the child itself, unlike its exec envelope.
+            span["status"] = "ok"
+            metadata["status"] = "completed"
+            span["meta"].pop("error", None)
         span["duration"] = max(span["duration"], end_ns - span["start_ns"])
         turn = session.active_turn
         if turn is not None and turn.trace_id == span["trace_id"]:
@@ -2045,7 +2074,6 @@ class CodexHooksAPI:
             "meta": {
                 "span": {"kind": "tool"},
                 "input": {"value": input_value},
-                "output": {"value": output_value},
                 "metadata": metadata,
             },
             "metrics": {},
@@ -2112,7 +2140,6 @@ class CodexHooksAPI:
             end_ns,
             is_error,
             shell=True,
-            error_message=str(value.get("output") or f"Exit code {exit_code}"),
         )
         if isinstance(exit_code, int) or result_error or value.get("isError"):
             session.shell_sessions.pop(str(session_id), None)
@@ -2245,6 +2272,7 @@ class CodexHooksAPI:
                 _timestamp_to_ns(record.get("timestamp", "")),
                 error,
                 shell=item_type == "CommandExecution",
+                authoritative=True,
             )
 
     def _emit_exec_tool_spans(
@@ -2304,7 +2332,7 @@ class CodexHooksAPI:
                 result_error = result_error or bool(value.get("isError"))
                 if raw_name == "exec_command" and isinstance(value.get("exit_code"), int):
                     result_error = result_error or value["exit_code"] != 0
-            is_error = _tool_status_is_error(outer_status) or result_error
+            is_error = result_error if result is not None else _tool_status_is_error(outer_status)
             session.pending_tool_statuses[child_id] = "failed" if is_error else "completed"
             if index == 0:
                 if reviews:

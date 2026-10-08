@@ -266,9 +266,9 @@ def _normalize_exec_result(parsed: Dict[str, Any]) -> Optional[Tuple[Any, Any, D
     if set(parsed) == {"goal", "remainingTokens", "completionBudgetReport"}:
         return None, "get_goal", {"value": parsed}
     # Tool descriptions have names too, but contain no result.
-    if not any(key in parsed for key in ("value", "result", "reason", "error")):
+    if type(parsed.get("i")) is not int and not any(key in parsed for key in ("value", "result", "reason", "error")):
         return None
-    value = parsed.get("value", parsed.get("result", parsed.get("reason", parsed.get("error"))))
+    value = parsed.get("value", parsed.get("result", parsed.get("reason", parsed.get("error", ""))))
     status = parsed.get("status")
     if "value" not in parsed and isinstance(value, dict) and value.get("status") in ("fulfilled", "rejected"):
         status = value["status"]
@@ -289,7 +289,10 @@ def _normalize_exec_result(parsed: Dict[str, Any]) -> Optional[Tuple[Any, Any, D
 def extract_exec_results(
     output: Any, call_count: int, source: str = "", calls: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[int, Dict[str, Any]]:
-    """Match indexed results, direct sequential prints, or a sole call's output."""
+    """Match indexed results, direct sequential prints, or a sole call's output.
+
+    calls caches name matching; source is still required for sequential matching.
+    """
     if call_count == 0:
         return {}
     if not isinstance(output, list):
@@ -300,6 +303,7 @@ def extract_exec_results(
         if isinstance(item, dict) and item.get("type") in ("input_text", "output_text")
     ]
     blocks: List[str] = [block for block in raw_blocks if isinstance(block, str)]
+    failed = bool(blocks and blocks[0].startswith("Script failed\n"))
     if blocks and re.match(r"^Script (completed|failed|running)(?:\n|$)", blocks[0]):
         blocks = blocks[1:]
     indexed: Dict[int, Dict[str, Any]] = {}
@@ -325,6 +329,19 @@ def extract_exec_results(
             call_index = matches[0]
         if 0 <= call_index < call_count and call_index not in indexed:
             indexed[call_index] = result
+    if failed:
+        # A direct sequence stops at its first exception. Later calls did not run.
+        if (
+            _prints_calls_in_order(source, call_count)
+            and 0 < len(blocks) <= call_count
+            and blocks[-1].startswith("Script error:")
+        ):
+            sequential = {index: {"value": block} for index, block in enumerate(blocks)}
+            sequential[len(blocks) - 1]["error"] = True
+            return {**sequential, **indexed}
+        if indexed or call_count != 1:
+            return indexed
+        return {0: {"value": blocks[0] if len(blocks) == 1 else blocks, "error": True}}
     if _prints_calls_in_order(source, call_count):
         if len(blocks) == call_count:
             return {**{index: {"value": block} for index, block in enumerate(blocks)}, **indexed}
