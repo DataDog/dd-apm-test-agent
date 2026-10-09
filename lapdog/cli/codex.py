@@ -340,12 +340,15 @@ def _run_codex(
     port: Optional[int] = None,
     proxy_session_key: Optional[str] = None,
     session_token: Optional[str] = None,
+    launch_bin: Optional[str] = None,
+    capture_proxy: bool = True,
 ) -> None:
     """Exec the codex binary, forwarding arguments. Never returns."""
     if args is None:
         args = []
-    codex_bin = shutil.which("codex")
-    if not codex_bin:
+
+    launch_bin = launch_bin or shutil.which("codex")
+    if not launch_bin:
         print("[lapdog] 'codex' not found in PATH", file=sys.stderr)
         sys.exit(1)
     env = os.environ.copy()
@@ -353,10 +356,11 @@ def _run_codex(
         env.pop(variable, None)
     proxy_args: List[str] = []
     if port is not None:
+        env["LAPDOG_URL"] = f"http://localhost:{port}"
+    if capture_proxy and port is not None and launch_bin == shutil.which("codex"):
         proxy_path = f"/codex/proxy/{proxy_session_key}/v1" if proxy_session_key else "/codex/proxy/v1"
         base_url = f"http://localhost:{port}{proxy_path}"
         env["OPENAI_BASE_URL"] = base_url
-        env["LAPDOG_URL"] = f"http://localhost:{port}"
         if env.get("OPENAI_API_KEY"):
             proxy_args = [
                 "-c",
@@ -374,11 +378,19 @@ def _run_codex(
             )
     if session_token:
         env["LAPDOG_SESSION_TOKEN"] = session_token
-    run(bin_path=codex_bin, argv=([codex_bin] + proxy_args + args), env=env)
+    run(bin_path=launch_bin, argv=([launch_bin] + proxy_args + args), env=env)
 
 
-def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) -> None:
+def cmd_codex(
+    sub_cmd_args: List[str],
+    forward_data: bool,
+    backfill: bool = False,
+    launch_bin: Optional[str] = None,
+    capture_proxy: bool = True,
+) -> None:
     """Ensure lapdog is running, start the Codex JSONL watcher, then launch Codex.
+
+    Set ``capture_proxy`` to False to preserve an externally configured provider.
 
     When ``backfill`` is True: ensure lapdog is running, replay historical
     rollouts from ``~/.codex/sessions`` through ``/codex/hooks``, and exit
@@ -430,4 +442,6 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = Fals
         port=port,
         proxy_session_key=proxy_session_key,
         session_token=session_token,
+        launch_bin=launch_bin,
+        capture_proxy=capture_proxy,
     )

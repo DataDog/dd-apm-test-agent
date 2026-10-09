@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Lapdog: support for ``ollama launch`` and ``ollama launch {{agent}}``,
+    for ``claude``, ``codex``, and ``pi`` on macOS, Linux, and Windows.
