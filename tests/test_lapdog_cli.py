@@ -1034,7 +1034,34 @@ def test_cmd_pi_injects_unique_session_token():
         args=["--model", "anthropic/claude-opus-4-1"],
         port=8126,
         session_token="pi-launch-token",
+        launch_bin=None,
     )
+
+
+@pytest.mark.parametrize("extra_args", [[], ["--model", "example", "--", "--resume"]])
+def test_ollama_pi_installs_extension_and_preserves_launch_context(monkeypatch, extra_args):
+    args = ["launch", "pi"] + extra_args
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/local/bin/{name}")
+    monkeypatch.setenv("CODEX_THREAD_ID", "outer-codex-thread")
+    monkeypatch.setenv("PI_SESSION_ID", "outer-pi-session")
+    monkeypatch.setenv("LAPDOG_SESSION_TOKEN", "outer-launch-token")
+
+    with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=9126) as ensure:
+        with mock.patch("lapdog.cli._install_pi_extension") as install_ext:
+            with mock.patch("lapdog.cli._run") as run:
+                with mock.patch("lapdog.cli.uuid.uuid4", return_value=mock.Mock(hex="pi-launch-token")):
+                    cli.cmd_ollama(args, forward_data=True, install_plugin=False)
+
+    ensure.assert_called_once_with(True, detached=True)
+    install_ext.assert_called_once_with()
+    run.assert_called_once()
+    assert run.call_args.kwargs["bin_path"] == "/usr/local/bin/ollama"
+    assert run.call_args.kwargs["argv"] == ["/usr/local/bin/ollama"] + args
+    env = run.call_args.kwargs["env"]
+    assert env["LAPDOG_URL"] == "http://localhost:9126"
+    assert env["LAPDOG_SESSION_TOKEN"] == "pi-launch-token"
+    assert "CODEX_THREAD_ID" not in env
+    assert "PI_SESSION_ID" not in env
 
 
 def test_run_codex_falls_back_without_openai_api_key(monkeypatch):
