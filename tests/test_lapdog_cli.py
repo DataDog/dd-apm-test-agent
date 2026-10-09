@@ -135,6 +135,7 @@ def test_cmd_codex_starts_watcher_and_execs_codex():
         port=8126,
         proxy_session_key="proxy-key",
         session_token="proxy-key",
+        launch_bin=None,
     )
 
 
@@ -215,6 +216,7 @@ def test_cmd_codex_app_starts_watcher_with_app_path_and_lapdog_pid(monkeypatch, 
         port=8126,
         proxy_session_key=None,
         session_token="app-token",
+        launch_bin=None,
     )
 
 
@@ -811,7 +813,7 @@ def test_cmd_claude_auto_installs_plugin_by_default():
                     with mock.patch("lapdog.cli.claude.uuid.uuid4", return_value=mock.Mock(hex="launch-token")):
                         cli_claude.cmd_claude(["--model", "opus"], forward_data=False, install_plugin=True)
     install.assert_called_once_with()
-    run_claude.assert_called_once_with(["--model", "opus"], port=8126, session_token="launch-token")
+    run_claude.assert_called_once_with(["--model", "opus"], port=8126, session_token="launch-token", launch_bin=None)
 
 
 def test_cmd_claude_skips_plugin_install_when_opted_out():
