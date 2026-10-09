@@ -15,6 +15,7 @@ from lapdog.cli.claude import LAPDOG_MARKETPLACE_SOURCE
 from lapdog.cli.claude import LAPDOG_PLUGIN_NAME
 from lapdog.cli.claude import cmd_claude
 from lapdog.cli.codex import cmd_codex
+from lapdog.cli.ollama import cmd_ollama
 from lapdog.cli.os_runner import run
 from lapdog.cli.pi import cmd_pi
 from lapdog.cli.runtime import _PATH_ROUTABLE_LAUNCHERS
@@ -27,7 +28,7 @@ from lapdog.cli.tags import cmd_tags
 from lapdog.cli.uninstall import cmd_uninstall
 
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "tags", "uninstall"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "ollama", "tags", "uninstall"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -239,6 +240,13 @@ def main() -> None:
         cmd_codex(
             sub_cmd_args=sub_cmd_args,
             forward_data=lapdog_parsed_args.forward,
+            backfill=backfill,
+        )
+    elif sub_cmd == "ollama":
+        cmd_ollama(
+            sub_cmd_args=sub_cmd_args,
+            forward_data=lapdog_parsed_args.forward,
+            install_plugin=lapdog_parsed_args.install_plugin,
             backfill=backfill,
         )
     elif sub_cmd == "tags":

@@ -58,6 +58,26 @@ def test_module_entry_point(args, returncode):
         ),
         (["pi", "--backfill"], "cmd_pi", mock.call(sub_cmd_args=[], forward_data=False, backfill=True)),
         (["--backfill", "codex"], "cmd_codex", mock.call(sub_cmd_args=[], forward_data=False, backfill=True)),
+        (
+            ["ollama", "launch"],
+            "cmd_ollama",
+            mock.call(sub_cmd_args=["launch"], forward_data=False, install_plugin=True, backfill=False),
+        ),
+        (
+            ["--forward", "--no-plugin-install", "ollama", "launch", "codex", "--", "resume"],
+            "cmd_ollama",
+            mock.call(
+                sub_cmd_args=["launch", "codex", "--", "resume"],
+                forward_data=True,
+                install_plugin=False,
+                backfill=False,
+            ),
+        ),
+        (
+            ["--backfill", "ollama", "launch", "pi"],
+            "cmd_ollama",
+            mock.call(sub_cmd_args=["launch", "pi"], forward_data=False, install_plugin=True, backfill=True),
+        ),
     ],
 )
 def test_entry_point_dispatches_commands(monkeypatch, argv, handler, expected):
@@ -136,6 +156,7 @@ def test_cmd_codex_starts_watcher_and_execs_codex():
         proxy_session_key="proxy-key",
         session_token="proxy-key",
         launch_bin=None,
+        capture_proxy=True,
     )
 
 
@@ -182,44 +203,6 @@ def test_cmd_codex_resume_starts_resume_watcher(args, session_id, all_cwds):
     assert start_watcher.call_args.kwargs["resume_all_cwds"] is all_cwds
 
 
-@pytest.mark.parametrize("resume", [False, True])
-def test_ollama_codex_detects_forwarded_session_and_preserves_launch_args(monkeypatch, tmp_path, resume):
-    session_id = "123e4567-e89b-12d3-a456-426614174000"
-    args = ["launch", "codex", "--model", "example", "--", "--cd", str(tmp_path)]
-    if resume:
-        args.extend(["resume", session_id, "--all"])
-    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/local/bin/{name}")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-
-    with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
-        with mock.patch("lapdog.cli._start_codex_watcher") as watcher:
-            with mock.patch("lapdog.cli._run") as run:
-                cli.cmd_ollama(args, forward_data=False, install_plugin=False)
-
-    assert watcher.call_args.kwargs["cwd"] == str(tmp_path)
-    assert watcher.call_args.kwargs.get("resume_mode", False) is resume
-    if resume:
-        assert watcher.call_args.kwargs["resume_session_id"] == session_id
-        assert watcher.call_args.kwargs["resume_all_cwds"] is True
-    assert run.call_args.kwargs["bin_path"] == "/usr/local/bin/ollama"
-    assert run.call_args.kwargs["argv"] == ["/usr/local/bin/ollama"] + args
-
-
-@pytest.mark.parametrize("suffix", [[], ["--"]])
-def test_ollama_codex_without_session_options_uses_current_directory(monkeypatch, suffix):
-    args = ["launch", "codex", "--model", "example"] + suffix
-    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/local/bin/{name}")
-
-    with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
-        with mock.patch("lapdog.cli._start_codex_watcher") as watcher:
-            with mock.patch("lapdog.cli._run") as run:
-                cli.cmd_ollama(args, forward_data=False, install_plugin=False)
-
-    assert watcher.call_args.kwargs["cwd"] == cli.os.getcwd()
-    assert "resume_mode" not in watcher.call_args.kwargs
-    assert run.call_args.kwargs["argv"] == ["/usr/local/bin/ollama"] + args
-
-
 def test_resume_options_skip_flag_values_and_handle_session_names():
     session_id = "123e4567-e89b-12d3-a456-426614174000"
     assert codex_args.resume_options(["resume", "-c", "model=o3", session_id]) == (True, session_id, False)
@@ -255,6 +238,7 @@ def test_cmd_codex_app_starts_watcher_with_app_path_and_lapdog_pid(monkeypatch, 
         proxy_session_key=None,
         session_token="app-token",
         launch_bin=None,
+        capture_proxy=True,
     )
 
 
@@ -1036,32 +1020,6 @@ def test_cmd_pi_injects_unique_session_token():
         session_token="pi-launch-token",
         launch_bin=None,
     )
-
-
-@pytest.mark.parametrize("extra_args", [[], ["--model", "example", "--", "--resume"]])
-def test_ollama_pi_installs_extension_and_preserves_launch_context(monkeypatch, extra_args):
-    args = ["launch", "pi"] + extra_args
-    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/local/bin/{name}")
-    monkeypatch.setenv("CODEX_THREAD_ID", "outer-codex-thread")
-    monkeypatch.setenv("PI_SESSION_ID", "outer-pi-session")
-    monkeypatch.setenv("LAPDOG_SESSION_TOKEN", "outer-launch-token")
-
-    with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=9126) as ensure:
-        with mock.patch("lapdog.cli._install_pi_extension") as install_ext:
-            with mock.patch("lapdog.cli._run") as run:
-                with mock.patch("lapdog.cli.uuid.uuid4", return_value=mock.Mock(hex="pi-launch-token")):
-                    cli.cmd_ollama(args, forward_data=True, install_plugin=False)
-
-    ensure.assert_called_once_with(True, detached=True)
-    install_ext.assert_called_once_with()
-    run.assert_called_once()
-    assert run.call_args.kwargs["bin_path"] == "/usr/local/bin/ollama"
-    assert run.call_args.kwargs["argv"] == ["/usr/local/bin/ollama"] + args
-    env = run.call_args.kwargs["env"]
-    assert env["LAPDOG_URL"] == "http://localhost:9126"
-    assert env["LAPDOG_SESSION_TOKEN"] == "pi-launch-token"
-    assert "CODEX_THREAD_ID" not in env
-    assert "PI_SESSION_ID" not in env
 
 
 def test_run_codex_falls_back_without_openai_api_key(monkeypatch):

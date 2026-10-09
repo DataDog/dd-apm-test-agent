@@ -58,12 +58,13 @@ def _run_pi(
     args: Optional[List[str]] = None,
     port: Optional[int] = 8126,
     session_token: Optional[str] = None,
+    launch_bin: Optional[str] = None,
 ) -> None:
     """Exec the pi binary, forwarding arguments.  Never returns."""
     if args is None:
         args = []
-    pi_bin = shutil.which("pi")
-    if not pi_bin:
+    launch_bin = launch_bin or shutil.which("pi")
+    if not launch_bin:
         print("[lapdog] 'pi' not found in PATH", file=sys.stderr)
         sys.exit(1)
     env = {**os.environ, "LAPDOG_URL": f"http://localhost:{port}"}
@@ -71,10 +72,12 @@ def _run_pi(
         env.pop(variable, None)
     if session_token:
         env["LAPDOG_SESSION_TOKEN"] = session_token
-    run(bin_path=pi_bin, argv=([pi_bin] + args), env=env)
+    run(bin_path=launch_bin, argv=([launch_bin] + args), env=env)
 
 
-def cmd_pi(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) -> None:
+def cmd_pi(
+    sub_cmd_args: List[str], forward_data: bool, backfill: bool = False, launch_bin: Optional[str] = None
+) -> None:
     """Ensure lapdog is running, install the pi extension, then launch pi.
 
     When ``backfill`` is True: ensure lapdog is running, replay historical
@@ -94,4 +97,4 @@ def cmd_pi(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False) 
     _install_pi_extension()
 
     print(build_running_banner(data_type="coding session"))
-    _run_pi(args=sub_cmd_args, port=port, session_token=uuid.uuid4().hex)
+    _run_pi(args=sub_cmd_args, port=port, session_token=uuid.uuid4().hex, launch_bin=launch_bin)

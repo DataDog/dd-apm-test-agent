@@ -102,7 +102,10 @@ def _uninstall_lapdog_claude_code_plugin() -> None:
 
 
 def _run_claude(
-    args: Optional[List[str]] = None, port: Optional[int] = None, session_token: Optional[str] = None
+    args: Optional[List[str]] = None,
+    port: Optional[int] = None,
+    session_token: Optional[str] = None,
+    launch_bin: Optional[str] = None,
 ) -> None:
     """Set BUN_OPTIONS with claude_intercept.mjs and exec the claude binary. Never returns."""
     if args is None:
@@ -115,8 +118,8 @@ def _run_claude(
     if sys.platform == "win32":
         mjs_path = mjs_path.replace("\\", "/")
 
-    claude_bin = shutil.which("claude")
-    if not claude_bin:
+    launch_bin = launch_bin or shutil.which("claude")
+    if not launch_bin:
         print("[ddapm] 'claude' not found in PATH", file=sys.stderr)
         sys.exit(1)
 
@@ -139,12 +142,13 @@ def _run_claude(
         with os.fdopen(fd, "a") as log_file:
             log_file.write(
                 f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
-                f"pid={os.getpid()} launcher exec preload={mjs_path} claude={claude_bin}\n"
+                f"pid={os.getpid()} launcher exec preload={mjs_path} claude={launch_bin}\n"
             )
     except OSError:
         # Diagnostics must not prevent Claude Code from starting.
         pass
-    run(bin_path=claude_bin, argv=([claude_bin] + args), env=env)
+
+    run(bin_path=launch_bin, argv=([launch_bin] + args), env=env)
 
 
 def cmd_claude(
@@ -152,6 +156,7 @@ def cmd_claude(
     forward_data: bool,
     install_plugin: bool,
     backfill: bool = False,
+    launch_bin: Optional[str] = None,
 ) -> None:
     """Ensure lapdog is running in background, then launch Claude with intercept.
 
@@ -176,4 +181,4 @@ def cmd_claude(
         sys.exit(1)
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
 
-    _run_claude(sub_cmd_args, port=port, session_token=uuid.uuid4().hex)
+    _run_claude(sub_cmd_args, port=port, session_token=uuid.uuid4().hex, launch_bin=launch_bin)
