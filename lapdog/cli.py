@@ -1064,8 +1064,17 @@ def _run_codex(
     _run(bin_path=launch_bin, argv=([launch_bin] + proxy_args + args), env=env)
 
 
-def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = False, launch_bin: Optional[str] = None) -> None:
+def cmd_codex(
+    sub_cmd_args: List[str],
+    forward_data: bool,
+    backfill: bool = False,
+    launch_bin: Optional[str] = None,
+    launch_args: Optional[List[str]] = None,
+) -> None:
     """Ensure lapdog is running, start the Codex JSONL watcher, then launch Codex.
+
+    ``sub_cmd_args`` contains Codex arguments for session detection. When supplied,
+    ``launch_args`` contains the complete arguments for the launcher instead.
 
     When ``backfill`` is True: ensure lapdog is running, replay historical
     rollouts from ``~/.codex/sessions`` through ``/codex/hooks``, and exit
@@ -1113,7 +1122,7 @@ def cmd_codex(sub_cmd_args: List[str], forward_data: bool, backfill: bool = Fals
 
     print(build_running_banner(data_type="coding session", warning_lines=_PROXY_SESSION_WARNING_LINES))
     _run_codex(
-        args=sub_cmd_args,
+        args=launch_args if launch_args is not None else sub_cmd_args,
         port=port,
         proxy_session_key=proxy_session_key,
         session_token=session_token,
@@ -1158,10 +1167,13 @@ def cmd_ollama(
             launch_bin=ollama_bin
         )
     elif sub_cmd == "codex":
+        # Ollama forwards only arguments after the first separator to Codex.
+        agent_args = sub_cmd_args[sub_cmd_args.index("--") + 1 :] if "--" in sub_cmd_args else []
         cmd_codex(
-            sub_cmd_args=sub_cmd_args,
+            sub_cmd_args=agent_args,
             forward_data=forward_data,
             launch_bin=ollama_bin,
+            launch_args=sub_cmd_args,
         )
     else:
         print("[lapdog] Cannot instrument non-Codex or Claude Ollama session.")

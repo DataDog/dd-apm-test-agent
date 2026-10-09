@@ -182,6 +182,44 @@ def test_cmd_codex_resume_starts_resume_watcher(args, session_id, all_cwds):
     assert start_watcher.call_args.kwargs["resume_all_cwds"] is all_cwds
 
 
+@pytest.mark.parametrize("resume", [False, True])
+def test_ollama_codex_detects_forwarded_session_and_preserves_launch_args(monkeypatch, tmp_path, resume):
+    session_id = "123e4567-e89b-12d3-a456-426614174000"
+    args = ["launch", "codex", "--model", "example", "--", "--cd", str(tmp_path)]
+    if resume:
+        args.extend(["resume", session_id, "--all"])
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/local/bin/{name}")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
+        with mock.patch("lapdog.cli._start_codex_watcher") as watcher:
+            with mock.patch("lapdog.cli._run") as run:
+                cli.cmd_ollama(args, forward_data=False, install_plugin=False)
+
+    assert watcher.call_args.kwargs["cwd"] == str(tmp_path)
+    assert watcher.call_args.kwargs.get("resume_mode", False) is resume
+    if resume:
+        assert watcher.call_args.kwargs["resume_session_id"] == session_id
+        assert watcher.call_args.kwargs["resume_all_cwds"] is True
+    assert run.call_args.kwargs["bin_path"] == "/usr/local/bin/ollama"
+    assert run.call_args.kwargs["argv"] == ["/usr/local/bin/ollama"] + args
+
+
+@pytest.mark.parametrize("suffix", [[], ["--"]])
+def test_ollama_codex_without_session_options_uses_current_directory(monkeypatch, suffix):
+    args = ["launch", "codex", "--model", "example"] + suffix
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/local/bin/{name}")
+
+    with mock.patch("lapdog.cli._ensure_lapdog_running", return_value=8126):
+        with mock.patch("lapdog.cli._start_codex_watcher") as watcher:
+            with mock.patch("lapdog.cli._run") as run:
+                cli.cmd_ollama(args, forward_data=False, install_plugin=False)
+
+    assert watcher.call_args.kwargs["cwd"] == cli.os.getcwd()
+    assert "resume_mode" not in watcher.call_args.kwargs
+    assert run.call_args.kwargs["argv"] == ["/usr/local/bin/ollama"] + args
+
+
 def test_resume_options_skip_flag_values_and_handle_session_names():
     session_id = "123e4567-e89b-12d3-a456-426614174000"
     assert codex_args.resume_options(["resume", "-c", "model=o3", session_id]) == (True, session_id, False)
