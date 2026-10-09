@@ -8,6 +8,18 @@ from typing import List
 from typing import Optional
 
 
+def wait_for_exit(proc: "subprocess.Popen[bytes]") -> int:
+    """On Windows, let the console child handle Ctrl+C before its parent exits."""
+    while True:
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            if sys.platform != "win32":
+                raise
+            # Windows delivers console interrupts to the child as well. It may
+            # cancel a turn and continue running, so keep waiting for its exit.
+
+
 def run(
     bin_path: str,
     argv: List[str],
@@ -29,7 +41,7 @@ def run(
             kwargs["executable"] = bin_path
 
         proc = subprocess.Popen(argv, **kwargs)
-        sys.exit(proc.wait())
+        sys.exit(wait_for_exit(proc))
     else:
         os_exec = os.execvpe if search_path else os.execve
         os_exec(bin_path, argv, run_env)
