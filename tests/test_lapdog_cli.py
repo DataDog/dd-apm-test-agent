@@ -924,7 +924,7 @@ def test_cmd_tags_targets_current_pi_session(monkeypatch, capsys):
 
 def test_main_routes_tags_command(monkeypatch):
     monkeypatch.setattr(cli_main.sys, "argv", ["lapdog", "tags", "set", "iteration:2"])
-    with mock.patch("lapdog.cli.main.cmd_tags") as cmd_tags:
+    with mock.patch.object(cli_main, "cmd_tags") as cmd_tags:
         cli_main.main()
     cmd_tags.assert_called_once_with(["set", "iteration:2"])
 
@@ -1129,8 +1129,8 @@ def test_main_routes_full_path_claude_to_cmd_claude(monkeypatch, tmp_path):
     claude.write_text("#!/bin/sh\n")
     monkeypatch.setattr(cli_main.shutil, "which", lambda name: str(claude) if name == "claude" else None)
     monkeypatch.setattr(cli_main.sys, "argv", ["lapdog", str(claude)])
-    with mock.patch("lapdog.cli.main.cmd_claude") as cmd_claude:
-        with mock.patch("lapdog.cli.main.cmd_exec") as cmd_exec:
+    with mock.patch.object(cli_main, "cmd_claude") as cmd_claude:
+        with mock.patch.object(cli_main, "cmd_exec") as cmd_exec:
             cli_main.main()
 
     cmd_claude.assert_called_once()
@@ -1140,8 +1140,8 @@ def test_main_routes_full_path_claude_to_cmd_claude(monkeypatch, tmp_path):
 def test_main_routes_unknown_command_to_cmd_exec(monkeypatch):
     monkeypatch.setattr(cli_main.shutil, "which", lambda name: None)
     monkeypatch.setattr(cli_main.sys, "argv", ["lapdog", "/usr/bin/python", "app.py"])
-    with mock.patch("lapdog.cli.main.cmd_claude") as cmd_claude:
-        with mock.patch("lapdog.cli.main.cmd_exec") as cmd_exec:
+    with mock.patch.object(cli_main, "cmd_claude") as cmd_claude:
+        with mock.patch.object(cli_main, "cmd_exec") as cmd_exec:
             cli_main.main()
 
     cmd_exec.assert_called_once()
