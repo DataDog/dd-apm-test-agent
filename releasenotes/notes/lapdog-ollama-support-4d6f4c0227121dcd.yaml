@@ -1,4 +1,4 @@
 ---
 features:
   - |
-    Lapdog: support for the ``ollama launch {{agent}}`` CLI, for ``claude``, ``codex``, and ``pi``.
+    Lapdog: support for the ``ollama launch {{agent}}`` CLI, for ``claude`` and ``codex``.
