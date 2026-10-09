@@ -29,6 +29,21 @@ def test_entry_point_preserves_help(monkeypatch, capsys):
     assert capsys.readouterr().out == cli_main.LAPDOG_USAGE + "\n"
 
 
+@pytest.mark.parametrize("args, returncode", [(["--help"], 0), ([], 1)])
+def test_module_entry_point(args, returncode):
+    result = subprocess.run(
+        [cli_main.sys.executable, "-m", "lapdog.cli"] + args,
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == returncode
+    assert result.stdout == (cli_main.LAPDOG_USAGE + "\n" if args else "")
+    assert result.stderr == ("" if args else cli_main.LAPDOG_USAGE + "\n")
+
+
 @pytest.mark.parametrize(
     "argv, handler, expected",
     [
