@@ -35,8 +35,8 @@ def test_menu_wrappers_forward_probes_restore_path_and_are_removed(monkeypatch, 
     ollama.write_text(f'#!/bin/sh\ncodex --version "argument with spaces"\nexit {exit_code}\n')
     ollama.chmod(0o700)
     monkeypatch.setenv("PATH", str(bin_dir))
-    # Let the subprocess import this checkout even without an editable install.
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    # Import this checkout while preserving dependency paths supplied by Riot.
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]), prepend=os.pathsep)
     real_run = subprocess.run
     wrapper_dirs = []
 
@@ -284,7 +284,7 @@ def test_windows_wrappers_execute_and_cleanup(monkeypatch, tmp_path, exit_code, 
     result_file = tmp_path / "result.json"
     monkeypatch.setenv("PATH", str(binaries))
     monkeypatch.setenv("LAPDOG_TEST_RESULT", str(result_file))
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]))
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1]), prepend=os.pathsep)
     write_wrappers = ollama_launcher._write_wrappers
     directories = []
 
