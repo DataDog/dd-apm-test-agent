@@ -1,4 +1,4 @@
-from lapdog.lapdog_ascii_art import build_running_banner
+from lapdog.cli.ascii_art import build_running_banner
 
 
 def test_running_banner_can_warn_for_proxy_backed_sessions():
