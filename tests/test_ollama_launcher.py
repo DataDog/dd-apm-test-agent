@@ -27,12 +27,16 @@ def test_menu_wrappers_forward_probes_restore_path_and_are_removed(monkeypatch, 
         "#!/bin/sh\nexec "
         + shlex.quote(sys.executable)
         + " -c "
-        + shlex.quote("import json, os, sys; print(json.dumps([sys.argv[1:], os.environ['PATH']]))")
+        + shlex.quote(
+            "import json, os, sys; "
+            "sys.stderr.write('agent diagnostic\\n'); "
+            "print(json.dumps([sys.argv[1:], os.environ['PATH']]))"
+        )
         + ' "$@"\n'
     )
     agent.chmod(0o700)
     ollama = bin_dir / "ollama"
-    ollama.write_text(f'#!/bin/sh\ncodex --version "argument with spaces"\nexit {exit_code}\n')
+    ollama.write_text(f'#!/bin/sh\ncodex --version "argument with spaces" || exit $?\nexit {exit_code}\n')
     ollama.chmod(0o700)
     monkeypatch.setenv("PATH", str(bin_dir))
     # Import this checkout while preserving dependency paths supplied by Riot.
@@ -48,7 +52,9 @@ def test_menu_wrappers_forward_probes_restore_path_and_are_removed(monkeypatch, 
         assert not (wrapper_dir / "claude").exists()
         assert not (wrapper_dir / "pi").exists()
         result = real_run(argv, env=env, capture_output=True, text=True)
-        assert result.stderr == ""
+        assert result.returncode == exit_code, result.stderr
+        # gRPC can also write diagnostics here on Linux.
+        assert "agent diagnostic\n" in result.stderr
         assert json.loads(result.stdout) == [["--version", "argument with spaces"], str(bin_dir)]
         return result
 
