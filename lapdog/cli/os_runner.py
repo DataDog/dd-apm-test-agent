@@ -37,7 +37,13 @@ def run(
             "stderr": None,
         }
 
-        if not search_path:
+        if os.path.splitext(bin_path)[1].lower() in (".cmd", ".bat"):
+            # Let subprocess add the outer quoting required by cmd.exe for
+            # batch paths with spaces. executable must identify the shell,
+            # not the batch file, so leave it unset here.
+            argv = [bin_path] + argv[1:]
+            kwargs["shell"] = True
+        elif not search_path:
             kwargs["executable"] = bin_path
 
         proc = subprocess.Popen(argv, **kwargs)

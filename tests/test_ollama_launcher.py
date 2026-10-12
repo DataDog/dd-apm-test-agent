@@ -258,7 +258,7 @@ def test_maintenance_command_uses_shared_runner(monkeypatch, tmp_path):
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Runs native Windows executables")
 @pytest.mark.parametrize("exit_code", [0, 23])
-@pytest.mark.parametrize("agent_format", ["exe", "cmd"])
+@pytest.mark.parametrize("agent_format", ["exe", "cmd", "bat"])
 def test_windows_wrappers_execute_and_cleanup(monkeypatch, tmp_path, exit_code, agent_format):
     from distlib.scripts import ScriptMaker
 
@@ -283,7 +283,7 @@ def test_windows_wrappers_execute_and_cleanup(monkeypatch, tmp_path, exit_code, 
         maker.make("codex.py")
     else:
         # npm-installed agents commonly expose .cmd launchers on Windows.
-        (binaries / "codex.cmd").write_text(
+        (binaries / f"codex.{agent_format}").write_text(
             f'@echo off\n"{sys.executable}" "{source / "codex.py"}" %*\nexit /b %errorlevel%\n'
         )
     maker.make("ollama.py")
