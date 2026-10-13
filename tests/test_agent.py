@@ -50,9 +50,11 @@ def test_log_level_default_is_info():
     assert "INFO:" in p.stderr
 
 
-def test_no_tcp_keepalive_oserror_on_loopback(available_port):
+def test_no_tcp_keepalive_oserror_on_loopback(available_port, otlp_http_port, otlp_grpc_port):
     env = os.environ.copy()
     env["PORT"] = available_port
+    env["OTLP_HTTP_PORT"] = otlp_http_port
+    env["OTLP_GRPC_PORT"] = otlp_grpc_port
 
     p = subprocess.Popen(
         ["ddapm-test-agent"],
@@ -479,14 +481,19 @@ async def test_put_integrations(
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="Unix domain sockets are not supported on Windows")
-async def test_uds(tmp_path, agent, available_port, loop):
+async def test_uds(tmp_path, agent, available_port, otlp_http_port, otlp_grpc_port, loop):
     env = os.environ.copy()
     env["DD_APM_RECEIVER_SOCKET"] = str(tmp_path / "apm.socket")
     env["PORT"] = str(available_port)
+    env["OTLP_HTTP_PORT"] = otlp_http_port
+    env["OTLP_GRPC_PORT"] = otlp_grpc_port
     p = subprocess.Popen(["ddapm-test-agent"], env=env)
 
-    # Sleep for 1 second to give time for the testagent to start up
-    time.sleep(1)
+    # Poll for the socket: startup can take well over a second on loaded CI runners.
+    deadline = time.monotonic() + 15
+    while not (tmp_path / "apm.socket").exists() and time.monotonic() < deadline:
+        assert p.poll() is None, "Test agent exited with code %s before creating the socket" % p.returncode
+        time.sleep(0.05)
     assert (tmp_path / "apm.socket").exists(), "Test agent did not create the socket in time"
 
     # Check the permissions
@@ -511,7 +518,7 @@ async def test_uds(tmp_path, agent, available_port, loop):
 
 
 @pytest.mark.skipif(platform.system() != "Windows", reason="Named pipes are Windows-specific")
-def test_named_pipe(available_port):
+def test_named_pipe(available_port, otlp_http_port, otlp_grpc_port):
 
     # Windows named pipe path
     pipe_path = "\\\\.\\pipe\\dd-apm-test-agent"
@@ -519,6 +526,8 @@ def test_named_pipe(available_port):
     env = os.environ.copy()
     env["DD_APM_RECEIVER_NAMED_PIPE"] = pipe_path
     env["PORT"] = str(available_port)
+    env["OTLP_HTTP_PORT"] = otlp_http_port
+    env["OTLP_GRPC_PORT"] = otlp_grpc_port
 
     p = subprocess.Popen(["ddapm-test-agent"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
