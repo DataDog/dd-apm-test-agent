@@ -51,7 +51,7 @@ from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .model_pricing import compute_cost_metrics
-
+from .utils import set_hidden_metadata
 
 log = logging.getLogger(__name__)
 
@@ -649,7 +649,7 @@ class PiHooksAPI:
                 "tools": [{"name": name} for name in sorted(session.tools_used)],
             }
             if dd_fields:
-                self._hooks_api._set_hidden_metadata(root_span, **dd_fields)
+                set_hidden_metadata(root_span, **dd_fields)
         else:
             # Fallback: create root span
             tags = self._hooks_api.base_tags(session, source="pi-hooks", ml_app=_ML_APP) + [
@@ -979,11 +979,10 @@ class PiHooksAPI:
         span_ref = self._hooks_api._current_span_ref(session)
         if span_ref is None:
             return
-        dd = span_ref.setdefault("meta", {}).setdefault("metadata", {}).setdefault("_dd", {})
-        dd.setdefault("compactions", []).append(
-            {
-                "trigger": "auto" if body.get("from_extension") else "manual",
-            }
+        compactions = span_ref.get("meta", {}).get("metadata", {}).get("_dd", {}).get("compactions", [])
+        set_hidden_metadata(
+            span_ref,
+            compactions=[*compactions, {"trigger": "auto" if body.get("from_extension") else "manual"}],
         )
 
     def _handle_session_shutdown(self, session_id: str, body: Dict[str, Any]) -> None:

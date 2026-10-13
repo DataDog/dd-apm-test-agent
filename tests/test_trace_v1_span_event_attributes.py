@@ -1,3 +1,5 @@
+import json
+
 import msgpack
 import pytest
 
@@ -142,3 +144,40 @@ def test_convert_v1_array_value_rejects_odd_length():
 def test_convert_v1_array_value_rejects_unknown_item_type():
     with pytest.raises(TypeError):
         _convert_v1_array_value([V1AnyValueKeys.KEY_VALUE_LIST, 0], [""])
+
+
+def test_event_attribute_bytes_ascii_is_string_value():
+    attrs = ["b", V1AnyValueKeys.BYTES, b"hi"]
+    assert _decode_single_event_attributes(attrs) == {"b": {"type": 0, "string_value": "hi"}}
+
+
+def test_event_attribute_bytes_msgpack_is_rejected():
+    with pytest.raises(NotImplementedError):
+        _decode_single_event_attributes(["b", V1AnyValueKeys.BYTES, msgpack.packb({"a": 1})])
+
+
+def test_event_attribute_key_value_list_is_json_string():
+    attrs = ["kv", V1AnyValueKeys.KEY_VALUE_LIST, ["n", V1AnyValueKeys.INT, 1, "s", V1AnyValueKeys.STRING, "x"]]
+    decoded = _decode_single_event_attributes(attrs)["kv"]
+    assert decoded["type"] == 0
+    assert json.loads(decoded["string_value"]) == {"n": 1, "s": "x"}
+
+
+def test_event_array_non_scalar_items_are_string_values():
+    attrs = [
+        "arr",
+        V1AnyValueKeys.ARRAY,
+        [
+            V1AnyValueKeys.BYTES,
+            b"hi",
+            V1AnyValueKeys.ARRAY,
+            [V1AnyValueKeys.INT, 1],
+            V1AnyValueKeys.KEY_VALUE_LIST,
+            ["k", V1AnyValueKeys.BOOL, True],
+        ],
+    ]
+    values = _decode_single_event_attributes(attrs)["arr"]["array_value"]["values"]
+    assert [v["type"] for v in values] == [0, 0, 0]
+    assert values[0]["string_value"] == "hi"
+    assert json.loads(values[1]["string_value"]) == [1]
+    assert json.loads(values[2]["string_value"]) == {"k": True}

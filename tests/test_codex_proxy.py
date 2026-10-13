@@ -6,6 +6,7 @@ import pytest
 
 from lapdog import codex_proxy as codex_proxy_module
 from lapdog.codex_proxy import _is_client_disconnect_error
+from lapdog.codex_proxy import _is_auto_review_request
 
 
 @pytest.fixture
@@ -26,6 +27,25 @@ def allow_codex_upstream_override(monkeypatch):
 def test_codex_proxy_identifies_closing_transport_as_client_disconnect():
     assert _is_client_disconnect_error(RuntimeError("Cannot write to closing transport"))
     assert not _is_client_disconnect_error(RuntimeError("upstream failed"))
+
+
+def test_codex_proxy_identifies_guardian_review_request():
+    body = {
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": ("Reviewed Codex session id: parent\nAPPROVAL REQUEST START\nPlanned action JSON: {}"),
+                    }
+                ],
+            }
+        ]
+    }
+    assert _is_auto_review_request(body)
+    assert _is_auto_review_request({"model": "codex-auto-review"})
+    assert not _is_auto_review_request({"input": [{"role": "user", "content": "hello"}]})
 
 
 async def test_codex_proxy_stream_disconnect_stops_upstream_and_skips_span(monkeypatch):
@@ -350,6 +370,27 @@ async def test_codex_proxy_non_streaming_forwards_and_creates_orphan_span(agent,
     assert llm["metrics"]["input_tokens"] == 100
     assert llm["metrics"]["cache_read_input_tokens"] == 20
     assert llm["metrics"]["reasoning_output_tokens"] == 5
+
+
+async def test_codex_proxy_forwards_guardian_review_without_llm_span(agent, aiohttp_server):
+    async def handle(request):
+        return web.json_response(_responses_body())
+
+    upstream_app = web.Application()
+    upstream_app.router.add_post("/v1/responses", handle)
+    upstream = await aiohttp_server(upstream_app)
+    request_body = _responses_request()
+    request_body["input"][0]["content"][0][
+        "text"
+    ] = "Reviewed Codex session id: parent\nAPPROVAL REQUEST START\nPlanned action JSON: {}"
+    resp = await agent.post(
+        "/codex/proxy/v1/responses",
+        headers={"X-DDAPM-Upstream": str(upstream.make_url("")).rstrip("/")},
+        json=request_body,
+    )
+    assert resp.status == 200
+    assert await resp.json() == _responses_body()
+    assert _by_kind(await _spans(agent), "llm") == []
 
 
 async def test_codex_proxy_rejects_upstream_override_when_disabled(agent, aiohttp_server, monkeypatch):

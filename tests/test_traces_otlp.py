@@ -443,3 +443,99 @@ async def test_grpc_server_resilience_after_failure(grpc_client_with_failure_typ
     call3 = grpc_client_with_failure_type.Export(ExportTraceServiceRequest())
     response3 = await call3
     assert response3 is not None
+
+
+def _otlp_snapshot_file(tmp_path, token):
+    return tmp_path / f"{token}_otlp_traces.json"
+
+
+async def _otlp_snapshot(testagent, testagent_url, tmp_path, token):
+    return await testagent.get(f"{testagent_url}/test/session/snapshot?test_session_token={token}&dir={tmp_path}")
+
+
+@pytest.mark.parametrize("testagent_snapshot_ci_mode", [False])
+async def test_otlp_snapshot_generate_then_match(
+    testagent, testagent_url, otlp_http_url, otlp_traces_string, otlp_traces_json, tmp_path, loop
+):
+    token = "test_otlp_snapshot_generate_then_match"
+    headers = {"X-Datadog-Test-Session-Token": token}
+    await testagent.get(f"{testagent_url}/test/session/start?test_session_token={token}")
+    resp = await testagent.post(
+        f"{otlp_http_url}{TRACES_ENDPOINT}", headers={**PROTOBUF_HEADERS, **headers}, data=otlp_traces_string
+    )
+    assert resp.status == 200
+    resp = await _otlp_snapshot(testagent, testagent_url, tmp_path, token)
+    assert resp.status == 200, await resp.text()
+    snapshot = json.loads(_otlp_snapshot_file(tmp_path, token).read_text())
+    (span,) = snapshot["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    assert span["traceId"] == f"{1:032x}"
+    assert span["spanId"] == f"{1:016x}"
+    assert span["kind"] == Span.SPAN_KIND_INTERNAL
+
+    # The same trace sent as JSON matches the snapshot generated from protobuf.
+    await testagent.get(f"{testagent_url}/test/session/start?test_session_token={token}")
+    resp = await testagent.post(
+        f"{otlp_http_url}{TRACES_ENDPOINT}", headers={**JSON_HEADERS, **headers}, data=otlp_traces_json
+    )
+    assert resp.status == 200
+    resp = await _otlp_snapshot(testagent, testagent_url, tmp_path, token)
+    assert resp.status == 200, await resp.text()
+
+
+@pytest.mark.parametrize("testagent_snapshot_ci_mode", [False])
+async def test_otlp_snapshot_mismatch(
+    testagent, testagent_url, otlp_http_url, otlp_traces_protobuf, otlp_traces_string, tmp_path, loop
+):
+    token = "test_otlp_snapshot_mismatch"
+    headers = {**PROTOBUF_HEADERS, "X-Datadog-Test-Session-Token": token}
+    await testagent.get(f"{testagent_url}/test/session/start?test_session_token={token}")
+    await testagent.post(f"{otlp_http_url}{TRACES_ENDPOINT}", headers=headers, data=otlp_traces_string)
+    resp = await _otlp_snapshot(testagent, testagent_url, tmp_path, token)
+    assert resp.status == 200, await resp.text()
+
+    otlp_traces_protobuf.resource_spans[0].scope_spans[0].spans[0].name = "renamed"
+    await testagent.get(f"{testagent_url}/test/session/start?test_session_token={token}")
+    await testagent.post(
+        f"{otlp_http_url}{TRACES_ENDPOINT}", headers=headers, data=otlp_traces_protobuf.SerializeToString()
+    )
+    resp = await _otlp_snapshot(testagent, testagent_url, tmp_path, token)
+    assert resp.status != 200
+    assert "do not match the snapshot" in await resp.text()
+
+
+async def test_otlp_snapshot_ci_mode_missing_file(
+    testagent, testagent_url, otlp_http_url, otlp_traces_string, tmp_path, loop
+):
+    token = "test_otlp_snapshot_ci_mode_missing_file"
+    headers = {**PROTOBUF_HEADERS, "X-Datadog-Test-Session-Token": token}
+    await testagent.get(f"{testagent_url}/test/session/start?test_session_token={token}")
+    await testagent.post(f"{otlp_http_url}{TRACES_ENDPOINT}", headers=headers, data=otlp_traces_string)
+    resp = await _otlp_snapshot(testagent, testagent_url, tmp_path, token)
+    assert resp.status != 200
+    assert "OTLP trace snapshot file" in await resp.text()
+    assert not _otlp_snapshot_file(tmp_path, token).exists()
+
+
+@pytest.mark.parametrize("testagent_snapshot_ci_mode", [False])
+async def test_otlp_snapshot_without_otlp_traces(testagent, testagent_url, tmp_path, loop):
+    token = "test_otlp_snapshot_without_otlp_traces"
+    await testagent.get(f"{testagent_url}/test/session/start?test_session_token={token}")
+    resp = await _otlp_snapshot(testagent, testagent_url, tmp_path, token)
+    assert resp.status == 200, await resp.text()
+    assert not _otlp_snapshot_file(tmp_path, token).exists()
+
+
+async def test_session_token_grpc_forwarding(
+    testagent, testagent_url, otlp_http_url, otlp_traces_grpc_client, otlp_traces_protobuf, loop
+):
+    token = "test_session_token_grpc_forwarding"
+    await testagent.get(f"{testagent_url}/test/session/start?test_session_token={token}")
+    # A later session would claim the request if the token were dropped.
+    await testagent.get(f"{testagent_url}/test/session/start?test_session_token=other")
+    call = otlp_traces_grpc_client.Export(otlp_traces_protobuf, metadata=(("x-datadog-test-session-token", token),))
+    await call
+    assert await _get_http_status_from_metadata(call) == 200
+
+    resp = await testagent.get(f"{otlp_http_url}/test/session/traces?test_session_token={token}")
+    assert resp.status == 200
+    assert len(await resp.json()) == 1

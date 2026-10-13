@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Lapdog: Properly capture resumed Codex sessions through ``lapdog codex resume``.

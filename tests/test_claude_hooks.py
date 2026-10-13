@@ -10,6 +10,8 @@ import pytest
 from lapdog.claude_hooks import ClaudeHooksAPI
 from lapdog.claude_link_tracker import ClaudeLinkTracker
 from lapdog.claude_proxy import ClaudeProxyAPI
+from lapdog.claude_proxy import _approved_auto_reviews
+from lapdog.claude_proxy import _extract_response_from_sse
 
 
 @pytest.fixture
@@ -37,6 +39,101 @@ async def test_hook_endpoint_returns_ok(agent):
     assert resp.status == 200
     body = await resp.json()
     assert body["status"] == "ok"
+
+
+def test_claude_auto_review_requires_explicit_allow_for_matching_tool():
+    request = {"safeguards": [{"type": "dangerous_tool_use"}]}
+    response = {
+        "content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash"}],
+        "safeguard_results": [
+            {
+                "type": "dangerous_tool_use",
+                "status": {
+                    "type": "available",
+                    "tool_uses": {
+                        "toolu_1": {"type": "evaluated", "outcome": "not_flagged"},
+                        "toolu_2": {"type": "evaluated", "outcome": "flagged"},
+                    },
+                },
+            },
+        ],
+    }
+    assert _approved_auto_reviews(request, response) == [
+        {
+            "outcome": "allow",
+            "risk_level": "",
+            "explanation": "",
+            "usage": {
+                "estimated_total_cost": None,
+                "estimated_total_cost_usd": None,
+                "estimated_cost_model": None,
+            },
+            "tool_id": "toolu_1",
+        }
+    ]
+    assert _approved_auto_reviews(request, {**response, "content": []}) == _approved_auto_reviews(request, response)
+    assert not _approved_auto_reviews({}, response)
+    assert not _approved_auto_reviews(request, {**response, "safeguard_results": []})
+    assert not _approved_auto_reviews(request, {**response, "safeguard_results": [{"decision": "allow"}]})
+    assert not _approved_auto_reviews(
+        request,
+        {
+            **response,
+            "safeguard_results": [
+                {
+                    "type": "dangerous_tool_use",
+                    "status": {
+                        "type": "available",
+                        "tool_uses": {"toolu_1": {"type": "evaluated", "outcome": "flagged"}},
+                    },
+                }
+            ],
+        },
+    )
+
+
+def test_claude_auto_review_from_stream_attaches_only_to_tool_span():
+    events = [
+        {"event": "message_start", "data": {"message": {"model": "claude-sonnet-5", "usage": {}}}},
+        {
+            "event": "content_block_start",
+            "data": {"index": 0, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "Bash"}},
+        },
+        {"event": "content_block_stop", "data": {"index": 0}},
+        {
+            "event": "message_delta",
+            "data": {
+                "delta": {
+                    "safeguard_results": [
+                        {
+                            "type": "dangerous_tool_use",
+                            "status": {
+                                "type": "available",
+                                "tool_uses": {"toolu_1": {"type": "evaluated", "outcome": "not_flagged"}},
+                            },
+                        }
+                    ]
+                }
+            },
+        },
+    ]
+    response = _extract_response_from_sse(events)
+    review = _approved_auto_reviews({"safeguards": [{"type": "dangerous_tool_use"}]}, response)[0]
+    hooks = ClaudeHooksAPI()
+    session = hooks._get_or_create_session("claude-review")
+    hooks.record_claude_auto_review(review)
+    hooks._handle_pre_tool_use("claude-review", {"tool_name": "Bash", "tool_use_id": "toolu_1"})
+    hooks._handle_post_tool_use("claude-review", {"tool_name": "Bash", "tool_use_id": "toolu_1"})
+    tool = next(span for span in hooks._assembled_spans if span["meta"]["span"]["kind"] == "tool")
+    assert tool["meta"]["metadata"]["_dd"]["auto_reviews"] == [review]
+    assert tool["session_id"] == session.session_id
+
+    late_hooks = ClaudeHooksAPI()
+    late_hooks._handle_pre_tool_use("claude-review-late", {"tool_name": "Bash", "tool_use_id": "toolu_1"})
+    late_hooks._handle_post_tool_use("claude-review-late", {"tool_name": "Bash", "tool_use_id": "toolu_1"})
+    late_hooks.record_claude_auto_review(review)
+    late_tool = next(span for span in late_hooks._assembled_spans if span["meta"]["span"]["kind"] == "tool")
+    assert late_tool["meta"]["metadata"]["_dd"]["auto_reviews"] == [review]
 
 
 async def test_hook_missing_session_id(agent):

@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Lapdog: The event stream for ``lapdog`` spans now properly pages for the Lapdog web application.

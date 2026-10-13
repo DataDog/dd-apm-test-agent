@@ -8,6 +8,7 @@ from typing import List
 from typing import Optional
 
 from . import _get_version
+from . import otlp_trace_snapshot
 from .trace_snapshot import generate_snapshot
 
 
@@ -78,16 +79,20 @@ def main(args: Optional[List[str]] = None) -> None:
 
     trace_files = []
     trace_stats_files = []
+    otlp_trace_files = []
     for f in resolved_files:
         if f.endswith("_tracestats.json"):
             trace_stats_files.append(f)
+        elif f.endswith("_otlp_traces.json"):
+            otlp_trace_files.append(f)
         else:
             trace_files.append(f)
     log.info("Found %d trace snapshot files to process", len(trace_files))
     log.info("Found %d trace stats snapshot files to process", len(trace_stats_files))
+    log.info("Found %d OTLP trace snapshot files to process", len(otlp_trace_files))
 
     has_errors = False
-    for fname in trace_files:
+    for fname in trace_files + otlp_trace_files:
         log.debug("Checking snapshot file %r", fname)
         try:
             # Read the original file data
@@ -96,7 +101,10 @@ def main(args: Optional[List[str]] = None) -> None:
 
             # Parse and re-format
             traces = json.loads(original)
-            formatted = generate_snapshot(traces)
+            if fname in otlp_trace_files:
+                formatted = otlp_trace_snapshot.generate(traces)
+            else:
+                formatted = generate_snapshot(traces)
 
             # Only do anything if something changed
             if formatted != original:

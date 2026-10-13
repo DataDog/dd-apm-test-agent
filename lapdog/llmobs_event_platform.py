@@ -1,5 +1,7 @@
 """LLM Observability Event Platform API."""
 
+import base64
+import binascii
 from collections import defaultdict
 from datetime import datetime
 import json
@@ -12,6 +14,7 @@ from typing import List
 from typing import Optional
 from typing import Set
 from typing import TYPE_CHECKING
+from typing import Tuple
 import uuid
 
 from aiohttp import web
@@ -24,7 +27,6 @@ from . import llmobs_query_parser
 from ._clock import monotonic_wall_ns
 from .model_pricing import COST_METRIC_KEYS
 from .model_pricing import estimate_span_cost
-
 
 if TYPE_CHECKING:
     from ddapm_test_agent.agent import Agent
@@ -850,11 +852,18 @@ def build_event_platform_list_response(
     request_id: str,
     limit: int = 100,
     all_spans: Optional[List[Dict[str, Any]]] = None,
+    paging: Optional[Dict[str, str]] = None,
+    hit_count: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build Event Platform list response from spans."""
     _all_spans = all_spans if all_spans is not None else spans
     trace_aggregates = _build_trace_aggregates(_all_spans)
-    children_map = compute_children_ids(spans[:limit])
+    spans_by_trace: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for span in _all_spans:
+        spans_by_trace[span.get("trace_id", "")].append(span)
+    children_by_trace = {
+        trace_id: compute_children_ids(trace_spans) for trace_id, trace_spans in spans_by_trace.items()
+    }
     events = []
 
     for span in spans[:limit]:
@@ -872,7 +881,7 @@ def build_event_platform_list_response(
         ml_app = span.get("ml_app", span.get("_ui_ml_app", "unknown"))
         service = span.get("service", "")
         env = span.get("env", "")
-        children_ids = children_map.get(span_id, [])
+        children_ids = children_by_trace.get(trace_id, {}).get(span_id, [])
         span_links = span.get("span_links", [])
         tag_obj = _tags_to_dict(tags)
         # Ensure session_id is always in the tag dict for the web-ui
@@ -991,17 +1000,82 @@ def build_event_platform_list_response(
             }
         )
 
+    result: Dict[str, Any] = {
+        "events": events,
+        "count": len(events),
+    }
+    if paging:
+        result["paging"] = paging
+
     return {
         "elapsed": 23,
-        "hitCount": len(events),
+        "hitCount": hit_count if hit_count is not None else len(events),
         "requestId": request_id,
-        "result": {
-            "events": events,
-            "count": len(events),
-        },
+        "result": result,
         "status": "done",
         "type": "status",
     }
+
+
+def _decode_list_cursor(value: str) -> Tuple[int, str, str, int]:
+    """Decode and validate an opaque list paging cursor."""
+    try:
+        parts = json.loads(base64.urlsafe_b64decode(value.encode("ascii")).decode("utf-8"))
+        if (
+            not isinstance(parts, list)
+            or len(parts) != 4
+            or type(parts[0]) is not int
+            or not isinstance(parts[1], str)
+            or not isinstance(parts[2], str)
+            or type(parts[3]) is not int
+            or parts[3] < 0
+        ):
+            raise ValueError
+        return parts[0], parts[1], parts[2], parts[3]
+    except (ValueError, UnicodeError, binascii.Error) as exc:
+        raise ValueError("Invalid list paging cursor") from exc
+
+
+def _list_page(
+    spans: List[Dict[str, Any]], limit: int, paging: Optional[Dict[str, Any]], sort_order: str
+) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, str]]]:
+    """Page spans by a stable time, trace, and span order.
+
+    The cursor is opaque to web-ui. An occurrence number distinguishes spans
+    with identical time and IDs, such as repeated intake payloads.
+    """
+    occurrences: Dict[Tuple[int, str, str], int] = defaultdict(int)
+    ordered = []
+    for span in spans:
+        identity = (int(span.get("start_ns", 0)), str(span.get("trace_id", "")), str(span.get("span_id", "")))
+        occurrence = occurrences[identity]
+        occurrences[identity] += 1
+        ordered.append(((*identity, occurrence), span))
+    ordered.sort(key=lambda item: item[0], reverse=sort_order != "asc")
+
+    if paging is not None and not isinstance(paging, dict):
+        raise ValueError("Invalid list paging cursor")
+    if paging:
+        after = paging.get("after")
+        from_cursor = paging.get("from")
+        if after and from_cursor:
+            raise ValueError("List paging accepts either after or from")
+        cursor = after or from_cursor
+        if cursor:
+            if not isinstance(cursor, str):
+                raise ValueError("Invalid list paging cursor")
+            key = _decode_list_cursor(cursor)
+            if sort_order == "asc":
+                ordered = [item for item in ordered if item[0] > key or (from_cursor and item[0] == key)]
+            else:
+                ordered = [item for item in ordered if item[0] < key or (from_cursor and item[0] == key)]
+
+    page = ordered[:limit]
+    next_paging = None
+    if page and len(ordered) > limit:
+        encoded = base64.urlsafe_b64encode(json.dumps(page[-1][0], separators=(",", ":")).encode()).decode()
+        next_paging = {"after": encoded}
+    return [span for _, span in page], next_paging
 
 
 class LLMObsEventPlatformAPI:
@@ -1093,6 +1167,8 @@ class LLMObsEventPlatformAPI:
             body = await request.json()
             list_params = body.get("list", {})
             limit = list_params.get("limit", 100)
+            if type(limit) is not int or limit < 0:
+                return web.json_response({"error": "Invalid list limit"}, status=400)
             query_str = list_params.get("search", {}).get("query", "")
 
             all_spans = self.get_llmobs_spans()
@@ -1101,13 +1177,19 @@ class LLMObsEventPlatformAPI:
                 spans = apply_filters(spans, parse_filter_query(query_str))
 
             # Handle sort order (default is descending by start_ns from get_llmobs_spans)
-            sort_params = list_params.get("sort", {})
-            sort_order = sort_params.get("time", {}).get("order", "desc") if isinstance(sort_params, dict) else "desc"
-            if sort_order == "asc":
-                spans = list(reversed(spans))
+            sorts = list_params.get("sorts") or [list_params.get("sort", {})]
+            sort_value = next((sort.get("time") for sort in sorts if isinstance(sort, dict) and "time" in sort), None)
+            time_sort: Dict[str, Any] = sort_value if isinstance(sort_value, dict) else {}
+            sort_order = time_sort.get("order", "desc")
+            try:
+                page_spans, next_paging = _list_page(spans, limit, list_params.get("paging"), sort_order)
+            except ValueError as exc:
+                return web.json_response({"error": str(exc)}, status=400)
 
             request_id = str(uuid.uuid4())
-            response = build_event_platform_list_response(spans, request_id, limit, all_spans=all_spans)
+            response = build_event_platform_list_response(
+                page_spans, request_id, limit, all_spans=all_spans, paging=next_paging, hit_count=len(spans)
+            )
             self._query_results[request_id] = response
 
             return web.json_response(response)
@@ -1176,6 +1258,18 @@ class LLMObsEventPlatformAPI:
                     key=lambda k: groups[k][-1].get("start_ns", 0),
                 )
 
+            paging = agg_params.get("paging") or {}
+            if not isinstance(paging, dict):
+                return web.json_response({"error": "Invalid aggregate paging cursor"}, status=400)
+            after = paging.get("after") or {}
+            if not isinstance(after, dict):
+                return web.json_response({"error": "Invalid aggregate paging cursor"}, status=400)
+            seen_groups = after.get(group_by_output, []) if group_by_output else []
+            if not isinstance(seen_groups, list) or any(not isinstance(key, str) for key in seen_groups):
+                return web.json_response({"error": "Invalid aggregate paging cursor"}, status=400)
+            seen_group_keys = set(seen_groups)
+            group_order = [key for key in group_order if key not in seen_group_keys]
+            has_more = len(group_order) > group_by_limit
             group_order = group_order[:group_by_limit]
 
             # Build compute results per group
@@ -1243,17 +1337,14 @@ class LLMObsEventPlatformAPI:
                     pass
                 values.append({"by": {group_by_output or group_by_field or "": by_val}, "metrics": metrics})
 
-            paging_after: Dict[str, Any] = {}
-            if group_by_output:
-                paging_after[group_by_output] = group_order
+            result: Dict[str, Any] = {"values": values}
+            if has_more and group_by_output:
+                result["paging"] = {"after": {group_by_output: [*seen_groups, *group_order]}}
 
             response = {
                 "elapsed": 50,
                 "requestId": str(uuid.uuid4()),
-                "result": {
-                    "paging": {"after": paging_after},
-                    "values": values,
-                },
+                "result": result,
                 "status": "done",
                 "type": "aggregate",
             }

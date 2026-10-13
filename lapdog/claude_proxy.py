@@ -18,6 +18,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Set
 from typing import cast
 
 import aiohttp
@@ -37,9 +38,52 @@ from .claude_link_tracker import ClaudeLinkTracker
 from .claude_link_tracker import SpanLink
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .model_pricing import compute_cost_metrics
-
+from .utils import set_hidden_metadata
 
 log = logging.getLogger(__name__)
+
+
+def _is_session_naming_request(request_body: Dict[str, Any]) -> bool:
+    """Recognize Claude's tool-free, single-message session naming call."""
+    messages = request_body.get("messages")
+    if request_body.get("tools") or not isinstance(messages, list) or len(messages) != 1:
+        return False
+    message = messages[0]
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    content = message.get("content", "")
+    if isinstance(content, list):
+        if any(not isinstance(block, dict) or block.get("type") != "text" for block in content):
+            return False
+        content = "\n".join(block.get("text", "") for block in content)
+    if not isinstance(content, str) or not content.lstrip().startswith("<session>") or "</session>" not in content:
+        return False
+
+    config = request_body.get("output_config")
+    output_format = config.get("format") if isinstance(config, dict) else None
+    if output_format is None:
+        output_format = request_body.get("output_format")
+    if output_format is not None:
+        # Claude requests exactly one required string field, not arbitrary JSON.
+        if not isinstance(output_format, dict) or output_format.get("type") != "json_schema":
+            return False
+        schema = output_format.get("schema")
+        return isinstance(schema, dict) and schema == {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
+            "additionalProperties": False,
+        }
+
+    # Claude retries without output_config.format on providers that reject it.
+    # Only use the prompt fallback with the request structure checked above.
+    system = request_body.get("system", "")
+    if isinstance(system, list):
+        system = "\n".join(block.get("text", "") for block in system if isinstance(block, dict))
+    return isinstance(system, str) and any(
+        line.startswith("You are naming a coding session") for line in system.splitlines()
+    )
+
 
 _HOSTNAME = socket.gethostname()
 _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
@@ -147,10 +191,15 @@ def _extract_response_from_sse(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     stop_reason = ""
     content_blocks: List[Dict[str, Any]] = []
     block_builders: Dict[int, Dict[str, Any]] = {}
+    safeguard_results: List[Any] = []
 
     for evt in events:
         event_type = evt.get("event", "")
         data = evt.get("data", {})
+        if isinstance(data, dict):
+            for source in (data, data.get("message"), data.get("delta")):
+                if isinstance(source, dict) and "safeguard_results" in source:
+                    safeguard_results.append(source["safeguard_results"])
 
         if event_type == "message_start":
             msg = data.get("message", {})
@@ -238,6 +287,7 @@ def _extract_response_from_sse(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "model": model,
         "content": content_blocks,
+        "safeguard_results": safeguard_results,
         "stop_reason": stop_reason,
         "usage": {
             "input_tokens": input_tokens,
@@ -246,6 +296,57 @@ def _extract_response_from_sse(events: List[Dict[str, Any]]) -> Dict[str, Any]:
             "output_tokens": output_tokens,
         },
     }
+
+
+def _approved_auto_reviews(request_body: Dict[str, Any], response_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Keep only evaluated, not-flagged auto mode tool verdicts."""
+    safeguards = request_body.get("safeguards")
+    if not isinstance(safeguards, list) or not any(
+        isinstance(item, dict) and item.get("type") == "dangerous_tool_use" for item in safeguards
+    ):
+        return []
+
+    results = response_data.get("safeguard_results")
+    if results is None:
+        log.info("Claude auto mode request returned tool calls without safeguard results")
+        return []
+    approvals: Dict[str, Dict[str, Any]] = {}
+
+    def visit(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict) or value.get("type") != "dangerous_tool_use":
+            return
+        status = value.get("status")
+        if not isinstance(status, dict) or status.get("type") != "available":
+            return
+        tool_uses = status.get("tool_uses")
+        if not isinstance(tool_uses, dict):
+            return
+        for tool_id, verdict in tool_uses.items():
+            if not isinstance(tool_id, str) or not isinstance(verdict, dict):
+                continue
+            if verdict.get("type") != "evaluated" or verdict.get("outcome") != "not_flagged":
+                continue
+            explanation = verdict.get("explanation") or ""
+            approvals[tool_id] = {
+                "outcome": "allow",
+                "risk_level": "",
+                "explanation": explanation if isinstance(explanation, str) else "",
+                "usage": {
+                    "estimated_total_cost": None,
+                    "estimated_total_cost_usd": None,
+                    "estimated_cost_model": None,
+                },
+                "tool_id": tool_id,
+            }
+
+    visit(results)
+    if not approvals:
+        log.info("Claude auto mode returned safeguard results without a matched allow verdict")
+    return list(approvals.values())
 
 
 def _extract_tool_results_from_request(body: Dict[str, Any]) -> List[str]:
@@ -347,6 +448,7 @@ class ClaudeProxyAPI:
         self._http_session: Optional[aiohttp.ClientSession] = None
         # Spans created before any session existed; re-parented when a session appears.
         self._orphan_spans: List[Dict[str, Any]] = []
+        self._orphan_naming_spans: Set[str] = set()
 
     async def _get_http_session(self) -> aiohttp.ClientSession:
         if self._http_session is None or self._http_session.closed:
@@ -402,6 +504,13 @@ class ClaudeProxyAPI:
             span["trace_id"] = session.trace_id
             span["parent_id"] = session.root_span_id
             span["session_id"] = session.session_id
+            messages = span.get("meta", {}).get("output", {}).get("messages", [])
+            self._extract_conversation_title(
+                session,
+                [{"type": "text", "text": message.get("content", "")} for message in messages],
+                naming_request=span["span_id"] in self._orphan_naming_spans,
+            )
+            self._orphan_naming_spans.discard(span["span_id"])
             existing_tags = list(span.get("tags") or [])
             existing_keys = {t.split(":", 1)[0] for t in existing_tags if ":" in t}
             for tag in session_scoped_tags:
@@ -413,9 +522,10 @@ class ClaudeProxyAPI:
         log.info("Re-parented %d orphan LLM spans into trace %s", len(self._orphan_spans), session.trace_id)
         self._orphan_spans.clear()
 
-    @staticmethod
-    def _extract_conversation_title(session: SessionState, content_blocks: List[Dict[str, Any]]) -> None:
-        """Detect the haiku summarization response and store the title on the session."""
+    def _extract_conversation_title(
+        self, session: SessionState, content_blocks: List[Dict[str, Any]], naming_request: bool
+    ) -> None:
+        """Read legacy topic responses and dedicated session-naming responses."""
         for block in content_blocks:
             if block.get("type") != "text":
                 continue
@@ -426,10 +536,14 @@ class ClaudeProxyAPI:
                 data = json.loads(text)
             except (json.JSONDecodeError, ValueError):
                 continue
-            if "title" in data and "isNewTopic" in data:
+            if not isinstance(data, dict):
+                continue
+            legacy_topic = set(data) == {"title", "isNewTopic"} and isinstance(data["isNewTopic"], bool)
+            if legacy_topic or (naming_request and set(data) == {"title"}):
                 title = data["title"]
-                if isinstance(title, str) and title:
-                    session.conversation_title = title
+                if isinstance(title, str) and title.strip():
+                    session.conversation_title = title.strip()
+                    self._hooks_api._set_session_name(session, title)
                     log.info("Conversation title: %s", title)
                 return
 
@@ -579,9 +693,11 @@ class ClaudeProxyAPI:
         input_messages = _format_input_messages(request_body)
         output_messages = _format_output_messages(content_blocks)
 
-        # Detect haiku summarization call and extract conversation title
+        naming_request = _is_session_naming_request(request_body)
         if session:
-            self._extract_conversation_title(session, content_blocks)
+            self._extract_conversation_title(session, content_blocks, naming_request)
+        elif naming_request:
+            self._orphan_naming_spans.add(span_id)
 
         # Attach session_id so LLM spans can be grouped with the session
         session_id = session.session_id if session else ""
@@ -625,9 +741,6 @@ class ClaudeProxyAPI:
                 "metadata": {
                     "stop_reason": response_data.get("stop_reason", ""),
                     "stream": request_body.get("stream", False),
-                    "_dd": {
-                        "context_breakdown": context_breakdown,
-                    },
                 },
             },
             "metrics": {
@@ -651,6 +764,7 @@ class ClaudeProxyAPI:
             },
             "span_links": [link.to_dict() for link in span_links],
         }
+        set_hidden_metadata(span, context_breakdown=context_breakdown)
         return span
 
     async def handle_proxy(self, request: Request) -> web.StreamResponse:
@@ -736,6 +850,8 @@ class ClaudeProxyAPI:
                     log.info("Buffered orphan LLM span %s (no session yet)", span["span_id"])
                 else:
                     self._hooks_api._append_span(span)
+                for review in _approved_auto_reviews(request_body, response_data):
+                    self._hooks_api.record_claude_auto_review(review)
                 log.info(
                     "LLM span %s: model=%s tokens=%d+%d duration=%.1fs",
                     span["span_id"],
@@ -771,6 +887,8 @@ class ClaudeProxyAPI:
                     log.info("Buffered orphan LLM span %s (no session yet)", span["span_id"])
                 else:
                     self._hooks_api._append_span(span)
+                for review in _approved_auto_reviews(request_body, response_data):
+                    self._hooks_api.record_claude_auto_review(review)
                 log.info(
                     "LLM span %s: model=%s tokens=%d+%d duration=%.1fs",
                     span["span_id"],

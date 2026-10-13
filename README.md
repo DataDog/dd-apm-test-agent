@@ -146,6 +146,19 @@ The traces are normalized and output in JSON to a file. The following transforma
 - The span meta and metrics maps if empty are excluded.
 
 
+#### OTLP trace snapshots
+
+OTLP traces are normalized and output in OTLP JSON format to a file. The following transformations are made to the input:
+
+- Spans sharing the same resource and scope are grouped together.
+- Trace ids are overwritten to match the order in which the traces started.
+- Span ids are overwritten to be the BFS order of the spans in the trace tree.
+- Parent ids are overwritten using the normalized span ids, unless the parent is not in the trace.
+- Attributes are ordered alphanumerically.
+
+Timestamps, `telemetry.sdk.version`, `traceState` and the ids of spans outside the payload are ignored when comparing since they change between runs.
+
+
 #### Web UI
 
 The test agent includes an optional and **experimental** Web UI that provides a dashboard for inspecting agent configuration, viewing received requests, exploring traces and snapshots, and managing tracer-flare and remote configuration.
@@ -376,6 +389,9 @@ Perform a snapshot generation or comparison on the data received during the sess
 Snapshots are generated when the test agent is not in CI mode and there is no snapshot file present. Otherwise a
 snapshot comparison will be performed.
 
+Native traces, trace stats and OTLP traces are snapshotted to `<token>.json`, `<token>_tracestats.json` and
+`<token>_otlp_traces.json` respectively (see [OTLP trace snapshots](#otlp-trace-snapshots)).
+
 
 #### [optional\*] `?test_session_token=`
 #### [optional\*] `X-Datadog-Test-Session-Token`
@@ -601,6 +617,8 @@ The HTTP endpoint accepts `POST` requests with `Content-Type: application/x-prot
 ### OTLP Logs, Metrics, and Traces via GRPC
 
 OTLP logs and metrics can also be sent via GRPC using the OpenTelemetry `LogsService.Export`, `MetricsService.Export`, and `TraceService.Export` methods respectively. The GRPC server implements the standard OTLP service interfaces and forwards all requests to the HTTP server, ensuring consistent processing and session management.
+
+To associate GRPC requests with a session, send the session token in the `x-datadog-test-session-token` metadata key.
 
 **Note:** OTLP endpoints are served on separate ports from the main APM endpoints (default: 8126):
 - **HTTP**: Port 4318 (default) - Use `--otlp-http-port` to configure

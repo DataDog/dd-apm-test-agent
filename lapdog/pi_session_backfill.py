@@ -30,7 +30,7 @@ from .claude_hooks import ClaudeHooksAPI
 from .coding_agent_metadata import CodingAgentProjectMetadata
 from .coding_agent_metadata import resolve_project_metadata
 from .model_pricing import compute_cost_metrics
-
+from .utils import set_hidden_metadata
 
 _TAGS_API = ClaudeHooksAPI()
 
@@ -193,11 +193,12 @@ def _new_turn(session_id: str, cwd: str, model: str, start_ns: int, prompt: str)
             "output": {"value": ""},
             "model_name": model,
             "model_provider": "anthropic",
-            "metadata": {"_dd": backfill_metadata()},
+            "metadata": {},
         },
         "metrics": {},
         "span_links": [],
     }
+    set_hidden_metadata(root_span, **backfill_metadata())
     return {
         "trace_id": trace_id,
         "root_span_id": root_span_id,
@@ -232,10 +233,7 @@ def _build_step_span(
         for block in content
         if isinstance(block, dict) and block.get("type") == "toolCall" and block.get("id")
     ]
-    metadata: Dict[str, Any] = {
-        "message_index": index,
-        "_dd": backfill_metadata(),
-    }
+    metadata: Dict[str, Any] = {"message_index": index}
     if stop_reason:
         metadata["stop_reason"] = stop_reason
     if tool_use_ids:
@@ -243,7 +241,7 @@ def _build_step_span(
     if any(isinstance(block, dict) and block.get("type") == "thinking" for block in content):
         metadata["has_thinking"] = True
 
-    return {
+    span = {
         "span_id": format_span_id(),
         "trace_id": trace_id,
         "parent_id": parent_span_id,
@@ -267,6 +265,8 @@ def _build_step_span(
         "metrics": {},
         "span_links": [],
     }
+    set_hidden_metadata(span, **backfill_metadata())
+    return span
 
 
 def _build_llm_span(
@@ -292,16 +292,19 @@ def _build_llm_span(
     else:
         price_model = model.split("/", 1)[1] if model.startswith(("openai/", "anthropic/")) else model
         price_provider = model.split("/", 1)[0] if model.startswith(("openai/", "anthropic/")) else provider
-        cost_metrics = compute_cost_metrics(
-            price_model,
-            price_provider,
-            input_tokens,
-            cache_write,
-            cache_read,
-            output_tokens,
-            start_ns,
-        ) or {}
-    return {
+        cost_metrics = (
+            compute_cost_metrics(
+                price_model,
+                price_provider,
+                input_tokens,
+                cache_write,
+                cache_read,
+                output_tokens,
+                start_ns,
+            )
+            or {}
+        )
+    span = {
         "span_id": format_span_id(),
         "trace_id": trace_id,
         "parent_id": parent_span_id,
@@ -324,7 +327,6 @@ def _build_llm_span(
             "output": {"messages": _format_output_messages(msg.get("content") or [])},
             "metadata": {
                 "stop_reason": msg.get("stopReason", ""),
-                "_dd": backfill_metadata(input_messages_unavailable=True),
             },
         },
         "metrics": {
@@ -338,6 +340,8 @@ def _build_llm_span(
         },
         "span_links": [],
     }
+    set_hidden_metadata(span, **backfill_metadata(input_messages_unavailable=True))
+    return span
 
 
 def _tool_result_text(message: Dict[str, Any]) -> str:
@@ -363,7 +367,7 @@ def _build_tool_span(
     duration = _closed_duration_ns(start_ns, end_ns)
     is_error = bool(tool_result_msg.get("isError", False))
     output_value = _tool_result_text(tool_result_msg)
-    return {
+    span = {
         "span_id": format_span_id(),
         "trace_id": trace_id,
         "parent_id": pending.get("parent_span_id", pending["llm_span_id"]),
@@ -385,13 +389,14 @@ def _build_tool_span(
             "metadata": {
                 "tool_name": tool_name,
                 "tool_call_id": pending.get("id", ""),
-                "_dd": backfill_metadata(),
             },
             **({"error": {"message": output_value}} if is_error else {}),
         },
         "metrics": {},
         "span_links": [],
     }
+    set_hidden_metadata(span, **backfill_metadata())
+    return span
 
 
 def _set_turn_model(turn: Dict[str, Any], model: str) -> None:

@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Lapdog: Computes better tool names for Codex coding agent sessions instead of ``exec`` and ``exec_command``, instead
+    parsing the code for the executed tool(s) into understandable tool names (``Ran``, ``Read``, ``Apply Patch``, ``Web``, ``List``)

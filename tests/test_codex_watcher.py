@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from lapdog.codex_cursor import CursorState
 from lapdog.codex_cursor import load_cursor
 from lapdog.codex_cursor import save_cursor_atomic
@@ -660,6 +662,170 @@ def test_proxy_watcher_ignores_existing_files_after_start(monkeypatch, tmp_path)
     )
 
     assert posts == []
+
+
+@pytest.mark.parametrize("selected_id", [None, "sess-resumed"])
+def test_resume_watcher_captures_new_records_without_replaying_old_turns(monkeypatch, tmp_path, selected_id):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    resumed_file = tmp_path / "rollout-resumed.jsonl"
+    unrelated_file = tmp_path / "rollout-unrelated.jsonl"
+    for path, session_id in ((resumed_file, "sess-resumed"), (unrelated_file, "sess-unrelated")):
+        _append(path, {"type": "session_meta", "payload": {"id": session_id, "cwd": str(tmp_path)}})
+        _append(path, {"type": "event_msg", "payload": {"type": "user_message", "message": "old"}})
+
+    polls = {"count": 0}
+
+    def fake_process_exists(pid, expected_start=None):
+        polls["count"] += 1
+        if polls["count"] == 1:
+            _append(resumed_file, {"type": "event_msg", "payload": {"type": "thread_settings_applied"}})
+            _append(resumed_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "new"}})
+            return True
+        if polls["count"] == 2:
+            _append(unrelated_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "unrelated"}})
+            return True
+        return False
+
+    monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=12345,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        proxy_session_key="proxy-key",
+        cursor_path=None,
+        discovery_interval=0,
+        resume_mode=True,
+        resume_session_id=selected_id,
+    )
+
+    assert {post["session_id"] for post in posts} == {"sess-resumed"}
+    assert [post["record"]["type"] for post in posts].count("session_meta") == 1
+    messages = [
+        post["record"]["payload"]["message"]
+        for post in posts
+        if post["record"]["type"] == "event_msg" and post["record"]["payload"].get("type") == "user_message"
+    ]
+    assert messages == ["new"]
+
+
+def test_resume_watcher_skips_other_old_file_even_if_it_changes_first(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    unrelated_file = tmp_path / "rollout-unrelated.jsonl"
+    resumed_file = tmp_path / "rollout-resumed.jsonl"
+    for path, session_id in ((unrelated_file, "sess-unrelated"), (resumed_file, "sess-resumed")):
+        _append(path, {"type": "session_meta", "payload": {"id": session_id, "cwd": str(tmp_path)}})
+
+    polls = {"count": 0}
+
+    def fake_process_exists(pid, expected_start=None):
+        polls["count"] += 1
+        if polls["count"] == 1:
+            _append(unrelated_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "other"}})
+            return True
+        if polls["count"] == 2:
+            _append(resumed_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "selected"}})
+            return True
+        return False
+
+    monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=12345,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        proxy_session_key="proxy-key",
+        cursor_path=None,
+        discovery_interval=0,
+        resume_mode=True,
+        resume_session_id="sess-resumed",
+    )
+
+    assert {post["session_id"] for post in posts} == {"sess-resumed"}
+
+
+def test_resume_picker_ignores_unrelated_old_file_that_grows_first(monkeypatch, tmp_path):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    unrelated_file = tmp_path / "rollout-unrelated.jsonl"
+    selected_file = tmp_path / "rollout-selected.jsonl"
+    for path, session_id in ((unrelated_file, "sess-unrelated"), (selected_file, "sess-selected")):
+        _append(path, {"type": "session_meta", "payload": {"id": session_id, "cwd": str(tmp_path)}})
+
+    polls = {"count": 0}
+
+    def fake_process_exists(pid, expected_start=None):
+        polls["count"] += 1
+        if polls["count"] == 1:
+            _append(unrelated_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "other"}})
+            return True
+        if polls["count"] == 2:
+            _append(selected_file, {"type": "event_msg", "payload": {"type": "thread_settings_applied"}})
+            _append(selected_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "selected"}})
+            return True
+        return False
+
+    monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=12345,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        proxy_session_key="proxy-key",
+        cursor_path=None,
+        discovery_interval=0,
+        resume_mode=True,
+    )
+
+    assert {post["session_id"] for post in posts} == {"sess-selected"}
+
+
+def test_resume_watcher_keeps_startup_offset_when_file_grows_before_discovery(monkeypatch, tmp_path):
+    from lapdog import codex_watcher
+
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout-resumed.jsonl"
+    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-resumed", "cwd": str(tmp_path)}})
+    _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "old"}})
+    real_iter = codex_watcher._iter_jsonl_files
+    calls = {"count": 0}
+
+    def files_with_early_append(session_dir):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            _append(session_file, {"type": "event_msg", "payload": {"type": "thread_settings_applied"}})
+            _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "new"}})
+        return real_iter(session_dir)
+
+    monkeypatch.setattr(codex_watcher, "_iter_jsonl_files", files_with_early_append)
+    monkeypatch.setattr(codex_watcher, "_process_exists", lambda *args, **kwargs: False)
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=12345,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        proxy_session_key="proxy-key",
+        cursor_path=None,
+        resume_mode=True,
+    )
+
+    messages = [
+        post["record"]["payload"]["message"]
+        for post in posts
+        if post["record"]["type"] == "event_msg" and post["record"]["payload"].get("type") == "user_message"
+    ]
+    assert messages == ["new"]
 
 
 def test_proxy_watcher_captures_only_its_first_new_top_level_session(monkeypatch, tmp_path):

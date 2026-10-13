@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Lapdog: Coding agent auto-review tool approvals are now captured as metadata on tool spans instead of separate operations.
