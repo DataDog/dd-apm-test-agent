@@ -271,15 +271,15 @@ def default_value_trace_results_summary():
 
 
 def _is_agent_authenticated(agent_url: str) -> bool:
-  try:
-    response = requests.get(
-      f"{agent_url.rstrip('/')}/evp_proxy/v2/api/v1/validate",
-      headers={"X-Datadog-EVP-Subdomain": "api"},
-      timeout=5,
-    )
-    return response.status_code == 200 and response.json().get("valid") is True
-  except (requests.RequestException, ValueError):
-    return False
+    try:
+        response = requests.get(
+            f"{agent_url.rstrip('/')}/evp_proxy/v2/api/v1/validate",
+            headers={"X-Datadog-EVP-Subdomain": "api"},
+            timeout=5,
+        )
+        return response.status_code == 200 and response.json().get("valid") is True
+    except (requests.RequestException, ValueError):
+        return False
 
 
 def _is_valid_api_key_and_site_combination(dd_api_key: str, dd_site: str) -> bool:
@@ -2214,8 +2214,8 @@ def make_app(
     app["authenticated"] = valid_auth
     if not disable_llmobs_data_forwarding and not valid_auth:
         log.warning(
-            "Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, " +
-            "or valid DD_AGENT_URL which is properly authenticated, " +
+            "Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, "
+            "or valid DD_AGENT_URL which is properly authenticated, "
             "disabling LLM Observability data forwarding."
         )
         disable_llmobs_data_forwarding = True
