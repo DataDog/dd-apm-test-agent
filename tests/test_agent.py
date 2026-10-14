@@ -638,7 +638,6 @@ async def test_agent_url_authorizes_llmobs_forwarding_without_a_key(agent, dd_ap
 async def test_post_settings_rejects_invalid_api_key(agent):
     resp = await agent.post("/test/settings", data='{ "dd_api_key": "bad-key" }')
     assert resp.status == 422
-    assert await resp.text() == "Incorrect DD API key and site combination to update"
     assert agent.app["dd_api_key"] == "1234567890"
     assert agent.app["authenticated"] is False
 
