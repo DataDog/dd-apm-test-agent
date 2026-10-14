@@ -4,6 +4,7 @@ from typing import Tuple
 
 from ddapm_test_agent import _get_version
 
+
 # Letter masks (5 rows tall). '#' = filled, ' ' = blank. All letters share the
 # same height so they can be rendered side-by-side with a drop shadow.
 _LAPDOG_LETTERS = (
