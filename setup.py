@@ -45,6 +45,7 @@ setup(
         "protobuf>=3.19.0",
         "grpcio>=1.66.2,<2.0",
         "pywin32; sys_platform == 'win32'",
+        "distlib>=0.4.3; sys_platform == 'win32'",
     ],
     tests_require=testing_deps,
     entry_points={

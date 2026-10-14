@@ -1,0 +1,4 @@
+---
+other:
+  - |
+    CI: run tests in parallel with pytest-xdist, cache pip downloads, and report all failing OS/Python combinations instead of cancelling the matrix on the first failure.
