@@ -4,6 +4,7 @@ import os
 import subprocess
 import tempfile
 
+from aiohttp import web
 import msgpack
 import pytest
 
@@ -39,6 +40,43 @@ async def test_hook_endpoint_returns_ok(agent):
     assert resp.status == 200
     body = await resp.json()
     assert body["status"] == "ok"
+
+
+async def test_claude_proxy_forwards_gzip_request_body_decompressed(agent, aiohttp_server):
+    seen = {}
+
+    async def handle(request):
+        seen["content_encoding"] = request.headers.get("Content-Encoding")
+        seen["body"] = await request.json()
+        return web.json_response(
+            {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-test",
+                "content": [{"type": "text", "text": "OK"}],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
+        )
+
+    upstream_app = web.Application()
+    upstream_app.router.add_post("/v1/messages", handle)
+    upstream = await aiohttp_server(upstream_app)
+    request_body = {"model": "claude-test", "messages": [{"role": "user", "content": "hello"}]}
+
+    resp = await agent.post(
+        "/claude/proxy/v1/messages",
+        headers={
+            "Content-Type": "application/json",
+            "Content-Encoding": "gzip",
+            "X-DDAPM-Upstream": str(upstream.make_url("")).rstrip("/"),
+        },
+        data=gzip.compress(json.dumps(request_body).encode()),
+    )
+
+    assert resp.status == 200, await resp.text()
+    assert seen["content_encoding"] is None
+    assert seen["body"] == request_body
 
 
 def test_claude_auto_review_requires_explicit_allow_for_matching_tool():

@@ -90,7 +90,8 @@ _USERNAME = os.environ.get("HOST_USER") or getpass.getuser()
 
 ANTHROPIC_API_BASE = "https://api.anthropic.com"
 
-SKIP_REQUEST_HEADERS = {"host", "transfer-encoding", "content-length", "x-ddapm-upstream"}
+# aiohttp decompresses request bodies, so the original content-encoding no longer describes what we forward.
+SKIP_REQUEST_HEADERS = {"host", "transfer-encoding", "content-length", "content-encoding", "x-ddapm-upstream"}
 SKIP_RESPONSE_HEADERS = {"content-length", "transfer-encoding", "content-encoding", "connection"}
 
 
