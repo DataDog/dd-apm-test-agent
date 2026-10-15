@@ -8,6 +8,8 @@ import subprocess
 import sys
 import threading
 from typing import Any
+from typing import List
+from typing import Set
 import uuid
 
 from lapdog.codex_registration import RegistrationClient
@@ -16,7 +18,7 @@ from lapdog.codex_registration import RegistrationClient
 class SessionRegistry(RegistrationClient):
     def __init__(self, url: str, owner: str) -> None:
         super().__init__(url, owner)
-        self.pending: set[Any] = set()
+        self.pending: Set[Any] = set()
 
     def observe(self, line: bytes, *, outgoing: bool) -> None:
         try:
@@ -58,7 +60,7 @@ class SessionRegistry(RegistrationClient):
             self.refresh()
 
 
-def relay(binary: str, args: list[str], port: int, owner: str) -> int:
+def relay(binary: str, args: List[str], port: int, owner: str) -> int:
     registry = SessionRegistry(f"http://localhost:{port}", owner)
     child = subprocess.Popen([binary, *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     assert child.stdin is not None and child.stdout is not None

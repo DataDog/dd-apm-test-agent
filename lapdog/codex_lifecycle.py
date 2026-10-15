@@ -12,6 +12,7 @@ import time
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Set
 from typing import TYPE_CHECKING
 from typing import Tuple
 
@@ -51,7 +52,7 @@ def tool_result(name: str, response: Any) -> Tuple[Any, bool]:
 @dataclass
 class Registration:
     expires: float = 0
-    sessions: set[str] = field(default_factory=set)
+    sessions: Set[str] = field(default_factory=set)
     pid: int = 0
     log_path: str = ""
 
@@ -60,8 +61,8 @@ class CodexLifecycle:
     def __init__(self, api: "CodexHooksAPI") -> None:
         self.api = api
         self.cursors: Dict[str, int] = {}
-        self.live_paths: set[str] = set()
-        self.events: set[str] = set()
+        self.live_paths: Set[str] = set()
+        self.events: Set[str] = set()
         self.tools: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         self.agents: Dict[str, Dict[str, Any]] = {}
         self.agent_details: Dict[str, Dict[str, Any]] = {}

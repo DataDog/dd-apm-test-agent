@@ -13,12 +13,14 @@ import sys
 from typing import Any
 from typing import Dict
 from typing import Iterator
+from typing import List
 from typing import Optional
 from typing import Tuple
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+
 
 EVENTS = (
     "SessionStart",
@@ -78,7 +80,7 @@ def transcript_identity(path: Path, fallback: str) -> str:
     return fallback
 
 
-def read_chunk(path: Path, offset: int) -> Tuple[list[Dict[str, Any]], int]:
+def read_chunk(path: Path, offset: int) -> Tuple[List[Dict[str, Any]], int]:
     records = []
     with path.open("rb") as source:
         source.seek(offset)

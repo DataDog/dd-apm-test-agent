@@ -411,7 +411,9 @@ async def test_hook_relay_to_collector_preserves_full_output(lapdog_agent, tmp_p
     }
     await lapdog_agent.post("/codex/hooks/registrations", json={"owner": "test", "session_ids": ["relay-session"]})
     url = str(lapdog_agent.make_url("/")).rstrip("/")
-    await asyncio.to_thread(codex_hook.forward, url, {**base, "hook_event_name": "PreToolUse"})
+    await asyncio.get_running_loop().run_in_executor(
+        None, codex_hook.forward, url, {**base, "hook_event_name": "PreToolUse"}
+    )
     append(
         "response_item",
         {
@@ -422,7 +424,8 @@ async def test_hook_relay_to_collector_preserves_full_output(lapdog_agent, tmp_p
         },
     )
     output = "complete output\n" * 2000
-    await asyncio.to_thread(
+    await asyncio.get_running_loop().run_in_executor(
+        None,
         codex_hook.forward,
         url,
         {**base, "hook_event_name": "PostToolUse", "tool_response": {"output": output, "exit_code": 0}},
@@ -438,11 +441,13 @@ async def test_hook_relay_to_collector_preserves_full_output(lapdog_agent, tmp_p
             "info": {"last_token_usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}},
         },
     )
-    await asyncio.to_thread(
-        codex_hook.forward, url, {**base, "hook_event_name": "Stop", "last_assistant_message": "done"}
+    await asyncio.get_running_loop().run_in_executor(
+        None, codex_hook.forward, url, {**base, "hook_event_name": "Stop", "last_assistant_message": "done"}
     )
     append("event_msg", {"type": "task_complete"})
-    await asyncio.to_thread(codex_hook.forward, url, {**base, "hook_event_name": "SessionEnd"})
+    await asyncio.get_running_loop().run_in_executor(
+        None, codex_hook.forward, url, {**base, "hook_event_name": "SessionEnd"}
+    )
     result = await (await lapdog_agent.get("/claude/hooks/spans")).json()
     tools = [s for s in result["spans"] if s["meta"]["span"]["kind"] == "tool"]
     assert len(tools) == 1
@@ -625,8 +630,8 @@ async def test_resume_primes_metadata_without_emitting_history(
     url = str(lapdog_agent.make_url("/")).rstrip("/")
     base = {"session_id": "resumed", "transcript_path": str(path), "cwd": str(tmp_path)}
     if resume_hook:
-        await asyncio.to_thread(
-            codex_hook.forward, url, {**base, "hook_event_name": "SessionStart", "source": "resume"}
+        await asyncio.get_running_loop().run_in_executor(
+            None, codex_hook.forward, url, {**base, "hook_event_name": "SessionStart", "source": "resume"}
         )
         assert (await (await lapdog_agent.get("/claude/hooks/spans")).json())["spans"] == []
     with path.open("a") as out:
@@ -645,7 +650,8 @@ async def test_resume_primes_metadata_without_emitting_history(
             },
         ]:
             out.write(json.dumps({"timestamp": "2026-10-14T12:01:01Z", **r}) + "\n")
-    await asyncio.to_thread(
+    await asyncio.get_running_loop().run_in_executor(
+        None,
         codex_hook.forward,
         url,
         {
@@ -670,7 +676,9 @@ async def test_resume_primes_metadata_without_emitting_history(
     assert len(tools) == 1 and tools[0]["meta"]["output"]["value"] == "/repo"
     assert "old answer" not in json.dumps(result)
     # A later resume on this collector does not reread or duplicate the old turns.
-    await asyncio.to_thread(codex_hook.forward, url, {**base, "hook_event_name": "SessionStart", "source": "resume"})
+    await asyncio.get_running_loop().run_in_executor(
+        None, codex_hook.forward, url, {**base, "hook_event_name": "SessionStart", "source": "resume"}
+    )
     assert len((await (await lapdog_agent.get("/claude/hooks/spans")).json())["spans"]) == len(result)
 
 

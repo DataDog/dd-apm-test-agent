@@ -8,7 +8,9 @@ import subprocess
 import sys
 import tempfile
 from typing import Any
+from typing import Dict
 from typing import Iterator
+from typing import List
 
 from lapdog.codex_registration import RegistrationClient
 
@@ -60,7 +62,7 @@ def owns_process(root_pid: int, pid: int) -> bool:
     return False
 
 
-def records(path: str) -> Iterator[dict[str, Any]]:
+def records(path: str) -> Iterator[Dict[str, Any]]:
     """Read complete JSON records only; Codex can be appending concurrently."""
     try:
         with open(path, encoding="utf-8") as source:
@@ -109,7 +111,7 @@ def matches_terminal(log_path: str, transcript_path: str, turn_id: str, sid: str
     return False
 
 
-def run(argv: list[str], env: dict[str, str], port: int, owner: str) -> None:
+def run(argv: List[str], env: Dict[str, str], port: int, owner: str) -> None:
     """Keep a launch registration alive while Codex retains normal terminal I/O."""
     with tempfile.TemporaryDirectory(prefix="lapdog-codex-") as directory:
         log_path = str(Path(directory) / "terminal.jsonl")

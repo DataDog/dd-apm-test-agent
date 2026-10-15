@@ -5,6 +5,7 @@ import sys
 import threading
 from typing import Any
 from typing import Iterator
+from typing import Set
 
 from lapdog.codex_hook import request
 
@@ -14,7 +15,7 @@ class RegistrationClient:
         self.url = url + "/codex/hooks/registrations"
         self.owner = owner
         self.details = details
-        self.sessions: set[str] = set()
+        self.sessions: Set[str] = set()
         self.lock = threading.Lock()
         self.closed = False
 

@@ -15,6 +15,7 @@ from lapdog.cli import pi as cli_pi
 from lapdog.cli import runtime as cli_runtime
 from lapdog.cli import tags as cli_tags
 
+
 cli_main = importlib.import_module("lapdog.cli.main")
 
 
@@ -756,13 +757,14 @@ def test_run_codex_does_not_duplicate_no_daemon(args, monkeypatch):
     assert run.call_args.kwargs["argv"][-len(args) :] == args
 
 
-def test_cmd_codex_launches_desktop_without_installing_global_hooks():
+def test_cmd_codex_launches_desktop_without_installing_global_hooks(tmp_path):
+    cwd = str(tmp_path.resolve())
     with mock.patch.object(cli_codex, "install_codex_hooks") as install, mock.patch.object(
         cli_codex, "ensure_lapdog_running", return_value=12345
     ), mock.patch("lapdog.cli.codex_desktop.launch") as launch:
-        cli_codex.cmd_codex(["app", "/repo"], forward_data=False)
+        cli_codex.cmd_codex(["app", cwd], forward_data=False)
     install.assert_not_called()
-    assert launch.call_args.args[:2] == ("/repo", 12345)
+    assert launch.call_args.args[:2] == (cwd, 12345)
     assert launch.call_args.args[2]
 
 
