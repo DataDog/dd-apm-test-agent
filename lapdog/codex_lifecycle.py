@@ -4,8 +4,11 @@ The transcript adapter supplies LLM history only. Tool spans never depend on
 JavaScript source, printed results, or the order of concurrent tool calls.
 """
 
+from dataclasses import dataclass
+from dataclasses import field
 import datetime
 import json
+import time
 from typing import Any
 from typing import Dict
 from typing import List
@@ -18,9 +21,11 @@ from ddapm_test_agent.cors import with_cors
 from lapdog.claude_hooks import PendingToolSpan
 from lapdog.claude_hooks import _format_span_id
 from lapdog.claude_hooks import _to_json_str
+from lapdog.codex_exec import decode_object
 from lapdog.codex_exec import display_tool_name
 from lapdog.codex_hook import EVENTS
 from lapdog.utils import set_hidden_metadata
+
 
 if TYPE_CHECKING:
     from lapdog.codex_hooks import CodexHooksAPI
@@ -28,13 +33,7 @@ if TYPE_CHECKING:
 
 def tool_result(name: str, response: Any) -> Tuple[Any, bool]:
     """Normalize the documented Bash envelope without discarding its fields."""
-    if isinstance(response, str):
-        try:
-            parsed = json.loads(response)
-        except ValueError:
-            parsed = None
-        if isinstance(parsed, dict):
-            response = parsed
+    response = decode_object(response)
     if not isinstance(response, dict):
         return response, False
     error = bool(response.get("isError") or response.get("error"))
@@ -49,6 +48,14 @@ def tool_result(name: str, response: Any) -> Tuple[Any, bool]:
     return response, error
 
 
+@dataclass
+class Registration:
+    expires: float = 0
+    sessions: set[str] = field(default_factory=set)
+    pid: int = 0
+    log_path: str = ""
+
+
 class CodexLifecycle:
     def __init__(self, api: "CodexHooksAPI") -> None:
         self.api = api
@@ -59,6 +66,67 @@ class CodexLifecycle:
         self.agents: Dict[str, Dict[str, Any]] = {}
         self.agent_details: Dict[str, Dict[str, Any]] = {}
         self.spawn_requests: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self.registrations: Dict[str, Registration] = {}
+
+    def registered_owner(self, sid: str) -> str:
+        now = time.monotonic()
+        for owner, registration in list(self.registrations.items()):
+            if registration.expires <= now:
+                del self.registrations[owner]
+            elif sid in registration.sessions:
+                return owner
+        return ""
+
+    async def registration(self, request: web.Request) -> web.Response:
+        if request.method == "GET":
+            from lapdog.codex_launch import matches_terminal
+            from lapdog.codex_launch import owns_process
+
+            sid = request.query.get("session_id", "")
+            matched_owner = self.registered_owner(sid)
+            if not matched_owner and sid:
+                pid = request.query.get("pid", "")
+                for candidate, registration in self.registrations.items():
+                    if not registration.pid:
+                        continue
+                    if (pid.isdigit() and owns_process(registration.pid, int(pid))) or matches_terminal(
+                        registration.log_path, request.query.get("path", ""), request.query.get("turn_id", ""), sid
+                    ):
+                        registration.sessions.add(sid)
+                        matched_owner = candidate
+                        break
+            return web.json_response({"registered": bool(matched_owner)})
+        try:
+            body = await request.json()
+        except ValueError:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "invalid registration"}, status=400)
+        parent = body.get("parent_session_id")
+        owner = self.registered_owner(parent) if isinstance(parent, str) else body.get("owner")
+        sessions = body.get("session_ids")
+        if (
+            not isinstance(owner, str)
+            or not owner
+            or not isinstance(sessions, list)
+            or any(not isinstance(sid, str) or not sid for sid in sessions)
+        ):
+            return web.json_response({"error": "invalid registration"}, status=400)
+        if parent:
+            self.registrations[owner].sessions.update(sessions)
+        elif sessions or "log_path" in body:
+            if "log_path" in body and (
+                type(body.get("pid")) is not int or body["pid"] <= 1 or not isinstance(body["log_path"], str)
+            ):
+                return web.json_response({"error": "invalid terminal launch"}, status=400)
+            registration = self.registrations.setdefault(owner, Registration())
+            registration.expires = time.monotonic() + 60
+            registration.sessions.update(sessions)
+            if "log_path" in body:
+                registration.pid, registration.log_path = body["pid"], body["log_path"]
+        else:
+            self.registrations.pop(owner, None)
+        return web.json_response({"status": "ok"})
 
     async def cursor(self, request: web.Request) -> web.Response:
         return web.json_response({"offset": self.cursors.get(request.query.get("path", ""), 0)})
@@ -70,6 +138,10 @@ class CodexLifecycle:
             return web.json_response({"error": "invalid JSON"}, status=400)
         if not isinstance(body, dict) or not isinstance(body.get("session_id"), str) or not body["session_id"]:
             return web.json_response({"error": "missing session_id"}, status=400)
+        capture_sid = body.get("capture_session_id")
+        if capture_sid is not None:
+            if not isinstance(capture_sid, str) or not capture_sid or not self.registered_owner(capture_sid):
+                return web.json_response({"error": "session is not instrumented"}, status=403)
         records = body.get("records", [])
         hook = body.get("hook")
         if not isinstance(records, list) or any(not isinstance(r, dict) for r in records):
@@ -165,10 +237,32 @@ class CodexLifecycle:
         turn = session.active_turn
         payload = record.get("payload", {})
         kind = payload.get("type")
+        if turn is not None and turn.hook_prompt_fallback is not None:
+            from lapdog.codex_hooks import _content_text
+            from lapdog.codex_hooks import _normalized_text
+
+            message = (
+                payload.get("message")
+                if kind == "user_message"
+                else (
+                    _content_text(payload.get("content"))
+                    if kind == "message" and payload.get("role") == "user"
+                    else None
+                )
+            )
+            if message is not None and _normalized_text(message) == turn.hook_prompt_fallback:
+                # Replace the hook's placeholder representation with the first
+                # transcript source, so the existing paired-row dedup still works.
+                turn.pending_user_prompt_duplicate = (record.get("type", ""), turn.hook_prompt_fallback)
+                turn.hook_prompt_fallback = None
+                return []
         if kind == "collab_agent_spawn_begin":
             self.spawn_requests[(sid, payload.get("call_id", ""))] = payload
         elif kind == "collab_agent_spawn_end" and payload.get("new_thread_id"):
             agent_id = payload["new_thread_id"]
+            owner = self.registered_owner(sid)
+            if owner:
+                self.registrations[owner].sessions.add(agent_id)
             begin = self.spawn_requests.pop((sid, payload.get("call_id", "")), {})
             self.agent_details[agent_id] = {**begin, **payload}
             self.enrich_agent(agent_id)
@@ -237,8 +331,12 @@ class CodexLifecycle:
         self.api._ensure_step(session, turn, ns)
         self.api._update_last_ns(session, record)
         if event == "UserPromptSubmit":
-            if turn.root_span_ref and not session.user_prompts:
-                turn.root_span_ref["meta"]["input"]["value"] = hook.get("prompt", "")
+            prompt = hook.get("prompt", "")
+            if prompt and not session.user_prompts:
+                from lapdog.codex_hooks import _normalized_text
+
+                self.api._handle_event_msg(session, {**record, "payload": {"type": "user_message", "message": prompt}})
+                turn.hook_prompt_fallback = _normalized_text(prompt)
         elif event in ("PreToolUse", "PostToolUse"):
             tool_id = hook.get("tool_use_id")
             if not isinstance(tool_id, str) or not tool_id:
@@ -355,6 +453,8 @@ class CodexLifecycle:
 
     def routes(self) -> List[web.RouteDef]:
         return [
+            web.get("/codex/hooks/registrations", with_cors(self.registration)),
+            web.post("/codex/hooks/registrations", with_cors(self.registration)),
             web.get("/codex/hooks/cursor", with_cors(self.cursor)),
             web.post("/codex/hooks/native", with_cors(self.handle)),
         ]

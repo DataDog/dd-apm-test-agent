@@ -6,4 +6,8 @@ fixes:
 upgrade:
   - |
     Lapdog: Live Codex capture now requires Codex CLI 0.124.0 or newer.
-    Review and trust Lapdog handlers in Codex with ``/hooks`` before use.
+    Lapdog registers global hooks. Review and trust them in Codex with
+    ``/hooks`` before use; ``lapdog uninstall`` removes them.
+    On macOS, quit Codex desktop before launching it with ``lapdog codex app``
+    so Lapdog can attach capture to that app process. Desktop process capture
+    on other operating systems is not supported.

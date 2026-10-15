@@ -197,14 +197,34 @@ lapdog stop
 ### Codex capture
 
 `lapdog codex` requires Codex CLI 0.124.0 or newer and uses native lifecycle hooks.
-It adds Lapdog handlers to `$CODEX_HOME/hooks.json` (normally
-`~/.codex/hooks.json`) and preserves existing handlers. The installed Python
-interpreter must remain available. No separate plugin is required.
-
-After launching, open `/hooks` in Codex and review and trust the **Lapdog
-session capture** handlers. Codex skips untrusted hooks. Restart an already
-running IDE/app session after installation so it loads the registrations.
+It registers **Lapdog session capture** handlers in `$CODEX_HOME/hooks.json`
+and preserves other handlers. The installed Python interpreter must remain
+available. No separate plugin is required. Review and trust the handlers through
+Codex's normal hook approval process (`/hooks`). Lapdog does not bypass trust.
+Use `lapdog uninstall` to remove its registrations, or disable them in Codex.
 Changed hook commands, including a changed collector port, require new trust.
+
+Terminal launches preserve Codex's normal backend selection, including shared
+backend connections for resume. Lapdog registers the launched process and enables
+a temporary Codex terminal diagnostic log. Embedded sessions are identified by
+process ancestry. Shared-backend sessions are identified by matching a unique
+submitted-message ID from that terminal log to the current transcript turn.
+The diagnostic log can contain prompt text; it is removed when the launcher exits.
+Capture can begin at the next hook after the first prompt reaches the transcript.
+Unregistered sessions produce no spans. Registrations expire after 60 seconds
+without renewal and are removed when the launcher exits.
+
+On macOS, `lapdog codex app [path]` launches a fresh desktop process with a
+wrapper around its bundled Codex backend. Quit the desktop app fully before
+launching it through Lapdog. The launcher will not attach to an app that is
+already running, and it does not modify the installed app.
+
+The wrapper registers session IDs returned to that app's own start, resume,
+and fork requests. Desktop hooks check this registry before reading transcripts
+or sending capture data. Linked subagents inherit registration. Registrations
+are cleared when the wrapper exits and expire after 60 seconds without renewal.
+Plain desktop and terminal launches are not registered for capture. Desktop process
+instrumentation on other operating systems is not yet supported.
 
 The handlers send actual tool inputs/results and session, turn, subagent,
 compaction, and interruption events to `/codex/hooks/native`. They do not make

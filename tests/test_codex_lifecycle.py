@@ -14,7 +14,8 @@ from lapdog.codex_hooks import CodexHooksAPI
 
 def test_hook_command_url_wins_over_stale_daemon_environment(monkeypatch, capsys):
     monkeypatch.setenv("LAPDOG_URL", "http://localhost:8126")
-    monkeypatch.setattr(codex_hook.sys, "argv", ["codex_hook", "--url", "http://localhost:12345/"])
+    monkeypatch.setenv("LAPDOG_CODEX_CAPTURE", "isolated")
+    monkeypatch.setattr(codex_hook.sys, "argv", ["codex_hook", "--url", "http://localhost:12345/", "--capture"])
     payload = {"session_id": "parent", "hook_event_name": "SessionStart"}
     monkeypatch.setattr(codex_hook.sys, "stdin", io.StringIO(json.dumps(payload)))
     with mock.patch.object(codex_hook, "forward") as forward:
@@ -204,7 +205,7 @@ def test_read_chunk_preserves_partial_line(tmp_path):
 def test_forward_preserves_tool_when_transcript_fails(tmp_path, monkeypatch):
     path = tmp_path / "broken.jsonl"
     path.write_text("broken\n")
-    send = mock.Mock(return_value={})
+    send = mock.Mock(return_value={"registered": True})
     monkeypatch.setattr(codex_hook, "request", send)
     codex_hook.forward(
         "http://localhost:12345",
@@ -218,14 +219,27 @@ def test_install_and_uninstall_preserve_foreign_hooks(tmp_path, monkeypatch, cap
     monkeypatch.setattr(codex_setup, "supported", lambda _: True)
     path = tmp_path / "hooks.json"
     foreign = {"hooks": {"PostToolUse": [{"hooks": [{"type": "command", "command": "other"}]}]}}
-    path.write_text(json.dumps(foreign))
-    codex_setup.install(12345)
+    legacy = json.loads(json.dumps(foreign))
+    legacy["hooks"]["PostToolUse"][0]["hooks"].append(
+        {"type": "command", "command": "old lapdog hook", "statusMessage": codex_setup.MARKER}
+    )
+    path.write_text(json.dumps(legacy))
+    flags = codex_setup.install(12345)
     first = path.read_text()
-    codex_setup.install(12345)
+    assert flags is None
+    assert codex_setup.install(12345) == flags
     assert path.read_text() == first
     config = json.loads(first)
-    assert len(config["hooks"]["PostToolUse"]) == 2
-    assert "12345" in config["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert set(config["hooks"]) == set(codex_hook.EVENTS)
+    assert config["hooks"]["PostToolUse"][0] == foreign["hooks"]["PostToolUse"][0]
+    for event in codex_hook.EVENTS:
+        handler = config["hooks"][event][-1]["hooks"][0]
+        assert "12345" in handler["command"]
+        assert "--capture" in handler["command"]
+        assert "trusted" not in handler
+    codex_setup.install(23456)
+    assert "23456" in path.read_text()
+    assert "12345" not in path.read_text()
     codex_setup.uninstall()
     assert json.loads(path.read_text()) == foreign
     assert f"Cleared Lapdog Codex hook registrations from {path}." in capsys.readouterr().out
@@ -237,6 +251,8 @@ def test_install_and_uninstall_preserve_foreign_hooks(tmp_path, monkeypatch, cap
     codex_setup.uninstall()
     assert f"No Codex hooks file at {path}; nothing to remove." in capsys.readouterr().out
     assert not path.exists()
+    codex_setup.install(12345)
+    assert path.exists()
 
 
 @pytest.fixture
@@ -393,6 +409,7 @@ async def test_hook_relay_to_collector_preserves_full_output(lapdog_agent, tmp_p
         "tool_input": {"command": "pwd"},
         "cwd": str(tmp_path),
     }
+    await lapdog_agent.post("/codex/hooks/registrations", json={"owner": "test", "session_ids": ["relay-session"]})
     url = str(lapdog_agent.make_url("/")).rstrip("/")
     await asyncio.to_thread(codex_hook.forward, url, {**base, "hook_event_name": "PreToolUse"})
     append(
@@ -578,9 +595,7 @@ async def test_resume_primes_metadata_without_emitting_history(
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     monkeypatch.setattr(codex_hook, "CHUNK_BYTES", 300)  # History and current turn cross request boundaries.
     if indexed_name:
-        (tmp_path / "session_index.jsonl").write_text(
-            json.dumps({"id": "resumed", "thread_name": indexed_name}) + "\n"
-        )
+        (tmp_path / "session_index.jsonl").write_text(json.dumps({"id": "resumed", "thread_name": indexed_name}) + "\n")
     path = tmp_path / "resume.jsonl"
     records = [
         {"type": "session_meta", "payload": {"id": "resumed", "cwd": str(tmp_path), "cli_version": "0.162.1"}},
@@ -606,6 +621,7 @@ async def test_resume_primes_metadata_without_emitting_history(
         {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "old"}},
     ]
     path.write_text("".join(json.dumps({"timestamp": "2026-10-14T12:00:01Z", **r}) + "\n" for r in records))
+    await lapdog_agent.post("/codex/hooks/registrations", json={"owner": "test", "session_ids": ["resumed"]})
     url = str(lapdog_agent.make_url("/")).rstrip("/")
     base = {"session_id": "resumed", "transcript_path": str(path), "cwd": str(tmp_path)}
     if resume_hook:
@@ -656,3 +672,30 @@ async def test_resume_primes_metadata_without_emitting_history(
     # A later resume on this collector does not reread or duplicate the old turns.
     await asyncio.to_thread(codex_hook.forward, url, {**base, "hook_event_name": "SessionStart", "source": "resume"})
     assert len((await (await lapdog_agent.get("/claude/hooks/spans")).json())["spans"]) == len(result)
+
+
+@pytest.mark.parametrize(
+    "order", [[], ["event_msg"], ["response_item"], ["event_msg", "response_item"], ["response_item", "event_msg"]]
+)
+def test_hook_prompt_survives_stop_and_transcript_duplicates(capture, order):
+    hook(capture, "UserPromptSubmit", prompt="keep this prompt")
+    turn = capture._sessions["parent"].active_turn
+    for record_type in order:
+        payload = (
+            {"type": "user_message", "message": "keep this prompt"}
+            if record_type == "event_msg"
+            else {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "keep this prompt"}]}
+        )
+        capture._lifecycle.ingest(
+            "parent", {"type": record_type, "timestamp": "2026-10-14T12:00:02Z", "payload": payload}
+        )
+    hook(capture, "Stop", seconds=3)
+    session = capture._sessions["parent"]
+    assert session.active_turn is turn
+    assert session.user_prompts == ["keep this prompt"]
+    assert turn.root_span_ref["meta"]["input"]["value"] == "keep this prompt"
+    assert turn.llm_input_messages == [{"role": "user", "content": "keep this prompt"}]
+    hook(capture, "UserPromptSubmit", turn="next-turn", seconds=4, prompt="keep this prompt")
+    hook(capture, "Stop", turn="next-turn", seconds=5)
+    assert session.active_turn is not turn
+    assert session.active_turn.root_span_ref["meta"]["input"]["value"] == "keep this prompt"

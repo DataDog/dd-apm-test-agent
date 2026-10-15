@@ -95,7 +95,13 @@ def read_chunk(path: Path, offset: int) -> Tuple[list[Dict[str, Any]], int]:
 
 
 def send_transcript(
-    url: str, path: Path, fallback: str, *, initial_context: bool = False, turn_id: Optional[str] = None
+    url: str,
+    path: Path,
+    fallback: str,
+    *,
+    initial_context: bool = False,
+    turn_id: Optional[str] = None,
+    capture_session_id: Optional[str] = None,
 ) -> str:
     sid = transcript_identity(path, fallback)
     query = urllib.parse.urlencode({"path": str(path)})
@@ -114,6 +120,7 @@ def send_transcript(
                 url + "/codex/hooks/native",
                 {
                     "session_id": sid,
+                    "capture_session_id": capture_session_id,
                     "path": str(path),
                     "offset": offset,
                     "end_offset": end,
@@ -149,17 +156,32 @@ def forward(url: str, hook: Dict[str, Any]) -> None:
     sid = str(hook.get("session_id") or "")
     if not sid:
         raise ValueError("hook has no session_id")
+    capture_session_id = sid
+    query = urllib.parse.urlencode(
+        {
+            "session_id": sid,
+            "pid": os.getpid(),
+            "path": hook.get("transcript_path") or "",
+            "turn_id": hook.get("turn_id") or "",
+        }
+    )
+    if not request(url + "/codex/hooks/registrations?" + query).get("registered"):
+        return
+    if hook.get("hook_event_name") == "SubagentStart" and hook.get("agent_id"):
+        request(url + "/codex/hooks/registrations", {"parent_session_id": sid, "session_ids": [hook["agent_id"]]})
     try:
         transcript = hook.get("transcript_path")
         if transcript and Path(transcript).is_file():
             path = Path(transcript)
-            sid = send_transcript(url, path, sid, initial_context=True, turn_id=hook.get("turn_id"))
+            sid = send_transcript(
+                url, path, sid, initial_context=True, turn_id=hook.get("turn_id"), capture_session_id=capture_session_id
+            )
             if hook.get("hook_event_name") in ("PostToolUse", "Stop", "SessionEnd"):
                 for review in review_transcripts(path, sid):
-                    send_transcript(url, review, sid)
+                    send_transcript(url, review, sid, capture_session_id=capture_session_id)
         child = hook.get("agent_transcript_path")
         if child and Path(child).is_file():
-            send_transcript(url, Path(child), str(hook.get("agent_id") or sid))
+            send_transcript(url, Path(child), str(hook.get("agent_id") or sid), capture_session_id=capture_session_id)
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"[lapdog] Codex transcript supplement failed: {exc}", file=sys.stderr)
     home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
@@ -167,6 +189,7 @@ def forward(url: str, hook: Dict[str, Any]) -> None:
     body = {
         "records": [{"type": "event_msg", "payload": {"type": "session_name", "name": name}}] if name else [],
         "session_id": sid,
+        "capture_session_id": capture_session_id,
         "event_id": str(uuid.uuid4()),
         "hook": hook,
         "proxy_session_key": os.environ.get("LAPDOG_SESSION_TOKEN"),
@@ -180,11 +203,15 @@ def forward(url: str, hook: Dict[str, Any]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", required=True)
+    parser.add_argument("--capture", action="store_true")
     args = parser.parse_args()
     try:
         # A shared Codex daemon can retain LAPDOG_URL from an older launch.
         # Use the collector explicitly configured in this hook's command.
-        forward(args.url.rstrip("/"), json.load(sys.stdin))
+        # Old global registrations lack the capture flag. Leave them inert even if
+        # an already-running Codex process still has those commands cached.
+        if args.capture:
+            forward(args.url.rstrip("/"), json.load(sys.stdin))
     except (OSError, ValueError, RuntimeError) as exc:
         # Capture must never approve, deny, or modify the user's operation.
         print(f"[lapdog] Codex capture failed: {exc}", file=sys.stderr)

@@ -12,6 +12,20 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
+
+def decode_object(value: Any) -> Any:
+    """Decode JSON objects while preserving plain text, arrays, and scalar values."""
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            pass
+        else:
+            if isinstance(parsed, dict):
+                return parsed
+    return value
+
+
 TOOL_DISPLAY_NAMES = {
     "write_stdin": "Ran",
     "apply_patch": "Apply patch",

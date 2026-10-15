@@ -1,4 +1,4 @@
-"""Install only Lapdog's Codex hook handlers, preserving other registrations."""
+"""Install and remove globally approved Codex capture hooks."""
 
 import json
 import os
@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from typing import Optional
 
 from lapdog.codex_hook import EVENTS
 
@@ -27,12 +28,12 @@ def supported(binary: str) -> bool:
         return False
 
 
-def configure(command: str = "") -> Path:
-    """Replace managed handlers; an empty command removes them."""
+def configure(port: Optional[int] = None) -> Path:
+    """Replace or remove Lapdog handlers, preserving other registrations."""
     path = hooks_path()
     config = json.loads(path.read_text()) if path.exists() else {}
     original = json.dumps(config, sort_keys=True)
-    hooks = config.setdefault("hooks", {}) if command else config.get("hooks", {})
+    hooks = config.get("hooks", {})
     for event, groups in list(hooks.items()):
         kept = []
         for group in groups:
@@ -43,10 +44,23 @@ def configure(command: str = "") -> Path:
             hooks[event] = kept
         else:
             del hooks[event]
-    if command:
-        handler = {"type": "command", "command": command, "timeout": 30, "statusMessage": MARKER}
+    if port is not None:
+        argv = [sys.executable, "-m", "lapdog.codex_hook", "--url", f"http://localhost:{port}", "--capture"]
+        command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+        config["hooks"] = hooks
         for event in EVENTS:
-            hooks.setdefault(event, []).append({"hooks": [handler]})
+            hooks.setdefault(event, []).append(
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": command,
+                            "timeout": 3 if event in ("SessionEnd", "Interrupt") else 30,
+                            "statusMessage": MARKER,
+                        }
+                    ]
+                }
+            )
     if json.dumps(config, sort_keys=True) != original:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".json.lapdog-tmp")
@@ -56,15 +70,16 @@ def configure(command: str = "") -> Path:
 
 
 def install(port: int, binary: str = "") -> None:
-    if not supported(binary or shutil.which("codex") or "codex"):
+    """Install global hooks without changing backend selection."""
+    binary = binary or shutil.which("codex") or "codex"
+    if not supported(binary):
         raise RuntimeError("Lapdog requires Codex CLI 0.124.0 or later. Upgrade Codex to use hook capture.")
     try:
-        argv = [sys.executable, "-m", "lapdog.codex_hook", "--url", f"http://localhost:{port}"]
-        path = configure(subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv))
-    except (OSError, ValueError, TypeError, AttributeError) as exc:
-        raise RuntimeError(f"Cannot install Codex hooks in {hooks_path()}: {exc}") from exc
+        configure(port)
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"Cannot configure global hooks in {hooks_path()}: {exc}") from exc
     print(
-        f"[lapdog] Hook capture configured in {path}. Review and trust Lapdog hooks with /hooks in Codex.",
+        "[lapdog] Global hook capture configured. Review and trust Lapdog hooks with /hooks in Codex.",
         file=sys.stderr,
     )
 

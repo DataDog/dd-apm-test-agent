@@ -161,7 +161,13 @@ def _run_codex(
             )
     if session_token:
         env["LAPDOG_SESSION_TOKEN"] = session_token
-    run(bin_path=launch_bin, argv=([launch_bin] + proxy_args + args), env=env)
+    argv = [launch_bin] + proxy_args + args
+    if port is not None and session_token:
+        from lapdog.codex_launch import run as run_capture
+
+        run_capture(argv, env, port, session_token)
+    else:
+        run(bin_path=launch_bin, argv=argv, env=env)
 
 
 def cmd_codex(
@@ -193,9 +199,17 @@ def cmd_codex(
     if port is None:
         print("[lapdog] Could not determine lapdog port.", file=sys.stderr)
         sys.exit(1)
-    app_mode = codex_args.is_app_command(sub_cmd_args)
     session_token = uuid.uuid4().hex
-    proxy_session_key = None if app_mode else session_token
+    if codex_args.is_app_command(sub_cmd_args):
+        from lapdog.cli.codex_desktop import launch
+
+        try:
+            launch(codex_args.resolve_cwd(sub_cmd_args), port, session_token)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            print(f"[lapdog] {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
+    proxy_session_key = session_token
     try:
         install_codex_hooks(port, launch_bin or "")
     except RuntimeError as exc:

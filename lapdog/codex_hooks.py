@@ -25,6 +25,7 @@ from .claude_hooks import SessionState
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
+from .codex_exec import decode_object
 from .codex_exec import display_tool_name
 from .codex_exec import extract_exec_calls
 from .codex_exec import extract_exec_results
@@ -35,6 +36,7 @@ from .coding_agent_metadata import extract_git_repository_url
 from .coding_agent_metadata import resolve_project_metadata
 from .model_pricing import compute_cost_metrics
 from .utils import set_hidden_metadata
+
 
 log = logging.getLogger(__name__)
 
@@ -302,13 +304,7 @@ def _normalized_text(value: Any) -> str:
 
 def _shell_tool_result(value: Any) -> Tuple[str, Dict[str, Any]]:
     """Separate command output from execution details."""
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except ValueError:
-            parsed = None
-        if isinstance(parsed, dict):
-            value = parsed
+    value = decode_object(value)
     if isinstance(value, dict) and "output" in value:
         return _to_json_str(value["output"]), {key: item for key, item in value.items() if key != "output"}
     return _to_json_str(value), {}
@@ -369,6 +365,7 @@ class CodexTurn:
         # the first representation in the pair so repeated prompt text in a
         # later occurrence is not discarded.
         self.pending_user_prompt_duplicate: Optional[Tuple[str, str]] = None
+        self.hook_prompt_fallback: Optional[str] = None
 
 
 class CodexSession:
@@ -2346,11 +2343,7 @@ class CodexHooksAPI:
         result: Optional[Dict[str, Any]]
         for index, result in session.exec_tool_results.pop(outer_id, {}).items():
             previous = results.get(index, {}).get("value")
-            if isinstance(previous, str):
-                try:
-                    previous = json.loads(previous)
-                except ValueError:
-                    previous = None
+            previous = decode_object(previous)
             if isinstance(previous, dict) and isinstance(result["value"], dict):
                 result["value"] = {**previous, **result["value"]}
             results[index] = result
@@ -2358,13 +2351,7 @@ class CodexHooksAPI:
             raw_name = call["name"]
             result = results.get(index)
             value = result.get("value", "") if result is not None else ""
-            if isinstance(value, str):
-                try:
-                    parsed_value = json.loads(value)
-                except (ValueError, TypeError):
-                    parsed_value = None
-                if isinstance(parsed_value, dict):
-                    value = parsed_value
+            value = decode_object(value)
             if raw_name == "write_stdin" and self._merge_shell_poll(
                 session, call["arguments"], value, end_ns, result_error=bool(result and result.get("error"))
             ):

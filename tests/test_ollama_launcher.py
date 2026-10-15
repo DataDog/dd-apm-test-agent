@@ -100,6 +100,11 @@ def test_pi_maintenance_commands_bypass_instrumentation(command):
 
 
 def test_codex_menu_launch_preserves_ollama_provider(monkeypatch):
+    from lapdog import codex_launch
+
+    monkeypatch.setattr(
+        codex_launch, "run", lambda argv, env, port, owner: cli_codex.run(bin_path=argv[0], argv=argv, env=env)
+    )
     monkeypatch.setattr(cli_codex.shutil, "which", lambda name: f"/real/bin/{name}")
     monkeypatch.setenv("OPENAI_API_KEY", "ollama")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
@@ -162,6 +167,11 @@ def test_wrapper_instruments_final_agent_arguments(monkeypatch, tmp_path, agent)
             }
         )
     )
+    from lapdog import codex_launch
+
+    monkeypatch.setattr(
+        codex_launch, "run", lambda argv, env, port, owner: cli_codex.run(bin_path=argv[0], argv=argv, env=env)
+    )
     session_id = "123e4567-e89b-12d3-a456-426614174000"
     args = ["--model", "example"]
     if agent == "codex":
@@ -173,7 +183,7 @@ def test_wrapper_instruments_final_agent_arguments(monkeypatch, tmp_path, agent)
         cli_codex if agent == "codex" else cli_pi, "ensure_lapdog_running", return_value=9126
     ) as ensure:
         with mock.patch.object(cli_pi, "_install_pi_extension") as install:
-            with mock.patch.object(cli_codex, "install_codex_hooks") as watcher, mock.patch.object(
+            with mock.patch.object(cli_codex, "install_codex_hooks", return_value=[]) as watcher, mock.patch.object(
                 cli_codex, "_stop_all_codex_watchers"
             ):
                 with mock.patch.object(cli_codex if agent == "codex" else cli_pi, "run") as run:

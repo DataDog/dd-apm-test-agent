@@ -30,6 +30,11 @@ def test_entry_point_preserves_help(monkeypatch, capsys):
 
 @pytest.fixture(autouse=True)
 def isolated_codex_capture(monkeypatch, tmp_path):
+    from lapdog import codex_launch
+
+    monkeypatch.setattr(
+        codex_launch, "run", lambda argv, env, port, owner: cli_codex.run(bin_path=argv[0], argv=argv, env=env)
+    )
     monkeypatch.setattr(cli_codex, "install_codex_hooks", mock.Mock())
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
 
@@ -727,7 +732,7 @@ def test_start_lapdog_uses_dedicated_server_module(tmp_path, monkeypatch):
     ]
 
 
-@pytest.mark.parametrize("args", [[], ["resume", "--last"], ["--cd", "/repo"], ["app", "/repo"]])
+@pytest.mark.parametrize("args", [[], ["resume", "--last"], ["--cd", "/repo"]])
 def test_cmd_codex_installs_hooks_and_preserves_launch_arguments(args):
     with mock.patch.object(cli_codex, "ensure_lapdog_running", return_value=12345), mock.patch.object(
         cli_codex, "install_codex_hooks"
@@ -739,7 +744,26 @@ def test_cmd_codex_installs_hooks_and_preserves_launch_arguments(args):
     stop.assert_called_once_with(lapdog_url="http://localhost:12345")
     assert launch.call_args.kwargs["args"] == args
     assert launch.call_args.kwargs["port"] == 12345
-    assert (launch.call_args.kwargs["proxy_session_key"] is None) == (args[:1] == ["app"])
+    assert launch.call_args.kwargs["proxy_session_key"]
+
+
+@pytest.mark.parametrize("args", [["--no-daemon"], ["resume", "--no-daemon", "--last"]])
+def test_run_codex_does_not_duplicate_no_daemon(args, monkeypatch):
+    monkeypatch.setattr(cli_codex.shutil, "which", lambda _: "/usr/bin/codex")
+    with mock.patch.object(cli_codex, "run") as run:
+        cli_codex._run_codex(args=args)
+    assert run.call_args.kwargs["argv"].count("--no-daemon") == 1
+    assert run.call_args.kwargs["argv"][-len(args) :] == args
+
+
+def test_cmd_codex_launches_desktop_without_installing_global_hooks():
+    with mock.patch.object(cli_codex, "install_codex_hooks") as install, mock.patch.object(
+        cli_codex, "ensure_lapdog_running", return_value=12345
+    ), mock.patch("lapdog.cli.codex_desktop.launch") as launch:
+        cli_codex.cmd_codex(["app", "/repo"], forward_data=False)
+    install.assert_not_called()
+    assert launch.call_args.args[:2] == ("/repo", 12345)
+    assert launch.call_args.args[2]
 
 
 def test_cmd_codex_rejects_unsupported_version_before_launch(capsys):
