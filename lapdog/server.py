@@ -46,6 +46,8 @@ def _inject_lapdog_forwarded(data: bytes, content_encoding: str) -> bytes:
 def extend_app(app: web.Application) -> web.Application:
     """Add Lapdog routes, shared state, forwarding behavior, and cleanup hooks."""
     agent = app["agent"]
+    # Lapdog handles incoming requests locally; LLMObs handlers forward separately.
+    app["proxy_to_agent"] = False
 
     llmobs_event_platform_api = LLMObsEventPlatformAPI(agent)
     claude_link_tracker = ClaudeLinkTracker()

@@ -2,6 +2,7 @@
 
 from unittest import mock
 
+from aiohttp import web
 import msgpack
 import pytest
 
@@ -45,8 +46,68 @@ def _route_paths(client):
     return {route.resource.canonical for route in client.app.router.routes()}
 
 
+@pytest.fixture
+def agent_authentication(monkeypatch, request):
+    monkeypatch.setattr(test_agent, "_is_agent_authenticated", lambda url: request.param)
+    return request.param
+
+
+@pytest.mark.parametrize("agent_authentication", [False, True], indirect=True)
+@pytest.mark.parametrize("agent_url", ["http://127.0.0.1:9876"])
+@pytest.mark.parametrize("disable_llmobs_data_forwarding", [False])
+async def test_agent_validation_controls_forwarding(agent_authentication, agent, lapdog_agent):
+    for client in (agent, lapdog_agent):
+        app = client.app
+        assert app["authenticated"] is agent_authentication
+        assert app["disable_llmobs_data_forwarding"] is (not agent_authentication)
+        assert app["agent_url"] == "http://127.0.0.1:9876"
+    response = await lapdog_agent.get("/info")
+    assert response.status == 200
+    assert (await response.json())["authenticated"] is agent_authentication
+
+
+@pytest.mark.parametrize("agent_url", ["http://127.0.0.1:9876"])
+async def test_request_proxy_override_takes_precedence(agent, lapdog_agent):
+    for client, default_forwarding in ((agent, True), (lapdog_agent, False)):
+        assert client.app["proxy_to_agent"] is default_forwarding
+        for override in (None, "true", "false"):
+            headers = {} if override is None else {"X-Datadog-Agent-Proxy-Disabled": override}
+            with mock.patch.object(test_agent, "_prepare_and_send_request", new_callable=mock.AsyncMock) as forward:
+                forward.return_value = web.Response()
+                response = await client.get("/info", headers=headers)
+                assert response.status == 200
+                should_forward = default_forwarding if override is None else override == "false"
+                assert forward.await_count == int(should_forward)
+
+
 async def test_base_agent_does_not_expose_lapdog_routes(agent):
     assert LAPDOG_ROUTE_PATHS.isdisjoint(_route_paths(agent))
+
+
+@pytest.mark.parametrize("agent_authentication", [True], indirect=True)
+@pytest.mark.parametrize("disable_llmobs_data_forwarding", [False])
+class TestLapdogLLMObsForwarding:
+    @pytest.fixture
+    def forwarded_payloads(self):
+        return []
+
+    @pytest.fixture
+    async def agent_url(self, aiohttp_server, forwarded_payloads):
+        async def receive(request):
+            forwarded_payloads.append(await request.read())
+            return web.json_response({})
+
+        upstream = web.Application()
+        upstream.router.add_post("/evp_proxy/v2/api/v2/llmobs", receive)
+        server = await aiohttp_server(upstream)
+        return str(server.make_url("")).rstrip("/")
+
+    async def test_llmobs_still_forwards(self, agent_authentication, lapdog_agent, forwarded_payloads):
+        assert lapdog_agent.app["proxy_to_agent"] is False
+        payload = msgpack.packb({"ml_obs": {"spans": []}}, use_bin_type=True)
+        response = await lapdog_agent.post("/evp_proxy/v2/api/v2/llmobs", data=payload)
+        assert response.status == 200
+        assert forwarded_payloads == [payload]
 
 
 async def test_lapdog_server_adds_all_lapdog_routes(lapdog_agent):

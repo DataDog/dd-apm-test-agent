@@ -270,6 +270,18 @@ def default_value_trace_results_summary():
     }
 
 
+def _is_agent_authenticated(agent_url: str) -> bool:
+    try:
+        response = requests.get(
+            f"{agent_url.rstrip('/')}/evp_proxy/v2/api/v1/validate",
+            headers={"X-Datadog-EVP-Subdomain": "api"},
+            timeout=5,
+        )
+        return response.status_code == 200 and response.json().get("valid") is True
+    except (requests.RequestException, ValueError):
+        return False
+
+
 def _is_valid_api_key_and_site_combination(dd_api_key: str, dd_site: str) -> bool:
     """Check if the api key + site is a valid DD auth combo"""
     url = f"https://api.{dd_site}/api/v1/validate"
@@ -1215,21 +1227,23 @@ class Agent:
             if key not in request.app:
                 return web.HTTPUnprocessableEntity(text=f"Unknown key: '{key}'", headers=headers)
 
-        # before applying config, check if api-key and site are valid
+        # before applying config, check if agent url, or api-key and site are valid
         # only do this if updating an api key or site
-        updated_auth_meta = "dd_api_key" in data or "dd_site" in data
+        updated_auth_meta = "agent_url" in data or "dd_api_key" in data or "dd_site" in data
         if updated_auth_meta:
             dd_api_key = data.get("dd_api_key", request.app["dd_api_key"])
             dd_site = data.get("dd_site", request.app["dd_site"])
+            agent_url = data.get("agent_url", request.app["agent_url"])
 
-            is_valid = _is_valid_api_key_and_site_combination(
-                dd_api_key=dd_api_key,
-                dd_site=dd_site
-            )
+            valid_auth = False
+            if agent_url:
+                valid_auth = _is_agent_authenticated(agent_url)
+            elif dd_api_key and dd_site:
+                valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site)
 
-            if not is_valid:
+            if not valid_auth:
                 return web.HTTPUnprocessableEntity(
-                    text="Incorrect DD API key and site combination to update", headers=headers
+                    text="Invalid agent or API key credentials", headers=headers
                 )
 
             request.app["authenticated"] = True
@@ -1728,7 +1742,7 @@ class Agent:
         data = self._request_data(request)
         headers = request["_headers"]
         agent_url = request.app["agent_url"]
-        proxy_to_agent = request.get("_proxy_to_agent", True)
+        proxy_to_agent = request.get("_proxy_to_agent", request.app["proxy_to_agent"])
 
         log.debug(f"New request: {request} with headers: {headers}")
         log.debug(f"Request Data: {data!r}")
@@ -2174,6 +2188,7 @@ def make_app(
     app["log_span_fmt"] = log_span_fmt
     app["snapshot_ignored_attrs"] = snapshot_ignored_attrs
     app["agent_url"] = agent_url
+    app["proxy_to_agent"] = True
     app["trace_request_delay"] = trace_request_delay
     app["suppress_trace_parse_errors"] = suppress_trace_parse_errors
     app["pool_trace_check_failures"] = pool_trace_check_failures
@@ -2190,11 +2205,18 @@ def make_app(
     app["dd_api_key"] = dd_api_key
     app["org_prop_marker"] = org_prop_marker
 
-    valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site) if dd_api_key and dd_site else False
+    valid_auth = False
+    if bool(agent_url):
+        valid_auth = _is_agent_authenticated(agent_url)
+    elif dd_api_key and dd_site:
+        valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site)
+
     app["authenticated"] = valid_auth
     if not disable_llmobs_data_forwarding and not valid_auth:
         log.warning(
-            "Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding."
+            "Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, "
+            "or valid DD_AGENT_URL which is properly authenticated, "
+            "disabling LLM Observability data forwarding."
         )
         disable_llmobs_data_forwarding = True
 

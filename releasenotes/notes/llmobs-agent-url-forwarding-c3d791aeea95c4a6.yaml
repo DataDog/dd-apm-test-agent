@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    Lapdog: Allow Agent Observability forwarding through a configured agent URL
+    (``--agent-url`` / ``DD_AGENT_URL``) without a local ``DD_API_KEY``. This 
+    takes precedence over the api key / site combination. The agent URL is checked
+    for authentication on startup and on re-configuration.
