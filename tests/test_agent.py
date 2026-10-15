@@ -11,7 +11,9 @@ import aiohttp
 from aiohttp import web
 import msgpack
 import pytest
+import requests
 
+from ddapm_test_agent.agent import _is_agent_authenticated
 from ddapm_test_agent.trace import decode_v1
 from ddapm_test_agent.trace import trace_id
 
@@ -609,14 +611,39 @@ async def test_info_authenticated_with_valid_api_key(agent, dd_api_key_validatio
     ]
 
 
+@pytest.mark.parametrize("dd_api_key_validation_response", [(200, {"valid": True})])
+@pytest.mark.parametrize("agent_url", ["http://127.0.0.1:9876/"])
+@pytest.mark.parametrize("dd_api_key", [""])
+@pytest.mark.parametrize("disable_llmobs_data_forwarding", [False])
+async def test_authenticated_agent_url_authorizes_llmobs_forwarding_without_a_key(
+    agent, dd_api_key_validation_requests
+):
+    assert agent.app["authenticated"] is True
+    assert agent.app["disable_llmobs_data_forwarding"] is False
+    # The agent at agent_url holds the key, so validation goes through its EVP proxy with no local key.
+    assert dd_api_key_validation_requests == [
+        {
+            "url": "http://127.0.0.1:9876/evp_proxy/v2/api/v1/validate",
+            "headers": {"X-Datadog-EVP-Subdomain": "api"},
+            "timeout": 5,
+        }
+    ]
+
+
 @pytest.mark.parametrize("agent_url", ["http://127.0.0.1:9876"])
 @pytest.mark.parametrize("dd_api_key", [""])
 @pytest.mark.parametrize("disable_llmobs_data_forwarding", [False])
-async def test_agent_url_authorizes_llmobs_forwarding_without_a_key(agent, dd_api_key_validation_requests):
-    assert agent.app["authenticated"] is True
-    assert agent.app["disable_llmobs_data_forwarding"] is False
-    # The agent at agent_url holds the key, so no local key is validated.
-    assert dd_api_key_validation_requests == []
+async def test_unauthenticated_agent_url_disables_llmobs_forwarding(agent):
+    assert agent.app["authenticated"] is False
+    assert agent.app["disable_llmobs_data_forwarding"] is True
+
+
+def test_unreachable_agent_is_not_authenticated(monkeypatch):
+    def raise_connection_error(url, **kwargs):
+        raise requests.ConnectionError(url)
+
+    monkeypatch.setattr(requests, "get", raise_connection_error)
+    assert _is_agent_authenticated("http://127.0.0.1:9876") is False
 
 
 async def test_post_settings_rejects_invalid_api_key(agent):
@@ -638,6 +665,27 @@ async def test_post_settings_accepts_valid_api_key(agent, dd_api_key_validation_
         "url": "https://api.datadoghq.eu/api/v1/validate",
         "headers": {"DD-API-KEY": "good-key"},
     }
+
+
+@pytest.mark.parametrize("dd_api_key_validation_response", [(200, {"valid": True})])
+async def test_post_settings_accepts_authenticated_agent_url(agent, dd_api_key_validation_requests):
+    resp = await agent.post("/test/settings", data='{ "agent_url": "http://127.0.0.1:9876" }')
+    assert resp.status == 202, await resp.text()
+    assert agent.app["agent_url"] == "http://127.0.0.1:9876"
+    assert agent.app["authenticated"] is True
+    assert dd_api_key_validation_requests[-1] == {
+        "url": "http://127.0.0.1:9876/evp_proxy/v2/api/v1/validate",
+        "headers": {"X-Datadog-EVP-Subdomain": "api"},
+        "timeout": 5,
+    }
+
+
+async def test_post_settings_rejects_unauthenticated_agent_url(agent):
+    resp = await agent.post("/test/settings", data='{ "agent_url": "http://127.0.0.1:9876" }')
+    assert resp.status == 422
+    assert await resp.text() == "Datadog agent at agent URL could not be authenticated"
+    assert agent.app["agent_url"] == ""
+    assert agent.app["authenticated"] is False
 
 
 async def test_evp_proxy_v4_api_v2_errorsintake(agent):

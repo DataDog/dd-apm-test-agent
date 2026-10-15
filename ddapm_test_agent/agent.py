@@ -282,6 +282,19 @@ def _is_valid_api_key_and_site_combination(dd_api_key: str, dd_site: str) -> boo
     return result.get("valid", False)
 
 
+def _is_agent_authenticated(agent_url: str) -> bool:
+    """Check if the Datadog agent at agent_url holds a valid API key by validating through its EVP proxy"""
+    try:
+        response = requests.get(
+            f"{agent_url.rstrip('/')}/evp_proxy/v2/api/v1/validate",
+            headers={"X-Datadog-EVP-Subdomain": "api"},
+            timeout=5,
+        )
+        return response.status_code == 200 and response.json().get("valid") is True
+    except (requests.RequestException, ValueError):
+        return False
+
+
 class MockQuery:
     """Mock query object that behaves like a dict."""
 
@@ -1214,19 +1227,21 @@ class Agent:
             if key not in request.app:
                 return web.HTTPUnprocessableEntity(text=f"Unknown key: '{key}'", headers=headers)
 
-        # before applying config, check if api-key and site are valid
-        # only do this if updating an api key or site
-        updated_auth_meta = "dd_api_key" in data or "dd_site" in data
+        # before applying config, check that the new auth settings are valid
+        # only do this if updating the agent url, api key, or site
+        updated_auth_meta = "agent_url" in data or "dd_api_key" in data or "dd_site" in data
         if updated_auth_meta:
+            agent_url = data.get("agent_url", request.app["agent_url"])
             dd_api_key = data.get("dd_api_key", request.app["dd_api_key"])
             dd_site = data.get("dd_site", request.app["dd_site"])
 
-            is_valid = _is_valid_api_key_and_site_combination(
-                dd_api_key=dd_api_key,
-                dd_site=dd_site
-            )
-
-            if not is_valid:
+            # a configured agent url takes precedence over the api key, matching the forwarding handlers
+            if agent_url:
+                if not _is_agent_authenticated(agent_url):
+                    return web.HTTPUnprocessableEntity(
+                        text="Datadog agent at agent URL could not be authenticated", headers=headers
+                    )
+            elif not _is_valid_api_key_and_site_combination(dd_api_key=dd_api_key, dd_site=dd_site):
                 return web.HTTPUnprocessableEntity(
                     text="Incorrect DD API key and site combination to update", headers=headers
                 )
@@ -2151,12 +2166,24 @@ def make_app(
     app["dd_api_key"] = dd_api_key
     app["org_prop_marker"] = org_prop_marker
 
-    valid_auth = bool(agent_url) or (
-        _is_valid_api_key_and_site_combination(dd_api_key, dd_site) if dd_api_key and dd_site else False
-    )
+    valid_auth = False
+    if agent_url:
+        valid_auth = _is_agent_authenticated(agent_url)
+    elif dd_api_key and dd_site:
+        valid_auth = _is_valid_api_key_and_site_combination(dd_api_key, dd_site)
     app["authenticated"] = valid_auth
     if not disable_llmobs_data_forwarding and not valid_auth:
-        log.warning("Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, disabling LLM Observability data forwarding.")
+        if agent_url:
+            log.warning(
+                "Cannot forward LLM Observability data through an unauthenticated Datadog agent at %r, "
+                "disabling LLM Observability data forwarding.",
+                agent_url,
+            )
+        else:
+            log.warning(
+                "Cannot forward LLM Observability data with an invalid DD_API_KEY and DD_SITE, "
+                "disabling LLM Observability data forwarding."
+            )
         disable_llmobs_data_forwarding = True
 
     app["disable_llmobs_data_forwarding"] = disable_llmobs_data_forwarding
