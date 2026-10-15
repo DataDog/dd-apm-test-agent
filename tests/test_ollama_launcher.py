@@ -173,15 +173,14 @@ def test_wrapper_instruments_final_agent_arguments(monkeypatch, tmp_path, agent)
         cli_codex if agent == "codex" else cli_pi, "ensure_lapdog_running", return_value=9126
     ) as ensure:
         with mock.patch.object(cli_pi, "_install_pi_extension") as install:
-            with mock.patch.object(cli_codex, "_start_codex_watcher") as watcher:
+            with mock.patch.object(cli_codex, "install_codex_hooks") as watcher, mock.patch.object(
+                cli_codex, "_stop_all_codex_watchers"
+            ):
                 with mock.patch.object(cli_codex if agent == "codex" else cli_pi, "run") as run:
                     ollama_launcher.main()
     ensure.assert_called_once_with(True, detached=True)
     if agent == "codex":
-        assert watcher.call_args.kwargs["cwd"] == str(tmp_path)
-        assert watcher.call_args.kwargs["resume_mode"] is True
-        assert watcher.call_args.kwargs["resume_session_id"] == session_id
-        assert watcher.call_args.kwargs["resume_all_cwds"] is True
+        watcher.assert_called_once_with(9126, binary)
         install.assert_not_called()
     else:
         install.assert_called_once_with()

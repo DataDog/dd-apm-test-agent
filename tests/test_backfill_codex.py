@@ -1,4 +1,8 @@
+from lapdog.backfill_codex import _default_session_dir
+from lapdog.backfill_codex import _is_under
+
 import json
+import os
 from pathlib import Path
 from typing import Any
 from typing import List
@@ -34,7 +38,7 @@ def test_backfill_posts_records_and_shutdown(monkeypatch, tmp_path):
 
     posts: List[Any] = []
     monkeypatch.setattr(
-        "lapdog.codex_watcher._session.post",
+        "lapdog.backfill_codex._session.post",
         lambda *args, **kwargs: posts.append(kwargs["json"]) or mock.Mock(status_code=200),
     )
 
@@ -63,7 +67,7 @@ def test_backfill_skips_sessions_under_different_cwd(monkeypatch, tmp_path):
 
     posts: List[Any] = []
     monkeypatch.setattr(
-        "lapdog.codex_watcher._session.post",
+        "lapdog.backfill_codex._session.post",
         lambda *args, **kwargs: posts.append(kwargs["json"]) or mock.Mock(status_code=200),
     )
 
@@ -86,7 +90,7 @@ def test_backfill_cwd_none_disables_filtering(monkeypatch, tmp_path):
 
     posts: List[Any] = []
     monkeypatch.setattr(
-        "lapdog.codex_watcher._session.post",
+        "lapdog.backfill_codex._session.post",
         lambda *args, **kwargs: posts.append(kwargs["json"]) or mock.Mock(status_code=200),
     )
 
@@ -103,7 +107,7 @@ def test_backfill_no_sessions_returns_zero(monkeypatch, tmp_path, capsys):
 
     posts: List[Any] = []
     monkeypatch.setattr(
-        "lapdog.codex_watcher._session.post",
+        "lapdog.backfill_codex._session.post",
         lambda *args, **kwargs: posts.append(kwargs["json"]) or mock.Mock(status_code=200),
     )
 
@@ -130,7 +134,7 @@ def test_backfill_session_meta_preserved_when_cwd_matches_in_later_record(monkey
 
     posts: List[Any] = []
     monkeypatch.setattr(
-        "lapdog.codex_watcher._session.post",
+        "lapdog.backfill_codex._session.post",
         lambda *args, **kwargs: posts.append(kwargs["json"]) or mock.Mock(status_code=200),
     )
 
@@ -140,3 +144,58 @@ def test_backfill_session_meta_preserved_when_cwd_matches_in_later_record(monkey
     assert types == ["session_meta", "turn_context", "event_msg", "event_msg"]
     # The final event_msg is shutdown_complete.
     assert posts[-1]["record"]["payload"]["type"] == "shutdown_complete"
+
+
+def test_default_session_dir_uses_codex_home(monkeypatch, tmp_path):
+    codex_home = tmp_path / "custom-codex-home"
+    monkeypatch.delenv("LAPDOG_CODEX_SESSION_DIR", raising=False)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    assert _default_session_dir() == codex_home / "sessions"
+
+
+def test_default_session_dir_prefers_lapdog_override(monkeypatch, tmp_path):
+    session_dir = tmp_path / "custom-sessions"
+    monkeypatch.setenv("LAPDOG_CODEX_SESSION_DIR", str(session_dir))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "custom-codex-home"))
+
+    assert _default_session_dir() == session_dir
+
+
+def test_is_under_accepts_descendant_cwd(tmp_path):
+    root = tmp_path
+    sub = tmp_path / "sub" / "deeper"
+    sub.mkdir(parents=True)
+    assert _is_under(str(sub), str(root)) is True
+    assert _is_under(str(root), str(root)) is True
+
+
+def test_is_under_rejects_prefix_without_separator(tmp_path):
+    root = tmp_path / "a"
+    sibling = tmp_path / "abc"
+    root.mkdir()
+    sibling.mkdir()
+    # /tmp/a vs /tmp/abc: textually a prefix, but not a child directory.
+    assert _is_under(str(sibling), str(root)) is False
+
+
+def test_is_under_resolves_symlinks(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    try:
+        os.symlink(real, link)
+    except (OSError, NotImplementedError):
+        # Platforms without symlink permissions skip the symlink branch.
+        return
+    nested = real / "child"
+    nested.mkdir()
+    # Watcher launched at the realpath should still match records that say
+    # their cwd is via the symlink.
+    assert _is_under(str(link / "child"), str(real)) is True
+    assert _is_under(str(nested), str(link)) is True
+
+
+def test_is_under_returns_false_for_empty_inputs():
+    assert _is_under("", "/tmp") is False
+    assert _is_under("/tmp", "") is False

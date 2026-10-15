@@ -6,6 +6,7 @@ import sys
 
 from lapdog.cli.claude import _uninstall_lapdog_claude_code_plugin
 from lapdog.cli.codex import _stop_all_codex_watchers
+from lapdog.cli.codex_setup import uninstall as uninstall_codex_hooks
 from lapdog.cli.pi import _PI_EXT_DEST
 from lapdog.cli.runtime import read_pid_file
 from lapdog.cli.server import cmd_stop
@@ -19,6 +20,9 @@ def cmd_uninstall() -> None:
     pid, _ = read_pid_file()
     if pid is not None:
         cmd_stop(pid=pid)
+
+    # Stop old watchers before removing the PID files used to identify them.
+    _stop_all_codex_watchers()
 
     # remove ~/.lapdog dir
     if os.path.isdir(LAPDOG_DIR):
@@ -36,8 +40,7 @@ def cmd_uninstall() -> None:
         except OSError as e:
             print(f"[lapdog] Failed to remove {_PI_EXT_DEST}: {e}", file=sys.stderr)
 
-    # stop codex watcher(s)
-    _stop_all_codex_watchers()
+    uninstall_codex_hooks()
 
     print(
         "[lapdog] Lapdog cleanup complete. Now uninstall the package:\n"

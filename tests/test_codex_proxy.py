@@ -282,7 +282,9 @@ async def test_codex_subagent_spawn_parents_to_active_step(agent):
     assert subagents[0]["parent_id"] == steps[0]["span_id"]
 
 
-def test_codex_proxy_caps_messages_and_links_reasoning_to_tool_calls():
+def test_codex_proxy_caps_messages_and_links_reasoning_to_tool_calls(monkeypatch):
+    monkeypatch.setattr("lapdog.codex_hooks.MAX_LLM_MESSAGE_CHARS", 8192)
+
     class FakeConfig:
         ml_app = "codex"
         service = "codex"

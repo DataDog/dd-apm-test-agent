@@ -8,9 +8,7 @@ from typing import Dict
 import requests
 from requests.exceptions import ConnectionError as RequestsConnectionError
 
-# Connection-pooled session shared by every backfill module. Mirrors the
-# pattern in ``lapdog.codex_watcher`` so a single TCP connection serves all
-# the per-record POSTs.
+# Reuse a TCP connection for per-record POSTs.
 _session = requests.Session()
 
 # (connect_timeout, read_timeout). Read timeout is generous because the

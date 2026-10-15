@@ -1,0 +1,9 @@
+fixes:
+  - |
+    Lapdog: Fixes missing Codex tool outputs and multiple tool executions
+    being combined into one span. Each tool execution now keeps its own
+    input and output.
+upgrade:
+  - |
+    Lapdog: Live Codex capture now requires Codex CLI 0.124.0 or newer.
+    Review and trust Lapdog handlers in Codex with ``/hooks`` before use.

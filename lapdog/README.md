@@ -180,7 +180,7 @@ lapdog start
 # Auto-install the Claude Code plugin (if needed), then launch Claude with intercept.
 lapdog claude
 
-# Or launch Codex with JSONL capture + proxy tracing wired up.
+# Or launch Codex with native hook capture + optional proxy tracing.
 lapdog codex
 
 # Or launch Pi with the lapdog extension installed.
@@ -193,6 +193,45 @@ lapdog python app.py
 lapdog status
 lapdog stop
 ```
+
+### Codex capture
+
+`lapdog codex` requires Codex CLI 0.124.0 or newer and uses native lifecycle hooks.
+It adds Lapdog handlers to `$CODEX_HOME/hooks.json` (normally
+`~/.codex/hooks.json`) and preserves existing handlers. The installed Python
+interpreter must remain available. No separate plugin is required.
+
+After launching, open `/hooks` in Codex and review and trust the **Lapdog
+session capture** handlers. Codex skips untrusted hooks. Restart an already
+running IDE/app session after installation so it loads the registrations.
+Changed hook commands, including a changed collector port, require new trust.
+
+The handlers send actual tool inputs/results and session, turn, subagent,
+compaction, and interruption events to `/codex/hooks/native`. They do not make
+approval decisions or modify results. Each hook also reads new complete
+transcript records for LLM messages, usage, hosted tools, and reviewer details.
+There is no background file watcher in this mode. Reads use collector-owned
+byte offsets and retry conflicts between concurrent hooks. The transcript
+itself is not copied or rewritten. On resume, existing records supply session
+metadata without creating historical spans. Capture starts with new activity.
+Use `lapdog --backfill codex` to create spans from history.
+
+Tool results use runtime invocation IDs, including calls inside JavaScript
+loops. MCP text results are displayed without the transport envelope; other
+response fields remain in metadata. Subagent executions use IDs and links,
+not a shared stack. Approval requests are recorded separately from actual
+review decisions.
+
+Hooks do not cover all hosted/specialized tool paths. LLM/history updates arrive
+at hook boundaries, and a final transcript flush may be captured by the next
+hook. Historical sessions cannot recover hook events that were never recorded;
+`lapdog --backfill codex` retains the existing transcript backfill adapter.
+
+Older Codex versions are no longer supported for live capture. Upgrade Codex
+before launching. The legacy watcher and `LAPDOG_CODEX_CAPTURE=legacy` option
+have been removed. The launcher stops verified old watchers for the same
+collector to prevent duplicate capture. `lapdog uninstall` removes only
+Lapdog's hook handlers.
 
 Claude, Codex, or Pi can tag its current session by running this command from
 one of its shell tool calls:

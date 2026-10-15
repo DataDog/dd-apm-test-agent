@@ -28,6 +28,7 @@ from .claude_hooks import _to_json_str
 from .codex_exec import display_tool_name
 from .codex_exec import extract_exec_calls
 from .codex_exec import extract_exec_results
+from .codex_lifecycle import CodexLifecycle
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .coding_agent_metadata import extract_agent_project_name
 from .coding_agent_metadata import extract_git_repository_url
@@ -352,6 +353,8 @@ class CodexTurn:
         self.pending_llm_input_messages: List[Dict[str, Any]] = []
         self.pending_llm_usage: Optional[Dict[str, Any]] = None
         self.pending_llm_end_ns: Optional[int] = None
+        self.pending_llm_span_ref: Optional[Dict[str, Any]] = None
+        self.llm_response_end_ns: Optional[int] = None
         self.reasoning_items: List[Dict[str, Any]] = []
         self.last_step_span_ref: Optional[Dict[str, Any]] = None
         self.last_llm_span_ref: Optional[Dict[str, Any]] = None
@@ -370,6 +373,7 @@ class CodexTurn:
 
 class CodexSession:
     def __init__(self, session_id: str, start_ns: int) -> None:
+        self.native_capture = False
         self.raw_session_id = session_id
         self.session_id = session_id
         self.start_ns = start_ns
@@ -428,6 +432,7 @@ class CodexHooksAPI:
     def __init__(self, hooks_api: ClaudeHooksAPI) -> None:
         self._hooks_api = hooks_api
         self._config = CodexConfig()
+        self._lifecycle = CodexLifecycle(self)
         self._sessions: Dict[str, CodexSession] = {}
         self._raw_events: List[Dict[str, Any]] = []
         self._last_session_id = ""
@@ -1148,6 +1153,7 @@ class CodexHooksAPI:
         turn.llm_output_messages = []
         turn.pending_llm_usage = None
         turn.pending_llm_end_ns = None
+        turn.llm_response_end_ns = None
         turn.reasoning_items = []
 
     def _begin_llm_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
@@ -1238,6 +1244,15 @@ class CodexHooksAPI:
         event = record.get("payload", {})
         event_type = event.get("type", "")
 
+        if session.native_capture and event_type in (
+            "item_completed",
+            "collab_agent_spawn_begin",
+            "collab_agent_spawn_end",
+            "exec_approval_request",
+            "apply_patch_approval_request",
+            "patch_apply_end",
+        ):
+            return []
         if event_type == "item_completed":
             self._handle_exec_item_completed(session, record)
             return []
@@ -1427,29 +1442,15 @@ class CodexHooksAPI:
                 self._set_step_output(turn, message)
                 if turn.last_llm_span_ref is not None and not turn.last_llm_span_ref["meta"]["output"].get("messages"):
                     turn.last_llm_span_ref["meta"]["output"]["messages"] = [{"role": "assistant", "content": message}]
-                self._emit_pending_llm_span(session, turn)
+                self._emit_pending_llm_span(session, turn, response_end_ns=ns)
         return []
 
-    def _emit_pending_llm_span(self, session: CodexSession, turn: CodexTurn) -> None:
-        usage = turn.pending_llm_usage
-        if usage is None or turn.pending_llm_end_ns is None:
-            return
-        if turn.current_step_has_llm or not _has_llm_output(turn.llm_output_messages):
-            return
-        if turn.step_span_ref is None:
-            self._ensure_step(session, turn, turn.pending_llm_end_ns)
-        self._mark_llm_start(session, turn, turn.llm_start_ns or turn.current_step_start_ns or turn.pending_llm_end_ns)
-        llm_start_ns = turn.llm_start_ns or turn.current_step_start_ns or turn.pending_llm_end_ns
-        end_ns = turn.pending_llm_end_ns
-        llm_input_messages = turn.active_llm_input_messages or self._llm_input_messages(session, turn)
-        llm_output_messages = _copy_messages(turn.llm_output_messages)
-        limited_input_messages, input_truncated = _copy_messages_with_limits(llm_input_messages)
-        limited_output_messages, output_truncated = _copy_messages_with_limits(llm_output_messages)
+    def _llm_usage_metrics(self, session: CodexSession, usage: Dict[str, Any], llm_start_ns: int) -> Dict[str, Any]:
         cached_input_tokens = usage.get("cached_input_tokens", 0)
         input_tokens = usage.get("input_tokens", 0)
         output_tokens = usage.get("output_tokens", 0)
         non_cached_input_tokens = max(input_tokens - cached_input_tokens, 0)
-        metrics = {
+        return {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": usage.get("total_tokens", 0),
@@ -1471,10 +1472,38 @@ class CodexHooksAPI:
                 or {}
             ),
         }
+
+    def _emit_pending_llm_span(
+        self, session: CodexSession, turn: CodexTurn, response_end_ns: Optional[int] = None
+    ) -> None:
+        if response_end_ns is not None:
+            turn.llm_response_end_ns = response_end_ns
+        usage = turn.pending_llm_usage
+        # Native hooks can deliver tool results before Codex writes token usage.
+        # Publish the observed response now; enrich this same span when usage arrives.
+        if usage is None and (
+            not session.native_capture
+            or (turn.proxy_llm_calls_started - turn.proxy_llm_calls_failed > turn.proxy_llm_usage_events_seen)
+        ):
+            return
+        end_ns = (turn.llm_response_end_ns if session.native_capture else None) or turn.pending_llm_end_ns
+        if end_ns is None:
+            return
+        if turn.current_step_has_llm or not _has_llm_output(turn.llm_output_messages):
+            return
+        if turn.step_span_ref is None:
+            self._ensure_step(session, turn, end_ns)
+        self._mark_llm_start(session, turn, turn.llm_start_ns or turn.current_step_start_ns or end_ns)
+        llm_start_ns = turn.llm_start_ns or turn.current_step_start_ns or end_ns
+        llm_input_messages = turn.active_llm_input_messages or self._llm_input_messages(session, turn)
+        llm_output_messages = _copy_messages(turn.llm_output_messages)
+        limited_input_messages, input_truncated = _copy_messages_with_limits(llm_input_messages)
+        limited_output_messages, output_truncated = _copy_messages_with_limits(llm_output_messages)
+        metrics = self._llm_usage_metrics(session, usage, llm_start_ns) if usage is not None else {}
         metadata: Dict[str, Any] = {"turn_id": turn.turn_id, "reasoning_effort": session.effort}
         if turn.reasoning_items:
             metadata["reasoning"] = _copy_reasoning_items(turn.reasoning_items)
-        span: Dict[str, Any] = {
+        span: Dict[str, Any] = turn.pending_llm_span_ref or {
             "span_id": _format_span_id(),
             "trace_id": turn.trace_id,
             "parent_id": turn.step_span_id,
@@ -1502,6 +1531,10 @@ class CodexHooksAPI:
             },
             "metrics": metrics,
         }
+        span["duration"] = max(end_ns - llm_start_ns, 0)
+        span["meta"]["output"]["messages"] = limited_output_messages
+        span["meta"]["metadata"].update(metadata)
+        span["metrics"] = metrics
         if input_truncated or output_truncated:
             set_hidden_metadata(
                 span,
@@ -1509,7 +1542,13 @@ class CodexHooksAPI:
                 truncated_output_messages=output_truncated,
                 max_message_chars=MAX_LLM_MESSAGE_CHARS,
             )
-        self._append_llm_span(turn, span)
+        if turn.pending_llm_span_ref is None:
+            self._append_llm_span(turn, span)
+        if usage is None:
+            turn.pending_llm_span_ref = span
+            return
+        turn.pending_llm_span_ref = None
+        turn.llm_response_end_ns = None
         turn.llm_input_messages = _copy_messages(limited_input_messages)
         turn.llm_input_messages.extend(_copy_messages(limited_output_messages))
         turn.llm_input_messages.extend(_copy_messages(turn.pending_llm_input_messages))
@@ -1539,6 +1578,11 @@ class CodexHooksAPI:
             return
 
         end_ns = self._update_last_ns(session, record)
+        if turn.pending_llm_span_ref is not None and not turn.llm_output_messages:
+            span = turn.pending_llm_span_ref
+            span["metrics"] = self._llm_usage_metrics(session, usage, span["start_ns"])
+            turn.pending_llm_span_ref = None
+            return
         if turn.current_step_has_llm and not turn.llm_output_messages:
             return
         if turn.step_span_ref is None:
@@ -1749,7 +1793,7 @@ class CodexHooksAPI:
 
     def _handle_collab_agent_spawn_begin(
         self, session: CodexSession, record: Dict[str, Any], event: Dict[str, Any]
-    ) -> None:
+    ) -> Dict[str, Any]:
         turn = self._active_turn(session, record)
         start_ns = _timestamp_to_ns(record.get("timestamp", ""))
         self._ensure_step(session, turn, start_ns)
@@ -1773,7 +1817,7 @@ class CodexHooksAPI:
             "session_id": session.session_id,
             "tags": self._hooks_api.base_tags(
                 session,
-                source="codex-jsonl",
+                source="codex-hooks" if session.native_capture else "codex-jsonl",
                 ml_app=self._config.ml_app,
                 user_handle=self._config.user_handle,
             )
@@ -1794,6 +1838,8 @@ class CodexHooksAPI:
             "span_links": [],
         }
         self._append_span(span)
+        if session.native_capture:
+            return span  # Runtime agent IDs track concurrent siblings without a stack.
         entry: Dict[str, Any] = {
             "span_id": span_id,
             "parent_id": parent_id,
@@ -1804,6 +1850,7 @@ class CodexHooksAPI:
         }
         session.pending_subagents[call_id] = entry
         session.agent_span_stack.append(entry)
+        return span
 
     def _handle_collab_agent_spawn_end(
         self, session: CodexSession, record: Dict[str, Any], event: Dict[str, Any]
@@ -1939,8 +1986,10 @@ class CodexHooksAPI:
         if turn.step_span_ref is not None and not turn.step_span_ref["meta"]["output"]["value"]:
             turn.step_span_ref["meta"]["output"]["value"] = _to_json_str(tool_input)
         self._add_step_tool_use_id(turn, turn.step_span_id, unique_id)
-        self._emit_pending_llm_span(session, turn)
+        self._emit_pending_llm_span(session, turn, response_end_ns=start_ns)
 
+        if session.native_capture and tool_name not in ("web_search", "image_generation"):
+            return unique_id
         pending_class = PendingExecSpan if tool_name in _EXEC_WRAPPER_NAMES else PendingToolSpan
         session.pending_tools[unique_id] = pending_class(
             span_id=_format_span_id(),
@@ -2066,7 +2115,7 @@ class CodexHooksAPI:
             "session_id": session.session_id,
             "tags": self._hooks_api.base_tags(
                 session,
-                source="codex-jsonl",
+                source=(extra_metadata or {}).get("capture_source", "codex-jsonl"),
                 ml_app=self._config.ml_app,
                 user_handle=self._config.user_handle,
             )
@@ -2150,7 +2199,7 @@ class CodexHooksAPI:
         call_id = payload.get("call_id", "")
         unique_id = session.tool_use_id_map.pop(call_id, call_id)
         pending = session.pending_tools.pop(unique_id, None)
-        if pending is None:
+        if pending is None and not session.native_capture:
             return
         output = payload.get("output", "")
         output_value = output if isinstance(output, str) else _to_json_str(output)
@@ -2169,6 +2218,8 @@ class CodexHooksAPI:
             session.active_turn.pending_llm_input_messages.append(tool_message)
         elif session.active_turn is not None:
             session.active_turn.llm_input_messages.append(tool_message)
+        if pending is None:
+            return
         if pending.tool_name in _EXEC_WRAPPER_NAMES:
             calls = pending.calls if isinstance(pending, PendingExecSpan) else []
             if calls:
@@ -2603,4 +2654,5 @@ class CodexHooksAPI:
         return [
             web.post("/codex/hooks", with_cors(self.handle_hook)),
             web.route("*", "/codex/hooks/raw", with_cors(self.handle_raw_events)),
+            *self._lifecycle.routes(),
         ]

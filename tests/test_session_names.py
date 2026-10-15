@@ -8,9 +8,7 @@ from lapdog.claude_link_tracker import ClaudeLinkTracker
 from lapdog.claude_proxy import ClaudeProxyAPI
 from lapdog.claude_proxy import _is_session_naming_request
 from lapdog.codex_hooks import CodexHooksAPI
-from lapdog.codex_watcher import FileState
-from lapdog.codex_watcher import SessionNames
-from lapdog.codex_watcher import _drain_file
+from lapdog.codex_hook import read_session_names
 
 
 def _naming_request():
@@ -166,46 +164,16 @@ def test_codex_child_name_does_not_become_parent_name():
 
 
 def test_codex_index_handles_renames_and_partial_records(tmp_path):
-    index = SessionNames(tmp_path / "sessions")
-    assert index.refresh() == {}
-    index.path.write_text('null\nbad json\n{"id":"one","thread_name":"First"}\n')
-    assert index.refresh() == {"one": "First"}
-    with index.path.open("a") as source:
+    path = tmp_path / "session_index.jsonl"
+    assert read_session_names(path) == {}
+    path.write_text('null\nbad json\n{"id":"one","thread_name":"First"}\n')
+    assert read_session_names(path) == {"one": "First"}
+    with path.open("a") as source:
         source.write('{"id":"one","thread_name":"Second"}')
-    assert index.refresh() == {"one": "First"}
-    with index.path.open("a") as source:
+    assert read_session_names(path) == {"one": "First"}
+    with path.open("a") as source:
         source.write("\n")
-    assert index.refresh() == {"one": "Second"}
-
-
-def test_codex_watcher_sends_name_changes_without_new_rollout_records(tmp_path, monkeypatch):
-    path = tmp_path / "rollout.jsonl"
-    path.write_text(json.dumps({"type": "session_meta", "payload": {"id": "one", "cwd": str(tmp_path)}}) + "\n")
-    posts = []
-    monkeypatch.setattr("lapdog.codex_watcher._post_record", lambda *args, **kwargs: posts.append(args[2]) or True)
-    state = FileState()
-    _drain_file(path, state, "http://lapdog", str(tmp_path), session_names={"one": "First"})
-    assert posts[0]["payload"] == {"type": "session_name", "name": "First"}
-    posts.clear()
-    _drain_file(path, state, "http://lapdog", str(tmp_path), session_names={"one": "Second"})
-    assert posts == [{"type": "event_msg", "payload": {"type": "session_name", "name": "Second"}}]
-    posts.clear()
-    _drain_file(path, state, "http://lapdog", str(tmp_path), session_names={"one": "Second"})
-    assert posts == []
-
-
-def test_codex_watcher_retries_failed_name_delivery(tmp_path, monkeypatch):
-    path = tmp_path / "rollout.jsonl"
-    path.write_text("")
-    state = FileState()
-    state.session_id = "one"
-    state.matches_cwd = True
-    monkeypatch.setattr("lapdog.codex_watcher._post_record", lambda *args, **kwargs: False)
-    _drain_file(path, state, "http://lapdog", str(tmp_path), session_names={"one": "Name"})
-    assert state.session_name == ""
-    monkeypatch.setattr("lapdog.codex_watcher._post_record", lambda *args, **kwargs: True)
-    _drain_file(path, state, "http://lapdog", str(tmp_path), session_names={"one": "Name"})
-    assert state.session_name == "Name"
+    assert read_session_names(path) == {"one": "Second"}
 
 
 def test_codex_backfill_reads_name_index(tmp_path, monkeypatch):
@@ -216,7 +184,7 @@ def test_codex_backfill_reads_name_index(tmp_path, monkeypatch):
     )
     (tmp_path / "session_index.jsonl").write_text('{"id":"one","thread_name":"Stored name"}\n')
     posts = []
-    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    monkeypatch.setattr("lapdog.backfill_codex._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     assert backfill_codex.backfill("http://lapdog", cwd=None, session_dir=sessions) == 1
     assert posts[0]["record"]["payload"] == {"type": "session_name", "name": "Stored name"}
     assert all(post["backfill"] for post in posts)
