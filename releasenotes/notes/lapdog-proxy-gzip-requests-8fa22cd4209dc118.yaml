@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Lapdog: Fixes an issue where Claude Code requests failed with "Request too large (max 32MB)" when Claude Code sent gzip-compressed request bodies, which it does by default when connecting directly to the Anthropic API.
