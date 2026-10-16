@@ -27,6 +27,9 @@ from .claude_hooks import _to_json_str
 from .codex_exec import display_tool_name
 from .codex_exec import extract_exec_calls
 from .codex_exec import extract_exec_results
+from .codex_items import matches_call
+from .codex_items import matches_tool_name
+from .codex_items import tool_completion
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .coding_agent_metadata import extract_agent_project_name
 from .coding_agent_metadata import extract_git_repository_url
@@ -39,8 +42,14 @@ log = logging.getLogger(__name__)
 CompletedTrace = Tuple[str, str]
 OrphanProxySpan = Tuple[Optional[str], Dict[str, Any]]
 
-MAX_LLM_MESSAGE_CHARS = int(os.environ.get("DD_CODEX_MAX_LLM_MESSAGE_CHARS", "8192"))
-MAX_TOOL_VALUE_CHARS = int(os.environ.get("DD_CODEX_MAX_TOOL_VALUE_CHARS", "8192"))
+
+def _optional_limit(name: str) -> Optional[int]:
+    value = os.environ.get(name)
+    return int(value) if value is not None else None
+
+
+MAX_LLM_MESSAGE_CHARS = _optional_limit("DD_CODEX_MAX_LLM_MESSAGE_CHARS")
+MAX_TOOL_VALUE_CHARS = _optional_limit("DD_CODEX_MAX_TOOL_VALUE_CHARS")
 
 _OK_TOOL_STATUSES = {"", "ok", "success", "succeeded", "completed", "complete"}
 _IN_FLIGHT_TOOL_STATUSES = {"pending", "queued", "running", "in_progress", "started"}
@@ -101,7 +110,9 @@ def _copy_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return copied
 
 
-def _truncate_text(value: str, max_chars: int) -> Tuple[str, bool]:
+def _truncate_text(value: str, max_chars: Optional[int]) -> Tuple[str, bool]:
+    if max_chars is None:
+        return value, False
     if max_chars <= 0:
         return "", bool(value)
     if len(value) <= max_chars:
@@ -110,7 +121,7 @@ def _truncate_text(value: str, max_chars: int) -> Tuple[str, bool]:
     return f"{value[:max_chars]}\n\n[truncated {omitted} chars]", True
 
 
-def _truncate_display_value(value: Any, max_chars: int) -> Tuple[Any, bool]:
+def _truncate_display_value(value: Any, max_chars: Optional[int]) -> Tuple[Any, bool]:
     if isinstance(value, str):
         return _truncate_text(value, max_chars)
     if value is None:
@@ -343,6 +354,9 @@ class CodexSession:
         self.pending_tool_statuses: Dict[str, str] = {}
         self.pending_tool_reasoning: Dict[str, List[Dict[str, Any]]] = {}
         self.shell_sessions: Dict[str, Dict[str, Any]] = {}
+        self.structured_tools: List[Dict[str, Any]] = []
+        self.fallback_tools: List[Dict[str, Any]] = []
+        self.exec_start_times: Dict[str, int] = {}
         self.active_turn: Optional[CodexTurn] = None
         self.completed_turns: List[str] = []
         self.seen_records: Set[str] = set()
@@ -964,6 +978,12 @@ class CodexHooksAPI:
         session.pending_tool_ids_by_span_id = {}
         session.pending_tool_statuses = {}
         session.pending_tool_reasoning = {}
+        session.structured_tools = []
+        session.fallback_tools = []
+        session.exec_start_times = {}
+        session.shell_sessions = {
+            key: value for key, value in session.shell_sessions.items() if not value.get("completed")
+        }
         session.tool_use_id_map = {}
         session.agent_span_stack = []
         session.pending_subagents = {}
@@ -1103,6 +1123,8 @@ class CodexHooksAPI:
             self._update_agent_manifest(session)
         self._emit_pending_llm_span(session, turn)
         for pending in list(session.pending_tools.values()):
+            if any(entry["span"]["span_id"] == pending.span_id for entry in session.structured_tools):
+                continue
             tool_id = session.pending_tool_ids_by_span_id.get(pending.span_id, pending.span_id)
             session.pending_tool_statuses[tool_id] = "failed"
             self._update_tool_call_status(turn, tool_id, "failed")
@@ -1187,6 +1209,10 @@ class CodexHooksAPI:
                         return []
                 record = {**record, "payload": {**event, "turn_id": task_id}}
                 return self._start_turn(session, record)
+            return []
+
+        if event_type == "item_completed":
+            self._handle_tool_completion(session, record)
             return []
 
         if event_type == "token_count":
@@ -1815,9 +1841,7 @@ class CodexHooksAPI:
         session.tool_use_id_map[call_id] = unique_id
         normalized_status = _canonical_tool_status(status)
         tool_name = tool_name or "unknown_tool"
-        display_name = (
-            display_tool_name(tool_name, tool_input) if tool_name == "exec_command" else tool_name
-        )
+        display_name = display_tool_name(tool_name, tool_input) if tool_name == "exec_command" else tool_name
         if tool_name not in _EXEC_WRAPPER_NAMES:
             session.tools_used.add(display_name)
             self._update_agent_manifest(session)
@@ -1874,6 +1898,8 @@ class CodexHooksAPI:
             start_ns=start_ns,
         )
         session.pending_tool_ids_by_span_id[session.pending_tools[unique_id].span_id] = unique_id
+        if tool_name in _EXEC_WRAPPER_NAMES:
+            session.exec_start_times[unique_id] = start_ns
         self._attach_pending_auto_reviews(session)
         return unique_id
 
@@ -1916,6 +1942,8 @@ class CodexHooksAPI:
             tool_status = "failed" if is_error else "completed"
         is_error = is_error or _tool_status_is_error(tool_status)
         input_value, input_truncated = _truncate_text(_to_json_str(pending.tool_input), MAX_TOOL_VALUE_CHARS)
+        if pending.tool_name in ("web__run", "web.run"):
+            output_value = re.sub(r"citeturn[^]*[ \t]*", "", output_value)
         output_value, output_truncated = _truncate_text(output_value, MAX_TOOL_VALUE_CHARS)
         metadata: Dict[str, Any] = {
             "tool_id": tool_id,
@@ -1997,6 +2025,8 @@ class CodexHooksAPI:
         entry = session.shell_sessions.get(str(session_id))
         if entry is None:
             return False
+        if entry.get("completed"):
+            return True
         span = entry["span"]
         previous = entry["result"]
         merged = dict(previous)
@@ -2026,6 +2056,87 @@ class CodexHooksAPI:
             self._update_step_end(turn, str(span["parent_id"]), end_ns)
         return True
 
+    def _handle_tool_completion(self, session: CodexSession, record: Dict[str, Any]) -> None:
+        item = record.get("payload", {}).get("item", {})
+        completion = tool_completion(item)
+        if completion is None or not item.get("id"):
+            return
+        if any(entry["item"].get("id") == item["id"] for entry in session.structured_tools):
+            return
+        end_ns = self._update_last_ns(session, record)
+        turn = self._active_turn(session, record)
+        candidates = [
+            entry
+            for entry in session.fallback_tools
+            if entry["span"]["trace_id"] == turn.trace_id
+            and matches_call(completion, entry["name"], entry["arguments"])
+        ]
+        # Running command IDs disambiguate identical concurrent commands.
+        process_id = item.get("process_id")
+        identified = (
+            [
+                entry
+                for entry in candidates
+                if isinstance(entry["value"], dict) and str(entry["value"].get("session_id")) == str(process_id)
+            ]
+            if process_id
+            else []
+        )
+        target = identified[0] if len(identified) == 1 else candidates[0] if len(candidates) == 1 else None
+        value = completion["value"]
+        output = value if isinstance(value, str) else _to_json_str(value)
+        is_error = (
+            _tool_status_is_error(item.get("status", ""))
+            or (isinstance(item.get("exit_code"), int) and item["exit_code"] != 0)
+            or (isinstance(value, dict) and bool(value.get("isError")))
+        )
+        details = {
+            **completion["details"],
+            "result_source": "item_completed",
+            "result_matched": True,
+            "raw_tool_name": completion["name"],
+            "item_id": item["id"],
+        }
+        if target is not None:
+            span = target["span"]
+            session.fallback_tools.remove(target)
+            output, truncated = _truncate_text(output, MAX_TOOL_VALUE_CHARS)
+            span["meta"]["output"]["value"] = output
+            span["meta"]["metadata"].update(details, status="failed" if is_error else "completed")
+            span["status"] = "error" if is_error else "ok"
+            span["duration"] = max(span["duration"], end_ns - span["start_ns"])
+            if truncated:
+                set_hidden_metadata(span, truncated_output=True, max_value_chars=MAX_TOOL_VALUE_CHARS)
+            if is_error:
+                span["meta"]["error"] = {"message": str(item.get("status") or "Tool failed")}
+            else:
+                span["meta"].pop("error", None)
+        else:
+            direct_id = session.tool_use_id_map.get(str(item["id"]), str(item["id"]))
+            pending = session.pending_tools.get(direct_id)
+            if pending is None:
+                self._ensure_step(session, turn, end_ns)
+                duration = item.get("duration") or {}
+                duration_ns = int(duration.get("secs", 0)) * 1_000_000_000 + int(duration.get("nanos", 0))
+                pending = PendingToolSpan(
+                    span_id=_format_span_id(),
+                    tool_name=display_tool_name(completion["name"], completion["arguments"]),
+                    tool_input=completion["arguments"],
+                    parent_id=self._tool_parent_id(session, turn),
+                    start_ns=end_ns - duration_ns,
+                )
+                session.pending_tool_ids_by_span_id[pending.span_id] = str(item["id"])
+            span = self._emit_tool_span(session, pending, end_ns, output, is_error, extra_metadata=details)
+            if span is None:
+                return
+        if process_id is not None:
+            session.shell_sessions[str(process_id)] = {"span": span, "completed": True}
+        completion.update(span=span, end_ns=end_ns, claimed=target is not None)
+        session.structured_tools.append(completion)
+        session.tools_used.add(span["name"])
+        self._update_step_end(turn, span["parent_id"], end_ns)
+        self._update_agent_manifest(session)
+
     def _handle_function_call_output(self, session: CodexSession, record: Dict[str, Any]) -> None:
         payload = record.get("payload", {})
         call_id = payload.get("call_id", "")
@@ -2035,6 +2146,13 @@ class CodexHooksAPI:
             return
         output = payload.get("output", "")
         output_value = output if isinstance(output, str) else _to_json_str(output)
+        if pending.tool_name == "wait" and isinstance(output, list) and all(
+            isinstance(block, dict)
+            and block.get("type") in ("input_text", "output_text")
+            and isinstance(block.get("text"), str)
+            for block in output
+        ):
+            output_value = "\n".join(block["text"] for block in output)
         final_status = _canonical_tool_status(payload.get("status", "")) or "completed"
         session.pending_tool_statuses[unique_id] = final_status
         end_ns = _timestamp_to_ns(record.get("timestamp", ""))
@@ -2055,12 +2173,22 @@ class CodexHooksAPI:
             if calls:
                 self._emit_exec_tool_spans(session, pending, unique_id, end_ns, output, final_status, calls)
             else:
+                session.exec_start_times.pop(unique_id, None)
                 session.pending_tool_ids_by_span_id.pop(pending.span_id, None)
                 session.pending_tool_statuses.pop(unique_id, None)
                 session.pending_tool_reasoning.pop(unique_id, None)
                 session.auto_reviews_by_tool_id.pop(unique_id, None)
             return
-        self._emit_tool_span(session, pending, end_ns, output_value, _tool_status_is_error(final_status))
+        structured = next((entry for entry in session.structured_tools if entry["item"].get("id") == call_id), None)
+        if structured is None:
+            span = self._emit_tool_span(session, pending, end_ns, output_value, _tool_status_is_error(final_status))
+            if span is not None:
+                session.fallback_tools.append(
+                    {"name": pending.tool_name, "arguments": pending.tool_input, "span": span, "value": output}
+                )
+        else:
+            session.pending_tool_ids_by_span_id.pop(pending.span_id, None)
+            session.pending_tool_statuses.pop(unique_id, None)
 
     def _emit_exec_tool_spans(
         self,
@@ -2077,9 +2205,44 @@ class CodexHooksAPI:
         session.pending_tool_statuses.pop(outer_id, None)
         reviews = session.auto_reviews_by_tool_id.pop(outer_id, [])
         reasoning = session.pending_tool_reasoning.pop(outer_id, [])
-        results = extract_exec_results(output, len(calls))
+        results = extract_exec_results(output, len(calls), calls=calls)
+        invocation_start = session.exec_start_times.pop(outer_id, pending.start_ns)
         for index, call in enumerate(calls):
             raw_name = call["name"]
+            matching = [
+                entry
+                for entry in session.structured_tools
+                if not entry.get("claimed")
+                and entry["span"]["parent_id"] == pending.parent_id
+                and invocation_start <= entry["end_ns"]
+                and matches_call(entry, raw_name, call["arguments"])
+            ]
+            if not matching and isinstance(call["arguments"], str) and raw_name != "apply_patch":
+                # A call expression inside a loop represents many invocations.
+                # Keep their structured spans; do not invent a span for the expression.
+                covered = [
+                    entry
+                    for entry in session.structured_tools
+                    if not entry.get("claimed")
+                    and entry["span"]["parent_id"] == pending.parent_id
+                    and invocation_start <= entry["end_ns"]
+                    and matches_tool_name(entry, raw_name)
+                ]
+                if covered and sum(c["name"] == raw_name for c in calls) == 1:
+                    for entry in covered:
+                        entry["claimed"] = True
+                        entry["span"]["meta"]["metadata"]["exec_call_id"] = outer_id
+                    continue
+            if matching:
+                entry = matching[0]
+                entry["claimed"] = True
+                metadata = entry["span"]["meta"]["metadata"]
+                metadata.update(exec_call_id=outer_id, tool_id=f"{outer_id}:{index}")
+                if index == 0 and reviews:
+                    set_hidden_metadata(entry["span"], auto_reviews=reviews)
+                if index == 0 and reasoning:
+                    metadata["reasoning"] = _copy_reasoning_items(reasoning)
+                continue
             result = results.get(index)
             value = result.get("value", "") if result is not None else ""
             if isinstance(value, str):
@@ -2129,6 +2292,10 @@ class CodexHooksAPI:
                     "timing": "exec_envelope",
                 },
             )
+            if span is not None:
+                session.fallback_tools.append(
+                    {"name": raw_name, "arguments": call["arguments"], "span": span, "value": value}
+                )
             if raw_name == "exec_command" and span is not None and isinstance(value, dict):
                 shell_session_id = value.get("session_id")
                 if shell_session_id is not None:

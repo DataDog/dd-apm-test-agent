@@ -730,7 +730,10 @@ async def test_codex_project_metadata_uses_cwd_basename_without_git(agent, tmp_p
     assert "git_repository_url" not in root["meta"]["metadata"]
 
 
-async def test_codex_tool_status_reasoning_and_large_output_are_tracked_safely(agent):
+@pytest.mark.parametrize("limit", [None, 8192])
+async def test_codex_tool_status_reasoning_and_large_output_are_tracked_safely(agent, monkeypatch, limit):
+    monkeypatch.setattr("lapdog.codex_hooks.MAX_LLM_MESSAGE_CHARS", limit)
+    monkeypatch.setattr("lapdog.codex_hooks.MAX_TOOL_VALUE_CHARS", limit)
     sid = "codex-status-reasoning"
     large_output = "x" * 9000
     await _post(agent, sid, _session_meta(sid))
@@ -830,14 +833,20 @@ async def test_codex_tool_status_reasoning_and_large_output_are_tracked_safely(a
     assert tool["meta"]["metadata"]["reasoning"][0]["text"] == "Need shell output"
     assert tool["meta"]["metadata"]["output_format"] == "verbatim"
     assert tool["meta"]["metadata"]["_dd"]["display"]["output"] == "code"
-    assert "[truncated " in tool["meta"]["output"]["value"]
-    assert len(tool["meta"]["output"]["value"]) < len(large_output)
+    if limit is None:
+        assert tool["meta"]["output"]["value"] == large_output
+    else:
+        assert "[truncated " in tool["meta"]["output"]["value"]
+        assert len(tool["meta"]["output"]["value"]) < len(large_output)
 
     tool_input_message = llms[1]["meta"]["input"]["messages"][-1]
     assert tool_input_message["role"] == "tool"
     assert tool_input_message["status"] == "failed"
-    assert "[truncated " in tool_input_message["content"]
-    assert len(tool_input_message["content"]) < len(large_output)
+    if limit is None:
+        assert tool_input_message["content"] == large_output
+    else:
+        assert "[truncated " in tool_input_message["content"]
+        assert len(tool_input_message["content"]) < len(large_output)
 
 
 async def test_codex_active_turn_keeps_root_duration_zero_for_live_badge(agent):
@@ -2495,3 +2504,535 @@ async def test_codex_subagent_call_id_reused_within_turn_yields_distinct_spans(a
     assert len(subagents) == 2
     nicknames = sorted(s["meta"]["metadata"]["subagent"]["agent_nickname"] for s in subagents)
     assert nicknames == ["agent-a", "agent-b"]
+
+
+@pytest.mark.parametrize("late", [False, True])
+async def test_structured_command_replaces_wrapper_output(agent, late):
+    sid = "structured-command"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "custom_tool_call", name="exec", call_id="batch", input='text(await tools.exec_command({cmd:"pwd"}));'
+        ),
+    )
+    completion = _event(
+        "item_completed",
+        timestamp="2026-05-11T17:00:04.000Z",
+        item={
+            "type": "CommandExecution",
+            "id": "exec-1",
+            "process_id": "123",
+            "command": ["/bin/sh", "-lc", "pwd"],
+            "aggregated_output": "/repo\n",
+            "exit_code": 0,
+            "status": "completed",
+            "duration": {"secs": 1, "nanos": 0},
+        },
+    )
+    output = _response_item(
+        "custom_tool_call_output",
+        call_id="batch",
+        output=[
+            {"type": "input_text", "text": "Script completed\nOutput:\n"},
+            {"type": "input_text", "text": '{"session_id":123,"output":"partial"}'},
+        ],
+    )
+    for record in ([output, completion] if late else [completion, output]):
+        await _post(agent, sid, record)
+    await _post(agent, sid, completion)  # Replayed completion must not duplicate the span.
+    await _post(agent, sid, _event("task_complete"))
+    tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
+    assert len(tools) == 1
+    assert tools[0]["meta"]["output"]["value"] == "/repo\n"
+    assert tools[0]["meta"]["metadata"]["exit_code"] == 0
+    assert tools[0]["meta"]["metadata"]["result_source"] == "item_completed"
+
+
+async def test_structured_mcp_and_patch_without_printed_results(agent):
+    sid = "structured-tools"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    patch = "*** Begin Patch\n*** Update File: a.py\n@@\n-old\n+new\n*** End Patch"
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "custom_tool_call",
+            name="exec",
+            call_id="batch",
+            input=(
+                "await tools.list_mcp_resources({}); await tools.apply_patch(" + json.dumps(patch) + '); text("done");'
+            ),
+        ),
+    )
+    result = {"content": [{"type": "text", "text": "resource result"}], "isError": False}
+    for item in [
+        {
+            "type": "McpToolCall",
+            "id": "mcp-1",
+            "server": "codex",
+            "tool": "list_mcp_resources",
+            "arguments": {},
+            "result": result,
+            "status": "completed",
+        },
+        {
+            "type": "FileChange",
+            "id": "patch-1",
+            "changes": {"/repo/a.py": {"type": "update", "unified_diff": "diff"}},
+            "stdout": "Success",
+            "stderr": "",
+            "status": "completed",
+        },
+    ]:
+        await _post(agent, sid, _event("item_completed", timestamp="2026-05-11T17:00:04.000Z", item=item))
+    await _post(agent, sid, _response_item("custom_tool_call_output", call_id="batch", output="done"))
+    await _post(agent, sid, _event("task_complete"))
+    tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
+    assert len(tools) == 2
+    assert json.loads(tools[0]["meta"]["output"]["value"]) == result
+    assert tools[1]["meta"]["output"]["value"] == "Success"
+    assert all(t["meta"]["metadata"]["exec_call_id"] == "batch" for t in tools)
+
+
+@pytest.mark.parametrize("has_wrapper_result", [True, False])
+async def test_structured_mcp_direct_call_does_not_duplicate(agent, has_wrapper_result):
+    sid = "structured-direct"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(
+        agent, sid, _response_item("function_call", name="mcp__test__read", call_id="mcp-1", arguments='{"key":"a"}')
+    )
+    await _post(
+        agent,
+        sid,
+        _event(
+            "item_completed",
+            timestamp="2026-05-11T17:00:04.000Z",
+            item={
+                "type": "McpToolCall",
+                "id": "mcp-1",
+                "server": "test",
+                "tool": "read",
+                "arguments": {"key": "a"},
+                "result": {"content": [], "isError": True},
+                "status": "failed",
+            },
+        ),
+    )
+    if has_wrapper_result:
+        await _post(agent, sid, _response_item("function_call_output", call_id="mcp-1", output="wrapper text"))
+    await _post(agent, sid, _event("task_complete"))
+    tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
+    assert len(tools) == 1
+    assert tools[0]["status"] == "error"
+    assert json.loads(tools[0]["meta"]["output"]["value"])["isError"] is True
+
+
+async def test_late_identical_commands_match_process_ids_and_do_not_repeat_poll_output(agent):
+    sid = "structured-parallel"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "custom_tool_call",
+            name="exec",
+            call_id="batch",
+            input='await Promise.all([tools.exec_command({cmd:"work"}), tools.exec_command({cmd:"work"})]);',
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "custom_tool_call_output",
+            call_id="batch",
+            output=[
+                {"type": "input_text", "text": json.dumps({"i": i, "value": {"session_id": pid, "output": "partial"}})}
+                for i, pid in enumerate([100, 200])
+            ],
+        ),
+    )
+    for pid in [200, 100]:
+        await _post(
+            agent,
+            sid,
+            _event(
+                "item_completed",
+                timestamp="2026-05-11T17:00:05.000Z",
+                item={
+                    "type": "CommandExecution",
+                    "id": f"exec-{pid}",
+                    "process_id": str(pid),
+                    "command": ["/bin/sh", "-lc", "work"],
+                    "aggregated_output": f"complete {pid}",
+                    "exit_code": 1 if pid == 100 else 0,
+                    "status": "completed",
+                },
+            ),
+        )
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "custom_tool_call",
+            name="exec",
+            call_id="poll",
+            timestamp="2026-05-11T17:00:06.000Z",
+            input="text(await tools.write_stdin({session_id:100}));",
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "custom_tool_call_output",
+            call_id="poll",
+            output={
+                "session_id": 100,
+                "output": "complete 100",
+                "exit_code": 1,
+            },
+        ),
+    )
+    tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
+    assert len(tools) == 2
+    assert [s["meta"]["output"]["value"] for s in tools] == ["complete 100", "complete 200"]
+    assert [s["status"] for s in tools] == ["error", "ok"]
+
+
+async def test_structured_tool_is_captured_when_javascript_has_no_literal_tool_call(agent):
+    sid = "structured-dynamic"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "custom_tool_call",
+            name="exec",
+            call_id="batch",
+            input="const run = tools.list_mcp_resources; await run({});",
+        ),
+    )
+    await _post(
+        agent,
+        sid,
+        _event(
+            "item_completed",
+            timestamp="2026-05-11T17:00:04.000Z",
+            item={
+                "type": "McpToolCall",
+                "id": "mcp-1",
+                "server": "codex",
+                "tool": "list_mcp_resources",
+                "arguments": {},
+                "result": {"resources": []},
+                "status": "completed",
+            },
+        ),
+    )
+    await _post(agent, sid, _response_item("custom_tool_call_output", call_id="batch", output=""))
+    await _post(agent, sid, _event("task_complete"))
+    tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
+    assert len(tools) == 1
+    assert tools[0]["name"] == "List mcp resources"
+    assert json.loads(tools[0]["meta"]["output"]["value"]) == {"resources": []}
+
+
+def test_exec_results_recovers_complete_lines_and_named_envelopes():
+    from lapdog.codex_exec import extract_exec_results
+
+    calls = [{"name": name} for name in ("clock__curr_time", "get_goal", "web__run")]
+    goal = {"goal": None, "remainingTokens": None, "completionBudgetReport": None}
+    output = [
+        {"type": "input_text", "text": "Script completed\nOutput:\n"},
+        {
+            "type": "input_text",
+            "text": "\n".join(
+                [
+                    "Warning: truncated output",
+                    "Total output lines: 4",
+                    json.dumps({"current_time": "2026-10-15 21:23:42 UTC"}),
+                    '{"resources": [truncated',
+                    json.dumps({"name": "goal", "result": goal}),
+                    json.dumps({"tool": "web__run", "result": {"status": "fulfilled", "value": "web result"}}),
+                ]
+            ),
+        },
+    ]
+    assert extract_exec_results(output, 3, calls=calls) == {
+        0: {"value": {"current_time": "2026-10-15 21:23:42 UTC"}},
+        1: {"value": goal},
+        2: {"value": "web result"},
+    }
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        [{"name": "web search", "result": "arbitrary label"}],
+        [{"name": "web__run", "description": "Tool documentation"}],
+        [{"name": "web__run", "result": "one"}, {"name": "web__run", "result": "two"}],
+    ],
+)
+def test_exec_results_does_not_guess_labels_or_duplicate_results(records):
+    from lapdog.codex_exec import extract_exec_results
+
+    calls = [{"name": "web__run"}, {"name": "get_goal"}]
+    output = [{"type": "input_text", "text": json.dumps(record)} for record in records]
+    assert extract_exec_results(output, 2, calls=calls) == {}
+
+
+def test_exec_results_explicit_indexes_handle_undefined_and_errors():
+    from lapdog.codex_exec import extract_exec_results
+
+    assert extract_exec_results(
+        "\n".join(
+            [
+                '{"i":0,"status":"fulfilled"}',
+                '{"i":1,"result":{"status":"rejected","reason":"failed"}}',
+            ]
+        ),
+        2,
+    ) == {0: {"value": ""}, 1: {"value": "failed", "error": True}}
+
+
+@pytest.mark.parametrize("late", [False, True])
+@pytest.mark.parametrize(
+    "server,tool,name,arguments",
+    [
+        (
+            "trajectory",
+            "read_mcp_resource",
+            "read_mcp_resource",
+            {"server": "trajectory", "uri": "trajectory://status"},
+        ),
+        ("trajectory", "list_mcp_resources", "list_mcp_resources", {"server": "trajectory"}),
+        ("trajectory", "list_mcp_resource_templates", "list_mcp_resource_templates", {"server": "trajectory"}),
+        ("chrome-devtools", "list_pages", "mcp__chrome_devtools__list_pages", {}),
+        (
+            "codex_apps",
+            "codex_document_control.list_document_sessions",
+            "mcp__codex_apps__codex_document_control_list_document_sessions",
+            {},
+        ),
+    ],
+)
+async def test_structured_mcp_name_variants_produce_one_span(agent, late, server, tool, name, arguments):
+    sid = "mcp-name-variants"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    await _post(
+        agent,
+        sid,
+        _response_item(
+            "custom_tool_call",
+            name="exec",
+            call_id="batch",
+            input=f"await tools.{name}({json.dumps(arguments)}); await tools.get_goal({{}});",
+        ),
+    )
+    result = {"content": [{"type": "text", "text": "authoritative result"}]}
+    completion = _event(
+        "item_completed",
+        timestamp="2026-05-11T17:00:04.000Z",
+        item={
+            "type": "McpToolCall",
+            "id": "mcp-1",
+            "server": server,
+            "tool": tool,
+            "arguments": arguments,
+            "result": result,
+            "status": "completed",
+        },
+    )
+    wrapper = _response_item("custom_tool_call_output", call_id="batch", output="summary")
+    for record in ([wrapper, completion] if late else [completion, wrapper]):
+        await _post(agent, sid, record)
+    await _post(agent, sid, _event("task_complete"))
+    tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
+    assert len(tools) == 2  # One MCP invocation and one get_goal invocation.
+    mcp = next(s for s in tools if s["name"] != "Get goal")
+    assert json.loads(mcp["meta"]["output"]["value"]) == result
+    assert mcp["meta"]["metadata"]["tool_id"] == "batch:0"
+
+
+@pytest.mark.parametrize("name", ["DD_CODEX_MAX_LLM_MESSAGE_CHARS", "DD_CODEX_MAX_TOOL_VALUE_CHARS"])
+def test_codex_optional_limits(monkeypatch, name):
+    from lapdog.codex_hooks import _optional_limit
+    from lapdog.codex_hooks import _truncate_text
+
+    monkeypatch.delenv(name, raising=False)
+    assert _optional_limit(name) is None
+    assert _truncate_text("x" * 20000, _optional_limit(name)) == ("x" * 20000, False)
+    monkeypatch.setenv(name, "10")
+    assert _truncate_text("x" * 20, _optional_limit(name)) == ("x" * 10 + "\n\n[truncated 10 chars]", True)
+    monkeypatch.setenv(name, "0")
+    assert _truncate_text("output", _optional_limit(name)) == ("", True)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        [
+            {
+                "type": "input_text",
+                "text": 'Warning: truncated output\n{"resources": [truncated\n' "citeturn0time0 The time is 5 PM",
+            }
+        ],
+        [{"type": "input_text", "text": "citeturn0time0 The time is 5 PM"}],
+        [
+            {
+                "type": "input_text",
+                "text": json.dumps(
+                    {"toolNumber": 2, "result": {"status": "fulfilled", "value": "citeturn0time0 The time is 5 PM"}}
+                ),
+            }
+        ],
+        [
+            {
+                "type": "input_text",
+                "text": json.dumps({"name": "web search", "result": "citeturn0time0 The time is 5 PM"}),
+            }
+        ],
+    ],
+)
+def test_exec_web_output_shapes(output):
+    from lapdog.codex_exec import extract_exec_results
+
+    calls = [{"name": "get_goal"}, {"name": "web__run"}]
+    assert extract_exec_results(output, 2, calls=calls) == {1: {"value": "citeturn0time0 The time is 5 PM"}}
+
+
+def test_exec_web_citations_do_not_disambiguate_parallel_web_calls():
+    from lapdog.codex_exec import extract_exec_results
+
+    calls = [{"name": "web__run"}, {"name": "web__run"}]
+    output = [{"type": "input_text", "text": "citeturn0time0 The time is 5 PM"}]
+    assert extract_exec_results(output, 2, calls=calls) == {}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"now":{"current_time":"2026-10-16 03:19:28 UTC"},"cal":{"content":"[truncated',
+        '{"now":{"current_time":"2026-10-16 03:19:28 UTC"},"cal":{}}',
+    ],
+)
+def test_exec_recovers_complete_native_result_in_grouped_output(body):
+    from lapdog.codex_exec import extract_exec_results
+
+    output = [{"type": "input_text", "text": "Warning: truncated output\nTotal output lines: 1\n\n" + body}]
+    calls = [{"name": "clock__curr_time"}, {"name": "mcp__calendar__list"}]
+    assert extract_exec_results(output, 2, calls) == {0: {"value": {"current_time": "2026-10-16 03:19:28 UTC"}}}
+
+
+def test_exec_does_not_recover_native_shape_from_inside_truncated_string():
+    from lapdog.codex_exec import extract_exec_results
+
+    text = '{"cal":"quoted \\n {\\"current_time\\":\\"not a result\\"} [truncated'
+    assert (
+        extract_exec_results(
+            [{"type": "input_text", "text": text}], 2, [{"name": "clock__curr_time"}, {"name": "other"}]
+        )
+        == {}
+    )
+
+
+@pytest.mark.parametrize("in_loop", [False, True])
+async def test_connector_alias_and_loop_calls_use_structured_invocations(agent, in_loop):
+    sid = "connector-loop"
+    await _post(agent, sid, _session_meta(sid))
+    await _post(agent, sid, _turn_context())
+    name = "mcp__codex_apps__enterprise_ai__gmail_mcp__enterprise_ai_gmail_mcp_get_message"
+    script = (
+        f"await Promise.all(ids.map(message_id=>tools.{name}({{message_id}})));"
+        if in_loop
+        else f'await tools.{name}({{"message_id":"first"}});'
+    )
+    await _post(agent, sid, _response_item("custom_tool_call", name="exec", call_id="batch", input=script))
+    ids = ["first", "second", "third"] if in_loop else ["first"]
+    for message_id in ids:
+        await _post(
+            agent,
+            sid,
+            _event(
+                "item_completed",
+                timestamp="2026-05-11T17:00:04.000Z",
+                item={
+                    "type": "McpToolCall",
+                    "id": "exec-" + message_id,
+                    "server": "codex_apps",
+                    "tool": "enterprise_ai_gmail_mcp.get_message",
+                    "arguments": {"message_id": message_id},
+                    "result": {"message": message_id},
+                    "status": "completed",
+                },
+            ),
+        )
+    await _post(
+        agent,
+        sid,
+        _response_item("custom_tool_call_output", call_id="batch", output="done", timestamp="2026-05-11T17:00:05.000Z"),
+    )
+    tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
+    assert len(tools) == len(ids)
+    assert len({s["meta"]["metadata"]["tool_id"] for s in tools}) == len(ids)
+    assert [json.loads(s["meta"]["output"]["value"])["message"] for s in tools] == ids
+    assert all(s["meta"]["metadata"]["exec_call_id"] == "batch" for s in tools)
+
+
+def test_approval_adjusted_start_does_not_duplicate_earlier_completions():
+    from lapdog.codex_hooks import CodexHooksAPI
+
+    hooks = ClaudeHooksAPI()
+    parser = CodexHooksAPI(hooks)
+    sid = "approval-start"
+    for record in [
+        _session_meta(sid),
+        _turn_context(),
+        _response_item(
+            "custom_tool_call",
+            name="exec",
+            call_id="batch",
+            input='await tools.exec_command({cmd:"pwd"});',
+        ),
+        _event(
+            "item_completed",
+            timestamp="2026-05-11T17:00:04.000Z",
+            item={
+                "type": "CommandExecution",
+                "id": "exec-1",
+                "command": ["/bin/sh", "-lc", "pwd"],
+                "status": "completed",
+                "exit_code": 0,
+                "aggregated_output": "/repo",
+            },
+        ),
+    ]:
+        parser._dispatch(sid, record)
+    # Approval metadata excludes review time from display timing. It must not
+    # change the interval used to associate wrapper and completion records.
+    parser._sessions[sid].pending_tools["batch"].start_ns += 2_000_000_000
+    parser._dispatch(
+        sid,
+        _response_item("custom_tool_call_output", call_id="batch", output="done", timestamp="2026-05-11T17:00:06.000Z"),
+    )
+    tools = _by_kind(hooks._assembled_spans, "tool")
+    assert len(tools) == 1
+    assert tools[0]["meta"]["output"]["value"] == "/repo"
+
+
+@pytest.mark.parametrize("title", ["First page", "[bug] Error: Cannot find module"])
+def test_multiple_web_citations_are_one_complete_result(title):
+    from lapdog.codex_exec import extract_exec_results
+
+    value = title + "\nciteturn0view0 first body\nSecond page\nciteturn0view1 second body"
+    output = [{"type": "input_text", "text": value}]
+    assert extract_exec_results(output, 1, [{"name": "web__run"}]) == {0: {"value": value}}

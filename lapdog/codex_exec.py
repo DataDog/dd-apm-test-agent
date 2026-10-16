@@ -11,6 +11,8 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
+from .codex_items import normalize_tool_name
+
 TOOL_DISPLAY_NAMES = {
     "write_stdin": "Ran",
     "apply_patch": "Apply patch",
@@ -208,36 +210,156 @@ def extract_exec_calls(source: str) -> List[Dict[str, Any]]:
     return calls
 
 
-def extract_exec_results(output: Any, call_count: int) -> Dict[int, Dict[str, Any]]:
-    """Use only explicit result indexes, or the sole call's whole output."""
+def _complete_object_prefix(text: str) -> Dict[str, Any]:
+    """Read complete top-level members before a truncated JSON value.
+
+    Decode in order rather than searching for braces inside strings. Never
+    manufacture the unfinished value or continue past the truncation point.
+    """
+    decoder = json.JSONDecoder()
+    remaining = text.lstrip()
+    members: Dict[str, Any] = {}
+    if not remaining.startswith("{"):
+        return members
+    remaining = remaining[1:].lstrip()
+    while remaining:
+        try:
+            key, end = decoder.raw_decode(remaining)
+            remaining = remaining[end:].lstrip()
+            if not isinstance(key, str) or not remaining.startswith(":"):
+                break
+            value, end = decoder.raw_decode(remaining[1:].lstrip())
+            remaining = remaining[1:].lstrip()[end:].lstrip()
+            if not remaining.startswith((",", "}")):
+                break
+            members[key] = value
+            if remaining.startswith("}"):
+                break
+            remaining = remaining[1:].lstrip()
+        except ValueError:
+            break
+    return members
+
+
+def _native_result_name(value: Any) -> Optional[str]:
+    if not isinstance(value, dict):
+        return None
+    if set(value) == {"current_time"} and isinstance(value["current_time"], str):
+        return "clock__curr_time"
+    if set(value) == {"goal", "remainingTokens", "completionBudgetReport"}:
+        return "get_goal"
+    return None
+
+
+def extract_exec_results(
+    output: Any, call_count: int, calls: Optional[List[Dict[str, Any]]] = None
+) -> Dict[int, Dict[str, Any]]:
+    """Match explicit indexes/names and unique native result schemas.
+
+    ``calls`` enables name matching. Arbitrary user labels and parallel output
+    order are not evidence of which tool produced a result.
+    """
     if call_count == 0:
         return {}
     if not isinstance(output, list):
-        return {0: {"value": output}} if call_count == 1 else {}
-    raw_blocks = [
-        item.get("text")
-        for item in output
-        if isinstance(item, dict) and item.get("type") in ("input_text", "output_text")
-    ]
-    blocks: List[str] = [block for block in raw_blocks if isinstance(block, str)]
+        blocks = [output] if isinstance(output, str) else []
+    else:
+        blocks = [
+            item["text"]
+            for item in output
+            if isinstance(item, dict)
+            and item.get("type") in ("input_text", "output_text")
+            and isinstance(item.get("text"), str)
+        ]
     if blocks and re.match(r"^Script (completed|failed|running)(?:\n|$)", blocks[0]):
         blocks = blocks[1:]
+    names: Dict[str, List[int]] = {}
+    for call_index, call in enumerate(calls or []):
+        names.setdefault(normalize_tool_name(call["name"]), []).append(call_index)
     indexed: Dict[int, Dict[str, Any]] = {}
+    ambiguous = set()
     for block in blocks:
         try:
-            parsed = json.loads(block)
-        except (ValueError, TypeError):
-            continue
-        if not isinstance(parsed, dict) or type(parsed.get("i")) is not int:
-            continue
-        call_index = parsed["i"]
-        if not 0 <= call_index < call_count or call_index in indexed:
-            continue
-        indexed[call_index] = {"value": parsed.get("value", parsed.get("reason", ""))}
-        if parsed.get("status") == "rejected":
-            indexed[call_index]["error"] = True
-    if indexed:
+            records = [json.loads(block)]
+        except ValueError:
+            if (
+                re.search(r"citeturn[\w]+", block)
+                and not block.lstrip().startswith(("{", "Warning: truncated output"))
+                and not re.match(r'^\s*\[\s*[\[{"\d-]', block)
+            ):
+                # A web response can contain multiple citations. They belong to
+                # one returned value, not separate results for the same call.
+                records = [{"result": block}]
+            else:
+                records = []
+            # Codex can combine text() calls into one block with a truncation
+            # notice. Recover only complete JSON lines, never truncated fragments.
+            for line in ([] if records else block.splitlines()):
+                try:
+                    records.append(json.loads(line))
+                except ValueError:
+                    # A plain web response can survive in a combined block even
+                    # when a neighboring JSON result was truncated by Codex.
+                    if line.startswith("cite"):
+                        records.append({"result": line})
+                    else:
+                        prefix = _complete_object_prefix(line)
+                        records.extend(value for value in prefix.values() if _native_result_name(value))
+        # Recognize native results grouped under arbitrary object member names,
+        # without interpreting JavaScript bindings such as {now, cal, mail}.
+        nested = [
+            value
+            for record in records
+            if isinstance(record, dict)
+            and not any(key in record for key in ("i", "toolNumber", "result", "value", "error", "reason"))
+            for value in record.values()
+            if _native_result_name(value)
+        ]
+        records.extend(nested)
+        for parsed in records:
+            if not isinstance(parsed, dict):
+                continue
+            index = parsed.get("i")
+            if index is None and type(parsed.get("toolNumber")) is int:
+                index = parsed["toolNumber"] - 1
+            explicit_index = type(index) is int
+            if not explicit_index and not any(key in parsed for key in ("value", "result", "reason", "error")):
+                value = parsed
+            else:
+                value = parsed.get("value", parsed.get("result", parsed.get("reason", parsed.get("error", ""))))
+            rejected = parsed.get("status") == "rejected" or "error" in parsed
+            if isinstance(value, dict) and value.get("status") in ("fulfilled", "rejected"):
+                rejected = rejected or value["status"] == "rejected"
+                value = value.get("value", value.get("reason", ""))
+            if not explicit_index:
+                # Tool descriptions also contain names; they are not results.
+                label = parsed.get("tool", parsed.get("name"))
+                matches = names.get(normalize_tool_name(label), []) if isinstance(label, str) else []
+                if not any(key in parsed for key in ("value", "result", "reason", "error")):
+                    matches = []
+                if not matches and isinstance(value, dict):
+                    native_name = _native_result_name(value)
+                    if native_name:
+                        matches = names.get(native_name, [])
+                if not matches and isinstance(value, str) and re.search(r"citeturn[\w]+", value):
+                    matches = names.get("web__run", [])
+                if len(matches) != 1:
+                    continue
+                index = matches[0]
+            if not isinstance(index, int) or not 0 <= index < call_count:
+                continue
+            if index in indexed:
+                ambiguous.add(index)
+                continue
+            indexed[index] = {"value": value}
+            if rejected:
+                indexed[index]["error"] = True
+    for index in ambiguous:
+        indexed.pop(index, None)
+    if indexed or ambiguous:
         return indexed
     if call_count == 1:
+        if not isinstance(output, list):
+            return {0: {"value": output}}
         return {0: {"value": blocks if len(blocks) != 1 else blocks[0]}}
     return {}
