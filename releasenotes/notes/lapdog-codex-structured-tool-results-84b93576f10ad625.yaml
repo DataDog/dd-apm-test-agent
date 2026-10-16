@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    Lapdog: Fixes an issue where Lapdog did not properly capture tool names and outputs from Codex instrumentation.
+features:
+  - |
+    Lapdog: Captures Codex LLM messages and tool values without a default size limit.
+    Set ``DD_CODEX_MAX_LLM_MESSAGE_CHARS`` or ``DD_CODEX_MAX_TOOL_VALUE_CHARS``
+    to apply an explicit limit.
