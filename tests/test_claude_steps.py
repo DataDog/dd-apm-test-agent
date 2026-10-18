@@ -389,6 +389,30 @@ def test_interrupted_turn_finalizes_open_step():
     assert step["meta"]["error"]["message"] == "interrupted"
 
 
+def test_interrupted_turn_keeps_claude_model_provider():
+    """Claude Code's provider default must survive an interrupted turn.
+
+    The pi hooks call this same finalizer, so Claude Code's provider default was
+    moved into the Claude adapter. This pins the behaviour that move preserved:
+    an interrupted Claude turn still reports ``anthropic`` on its root span.
+    """
+    sid = "sess-interrupted-provider"
+    hooks_api, proxy_api, _ = _make_apis()
+
+    hooks_api._dispatch_hook(_session_start(sid))
+    hooks_api._dispatch_hook(_user_prompt(sid, "first"))
+    _simulate_llm_call(proxy_api, sid, _response())
+    # Simulate Ctrl+C — no Stop.
+    hooks_api._dispatch_hook(_user_prompt(sid, "second"))
+
+    roots = [s for s in _spans_for_session(hooks_api, sid) if s["parent_id"] == "undefined"]
+    interrupted = next(r for r in roots if r["meta"]["input"]["value"] == "first")
+    assert interrupted["status"] == "error"
+    assert interrupted["meta"]["error"]["message"] == "interrupted by user"
+    assert interrupted["meta"]["model_name"] == "claude-sonnet-4-5-20250929"
+    assert interrupted["meta"]["model_provider"] == "anthropic"
+
+
 def test_stop_finalizes_open_step():
     """Stop populates duration and metadata on the active step."""
     sid = "sess-stop-finalizes"

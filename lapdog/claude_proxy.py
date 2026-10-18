@@ -614,6 +614,9 @@ class ClaudeProxyAPI:
             # Keep session model in sync with the actual API response — same source as cost.
             if model != "unknown":
                 session.model = model
+            # The proxy can populate a session the hooks never saw, and the shared
+            # interrupted-turn finalizer reads the provider back off the session.
+            session.model_provider = "anthropic"
             trace_id = session.trace_id
             # Default parent: use the agent stack (works for sequential execution)
             parent_id = self._hooks_api._current_parent_id(session)

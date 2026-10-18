@@ -793,6 +793,10 @@ class ClaudeHooksAPI:
         model = body.get("model", "")
         if model:
             session.model = model
+        # SessionStart reports no provider, so the adapter is the only place that
+        # can record one.  Record it next to the model, because the shared
+        # interrupted-turn finalizer only echoes what the session says.
+        session.model_provider = "anthropic"
 
         session.instrumented = body.get("lapdog_instrumented", False)
 
@@ -852,8 +856,10 @@ class ClaudeHooksAPI:
             root_span["status"] = "error"
             root_span["meta"]["input"]["value"] = input_value
             root_span["meta"]["error"] = {"message": "interrupted by user"}
+            # Echo the session, exactly as model_name does.  The pi hooks call
+            # this same finalizer, so no adapter's default may live here.
             root_span["meta"]["model_name"] = session.model
-            root_span["meta"]["model_provider"] = "anthropic"
+            root_span["meta"]["model_provider"] = session.model_provider
             # Do not roll token_usage up onto root_span["metrics"] —
             # production stores trace rollups in a separate `@trace.*`
             # document, not on the root span. Mirroring it here caused
