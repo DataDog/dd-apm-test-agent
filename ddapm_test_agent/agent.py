@@ -1658,7 +1658,13 @@ class Agent:
         return web.json_response(data=events)
 
     async def handle_v1_profiling(self, request: Request) -> web.Response:
+        log.info(
+            "Profiling request started: remote=%s content_length=%s",
+            request.remote,
+            request.content_length,
+        )
         await request.read()
+        log.info("Profiling request body received: bytes=%d", len(request.body))
         self._requests.append(request)
         # TODO: valid response?
         return web.HTTPOk()
