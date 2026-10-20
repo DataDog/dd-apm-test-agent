@@ -9,8 +9,8 @@ import pytest
 from ddapm_test_agent import agent as test_agent
 from lapdog import server as lapdog_server
 
-
 LAPDOG_ROUTE_PATHS = {
+    "/lapdog/coding_agent/send",
     "/claude/hooks",
     "/lapdog/session/tags",
     "/claude/hooks/session/tags",
@@ -112,6 +112,52 @@ class TestLapdogLLMObsForwarding:
 
 async def test_lapdog_server_adds_all_lapdog_routes(lapdog_agent):
     assert LAPDOG_ROUTE_PATHS <= _route_paths(lapdog_agent)
+
+
+@pytest.mark.parametrize("origin", ["https://app.datadoghq.com", "http://localhost:3000", "https://example.com"])
+async def test_coding_agent_cors_preflight(lapdog_agent, origin):
+    with mock.patch("lapdog.headless_coding_agent_interactions.asyncio.create_subprocess_exec") as spawn:
+        response = await lapdog_agent.options(
+            "/lapdog/coding_agent/send",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+    assert response.status == 200
+    expected_origin = None if origin == "https://example.com" else origin
+    assert response.headers.get("Access-Control-Allow-Origin") == expected_origin
+    assert "POST" in response.headers["Access-Control-Allow-Methods"]
+    assert "content-type" in response.headers["Access-Control-Allow-Headers"].lower()
+    spawn.assert_not_called()
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+async def test_coding_agent_cors_response(lapdog_agent, exit_code):
+    process = mock.Mock(returncode=exit_code)
+    process.communicate = mock.AsyncMock(return_value=(b"output", b""))
+    with (
+        mock.patch("lapdog.headless_coding_agent_interactions.shutil.which", return_value="/bin/pi"),
+        mock.patch("lapdog.headless_coding_agent_interactions.asyncio.create_subprocess_exec", return_value=process),
+    ):
+        response = await lapdog_agent.post(
+            "/lapdog/coding_agent/send",
+            json={"coding_agent": "pi-coding-agent", "session_id": "session", "message": "hello"},
+            headers={"Origin": "https://app.datadoghq.com"},
+        )
+    assert response.status == (200 if exit_code == 0 else 502)
+    assert response.headers["Access-Control-Allow-Origin"] == "https://app.datadoghq.com"
+
+
+async def test_coding_agent_cors_validation_error(lapdog_agent):
+    response = await lapdog_agent.post(
+        "/lapdog/coding_agent/send",
+        json={},
+        headers={"Origin": "https://app.datadoghq.com"},
+    )
+    assert response.status == 400
+    assert response.headers["Access-Control-Allow-Origin"] == "https://app.datadoghq.com"
 
 
 async def test_lapdog_and_base_apps_use_different_forwarding_extensions(agent, lapdog_agent):

@@ -340,6 +340,7 @@ class ClaudeHooksAPI:
         self._assembled_spans: List[Dict[str, Any]] = []
         self._pending_claude_auto_reviews: Dict[str, Dict[str, Any]] = {}
         self._raw_events: List[Dict[str, Any]] = []
+        self._pending_stops: Dict[str, Set[asyncio.Event]] = {}
         self._link_tracker = link_tracker
         self._app: Optional[web.Application] = None
 
@@ -1953,21 +1954,35 @@ class ClaudeHooksAPI:
             self._register_session_token(session_token, session_id)
         self._raw_events.append(body)
 
-        # wait for the transcript to be fully flushed before dispatching the hook
-        if body.get("hook_event_name") == "Stop":
-            await asyncio.sleep(1.0)
-
-        self._dispatch_hook(body)
-
         hook_event_name = body.get("hook_event_name", "")
+        stop_finished = asyncio.Event() if hook_event_name == "Stop" else None
+        if stop_finished is not None:
+            self._pending_stops.setdefault(session_id, set()).add(stop_finished)
+        try:
+            if hook_event_name == "SessionEnd":
+                # Stop waits for the transcript to flush. Do not treat that wait
+                # as a missing Stop and forward an interrupted turn.
+                for pending in list(self._pending_stops.get(session_id, ())):
+                    await pending.wait()
+            if stop_finished is not None:
+                await asyncio.sleep(1.0)
 
-        # Forward completed traces to the backend (includes the now-updated root span).
-        # The eager root span is only used locally so the test agent UI has a root node
-        # immediately; we don't forward it on UserPromptSubmit because the DD backend
-        # doesn't deduplicate by span_id and would create a duplicate entry.
-        if hook_event_name in ("Stop", "SessionEnd"):
-            await self._forward_trace_to_backend(session_id)
-            await self._forward_eval_metrics_to_backend(session_id)
+            self._dispatch_hook(body)
+
+            # Forward completed traces to the backend (includes the now-updated root span).
+            # The eager root span is only used locally so the test agent UI has a root node
+            # immediately; we don't forward it on UserPromptSubmit because the DD backend
+            # doesn't deduplicate by span_id and would create a duplicate entry.
+            if hook_event_name in ("Stop", "SessionEnd"):
+                await self._forward_trace_to_backend(session_id)
+                await self._forward_eval_metrics_to_backend(session_id)
+        finally:
+            if stop_finished is not None:
+                pending_stops = self._pending_stops[session_id]
+                pending_stops.remove(stop_finished)
+                if not pending_stops:
+                    del self._pending_stops[session_id]
+                stop_finished.set()
 
         return web.json_response({"status": "ok"})
 

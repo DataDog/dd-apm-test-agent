@@ -15,6 +15,7 @@ from .claude_link_tracker import ClaudeLinkTracker
 from .claude_proxy import ClaudeProxyAPI
 from .codex_hooks import CodexHooksAPI
 from .codex_proxy import CodexProxyAPI
+from .headless_coding_agent_interactions import HeadlessCodingAgentInteractionsAPI
 from .llmobs_event_platform import LLMObsEventPlatformAPI
 from .pi_hooks import PiHooksAPI
 
@@ -59,6 +60,7 @@ def extend_app(app: web.Application) -> web.Application:
     pi_hooks_api = PiHooksAPI(hooks_api=claude_hooks_api)
     codex_hooks_api = CodexHooksAPI(hooks_api=claude_hooks_api)
     codex_proxy_api = CodexProxyAPI(hooks_api=codex_hooks_api)
+    headless_coding_agent_interactions_api = HeadlessCodingAgentInteractionsAPI()
 
     app.add_routes(llmobs_event_platform_api.get_routes())
     app.add_routes(claude_hooks_api.get_routes())
@@ -66,6 +68,7 @@ def extend_app(app: web.Application) -> web.Application:
     app.add_routes(pi_hooks_api.get_routes())
     app.add_routes(codex_hooks_api.get_routes())
     app.add_routes(codex_proxy_api.get_routes())
+    app.add_routes(headless_coding_agent_interactions_api.get_routes())
 
     app["llmobs_event_platform_api"] = llmobs_event_platform_api
     agent.llmobs_payload_transform = _inject_lapdog_forwarded

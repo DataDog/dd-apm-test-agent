@@ -8,7 +8,6 @@ from typing import Dict
 from aiohttp import web
 from aiohttp.web import Request
 
-
 # Allowed CORS origins: Datadog UI domains and localhost for local development.
 ALLOWED_ORIGIN_PATTERN = re.compile(
     r"^https?://(localhost(:\d+)?|127\.0\.0\.1(:\d+)?|[\w.-]+\.datadoghq\.(com|eu)|[\w.-]+\.ddog-gov\.com|[\w.-]+\.datad0g\.com|[\w.-]+\.static-app\.us1\.staging\.dog)$"
@@ -44,7 +43,11 @@ def with_cors(
         headers = cors_headers(request)
         if request.method == "OPTIONS":
             return web.Response(status=200, headers=headers)
-        response = await handler(request)
+        try:
+            response = await handler(request)
+        except web.HTTPException as error:
+            error.headers.update(headers)
+            raise
         response.headers.update(headers)
         return response
 

@@ -1,8 +1,10 @@
+import asyncio
 import gzip
 import json
 import os
 import subprocess
 import tempfile
+from unittest import mock
 
 from aiohttp import web
 import msgpack
@@ -40,6 +42,76 @@ async def test_hook_endpoint_returns_ok(agent):
     assert resp.status == 200
     body = await resp.json()
     assert body["status"] == "ok"
+
+
+@pytest.mark.parametrize("cancel_stop", [False, True])
+async def test_session_end_waits_for_pending_stop(monkeypatch, cancel_stop):
+    hooks = ClaudeHooksAPI()
+    sid = "stop-session-end-race"
+    hooks._dispatch_hook({"session_id": sid, "hook_event_name": "UserPromptSubmit", "prompt": "hello"})
+    root = hooks._sessions[sid]._root_span_ref
+    stop_waiting = asyncio.Event()
+    release_stop = asyncio.Event()
+    real_sleep = asyncio.sleep
+    forwarded_statuses = []
+
+    async def wait_for_transcript(_):
+        stop_waiting.set()
+        await release_stop.wait()
+
+    async def forward(session_id):
+        forwarded_statuses.append(root["status"])
+
+    def request(event, session_id=sid):
+        return mock.Mock(json=mock.AsyncMock(return_value={"session_id": session_id, "hook_event_name": event}))
+
+    monkeypatch.setattr("lapdog.claude_hooks.asyncio.sleep", wait_for_transcript)
+    monkeypatch.setattr(hooks, "_forward_trace_to_backend", forward)
+    monkeypatch.setattr(hooks, "_forward_eval_metrics_to_backend", mock.AsyncMock())
+    stop = asyncio.create_task(hooks.handle_hook(request("Stop")))
+    end = None
+    try:
+        await asyncio.wait_for(stop_waiting.wait(), timeout=1)
+        end = asyncio.create_task(hooks.handle_hook(request("SessionEnd")))
+        await real_sleep(0)
+        assert not end.done()
+        assert forwarded_statuses == []
+        assert "error" not in root["meta"]
+        # Another session must not wait for this session's Stop.
+        other = await asyncio.wait_for(hooks.handle_hook(request("SessionEnd", "other-session")), timeout=1)
+        assert other.status == 200
+        forwarded_statuses.clear()
+        if cancel_stop:
+            stop.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await stop
+        else:
+            release_stop.set()
+            assert (await asyncio.wait_for(stop, timeout=1)).status == 200
+        assert (await asyncio.wait_for(end, timeout=1)).status == 200
+        if cancel_stop:
+            assert root["meta"]["error"]["message"] == "interrupted by user"
+            assert forwarded_statuses == ["error"]
+        else:
+            assert root["status"] == "ok"
+            assert "error" not in root["meta"]
+            assert forwarded_statuses == ["ok", "ok"]
+        assert hooks._pending_stops == {}
+    finally:
+        for task in (stop, end):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(*(task for task in (stop, end) if task is not None), return_exceptions=True)
+
+
+async def test_session_end_without_stop_still_marks_interruption():
+    hooks = ClaudeHooksAPI()
+    sid = "missing-stop"
+    hooks._dispatch_hook({"session_id": sid, "hook_event_name": "UserPromptSubmit", "prompt": "hello"})
+    request = mock.Mock(json=mock.AsyncMock(return_value={"session_id": sid, "hook_event_name": "SessionEnd"}))
+    response = await hooks.handle_hook(request)
+    assert response.status == 200
+    assert hooks._sessions[sid]._root_span_ref["meta"]["error"]["message"] == "interrupted by user"
 
 
 async def test_claude_proxy_forwards_gzip_request_body_decompressed(agent, aiohttp_server):
