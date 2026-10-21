@@ -60,7 +60,7 @@ def extend_app(app: web.Application) -> web.Application:
     pi_hooks_api = PiHooksAPI(hooks_api=claude_hooks_api)
     codex_hooks_api = CodexHooksAPI(hooks_api=claude_hooks_api)
     codex_proxy_api = CodexProxyAPI(hooks_api=codex_hooks_api)
-    headless_coding_agent_interactions_api = HeadlessCodingAgentInteractionsAPI()
+    headless_coding_agent_interactions_api = HeadlessCodingAgentInteractionsAPI(hooks_api=claude_hooks_api)
 
     app.add_routes(llmobs_event_platform_api.get_routes())
     app.add_routes(claude_hooks_api.get_routes())
@@ -69,6 +69,7 @@ def extend_app(app: web.Application) -> web.Application:
     app.add_routes(codex_hooks_api.get_routes())
     app.add_routes(codex_proxy_api.get_routes())
     app.add_routes(headless_coding_agent_interactions_api.get_routes())
+    app.on_shutdown.append(headless_coding_agent_interactions_api.close)
 
     app["llmobs_event_platform_api"] = llmobs_event_platform_api
     agent.llmobs_payload_transform = _inject_lapdog_forwarded

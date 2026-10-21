@@ -11,6 +11,7 @@ from lapdog import server as lapdog_server
 
 LAPDOG_ROUTE_PATHS = {
     "/lapdog/coding_agent/send",
+    "/lapdog/pi/connect",
     "/claude/hooks",
     "/lapdog/session/tags",
     "/claude/hooks/session/tags",
@@ -138,12 +139,12 @@ async def test_coding_agent_cors_response(lapdog_agent, exit_code):
     process = mock.Mock(returncode=exit_code)
     process.communicate = mock.AsyncMock(return_value=(b"output", b""))
     with (
-        mock.patch("lapdog.headless_coding_agent_interactions.shutil.which", return_value="/bin/pi"),
+        mock.patch("lapdog.headless_coding_agent_interactions.shutil.which", return_value="/bin/lapdog"),
         mock.patch("lapdog.headless_coding_agent_interactions.asyncio.create_subprocess_exec", return_value=process),
     ):
         response = await lapdog_agent.post(
             "/lapdog/coding_agent/send",
-            json={"coding_agent": "pi-coding-agent", "session_id": "session", "message": "hello"},
+            json={"coding_agent": "claude-code", "session_id": "session", "message": "hello"},
             headers={"Origin": "https://app.datadoghq.com"},
         )
     assert response.status == (200 if exit_code == 0 else 502)

@@ -10,8 +10,8 @@
  * Install: copy to ~/.pi/agent/extensions/lapdog.ts
  * Configure: set LAPDOG_URL to override the default http://localhost:8126
  *
- * All HTTP posts are fire-and-forget with a 2 s timeout so a lapdog outage
- * never blocks the agent.
+ * Tracing posts have a 2 s timeout. A reconnecting WebSocket receives user
+ * messages for this process; it never starts a second Pi session.
  */
 
 import { convertToLlm, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -41,9 +41,9 @@ function getCwd(ctx?: CwdContext): string {
 	}
 }
 
-function post(event: string, sessionId: string, data: Record<string, unknown>, ctx?: CwdContext): void {
+async function post(event: string, sessionId: string, data: Record<string, unknown>, ctx?: CwdContext): Promise<boolean> {
 	try {
-		fetch(HOOKS_ENDPOINT, {
+		const response = await fetch(HOOKS_ENDPOINT, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
@@ -54,10 +54,86 @@ function post(event: string, sessionId: string, data: Record<string, unknown>, c
 				...data,
 			}),
 			signal: AbortSignal.timeout(2000),
-		}).catch(() => {});
+		});
+		return response.ok;
 	} catch {
-		// fetch itself can throw synchronously in some edge cases
+		return false;
 	}
+}
+
+/** Keep delivery tied to this session/runtime, including across server restarts. */
+export function startPiMessageConnection(
+	pi: Pick<ExtensionAPI, "sendUserMessage">,
+	sessionId: string,
+	register: () => Promise<boolean>,
+): () => void {
+	let stopped = false;
+	let socket: WebSocket | undefined;
+	let retry: ReturnType<typeof setTimeout> | undefined;
+	let ready = false;
+
+	function scheduleReconnect() {
+		if (stopped || retry) return;
+		retry = setTimeout(() => {
+			retry = undefined;
+			void connect();
+		}, 2000);
+		retry.unref?.();
+	}
+
+	async function connect() {
+		if (stopped) return;
+		// Register the launch token through the existing hooks endpoint first.
+		if (!(await register())) {
+			scheduleReconnect();
+			return;
+		}
+		if (stopped) return;
+		try {
+			const url = new URL("/lapdog/pi/connect", LAPDOG_URL);
+			url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+			const current = new WebSocket(url);
+			socket = current;
+			ready = false;
+			current.onopen = () => {
+				if (stopped) return current.close();
+				current.send(JSON.stringify({ session_id: sessionId, token: LAPDOG_SESSION_TOKEN }));
+			};
+			current.onmessage = (event) => {
+				if (stopped || socket !== current) return;
+				try {
+					const message = JSON.parse(String(event.data));
+					if (message.type === "ready") {
+						ready = true;
+						return;
+					}
+					if (!ready || message.type !== "message" ||
+						typeof message.message_id !== "string" || typeof message.content !== "string") return;
+					try {
+						// The extension API schedules the prompt; it does not wait
+						// for the resulting agent run to finish.
+						pi.sendUserMessage(message.content, { deliverAs: "followUp" });
+						current.send(JSON.stringify({ type: "accepted", message_id: message.message_id }));
+					} catch {
+						current.send(JSON.stringify({ type: "error", message_id: message.message_id }));
+					}
+				} catch {
+					current.close();
+				}
+			};
+			current.onclose = () => scheduleReconnect();
+			current.onerror = () => current.close();
+		} catch {
+			scheduleReconnect();
+		}
+	}
+
+	void connect();
+	return () => {
+		stopped = true;
+		if (retry) clearTimeout(retry);
+		socket?.close();
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +162,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 	let sessionId = "";
 	let currentModel = "";
 	let currentProvider = "";
+	let stopMessageConnection: (() => void) | undefined;
 
 	// Track the user prompt that started the current agent run so we can
 	// attach it to the agent_start event (input event fires before agent_start).
@@ -115,6 +192,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 	// ------------------------------------------------------------------
 
 	pi.on("session_start", (_event, ctx) => {
+		stopMessageConnection?.();
 		sessionId = ctx.sessionManager.getSessionId();
 		process.env.PI_SESSION_ID = sessionId;
 		const model = ctx.model;
@@ -122,14 +200,23 @@ export default function lapdog(pi: ExtensionAPI): void {
 			currentModel = model.id;
 			currentProvider = model.provider;
 		}
-		post("session_start", sessionId, {
+		const activeSessionId = sessionId;
+		const sessionData = {
 			model: model ? `${model.provider}/${model.id}` : "",
 			model_provider: currentProvider,
 			model_id: currentModel,
-		}, ctx);
+		};
+		const register = () => post("session_start", activeSessionId, sessionData, ctx);
+		if (LAPDOG_SESSION_TOKEN && typeof WebSocket !== "undefined") {
+			stopMessageConnection = startPiMessageConnection(pi, activeSessionId, register);
+		} else {
+			void register();
+		}
 	});
 
 	pi.on("session_shutdown", (_event?: unknown, ctx?: CwdContext) => {
+		stopMessageConnection?.();
+		stopMessageConnection = undefined;
 		post("session_shutdown", sessionId, {}, ctx);
 	});
 
