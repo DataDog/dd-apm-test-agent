@@ -1115,3 +1115,45 @@ async def test_second_real_turn_still_rotates_trace(agent):
     assert first_trace in trace_ids
     inputs = sorted(r["meta"]["input"]["value"] for r in roots)
     assert inputs == ["first", "second"]
+
+
+async def test_interrupted_turn_preserves_model_provider(agent):
+    """Ctrl+C must not relabel the root span's provider.
+
+    The interrupted-turn finalizer is shared with Claude Code and used to
+    hardcode ``model_provider`` to "anthropic", so a pi session on any other
+    provider had its root span relabelled. That splits the LLM Observability
+    model facet into one entry per provider for a single model, and the facet
+    icon follows the provider, so the stray entry wore the Anthropic logo.
+    """
+    sid = "pi-interrupted-provider"
+    model = "z-ai/glm-5.3"
+    provider = "openrouter"
+
+    await _post(agent, _session_start(sid, model_id=model, model_provider=provider))
+
+    # A completed LLM call, then Ctrl+C: no turn_end and no agent_end.
+    await _post(agent, _agent_start(sid, prompt="first", model_id=model, model_provider=provider))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid, model_id=model, model_provider=provider))
+
+    # The next prompt arrives, which is where lapdog finalizes the dead turn.
+    await _post(agent, _agent_start(sid, prompt="second", model_id=model, model_provider=provider))
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    roots = [s for s in session_spans if s["parent_id"] == "undefined"]
+    interrupted = next(r for r in roots if r["meta"]["input"]["value"] == "first")
+
+    # The interrupted-turn path really did run ...
+    assert interrupted["status"] == "error"
+    assert interrupted["meta"]["error"]["message"] == "interrupted by user"
+    assert interrupted["meta"]["model_name"] == model
+    # ... and it kept the provider the session actually ran on.
+    assert interrupted["meta"]["model_provider"] == provider
+
+    # The child LLM spans were never in doubt; only the root span disagreed.
+    llm_spans = _by_kind(session_spans, "llm")
+    assert llm_spans
+    assert {s["meta"]["model_provider"] for s in llm_spans} == {provider}

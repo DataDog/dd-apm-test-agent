@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    Lapdog: Keep the model provider a pi session reported on the root span of an interrupted turn.
+    The interrupted-turn finalizer is shared with Claude Code and hardcoded the provider to
+    ``anthropic``, so pi sessions running on any other provider had their root span relabelled
+    after Ctrl+C. In LLM Observability this split one model into two entries in the model
+    facet, and the entry carrying the wrong provider wore the Anthropic logo.
