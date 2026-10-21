@@ -33,6 +33,8 @@ from .codex_items import tool_completion
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .coding_agent_metadata import extract_agent_project_name
 from .coding_agent_metadata import extract_git_repository_url
+from .coding_agent_metadata import git_commit_sha_tags
+from .coding_agent_metadata import project_metadata_tags
 from .coding_agent_metadata import resolve_project_metadata
 from .model_pricing import compute_cost_metrics
 from .utils import set_hidden_metadata
@@ -615,12 +617,33 @@ class CodexHooksAPI:
     ) -> None:
         project_name = extract_agent_project_name(payload) or extract_agent_project_name(record)
         git_repository_url = extract_git_repository_url(record) or extract_git_repository_url(payload)
+        previous_metadata = session.project_metadata
         session.project_metadata = resolve_project_metadata(
             cwd=session.cwd,
             project_name=project_name or ("" if cwd_changed else session.project_metadata.project_name),
             git_repository_url=git_repository_url
             or ("" if cwd_changed else session.project_metadata.git_repository_url),
         )
+        turn = session.active_turn
+        if turn is None or turn.closed or (not cwd_changed and session.project_metadata == previous_metadata):
+            return
+        # A task_started event can create spans before turn_context supplies
+        # the session cwd. Replace project tags on that turn only; completed
+        # turns can describe a different repository.
+        tags = project_metadata_tags(session.project_metadata) + git_commit_sha_tags(session.cwd)
+        for span in self._hooks_api._assembled_spans:
+            if span.get("trace_id") != turn.trace_id:
+                continue
+            span["tags"] = [
+                tag
+                for tag in span.get("tags", [])
+                if not tag.startswith(("project_name:", "git.repository_url:", "git.commit.sha:"))
+            ] + tags
+            metadata = span.setdefault("meta", {}).setdefault("metadata", {})
+            metadata.pop("project_name", None)
+            metadata.pop("git_repository_url", None)
+            apply_project_metadata_to_span(span, session.project_metadata)
+            self._hooks_api._apply_registered_session_tags(span)
 
     def _agent_manifest(self, session: CodexSession) -> Dict[str, Any]:
         model_settings: Dict[str, Any] = {}
@@ -2146,11 +2169,15 @@ class CodexHooksAPI:
             return
         output = payload.get("output", "")
         output_value = output if isinstance(output, str) else _to_json_str(output)
-        if pending.tool_name == "wait" and isinstance(output, list) and all(
-            isinstance(block, dict)
-            and block.get("type") in ("input_text", "output_text")
-            and isinstance(block.get("text"), str)
-            for block in output
+        if (
+            pending.tool_name == "wait"
+            and isinstance(output, list)
+            and all(
+                isinstance(block, dict)
+                and block.get("type") in ("input_text", "output_text")
+                and isinstance(block.get("text"), str)
+                for block in output
+            )
         ):
             output_value = "\n".join(block["text"] for block in output)
         final_status = _canonical_tool_status(payload.get("status", "")) or "completed"

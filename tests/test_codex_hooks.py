@@ -658,6 +658,79 @@ async def test_codex_project_metadata_from_session_git(agent):
     assert not any("commit" in key for key in root["meta"]["metadata"])
 
 
+async def test_codex_late_turn_context_corrects_project_tags(agent, tmp_path, monkeypatch):
+    monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    folder_x = tmp_path / "x"
+    folder_y = tmp_path / "y"
+    folder_x.mkdir()
+    folder_y.mkdir()
+    monkeypatch.chdir(folder_y)
+    sid = "codex-after-restart"
+    await _post(agent, sid, _event("task_started", turn_id="turn-1"))
+    await _post(agent, sid, _event("user_message", message="continue in x"))
+    context = _turn_context()
+    context["payload"]["cwd"] = str(folder_x)
+    context["payload"]["git"] = {"repository_url": "https://github.com/example/x.git"}
+    await _post(agent, sid, context)
+    await _post(agent, sid, _event("agent_message", message="done"))
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in _spans(await response.json()) if span.get("session_id") == sid]
+    assert spans
+    for span in spans:
+        assert "project_name:x" in span["tags"]
+        assert "git.repository_url:github.com/example/x" in span["tags"]
+        assert "project_name:y" not in span["tags"]
+    root = next(span for span in spans if span["parent_id"] == "undefined")
+    assert root["meta"]["metadata"]["cwd"] == str(folder_x)
+    assert root["meta"]["metadata"]["project_name"] == "x"
+
+
+async def test_codex_project_update_preserves_completed_turn_and_custom_tags(agent, tmp_path, monkeypatch):
+    monkeypatch.delenv("DD_GIT_REPOSITORY_URL", raising=False)
+    folder_x = tmp_path / "x"
+    folder_y = tmp_path / "y"
+    folder_x.mkdir()
+    folder_y.mkdir()
+    sid = "codex-project-change"
+    metadata = _session_meta(sid)
+    metadata["payload"]["cwd"] = str(folder_y)
+    metadata["git"] = {"repository_url": "https://github.com/example/y.git"}
+    await _post(agent, sid, metadata, proxy_session_key="project-change-token")
+    context = _turn_context("old-turn")
+    context["payload"]["cwd"] = str(folder_y)
+    await _post(agent, sid, context)
+    await _post(agent, sid, _event("task_complete"))
+    response = await agent.get("/claude/hooks/spans")
+    old_spans = _spans(await response.json())
+    old_trace_ids = {span["trace_id"] for span in old_spans}
+    await _post(agent, sid, _event("task_started", turn_id="new-turn"))
+    await _post(agent, sid, _event("user_message", message="switch to x"))
+    response = await agent.post(
+        "/lapdog/session/tags",
+        headers={"X-Lapdog-Session-Token": "project-change-token"},
+        json={"session_id": sid, "tags": {"iteration": "2"}},
+    )
+    assert response.status == 200
+    context = _turn_context("new-turn")
+    context["payload"]["cwd"] = str(folder_x)
+    await _post(agent, sid, context)
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = _spans(await response.json())
+    new_spans = [span for span in spans if span["trace_id"] not in old_trace_ids]
+    assert new_spans
+    for span in spans:
+        assert "iteration:2" in span["tags"]
+        if span["trace_id"] in old_trace_ids:
+            assert "project_name:y" in span["tags"]
+            assert "git.repository_url:github.com/example/y" in span["tags"]
+        else:
+            assert "project_name:x" in span["tags"]
+            assert not any(tag.startswith("git.repository_url:") for tag in span["tags"])
+            assert "git_repository_url" not in span["meta"]["metadata"]
+
+
 async def test_codex_project_metadata_uses_local_git_fallback(agent, tmp_path, monkeypatch):
     from lapdog.coding_agent_metadata import _local_git_metadata
 

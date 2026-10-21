@@ -44,6 +44,7 @@ class FileState:
         self.scan_offset = offset
         self.session_id = ""
         self.session_meta: Optional[Dict[str, Any]] = None
+        self.session_meta_pending = False
         self.matches_cwd: Optional[bool] = None
         # Holds parsed records whose cwd disposition is still unknown. The
         # bytes for these records live between ``offset`` and ``scan_offset``.
@@ -360,6 +361,7 @@ def _drain_file(
         state.scan_offset = 0
         state.session_id = ""
         state.session_meta = None
+        state.session_meta_pending = False
         state.matches_cwd = None
         state.buffer.clear()
         state.buffer_ends.clear()
@@ -493,6 +495,21 @@ def _drain_file(
                 continue
 
             if state.session_id:
+                # The server can restart while this watcher remains alive.
+                # Restore the session before each new turn, and before the
+                # first event read after a persisted cursor.
+                starts_turn = (
+                    record.get("type") == "event_msg" and record.get("payload", {}).get("type") == "task_started"
+                )
+                if state.session_meta is not None and (state.session_meta_pending or starts_turn):
+                    if not _post_record(
+                        lapdog_url, state.session_id, state.session_meta, path, proxy_session_key=proxy_session_key
+                    ):
+                        state.scan_offset = state.offset
+                        state.buffer.clear()
+                        state.buffer_ends.clear()
+                        return posted_session_id
+                    state.session_meta_pending = False
                 _sync_session_name(lapdog_url, path, state, session_names)
                 if state.buffer:
                     aborted = False
@@ -563,6 +580,7 @@ def _prime_file_state(
                 if session_id:
                     state.session_id = session_id
                     state.session_meta = record
+                    state.session_meta_pending = True
                 record_cwd = _record_cwd(record)
                 if record_cwd and state.matches_cwd is None:
                     if include_all_cwds:
@@ -755,6 +773,7 @@ def _prepare_resumed_file(
         if not _post_record(lapdog_url, state.session_id, state.session_meta, path, proxy_session_key):
             return False
         state.resume_meta_posted = True
+        state.session_meta_pending = False
     return True
 
 

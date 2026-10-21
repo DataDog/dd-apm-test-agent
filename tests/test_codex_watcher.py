@@ -8,17 +8,17 @@ import pytest
 from lapdog.codex_cursor import CursorState
 from lapdog.codex_cursor import load_cursor
 from lapdog.codex_cursor import save_cursor_atomic
+from lapdog.codex_watcher import FileState
 from lapdog.codex_watcher import MAX_BUFFER_RECORDS
 from lapdog.codex_watcher import MAX_LINE_BYTES
-from lapdog.codex_watcher import _maybe_save_cursor
-from lapdog.codex_watcher import _prune_cursor
-from lapdog.codex_watcher import _sync_cursor
-from lapdog.codex_watcher import FileState
 from lapdog.codex_watcher import _default_session_dir
 from lapdog.codex_watcher import _drain_file
 from lapdog.codex_watcher import _initial_offset_for_file
 from lapdog.codex_watcher import _is_under
+from lapdog.codex_watcher import _maybe_save_cursor
 from lapdog.codex_watcher import _prime_file_state
+from lapdog.codex_watcher import _prune_cursor
+from lapdog.codex_watcher import _sync_cursor
 from lapdog.codex_watcher import watch_codex_sessions
 
 
@@ -384,6 +384,58 @@ def test_prime_file_state_learns_old_session_metadata(tmp_path):
 
     assert state.session_id == "sess-resume"
     assert state.matches_cwd is True
+
+
+@pytest.mark.parametrize("restart_watcher", [False, True])
+def test_drain_file_restores_metadata_after_server_restart(monkeypatch, tmp_path, restart_watcher):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    session_file = tmp_path / "rollout.jsonl"
+    session_meta = {"type": "session_meta", "payload": {"id": "sess-x", "cwd": str(tmp_path / "x")}}
+    _append(session_file, session_meta)
+    _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "old"}})
+    state = FileState()
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path), include_all_cwds=True)
+    if restart_watcher:
+        state = FileState(offset=state.offset)
+        _prime_file_state(session_file, state, str(tmp_path / "y"), state.offset, include_all_cwds=True)
+    posts.clear()
+    new_turn = {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "new-turn"}}
+    _append(session_file, new_turn)
+
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path / "y"), include_all_cwds=True)
+
+    assert [post["record"] for post in posts] == [session_meta, new_turn]
+    assert all(post["session_id"] == "sess-x" for post in posts)
+
+
+def test_drain_file_retries_primed_metadata_before_new_events(monkeypatch, tmp_path):
+    session_file = tmp_path / "rollout.jsonl"
+    session_meta = {"type": "session_meta", "payload": {"id": "sess-x", "cwd": str(tmp_path)}}
+    _append(session_file, session_meta)
+    state = FileState(offset=session_file.stat().st_size)
+    _prime_file_state(session_file, state, str(tmp_path), state.offset)
+    new_event = {"type": "event_msg", "payload": {"type": "user_message", "message": "new"}}
+    _append(session_file, new_event)
+    original_offset = state.offset
+    posts = []
+
+    def fail_post(*args, **kwargs):
+        posts.append(kwargs["json"]["record"])
+        raise ConnectionError("server restarting")
+
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", fail_post)
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
+    assert posts == [session_meta]
+    assert state.offset == original_offset
+
+    posts.clear()
+    monkeypatch.setattr(
+        "lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]["record"])
+    )
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
+    assert posts == [session_meta, new_event]
+    assert state.offset == session_file.stat().st_size
 
 
 def test_recent_existing_files_are_replayed_from_start():
@@ -1157,6 +1209,7 @@ def test_watch_codex_sessions_continues_after_per_file_error(monkeypatch, capsys
 def test_process_exists_falls_back_when_psutil_missing(monkeypatch):
     """When psutil is unavailable, _process_exists uses a safe fallback."""
     import builtins
+
     from lapdog import codex_watcher
 
     # Force ImportError for psutil even if it happens to be installed.
@@ -1176,6 +1229,7 @@ def test_process_exists_falls_back_when_psutil_missing(monkeypatch):
 
 def test_process_exists_uses_windows_probe_when_psutil_missing(monkeypatch):
     import builtins
+
     from lapdog import codex_watcher
 
     real_import = builtins.__import__

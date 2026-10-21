@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    Lapdog: Preserve the correct project name for open Codex sessions after
+    Lapdog restarts in a different folder. Restore session metadata before
+    new turns and correct project tags when turn context arrives later.
