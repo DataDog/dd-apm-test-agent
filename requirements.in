@@ -1,0 +1,19 @@
+# Runtime dependencies (from setup.py install_requires)
+aiohttp
+ddsketch[serialization]
+msgpack
+requests
+typing_extensions
+yarl
+requests-aws4auth
+jinja2>=3.0.0
+pyyaml
+opentelemetry-proto>1.33.0,<1.37.0
+protobuf>=3.19.0
+grpcio>=1.66.2,<2.0
+
+# Test dependencies (from test_deps.txt)
+ddtrace==3.15.0
+pytest
+riot==0.20.1
+PyYAML==6.0.3
