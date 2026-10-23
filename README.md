@@ -381,26 +381,6 @@ Example: `"{'service:test,env:staging': 0.5, 'service:test2,env:prod': 0.2}"` (n
 
 Test session token for a test case. **Ensure this value is unique to avoid conflicts between sessions.**
 
-#### [optional] `?capture_untagged=`
-
-Default: `true`. Set to `false` to include only requests explicitly carrying this
-session's token when reading, snapshotting, or clearing the session. A non-empty
-session token is required. Untagged requests remain available through the global
-endpoints but are not included in this session. Existing clients retain the
-default timing-based association of untagged requests.
-
-For retries and concurrent tests, use a fresh `test_session_token` for every
-attempt and propagate it as `X-Datadog-Test-Session-Token` on every producer's
-requests. Start the session with `capture_untagged=false` before sending data.
-Keep the baseline name stable using the snapshot endpoint's `file` parameter.
-A late request carrying an older attempt's token stays with that older attempt.
-
-The token identifies a whole request, not individual spans within a shared
-writer's payload. Producers from concurrent tests must use separate writers or
-processes. Finish and flush producers before comparing or clearing; clearing
-removes stored data but does not close a session or reject later requests.
-
-
 ### /test/session/clear
 
 Clear stored requests carrying the supplied `test_session_token` query parameter
@@ -409,8 +389,7 @@ are retained, so the session can still be queried and accept new requests.
 Requests explicitly carrying another token are preserved.
 
 By default, this also clears untagged requests received between this token's
-session starts and the following session starts. Sessions started with
-`capture_untagged=false` clear only requests carrying their exact token.
+session starts and the following session starts.
 Repeated clears are safe, but each call also removes any matching data that
 arrived since the previous call. **Omitting the token clears all stored requests.**
 
@@ -432,6 +411,36 @@ To run test cases in parallel this HTTP header must be specified. All test
 cases sharing a test token will be grouped.
 
 \* Required for concurrent tests. Either via query param or HTTP header.
+
+#### [optional] `?exact_match=`
+
+Default: `false`, to support legacy clients that start a session with a token but
+send untagged requests. Omitting this option or setting it to `false` preserves
+that timing-based association, even when the comparison supplies a token.
+
+New clients should always supply a session token and `exact_match=true`, so only
+requests explicitly carrying that token are included in the comparison.
+Untagged requests and requests carrying another token are excluded from native
+trace, trace-stat, and OTLP trace snapshots. A non-empty token is required in
+exact-match mode. This option applies only to this snapshot operation; it does
+not change ingestion, session reads, or clearing.
+
+For example:
+
+```text
+/test/session/snapshot?test_session_token=attempt-2&exact_match=true&file=stable-test-name
+```
+
+Use a fresh token for each attempt and propagate it as
+`X-Datadog-Test-Session-Token` on every producer's requests. Keep the baseline name
+stable using `file`. Late requests carrying an older attempt's token are excluded
+from the new attempt's comparison. Starting a session is optional when requests
+already carry tokens.
+
+Tokens identify whole requests, not individual spans within a shared writer's
+payload. Concurrent tests must avoid mixing spans into one writer payload.
+Finish and flush producers before comparing or clearing. Clearing removes stored
+data but does not close a session or reject later requests.
 
 #### [optional] `?ignores=`
 

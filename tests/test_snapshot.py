@@ -9,6 +9,7 @@ from ddapm_test_agent import fmt
 from ddapm_test_agent import otlp_trace_snapshot
 from ddapm_test_agent import trace_snapshot
 from ddapm_test_agent import tracestats_snapshot
+from ddapm_test_agent.agent import make_otlp_http_app
 from ddapm_test_agent.checks import start_trace
 from ddapm_test_agent.trace import add_span_event
 from ddapm_test_agent.trace import add_span_link
@@ -1110,3 +1111,97 @@ def test_fmt_formats_otlp_trace_snapshots(tmp_path):
     fmt.main([str(tmp_path)])
     assert snapshot_file.read_text() == otlp_trace_snapshot.generate(doc)
     fmt.main(["--check", str(tmp_path)])
+
+
+@pytest.mark.parametrize("signal", ["traces", "stats", "otlp"])
+@pytest.mark.parametrize("token_source", ["params", "headers"])
+async def test_snapshot_exact_match_excludes_untagged_requests(
+    agent,
+    agent_app,
+    aiohttp_client,
+    snapshot_dir,
+    do_reference_v06_http_stats,
+    v04_reference_http_trace_payload_data_raw,
+    signal,
+    token_source,
+):
+    otlp_agent = await aiohttp_client(make_otlp_http_app(agent_app.app["agent"])) if signal == "otlp" else None
+
+    async def send(token):
+        if signal == "traces":
+            v04_reference_http_trace_payload_data_raw[0][0]["resource"] = "target" if token == "target" else "unrelated"
+            return await v04_trace(agent, v04_reference_http_trace_payload_data_raw, token=token)
+        if signal == "stats":
+            return await do_reference_v06_http_stats(token=token)
+        headers = {"X-Datadog-Test-Session-Token": token} if token is not None else {}
+        return await otlp_agent.post(
+            "/v1/traces",
+            headers=headers,
+            json=_otlp_payload([_otlp_span(TRACE_A, ROOT, "target" if token == "target" else "unrelated", 100)]),
+        )
+
+    suffix = {"traces": "", "stats": "_tracestats", "otlp": "_otlp_traces"}[signal]
+    baseline = snapshot_dir / f"target{suffix}.json"
+    token_key = "test_session_token" if token_source == "params" else "X-Datadog-Test-Session-Token"
+    session_args = {token_source: {token_key: "target"}}
+    resp = await agent.get("/test/session/start", **session_args)
+    assert resp.status == 200
+    resp = await send("target")
+    assert resp.status == 200, await resp.text()
+    resp = await agent.get("/test/session/snapshot", **session_args)
+    assert resp.status == 200, await resp.text()
+    assert baseline.is_file()
+    expected = baseline.read_text()
+
+    for token in (None, "other"):
+        resp = await send(token)
+        assert resp.status == 200, await resp.text()
+
+    for exact_match in ("true", None, "false", "true"):
+        args = {token_source: {token_key: "target"}}
+        if exact_match is not None:
+            args.setdefault("params", {})["exact_match"] = exact_match
+        resp = await agent.get("/test/session/snapshot", **args)
+        assert resp.status == (200 if exact_match == "true" else 400), await resp.text()
+    assert baseline.read_text() == expected
+
+
+@pytest.mark.parametrize("start_session", [False, True])
+async def test_snapshot_exact_match_isolates_retries(
+    agent, do_reference_v04_http_trace, snapshot_dir, v04_reference_http_trace_payload_data_raw, start_session
+):
+    snapshot_file = str(snapshot_dir / "stable-test-name")
+    for token in ("attempt-1", "attempt-2"):
+        if start_session:
+            resp = await agent.get("/test/session/start", params={"test_session_token": token})
+            assert resp.status == 200
+        if token == "attempt-2":
+            v04_reference_http_trace_payload_data_raw[0][0]["resource"] = "unrelated request"
+            for unrelated_token in (None, "attempt-1", "concurrent"):
+                resp = await v04_trace(agent, v04_reference_http_trace_payload_data_raw, token=unrelated_token)
+                assert resp.status == 200
+        resp = await do_reference_v04_http_trace(token=token)
+        assert resp.status == 200
+        resp = await agent.get(
+            "/test/session/snapshot",
+            params={"test_session_token": token, "file": snapshot_file, "exact_match": "true"},
+        )
+        assert resp.status == 200, await resp.text()
+        resp = await agent.get("/test/session/clear", params={"test_session_token": token})
+        assert resp.status == 200
+    assert (snapshot_dir / "stable-test-name.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"exact_match": "true"},
+        {"exact_match": "true", "test_session_token": ""},
+        {"exact_match": "invalid", "test_session_token": "target"},
+    ],
+)
+async def test_snapshot_invalid_exact_match(agent, snapshot_dir, params):
+    resp = await agent.get("/test/session/snapshot", params={**params, "file": str(snapshot_dir / "invalid")})
+    assert resp.status == 400
+    assert "exact_match" in await resp.text()
+    assert list(snapshot_dir.iterdir()) == []
