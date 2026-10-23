@@ -24,11 +24,13 @@ from .conftest import v04_trace
 from .trace_utils import random_trace
 
 
+@pytest.mark.parametrize("token", ["test_case", None])
 @pytest.mark.parametrize("snapshot_ci_mode", [False, True])
 async def test_snapshot_single_trace(
     agent,
     snapshot_dir,
     snapshot_ci_mode,
+    token,
     do_reference_v04_http_trace,
 ):
     """
@@ -40,12 +42,14 @@ async def test_snapshot_single_trace(
             When the same trace is sent again
                 The snapshot should pass
     """  # noqa: RST301
+    params = {"test_session_token": token} if token is not None else {"file": str(snapshot_dir / "test_case")}
+
     # Send a trace
-    resp = await do_reference_v04_http_trace(token="test_case")
+    resp = await do_reference_v04_http_trace(token=token)
     assert resp.status == 200
 
     # Do the snapshot
-    resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test_case"})
+    resp = await agent.get("/test/session/snapshot", params=params)
     snap_path = snapshot_dir / "test_case.json"
     if snapshot_ci_mode:
         # No previous snapshot file exists so this should fail
@@ -59,10 +63,10 @@ async def test_snapshot_single_trace(
             assert "".join(f.readlines()) != ""
 
         # Do the snapshot again to actually perform a comparison
-        resp = await do_reference_v04_http_trace(token="test_case")
+        resp = await do_reference_v04_http_trace(token=token)
         assert resp.status == 200, await resp.text()
 
-        resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test_case"})
+        resp = await agent.get("/test/session/snapshot", params=params)
         assert resp.status == 200, await resp.text()
 
 

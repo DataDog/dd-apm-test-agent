@@ -367,8 +367,9 @@ Specify trace ids as comma separated values (eg. `12345,7890,2468`)
 
 ### /test/session/start
 
-Start a session. Untagged requests received before the next session start are
-associated with this session's token for reads and clearing, but not snapshots.
+Start a session. Reads and snapshots with a token include only requests carrying
+that token since its latest session start. Without a token, they use untagged
+requests since the latest session start.
 
 #### [optional] `?agent_sample_rate_by_service=`
 
@@ -383,9 +384,9 @@ Test session token for a test case. **Ensure this value is unique to avoid confl
 
 ### /test/session/clear
 
-Clear requests for the supplied session token, including untagged requests
-associated by session timing. Requests carrying another token are preserved.
-Omitting the token clears all requests; session configuration is retained.
+Clear only requests carrying the supplied session token, preserving untagged
+requests and other tokens. Omitting the token clears all requests, as before.
+Session configuration is retained.
 
 
 ### /test/session/snapshot
@@ -401,9 +402,9 @@ Native traces, trace stats and OTLP traces are snapshotted to `<token>.json`, `<
 
 #### [optional\*] `?test_session_token=`
 #### [optional\*] `X-Datadog-Test-Session-Token`
-Snapshots include only requests carrying the supplied token. Legacy clients that
-previously relied on session timing must now attach the token to every producer
-request. This applies to native traces, trace stats, and OTLP traces.
+With a token, snapshots include only requests carrying that token. Without one,
+they use untagged requests since the latest session start; supply `file` for the
+baseline name. This applies to native traces, trace stats, and OTLP traces.
 
 \* Required for concurrent tests. Either via query param or HTTP header.
 

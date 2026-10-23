@@ -1,7 +1,8 @@
 ---
 fixes:
-  - Clearing a session now preserves requests carrying another session's token.
+  - Clearing a session with a token now preserves untagged requests and other tokens.
 upgrade:
   - |
-    Token-scoped snapshots now include only requests carrying that token.
-    Clients relying on session timing must attach the token to every producer request.
+    Session reads and snapshots with a token now include only requests carrying
+    that token. Clients supplying a token must attach it to every producer request.
+    Operations without a token retain their existing behavior.
