@@ -5,8 +5,8 @@ Enabled with ``--enable-trace-fast-path`` (``ENABLE_TRACE_FAST_PATH=true``). Two
 - Queries: each stored trace request is rendered to JSON once and cached, instead of being
   decoded and serialized again on every ``/test/session/traces`` call. Spans are cached as the
   exact bytes ``json.dumps`` produces for them inside the session response.
-- Ingestion (needs the optional ``_native`` extension): v0.4 msgpack payloads are validated and
-  transcoded to JSON in C, in a worker thread while the request body is being stored. The result is only used when the extension can show that the Python
+- Ingestion (needs the optional ``_native`` extension): v0.4 and v1 msgpack payloads are validated
+  and transcoded to JSON in C, in a worker thread while the request body is being stored. The result is only used when the extension can show that the Python
   code path would accept the payload without raising or logging; otherwise the request is
   handled by the Python code path unchanged.
 """
@@ -55,6 +55,15 @@ def transcode_v04(data: bytes) -> Optional[Fragments]:
     assert _native is not None
     try:
         return _fragments(_native.transcode_v04(data))
+    except Exception:
+        return None
+
+
+def transcode_v1(data: bytes) -> Optional[Fragments]:
+    """Like transcode_v04, for /v1.0/traces payloads (trace.decode_v1)."""
+    assert _native is not None
+    try:
+        return _fragments(_native.transcode_v1(data))
     except Exception:
         return None
 

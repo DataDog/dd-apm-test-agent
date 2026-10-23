@@ -552,13 +552,21 @@ class Agent:
         # result in: RuntimeError: readany() called while another coroutine is already waiting for incoming data
         # See: https://github.com/DataDog/dd-apm-test-agent/pull/101 for more info
         request["_testagent_data"] = await request.read()
-        if request.match_info.handler == self.handle_v04_traces and self._trace_fast_path_ingest(request):
+        transcode = self._native_transcoder(request.match_info.handler)
+        if transcode is not None and self._trace_fast_path_ingest(request):
             # Transcode in a worker thread before the request becomes visible, like a slower upload:
             # the handler then uses the result without yielding, as atomically as the Python decode.
             request[_TRACE_TRANSCODED] = await trace_fast_path.transcode_in_worker(
-                trace_fast_path.transcode_v04, request["_testagent_data"]
+                transcode, request["_testagent_data"]
             )
         self._requests.append(request)
+
+    def _native_transcoder(self, handler: Any) -> Optional[Callable[[bytes], Optional[trace_fast_path.Fragments]]]:
+        if handler == self.handle_v04_traces:
+            return trace_fast_path.transcode_v04
+        if handler == self.handle_v1_traces:
+            return trace_fast_path.transcode_v1
+        return None
 
     def _request_data(self, request: Request) -> bytes:
         """Return the data from the request.
@@ -1325,7 +1333,7 @@ class Agent:
     def _trace_fast_path_ingest(self, request: Request) -> bool:
         """Whether nothing observable depends on decoding the payload in Python.
 
-        With no checks enabled and logging above INFO, the Python path only decodes the payload
+        With no checks enabled and logging above INFO, the Python path only decodes a v0.4 or v1 payload
         to validate it and to render span trees that are never logged. The native transcoder
         replicates exactly that and defers to the Python path for anything else.
         """
@@ -1340,10 +1348,11 @@ class Agent:
         )
 
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5", "v0.7", "v1"]) -> web.Response:
-        if version == "v0.4" and self._trace_fast_path_ingest(request):
+        if version in ("v0.4", "v1") and self._trace_fast_path_ingest(request):
             fragments = request.get(_TRACE_TRANSCODED, _NOT_TRANSCODED)
             if fragments is _NOT_TRANSCODED:  # not stored through _store_request (named pipes)
-                fragments = trace_fast_path.transcode_v04(self._request_data(request))
+                transcode = trace_fast_path.transcode_v1 if version == "v1" else trace_fast_path.transcode_v04
+                fragments = transcode(self._request_data(request))
             if fragments is not None:
                 request[_TRACE_FRAGMENTS] = (_trace_decode_key(request.app), fragments)
                 token = request["session_token"]
@@ -2682,7 +2691,7 @@ def main(
         default=os.environ.get("ENABLE_TRACE_FAST_PATH", "").lower() in ("true", "1", "yes"),
         help=(
             "Cache rendered /test/session/traces responses and, when the native extension is installed, "
-            "decode v0.4 msgpack payloads natively. Responses are identical to the default path."
+            "decode v0.4 and v1 msgpack payloads natively. Responses are identical to the default path."
         ),
     )
     parsed_args = parser.parse_args(args=args)

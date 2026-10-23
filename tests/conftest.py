@@ -1,6 +1,7 @@
 import asyncio
 import itertools
 import json
+import logging
 import os
 from pathlib import Path
 import random
@@ -1098,3 +1099,24 @@ async def grpc_client_with_failure_type(agent_app, available_port, aiohttp_serve
 
     await channel.close()
     await grpc_server.stop(grace=0)
+
+
+class _WarningRecords(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.messages: List[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append("%s %s" % (record.levelname, record.getMessage()))
+
+
+@pytest.fixture
+def agent_log_above_info():
+    logger = logging.getLogger("ddapm_test_agent.agent")
+    level = logger.level
+    logger.setLevel(logging.WARNING)
+    records = _WarningRecords()
+    logger.addHandler(records)
+    yield records
+    logger.removeHandler(records)
+    logger.setLevel(level)

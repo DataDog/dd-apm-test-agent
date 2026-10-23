@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    The native trace fast path now also validates and transcodes ``/v1.0/traces`` msgpack payloads outside
+    the event loop. Responses are unchanged; payloads with bytes, array or key-value attributes, span links,
+    or span events take the Python path.
