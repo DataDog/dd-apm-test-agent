@@ -1,7 +1,7 @@
 ---
 fixes:
   - Clearing a session now preserves requests carrying another session's token.
-features:
+upgrade:
   - |
-    Add ``exact_match=true`` to ``/test/session/snapshot`` to compare only requests
-    carrying the supplied token. Defaults to ``false`` for legacy clients.
+    Token-scoped snapshots now include only requests carrying that token.
+    Clients relying on session timing must attach the token to every producer request.

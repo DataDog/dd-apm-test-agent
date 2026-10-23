@@ -367,8 +367,8 @@ Specify trace ids as comma separated values (eg. `12345,7890,2468`)
 
 ### /test/session/start
 
-Start a session. By default, untagged requests received before the next session
-start are associated with this session's token.
+Start a session. Untagged requests received before the next session start are
+associated with this session's token for reads and clearing, but not snapshots.
 
 #### [optional] `?agent_sample_rate_by_service=`
 
@@ -401,22 +401,17 @@ Native traces, trace stats and OTLP traces are snapshotted to `<token>.json`, `<
 
 #### [optional\*] `?test_session_token=`
 #### [optional\*] `X-Datadog-Test-Session-Token`
-To run test cases in parallel this HTTP header must be specified. All test
-cases sharing a test token will be grouped.
+Snapshots include only requests carrying the supplied token. Legacy clients that
+previously relied on session timing must now attach the token to every producer
+request. This applies to native traces, trace stats, and OTLP traces.
 
 \* Required for concurrent tests. Either via query param or HTTP header.
 
-#### [optional] `?exact_match=`
-
-Default: `false`, preserving legacy clients that send untagged requests.
-Set to `true` to snapshot only requests explicitly carrying the supplied token;
-a non-empty token is required. This applies only to the snapshot operation.
-
-New clients should use `exact_match=true` with a fresh token per attempt and send
-that token on every producer request. Use `file` to keep the baseline name stable:
+Use a fresh token per attempt to isolate retries and concurrent tests, and `file`
+to keep the baseline name stable:
 
 ```text
-/test/session/snapshot?test_session_token=attempt-2&exact_match=true&file=stable-test-name
+/test/session/snapshot?test_session_token=attempt-2&file=stable-test-name
 ```
 
 #### [optional] `?ignores=`

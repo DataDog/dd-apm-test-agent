@@ -1380,12 +1380,6 @@ class Agent:
     async def handle_snapshot(self, request: Request) -> web.Response:
         """Generate a snapshot or perform a snapshot test."""
         token = request["session_token"]
-        raw_exact_match = request.url.query.get("exact_match", "false").lower()
-        if raw_exact_match not in ("true", "false"):
-            raise web.HTTPBadRequest(text="exact_match must be true or false")
-        exact_match = raw_exact_match == "true"
-        if exact_match and not token:
-            raise web.HTTPBadRequest(text="exact_match=true requires a non-empty test session token")
         snap_dir = request.url.query.get("dir", request.app["snapshot_dir"])
         snap_ci_mode = request.app["snapshot_ci_mode"]
         log.info(
@@ -1445,7 +1439,7 @@ class Agent:
 
             trace_snap_path_exists = os.path.exists(trace_snap_file)
 
-            received_traces = await self._traces_by_session(token, exact_match=exact_match)
+            received_traces = await self._traces_by_session(token, exact_match=True)
             if snap_ci_mode and received_traces and not trace_snap_path_exists:
                 raise AssertionError(
                     f"Trace snapshot file '{trace_snap_file}' not found. "
@@ -1477,9 +1471,7 @@ class Agent:
             # Get all stats buckets from the payloads since we don't care about the other fields (hostname, env, etc)
             # in the payload.
             received_stats = [
-                bucket
-                for p in (await self._tracestats_by_session(token, exact_match=exact_match))
-                for bucket in p["Stats"]
+                bucket for p in (await self._tracestats_by_session(token, exact_match=True)) for bucket in p["Stats"]
             ]
             tracestats_snap_path_exists = os.path.exists(tracestats_snap_file)
             if snap_ci_mode and received_stats and not tracestats_snap_path_exists:
@@ -1509,11 +1501,11 @@ class Agent:
             otlp_trace_snap_path_exists = os.path.exists(otlp_trace_snap_file)
             received_otlp_requests = any(
                 req.match_info.handler == self.handle_v1_traces_otlp
-                for req in self._requests_by_session(token, exact_match=exact_match)
+                for req in self._requests_by_session(token, exact_match=True)
             )
             if received_otlp_requests or otlp_trace_snap_path_exists:
                 received_otlp_traces = otlp_trace_snapshot.canonicalize(
-                    await self._traces_otlp_by_session(token, exact_match=exact_match)
+                    await self._traces_otlp_by_session(token, exact_match=True)
                 )
             else:
                 received_otlp_traces = {"resourceSpans": []}

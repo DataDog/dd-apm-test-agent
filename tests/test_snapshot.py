@@ -1114,7 +1114,7 @@ def test_fmt_formats_otlp_trace_snapshots(tmp_path):
 
 
 @pytest.mark.parametrize("signal", ["traces", "stats", "otlp"])
-async def test_snapshot_exact_match_excludes_untagged_requests(
+async def test_snapshot_token_excludes_untagged_requests(
     agent,
     agent_app,
     aiohttp_client,
@@ -1153,21 +1153,5 @@ async def test_snapshot_exact_match_excludes_untagged_requests(
         resp = await send(token)
         assert resp.status == 200, await resp.text()
 
-    for exact_match, status in (("true", 200), ("false", 400), (None, 400)):
-        query = {**params, "exact_match": exact_match} if exact_match is not None else params
-        resp = await agent.get("/test/session/snapshot", params=query)
-        assert resp.status == status, await resp.text()
-
-
-@pytest.mark.parametrize(
-    "params",
-    [
-        {"exact_match": "true"},
-        {"exact_match": "true", "test_session_token": ""},
-        {"exact_match": "invalid", "test_session_token": "target"},
-    ],
-)
-async def test_snapshot_invalid_exact_match(agent, params):
     resp = await agent.get("/test/session/snapshot", params=params)
-    assert resp.status == 400
-    assert "exact_match" in await resp.text()
+    assert resp.status == 200, await resp.text()
