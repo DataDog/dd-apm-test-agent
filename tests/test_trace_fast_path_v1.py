@@ -1,9 +1,12 @@
 """The native v1 fast path must be indistinguishable from trace.decode_v1 and the Python path."""
 
+import asyncio
+import base64
 from collections import OrderedDict
 import json
 import random
 import struct
+import threading
 from typing import Any
 from typing import Dict
 from typing import List
@@ -369,3 +372,42 @@ async def test_http_v1_responses_and_logs_identical(aiohttp_client, tmp_path, ag
                 await both("GET", "/test/session/traces" + q)
                 await both("GET", "/test/trace_check/failures" + (q + "&" if q else "?") + "use_json=true")
     assert sum(native_hits) > 100, "the native path was not used"
+
+
+@requires_native
+async def test_concurrent_v1_puts_match_a_sequential_replay(
+    aiohttp_client, tmp_path, agent_log_above_info, monkeypatch
+):
+    threads = []
+    transcode = trace_fast_path.transcode_v1
+
+    def recording_transcode(data: bytes) -> Optional[trace_fast_path.Fragments]:
+        threads.append(threading.current_thread().name)
+        res: Optional[trace_fast_path.Fragments] = transcode(data)
+        return res
+
+    monkeypatch.setattr(trace_fast_path, "transcode_v1", recording_transcode)
+    fast = await aiohttp_client(_app(tmp_path / "fast", True))
+    slow = await aiohttp_client(_app(tmp_path / "slow", False))
+    r = random.Random(8)
+    corpus = [
+        data for data in (rand_payload(r, weird=i % 3 == 0) for i in range(300)) if not may_hang_python_path(data)
+    ]
+    headers = {"Content-Type": MP, "X-Datadog-Test-Session-Token": "c"}
+
+    async def put(data: bytes) -> Tuple[int, bytes]:
+        resp = await fast.put("/v1.0/traces", data=data, headers=headers)
+        return resp.status, await resp.read()
+
+    responses = dict(zip(corpus, await asyncio.gather(*(put(data) for data in corpus))))
+    assert any(name.startswith("ddapm-trace-fast-path") for name in threads)
+    resp = await fast.get("/test/session/requests?test_session_token=c")
+    stored = [base64.b64decode(entry["body"]) for entry in await resp.json()]  # oldest first
+    assert sorted(stored) == sorted(corpus)
+    for data in stored:
+        resp = await slow.put("/v1.0/traces", data=data, headers=headers)
+        assert (resp.status, await resp.read()) == responses[data]
+    for path in ("/test/session/traces", "/test/trace_check/failures?use_json=true"):
+        a = await fast.get(path + ("&" if "?" in path else "?") + "test_session_token=c")
+        b = await slow.get(path + ("&" if "?" in path else "?") + "test_session_token=c")
+        assert (a.status, a.reason, await a.read()) == (b.status, b.reason, await b.read()), path
