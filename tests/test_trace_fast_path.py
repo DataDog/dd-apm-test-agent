@@ -6,6 +6,7 @@ for HTTP responses and log records.
 """
 
 from collections import OrderedDict
+import inspect
 import json
 import logging
 import math
@@ -19,6 +20,7 @@ from typing import Optional
 from typing import Tuple
 from typing import cast
 
+from aiohttp import web
 import msgpack
 import pytest
 
@@ -29,7 +31,6 @@ from ddapm_test_agent.llmobs_trace import extract_llmobs_envelopes_from_v04_trac
 from ddapm_test_agent.trace import decode_v04
 from ddapm_test_agent.trace import pprint_trace
 from ddapm_test_agent.trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
-
 
 MP = "application/msgpack"
 REQUIRE_NATIVE = os.environ.get("DDAPM_TEST_AGENT_REQUIRE_NATIVE", "").lower() in ("1", "true", "yes")
@@ -253,7 +254,7 @@ def assert_python_path_silent(data: bytes) -> None:
 
 
 def native_fragments(data: bytes) -> Optional[trace_fast_path.Fragments]:
-    return trace_fast_path._transcode_v04(data)
+    return trace_fast_path.transcode_v04(data)
 
 
 def check_payload(data: bytes) -> bool:
@@ -412,6 +413,31 @@ def _app(tmp_path: Any, fast_path: bool) -> Any:
     )
 
 
+# A tracer in the test process (e.g. ddtrace patching aiohttp) adds these to the client's
+# requests; /test/session/requests echoes them, and they differ between the two apps.
+_PROPAGATION_HEADERS = {
+    "x-datadog-trace-id",
+    "x-datadog-parent-id",
+    "x-datadog-sampling-priority",
+    "x-datadog-origin",
+    "x-datadog-tags",
+    "traceparent",
+    "tracestate",
+}
+
+
+def _normalize_session_requests(body: bytes, port: int) -> Any:
+    entries = json.loads(body)
+    for entry in entries:
+        entry["headers"] = {
+            k: v.replace(str(port), "PORT") if k.lower() == "host" else v
+            for k, v in entry["headers"].items()
+            if k.lower() not in _PROPAGATION_HEADERS
+        }
+        entry["url"] = entry["url"].replace(":%d/" % port, ":PORT/")
+    return entries
+
+
 def _v05_payload(r: random.Random) -> bytes:
     strings = ["", "svc", "op", "res", "db", "k", "v", "m"]
     v05_span = [1, 2, 3, r.getrandbits(63), r.getrandbits(63), 0, 10, 20, 0, {5: 6}, {7: 1.5}, 4]
@@ -421,28 +447,32 @@ def _v05_payload(r: random.Random) -> bytes:
 @requires_native
 async def test_http_responses_and_logs_identical(aiohttp_client, tmp_path, agent_log_above_info, monkeypatch):
     native_hits = []
-    transcode = trace_fast_path._transcode_v04
+    transcode = trace_fast_path.transcode_v04
 
     def counting_transcode(data: bytes) -> Optional[trace_fast_path.Fragments]:
         res: Optional[trace_fast_path.Fragments] = transcode(data)
         native_hits.append(res is not None)
         return res
 
-    monkeypatch.setattr(trace_fast_path, "_transcode_v04", counting_transcode)
+    monkeypatch.setattr(trace_fast_path, "transcode_v04", counting_transcode)
     fast = await aiohttp_client(_app(tmp_path / "fast", True))
     slow = await aiohttp_client(_app(tmp_path / "slow", False))
-    ports = [str(fast.port), str(slow.port)]
 
-    async def both(method: str, path: str, **kwargs: Any) -> Tuple[int, Optional[str], Optional[str], bytes]:
+    async def both(method: str, path: str, **kwargs: Any) -> None:
         out = []
-        for client, port in ((fast, ports[0]), (slow, ports[1])):
+        for client in (fast, slow):
             before = len(agent_log_above_info.messages)
             resp = await client.request(method, path, **kwargs)
-            body = (await resp.read()).replace(port.encode(), b"PORT")
-            logs = [m.replace(port, "PORT") for m in agent_log_above_info.messages[before:]]
-            out.append((resp.status, resp.reason, resp.headers.get("Content-Type"), body, logs))
+            body: Any = await resp.read()
+            ignored_headers = {"Date"}
+            if path.startswith("/test/session/requests") and resp.status == 200:
+                # The body echoes each client's own request headers; compare it normalized.
+                body = _normalize_session_requests(body, client.port)
+                ignored_headers.add("Content-Length")
+            logs = agent_log_above_info.messages[before:]
+            headers = sorted((k, v) for k, v in resp.headers.items() if k not in ignored_headers)
+            out.append((resp.status, resp.reason, headers, body, logs))
         assert out[0] == out[1], (method, path, kwargs.get("data", b"")[:200])
-        return out[0][:4]
 
     r = random.Random(3)
     corpus = [rand_payload(r, weird=i % 2 == 1) for i in range(400)]
@@ -462,12 +492,16 @@ async def test_http_responses_and_logs_identical(aiohttp_client, tmp_path, agent
         if token:
             headers["X-Datadog-Test-Session-Token"] = token
         await both(r.choice(["PUT", "POST"]), "/v0.4/traces", data=data, headers=headers)
-        if r.random() < 0.02:
+        if r.random() < 0.03:
+            # Decodes differently with suppress_trace_parse_errors, which /test/settings toggles below.
             json_headers = {k: v for k, v in headers.items() if k != "Content-Type"}
-            json_body = json.dumps([[{"trace_id": 5, "span_id": 6, "name": "j"}]])
+            json_body = json.dumps([[{"trace_id": 5, "span_id": 6, "name": "j", "duration": "123"}]])
             await both(
                 "PUT", "/v0.4/traces", data=json_body, headers={"Content-Type": "application/json", **json_headers}
             )
+        if r.random() < 0.01:
+            suppress = r.random() < 0.5
+            await both("POST", "/test/settings", data=json.dumps({"suppress_trace_parse_errors": suppress}))
         if r.random() < 0.02:
             await both("PUT", "/v0.5/traces", data=_v05_payload(r), headers=headers)
         if i == len(corpus) // 3:
@@ -488,7 +522,7 @@ async def test_http_responses_and_logs_identical(aiohttp_client, tmp_path, agent
 async def test_info_logging_uses_python_path(
     aiohttp_client, tmp_path, monkeypatch, v04_reference_http_trace_payload_data
 ):
-    calls = []
+    calls: List[bytes] = []
     monkeypatch.setattr(trace_fast_path, "transcode_v04", lambda data: calls.append(data))
     logging.getLogger("ddapm_test_agent.agent").setLevel(logging.INFO)
     try:
@@ -500,3 +534,19 @@ async def test_info_logging_uses_python_path(
     finally:
         logging.getLogger("ddapm_test_agent.agent").setLevel(logging.NOTSET)
     assert calls == [], "span trees are logged at INFO, so the payload must be decoded in Python"
+
+
+def test_trace_fast_path_is_opt_in():
+    assert inspect.signature(make_app).parameters["trace_fast_path"].default is False
+
+
+async def test_session_traces_response_matches_json_response():
+    traces = [[{"trace_id": 1, "span_id": 2, "name": "\u00e9"}]]
+    fast = web.Response(body=json.dumps(traces).encode(), content_type="application/json", charset="utf-8")
+    slow = web.json_response(traces)
+    assert (fast.status, fast.reason, dict(fast.headers), fast.body) == (
+        slow.status,
+        slow.reason,
+        dict(slow.headers),
+        slow.body,
+    )

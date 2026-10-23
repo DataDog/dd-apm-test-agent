@@ -1,25 +1,24 @@
-"""Fast path for trace ingestion and ``/test/session/traces`` that never changes behaviour.
+"""Opt-in fast path for trace ingestion and ``/test/session/traces`` that does not change behaviour.
 
-Two parts, both enabled by default and disabled with ``--disable-trace-fast-path``:
+Enabled with ``--enable-trace-fast-path`` (``ENABLE_TRACE_FAST_PATH=true``). Two parts:
 
-- Ingestion (needs the optional ``_native`` extension): v0.4 msgpack payloads are transcoded to
-  JSON off the event loop. The result is only used when the extension can show that the Python
-  code path would accept the payload without raising or logging; otherwise the request is
-  handled by the Python code path unchanged.
 - Queries: each stored trace request is rendered to JSON once and cached, instead of being
   decoded and serialized again on every ``/test/session/traces`` call. Spans are cached as the
-  exact bytes ``json.dumps`` would produce for them inside the session response.
+  exact bytes ``json.dumps`` produces for them inside the session response.
+- Ingestion (needs the optional ``_native`` extension): v0.4 msgpack payloads are validated and
+  transcoded to JSON in C. The result is only used when the extension can show that the Python
+  code path would accept the payload without raising or logging; otherwise the request is
+  handled by the Python code path unchanged.
 """
 
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import json
-import os
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
+
+import msgpack
 
 from .trace import Trace
 
@@ -29,7 +28,9 @@ except ImportError:  # pure-Python install: queries are still cached, ingestion 
     _native = None  # type: ignore[assignment]
 
 
-NATIVE_AVAILABLE = _native is not None
+# The extension replicates the msgpack>=1.0 defaults that trace.decode_v04 relies on
+# (raw=False, strict_map_key=True).
+NATIVE_AVAILABLE = _native is not None and msgpack.version >= (1, 0, 0)
 
 # The extension proves that pprint_trace() cannot raise for this format only.
 NATIVE_LOG_SPAN_FMT = "[{name}]"
@@ -37,28 +38,21 @@ NATIVE_LOG_SPAN_FMT = "[{name}]"
 # A run of consecutive spans with the same trace_id, rendered as ", ".join(json.dumps(span)).
 Fragments = List[Tuple[Any, bytes]]
 
-_pool: Optional[ThreadPoolExecutor] = None
 
-
-def _executor() -> ThreadPoolExecutor:
-    global _pool
-    if _pool is None:
-        _pool = ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 1), thread_name_prefix="ddapm-trace-fast-path")
-    return _pool
-
-
-def _transcode_v04(data: bytes) -> Optional[Fragments]:
-    assert _native is not None
-    res = _native.transcode_v04(data)
+def _fragments(res: Optional[Tuple[bytes, List[Tuple[int, int, int]]]]) -> Optional[Fragments]:
     if res is None:
         return None
     body, runs = res
     return [(trace_id, body[start:end]) for trace_id, start, end in runs]
 
 
-def transcode_v04(data: bytes) -> "asyncio.Future[Optional[Fragments]]":
-    """Transcode in a worker thread; the extension releases the GIL while it works."""
-    return asyncio.get_running_loop().run_in_executor(_executor(), _transcode_v04, data)
+def transcode_v04(data: bytes) -> Optional[Fragments]:
+    """Return the payload's cached JSON, or None if only the Python path may handle it."""
+    assert _native is not None
+    try:
+        return _fragments(_native.transcode_v04(data))
+    except Exception:
+        return None
 
 
 def fragments_from_traces(traces: List[Trace]) -> Fragments:

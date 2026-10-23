@@ -88,12 +88,10 @@ INFO:ddapm_test_agent.agent:end of payload -------------------------------------
 
 ### Trace fast path
 
-Responses never depend on it, but two optimizations keep the test agent from becoming the bottleneck when a tracer sends many spans:
+An opt-in mode for tracers that send many spans, enabled with `ENABLE_TRACE_FAST_PATH=true` (or `--enable-trace-fast-path`). Responses and logs are the same as without it:
 
 - `/test/session/traces` renders each stored trace payload to JSON once instead of decoding and serializing every payload again on every request.
-- When the optional native extension is installed (it is built from the sdist and in the Docker image when a C compiler is available), v0.4 msgpack payloads are validated and transcoded outside the event loop. This applies when no [checks](#trace-invariant-checks) are enabled and the log level is above `INFO`, because `INFO` logs every span tree. Payloads the extension cannot prove it handles identically, for example ones with span links or span events, take the regular Python path.
-
-Set `DD_DISABLE_TRACE_FAST_PATH=true` (or pass `--disable-trace-fast-path`) to always use the Python path.
+- When the optional native extension is installed (it is built from the sdist and in the Docker image when a C compiler is available), v0.4 msgpack payloads are validated and transcoded in C. This applies when no [checks](#trace-invariant-checks) are enabled and the log level is above `INFO`, because `INFO` logs every span tree. Payloads the extension cannot prove it handles identically, for example ones with span links or span events, take the regular Python path.
 
 
 ### Proxy
@@ -361,7 +359,7 @@ ordering to be maintained.**
 
 - `DD_AGENT_EXTRA_INFO` [`{}`]: Json string with an object to merge with the default '/info' response content. Fields here take priority over the defaults.
 
-- `DD_DISABLE_TRACE_FAST_PATH` [`false`]: Set to `"true"` to always decode and serialize traces in Python instead of using the [trace fast path](#trace-fast-path). Can also be set using the `--disable-trace-fast-path` option.
+- `ENABLE_TRACE_FAST_PATH` [`false`]: Set to `"true"` to enable the [trace fast path](#trace-fast-path). Can also be set using the `--enable-trace-fast-path` option.
 
 
 ## HTTP API

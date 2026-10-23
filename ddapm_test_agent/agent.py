@@ -116,10 +116,13 @@ _Handler = Callable[[Request], Awaitable[web.Response]]
 
 log = logging.getLogger(__name__)
 
-# Request keys used by the trace fast path (see trace_fast_path.py).
+# Request key holding (decode key, cached JSON or None) for the trace fast path (see trace_fast_path.py).
 _TRACE_FRAGMENTS = "_testagent_trace_fragments"
-_TRACE_FRAGMENTS_PENDING = "_testagent_trace_fragments_pending"
-_TRACE_FRAGMENTS_UNAVAILABLE = "_testagent_trace_fragments_unavailable"
+
+
+def _trace_decode_key(app: web.Application) -> Any:
+    """App settings that change how a stored trace request decodes (/test/settings can change them)."""
+    return app["suppress_trace_parse_errors"]
 
 
 def _parse_csv(s: str) -> List[str]:
@@ -1327,22 +1330,12 @@ class Agent:
             and not log.isEnabledFor(logging.INFO)
         )
 
-    async def _native_trace_fragments(self, request: Request) -> Optional[trace_fast_path.Fragments]:
-        pending = trace_fast_path.transcode_v04(self._request_data(request))
-        # Queries for this session wait for the transcode instead of decoding the payload again.
-        request[_TRACE_FRAGMENTS_PENDING] = pending
-        try:
-            return await asyncio.shield(pending)
-        except Exception:
-            return None
-        finally:
-            request[_TRACE_FRAGMENTS_PENDING] = None
-
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5", "v0.7", "v1"]) -> web.Response:
         if version == "v0.4" and self._trace_fast_path_ingest(request):
-            fragments = await self._native_trace_fragments(request)
+            # Synchronous like the Python decode below, so the request is handled without yielding.
+            fragments = trace_fast_path.transcode_v04(self._request_data(request))
             if fragments is not None:
-                request[_TRACE_FRAGMENTS] = fragments
+                request[_TRACE_FRAGMENTS] = (_trace_decode_key(request.app), fragments)
                 token = request["session_token"]
                 return web.json_response(data={"rate_by_service": self._sessions[token].sample_rate_by_service_env})
 
@@ -1577,26 +1570,17 @@ class Agent:
 
     async def _trace_fragments(self, req: Request) -> Optional[trace_fast_path.Fragments]:
         """Return cached JSON for one stored trace request, or None if only the Python path may render it."""
-        if req.get(_TRACE_FRAGMENTS_UNAVAILABLE):
-            return None
-        fragments: Optional[trace_fast_path.Fragments] = req.get(_TRACE_FRAGMENTS)
-        if fragments is not None:
+        key = _trace_decode_key(req.app)
+        cached = req.get(_TRACE_FRAGMENTS)
+        if cached is not None and cached[0] == key:
+            fragments: Optional[trace_fast_path.Fragments] = cached[1]
             return fragments
-        pending = req.get(_TRACE_FRAGMENTS_PENDING)
-        if pending is not None:
-            try:
-                fragments = await asyncio.shield(pending)
-            except Exception:
-                fragments = None
-            if fragments is not None:
-                return fragments
         try:
             fragments = trace_fast_path.fragments_from_traces(await self._traces_from_request(req))
         except Exception:
             # Decoding or serializing fails: the Python path raises the exact same error.
-            req[_TRACE_FRAGMENTS_UNAVAILABLE] = True
-            return None
-        req[_TRACE_FRAGMENTS] = fragments
+            fragments = None
+        req[_TRACE_FRAGMENTS] = (key, fragments)
         return fragments
 
     async def _session_traces_fast_path(self, token: Optional[str]) -> Optional[bytes]:
@@ -1614,7 +1598,10 @@ class Agent:
             if fragments is None:
                 return None
             fragment_lists.append(fragments)
-        return trace_fast_path.session_traces_body(fragment_lists)
+        try:
+            return trace_fast_path.session_traces_body(fragment_lists)
+        except Exception:
+            return None  # e.g. an unhashable trace_id: the Python path raises the same error
 
     async def handle_session_traces(self, request: Request) -> web.Response:
         token = request["session_token"]
@@ -2177,7 +2164,7 @@ def make_app(
     disable_llmobs_data_forwarding: bool,
     org_prop_marker: str = "",
     enable_web_ui: bool = False,
-    trace_fast_path: bool = True,
+    trace_fast_path: bool = False,
 ) -> web.Application:
     agent = Agent()
 
@@ -2680,12 +2667,12 @@ def main(
         help="Disable data forwarding to Datadog.",
     )
     parser.add_argument(
-        "--disable-trace-fast-path",
+        "--enable-trace-fast-path",
         action="store_true",
-        default=os.environ.get("DD_DISABLE_TRACE_FAST_PATH", "").lower() in ("true", "1", "yes"),
+        default=os.environ.get("ENABLE_TRACE_FAST_PATH", "").lower() in ("true", "1", "yes"),
         help=(
-            "Always decode and serialize traces in Python. The fast path (native v0.4 decoding and cached "
-            "/test/session/traces responses) produces identical responses; this is for troubleshooting."
+            "Cache rendered /test/session/traces responses and, when the native extension is installed, "
+            "decode v0.4 msgpack payloads natively. Responses are identical to the default path."
         ),
     )
     parsed_args = parser.parse_args(args=args)
@@ -2751,7 +2738,7 @@ def main(
         disable_llmobs_data_forwarding=parsed_args.disable_llmobs_data_forwarding,
         org_prop_marker=parsed_args.org_prop_marker,
         enable_web_ui=parsed_args.web_ui_port > 0,
-        trace_fast_path=not parsed_args.disable_trace_fast_path,
+        trace_fast_path=parsed_args.enable_trace_fast_path,
     )
 
     # Validate port configuration

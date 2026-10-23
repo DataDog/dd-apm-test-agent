@@ -56,6 +56,17 @@ jobs:
       - name: Run tests (Unix)
         if: runner.os != 'Windows'
         run: python -m pytest -v -n auto
+      # The opt-in trace fast path must not change any behaviour the suite checks.
+      - name: Run tests with the trace fast path (Windows)
+        if: runner.os == 'Windows'
+        env:
+          ENABLE_TRACE_FAST_PATH: "true"
+        run: python -m pytest -v -n auto --basetemp=$env:TEMP\pytest tests/ --ignore=tests/test_container.py
+      - name: Run tests with the trace fast path (Unix)
+        if: runner.os != 'Windows'
+        env:
+          ENABLE_TRACE_FAST_PATH: "true"
+        run: python -m pytest -v -n auto
   cassettes-size:
     runs-on: ubuntu-latest
     steps:
