@@ -39,7 +39,6 @@ def stats_tracer(tracer: Tracer, trace_sample_rate: float) -> Generator[Tracer, 
     for processor in tracer._span_processors:
         if processor.__class__.__name__ == "SpanStatsProcessorV06":
             processor._agent_url = tracer._agent_url
-            processor._headers["X-Datadog-Test-Session-Token"] = "test_trace_stats"
     yield tracer
 
 
@@ -92,7 +91,6 @@ async def test_single_trace(
     await testagent.get(f"{testagent_url}/test/session/start?test_session_token=test_single_trace")
     tracer = Tracer()
     tracer._agent_url = testagent_url
-    tracer._span_aggregator.writer.set_test_session_token("test_single_trace")
     with tracer.trace(operation_name, service=service, resource=resource, span_type=span_type) as span:
         if error is not None:
             span.error = error
@@ -107,7 +105,6 @@ async def test_single_trace(
 
 
 async def test_multi_trace(testagent_url, testagent, tracer):
-    tracer._span_aggregator.writer.set_test_session_token("test_multi_trace")
     await testagent.get(f"{testagent_url}/test/session/start?test_session_token=test_multi_trace")
     with tracer.trace("root0"):
         with tracer.trace("child0"):
@@ -143,7 +140,6 @@ async def test_multi_trace(testagent_url, testagent, tracer):
 
 
 async def test_trace_distributed_same_payload(testagent_url, testagent, tracer):
-    tracer._span_aggregator.writer.set_test_session_token("test_trace_distributed_same_payload")
     await testagent.get(f"{testagent_url}/test/session/start?test_session_token=test_trace_distributed_same_payload")
     with tracer.trace("root0"):
         with tracer.trace("child0") as span:
@@ -161,7 +157,6 @@ async def test_trace_distributed_same_payload(testagent_url, testagent, tracer):
 
 
 async def test_trace_distributed_propagated(testagent_url, testagent, tracer):
-    tracer._span_aggregator.writer.set_test_session_token("test_trace_distributed_propagated")
     await testagent.get(f"{testagent_url}/test/session/start?test_session_token=test_trace_distributed_propagated")
     headers = {
         "x-datadog-trace-id": "1234",
@@ -182,7 +177,6 @@ async def test_trace_distributed_propagated(testagent_url, testagent, tracer):
 
 
 async def test_trace_missing_received(testagent_url, testagent, tracer):
-    tracer._span_aggregator.writer.set_test_session_token("test_trace_missing_received")
     resp = await testagent.get(f"{testagent_url}/test/session/start?test_session_token=test_trace_missing_received")
     assert resp.status == 200, await resp.text()
 
@@ -248,7 +242,6 @@ async def test_tracestats(
     do_traces: Callable[[Tracer], None],
     fail: bool,
 ) -> None:
-    stats_tracer._span_aggregator.writer.set_test_session_token("test_trace_stats")
     await testagent.get(f"{testagent_url}/test/session/start?test_session_token=test_trace_stats")
     do_traces(stats_tracer)
     stats_tracer.shutdown()  # force out the stats
@@ -264,7 +257,6 @@ async def test_cmd(testagent_url: str, testagent: aiohttp.ClientSession, tracer:
 
     Note that this test reuses the trace/snapshot from test_single_trace above.
     """
-    tracer._span_aggregator.writer.set_test_session_token("test_single_trace")
     env = os.environ.copy()
     env["DD_TRACE_AGENT_URL"] = testagent_url
     p = subprocess.run(

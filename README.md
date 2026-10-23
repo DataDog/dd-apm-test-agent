@@ -124,14 +124,14 @@ This can be used to write integration tests by having test cases use the tracer 
 
 To do snapshot testing with the test agent:
 
-1. Start capture with `/test/session/start`. For isolated tests, supply a unique
-   token and attach it to every producer request using the query parameter or header.
+1. Ensure traces are associated with a session token (typically the name of the test case) by either:
+   - Calling the `/test/session/start` with the token endpoint before emitting the traces; or
+   - Attaching an additional query string parameter or header specifying the session token on `/vX.Y/trace` requests (see below for
+     the API specifics). (Required for concurrent test running)
 2. Emit traces (run the integration test).
-3. Compare with `/test/session/snapshot`, supplying the same token and a stable `file` name.
-   A mismatch returns `400` with error details.
-
-For sequential capture without tokens, reads and snapshots include all requests
-since the latest session start. Supply `file` to name the snapshot baseline.
+3. Signal the end of the session and perform the snapshot comparison by calling the `/tests/session/snapshot` endpoint
+   with the session token. The endpoint will return a `400` response code if the snapshot failed along with a plain-text
+   trace of the error which can be forwarded to the test framework to help triage the issue.
 
 
 #### Snapshot output
@@ -367,9 +367,8 @@ Specify trace ids as comma separated values (eg. `12345,7890,2468`)
 
 ### /test/session/start
 
-Start a session. Reads and snapshots with a token include only requests carrying
-that token since its latest session start. Without a token, they use all
-requests since the latest session start.
+Initiate a _synchronous_ session. All subsequent traces received will be
+associated with the required test token provided.
 
 #### [optional] `?agent_sample_rate_by_service=`
 
@@ -382,11 +381,12 @@ Example: `"{'service:test,env:staging': 0.5, 'service:test2,env:prod': 0.2}"` (n
 
 Test session token for a test case. **Ensure this value is unique to avoid conflicts between sessions.**
 
+
 ### /test/session/clear
 
-Clear only requests carrying the supplied session token, preserving untagged
-requests and other tokens. Omitting the token clears all requests, as before.
-Session configuration is retained.
+Clear requests for the supplied token, including untagged requests associated
+by session timing. Requests carrying another token are preserved.
+Omitting the token clears all requests; session configuration is retained.
 
 
 ### /test/session/snapshot
@@ -402,18 +402,10 @@ Native traces, trace stats and OTLP traces are snapshotted to `<token>.json`, `<
 
 #### [optional\*] `?test_session_token=`
 #### [optional\*] `X-Datadog-Test-Session-Token`
-With a token, snapshots include only requests carrying that token. Without one,
-they use all requests since the latest session start; supply `file` for the
-baseline name. This applies to native traces, trace stats, and OTLP traces.
+To run test cases in parallel this HTTP header must be specified. All test
+cases sharing a test token will be grouped.
 
 \* Required for concurrent tests. Either via query param or HTTP header.
-
-Use a fresh token per attempt to isolate retries and concurrent tests, and `file`
-to keep the baseline name stable:
-
-```text
-/test/session/snapshot?test_session_token=attempt-2&file=stable-test-name
-```
 
 #### [optional] `?ignores=`
 

@@ -9,7 +9,6 @@ from ddapm_test_agent import fmt
 from ddapm_test_agent import otlp_trace_snapshot
 from ddapm_test_agent import trace_snapshot
 from ddapm_test_agent import tracestats_snapshot
-from ddapm_test_agent.agent import make_otlp_http_app
 from ddapm_test_agent.checks import start_trace
 from ddapm_test_agent.trace import add_span_event
 from ddapm_test_agent.trace import add_span_link
@@ -24,14 +23,11 @@ from .conftest import v04_trace
 from .trace_utils import random_trace
 
 
-@pytest.mark.parametrize("token,producer_token", [("test_case", "test_case"), (None, None), (None, "tagged")])
 @pytest.mark.parametrize("snapshot_ci_mode", [False, True])
 async def test_snapshot_single_trace(
     agent,
     snapshot_dir,
     snapshot_ci_mode,
-    token,
-    producer_token,
     do_reference_v04_http_trace,
 ):
     """
@@ -43,14 +39,12 @@ async def test_snapshot_single_trace(
             When the same trace is sent again
                 The snapshot should pass
     """  # noqa: RST301
-    params = {"test_session_token": token} if token is not None else {"file": str(snapshot_dir / "test_case")}
-
     # Send a trace
-    resp = await do_reference_v04_http_trace(token=producer_token)
+    resp = await do_reference_v04_http_trace(token="test_case")
     assert resp.status == 200
 
     # Do the snapshot
-    resp = await agent.get("/test/session/snapshot", params=params)
+    resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test_case"})
     snap_path = snapshot_dir / "test_case.json"
     if snapshot_ci_mode:
         # No previous snapshot file exists so this should fail
@@ -64,10 +58,10 @@ async def test_snapshot_single_trace(
             assert "".join(f.readlines()) != ""
 
         # Do the snapshot again to actually perform a comparison
-        resp = await do_reference_v04_http_trace(token=producer_token)
+        resp = await do_reference_v04_http_trace(token="test_case")
         assert resp.status == 200, await resp.text()
 
-        resp = await agent.get("/test/session/snapshot", params=params)
+        resp = await agent.get("/test/session/snapshot", params={"test_session_token": "test_case"})
         assert resp.status == 200, await resp.text()
 
 
@@ -1116,47 +1110,3 @@ def test_fmt_formats_otlp_trace_snapshots(tmp_path):
     fmt.main([str(tmp_path)])
     assert snapshot_file.read_text() == otlp_trace_snapshot.generate(doc)
     fmt.main(["--check", str(tmp_path)])
-
-
-@pytest.mark.parametrize("signal", ["traces", "stats", "otlp"])
-async def test_snapshot_token_excludes_untagged_requests(
-    agent,
-    agent_app,
-    aiohttp_client,
-    snapshot_dir,
-    do_reference_v06_http_stats,
-    v04_reference_http_trace_payload_data_raw,
-    signal,
-):
-    otlp_agent = await aiohttp_client(make_otlp_http_app(agent_app.app["agent"])) if signal == "otlp" else None
-
-    async def send(token):
-        if signal == "traces":
-            v04_reference_http_trace_payload_data_raw[0][0]["resource"] = "target" if token == "target" else "unrelated"
-            return await v04_trace(agent, v04_reference_http_trace_payload_data_raw, token=token)
-        if signal == "stats":
-            return await do_reference_v06_http_stats(token=token)
-        headers = {"X-Datadog-Test-Session-Token": token} if token is not None else {}
-        return await otlp_agent.post(
-            "/v1/traces",
-            headers=headers,
-            json=_otlp_payload([_otlp_span(TRACE_A, ROOT, "target" if token == "target" else "unrelated", 100)]),
-        )
-
-    suffix = {"traces": "", "stats": "_tracestats", "otlp": "_otlp_traces"}[signal]
-    baseline = snapshot_dir / f"target{suffix}.json"
-    params = {"test_session_token": "target"}
-    resp = await agent.get("/test/session/start", params=params)
-    assert resp.status == 200
-    resp = await send("target")
-    assert resp.status == 200, await resp.text()
-    resp = await agent.get("/test/session/snapshot", params=params)
-    assert resp.status == 200, await resp.text()
-    assert baseline.is_file()
-
-    for token in (None, "other"):
-        resp = await send(token)
-        assert resp.status == 200, await resp.text()
-
-    resp = await agent.get("/test/session/snapshot", params=params)
-    assert resp.status == 200, await resp.text()

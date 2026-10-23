@@ -550,24 +550,43 @@ class Agent:
         return cast(bytes, request["_testagent_data"])
 
     def _requests_by_session(self, token: Optional[str]) -> List[Request]:
-        """Return matching requests since the token's latest session start.
+        """Return the latest requests sent with the given token.
 
-        Without a token, return all requests since the latest session start.
+        All requests since the most recent /session/start request are included.
+
+        If no /session/start is given for the token then all requests made with
+        the token are returned.
         """
-        session_reqs: List[Request] = []
+        # Go backwards in the requests received gathering requests until
+        # the /session-start request for the token is found.
+        # Note that this may not return all associated traces, because some
+        # may be generated before the session-start call
+        session_reqs: List[Tuple[int, Request]] = []
+        sessionless_reqs: List[Tuple[int, Request]] = []
         matched = token is None
-        for req in reversed(self._requests):
+
+        for i, req in enumerate(reversed(self._requests)):
             if req.match_info.handler == self.handle_session_start:
-                if token is None or _session_token(req) == token:
+                if token is None:
+                    # If no token is specified, then we match the latest session
+                    break
+                elif _session_token(req) == token:
+                    # If a token is specified and it matches, we've hit the start of our session
                     matched = True
                     break
-                continue
-            if token is None or _session_token(req) == token:
-                session_reqs.append(req)
+                elif _session_token(req) != token:
+                    # If a token is specified and it doesn't match, we've hit the start of a different session
+                    # So we reset the list of requests
+                    sessionless_reqs = []
+                    continue
+            if _session_token(req) == token:
+                session_reqs.append((i, req))
+            elif _session_token(req) is None:
+                sessionless_reqs.append((i, req))
 
         if not matched and not session_reqs:
             raise NoSuchSessionException(f"No session found for token '{token}'")
-        return session_reqs
+        return [x[1] for x in sorted(session_reqs + sessionless_reqs, key=lambda x: x[0])]
 
     async def _traces_from_request(self, req: Request) -> List[List[Span]]:
         """Return the trace from a trace request."""
@@ -584,7 +603,9 @@ class Agent:
     async def _traces_by_session(self, token: Optional[str]) -> List[Trace]:
         """Return the traces that belong to the given session token.
 
-        Without a token, use all requests since the latest session start.
+        If token is None or if the token was used to manually start a session
+        with /session-start then return all traces that were sent since the last
+        /session-start request was made.
 
         Spans are aggregated by trace_id (no ordering is performed).
         """
@@ -602,7 +623,9 @@ class Agent:
     async def _apmtelemetry_by_session(self, token: Optional[str]) -> List[TelemetryEvent]:
         """Return the telemetry events that belong to the given session token.
 
-        Without a token, use all requests since the latest session start.
+        If token is None or if the token was used to manually start a session
+        with /session-start then return all telemetry events that were sent since
+        the last /session-start request was made.
         """
         events: List[TelemetryEvent] = []
         for req in self._requests_by_session(token):
@@ -615,7 +638,9 @@ class Agent:
     async def _tracerflares_by_session(self, token: Optional[str]) -> List[TracerFlareEvent]:
         """Return the tracer-flare events that belong to the given session token.
 
-        Without a token, use all requests since the latest session start.
+        If token is None or if the token was used to manually start a session
+        with /session-start then return all tracer-flare events that were sent
+        since the last /session-start request was made.
         """
         events: List[TracerFlareEvent] = []
         for req in self._requests_by_session(token):
@@ -634,7 +659,9 @@ class Agent:
     async def _logs_by_session(self, token: Optional[str]) -> List[Dict[str, Any]]:
         """Return the logs that belong to the given session token.
 
-        Without a token, use all requests since the latest session start.
+        If token is None or if the token was used to manually start a session
+        with /session-start then return all logs that were sent since the last
+        /session-start request was made.
         """
         logs: List[Dict[str, Any]] = []
         for req in self._requests_by_session(token):
@@ -646,7 +673,9 @@ class Agent:
     async def _metrics_by_session(self, token: Optional[str]) -> List[Dict[str, Any]]:
         """Return the metrics that belong to the given session token.
 
-        Without a token, use all requests since the latest session start.
+        If token is None or if the token was used to manually start a session
+        with /session-start then return all metrics that were sent since the last
+        /session-start request was made.
         """
         metrics: List[Dict[str, Any]] = []
         for req in self._requests_by_session(token):
@@ -658,7 +687,9 @@ class Agent:
     async def _traces_otlp_by_session(self, token: Optional[str]) -> List[Dict[str, Any]]:
         """Return the OTLP traces that belong to the given session token.
 
-        Without a token, use all requests since the latest session start.
+        If token is None or if the token was used to manually start a session
+        with /session-start then return all OTLP traces that were sent since the last
+        /session-start request was made.
         """
         traces: List[Dict[str, Any]] = []
         for req in self._requests_by_session(token):
@@ -1636,10 +1667,25 @@ class Agent:
         """Clear traces by session token or all traces if none is provided."""
         session_token = request["session_token"]
         if session_token is not None:
+            # Clear any synchronous sessions.
+            in_token_sync_session = False
+            for req in self._requests:
+                if req.match_info.handler == self.handle_session_start:
+                    if _session_token(req) == session_token:
+                        in_token_sync_session = True
+                        continue  # Don't clear the session start
+                    else:
+                        in_token_sync_session = False
+                if in_token_sync_session and _session_token(req) is None:
+                    setattr(req, "__delete", True)
+
+            # Filter out all requests marked for deletion.
+            # Keep session starts.
             self._requests = [
                 r
                 for r in self._requests
-                if _session_token(r) != session_token or r.match_info.handler == self.handle_session_start
+                if (_session_token(r) != session_token or r.match_info.handler == self.handle_session_start)
+                and not hasattr(r, "__delete")
             ]
         else:
             self._requests = []
