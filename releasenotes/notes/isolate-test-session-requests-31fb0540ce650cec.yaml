@@ -1,0 +1,10 @@
+---
+fixes:
+  - |
+    Clearing a test session no longer deletes requests explicitly carrying another
+    session's token, even when they arrive during the cleared session's capture window.
+features:
+  - |
+    Add ``capture_untagged=false`` to ``/test/session/start`` to exclude untagged
+    requests from session reads, snapshots, and clearing. Use the existing session
+    token with a fresh value for each attempt to isolate retries and concurrent tests.

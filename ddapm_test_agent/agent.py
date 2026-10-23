@@ -388,6 +388,7 @@ class _AgentSession:
     """Maintain Agent state across requests."""
 
     sample_rate_by_service_env: Dict[str, float] = field(default_factory=dict)
+    capture_untagged: bool = True
 
 
 class Agent:
@@ -564,6 +565,8 @@ class Agent:
         session_reqs: List[Tuple[int, Request]] = []
         sessionless_reqs: List[Tuple[int, Request]] = []
         matched = token is None
+        session = self._sessions.get(token)
+        capture_untagged = session is None or session.capture_untagged
 
         for i, req in enumerate(reversed(self._requests)):
             if req.match_info.handler == self.handle_session_start:
@@ -581,7 +584,7 @@ class Agent:
                     continue
             if _session_token(req) == token:
                 session_reqs.append((i, req))
-            elif _session_token(req) is None:
+            elif capture_untagged and _session_token(req) is None:
                 sessionless_reqs.append((i, req))
 
         if not matched and not session_reqs:
@@ -1370,10 +1373,17 @@ class Agent:
         return web.json_response(data={"rate_by_service": self._sessions[token].sample_rate_by_service_env})
 
     async def handle_session_start(self, request: Request) -> web.Response:
+        token = request["session_token"]
+        capture_untagged = request.url.query.get("capture_untagged", "true").lower()
+        if capture_untagged not in ("true", "false"):
+            raise web.HTTPBadRequest(text="capture_untagged must be true or false")
+        if capture_untagged == "false" and not token:
+            raise web.HTTPBadRequest(text="capture_untagged=false requires a non-empty test session token")
         rates = json.loads(request.url.query.get("agent_sample_rate_by_service", "{}"))
         self._requests.append(request)
-        session = self._sessions[_session_token(request)]
+        session = self._sessions[token]
         session.sample_rate_by_service_env = rates
+        session.capture_untagged = capture_untagged == "true"
         log.info("Starting new session with token %r: %r", _session_token(request), session)
         return web.HTTPOk()
 
@@ -1667,6 +1677,8 @@ class Agent:
         """Clear traces by session token or all traces if none is provided."""
         session_token = request["session_token"]
         if session_token is not None:
+            session = self._sessions.get(session_token)
+            capture_untagged = session is None or session.capture_untagged
             # Clear any synchronous sessions.
             in_token_sync_session = False
             for req in self._requests:
@@ -1676,7 +1688,7 @@ class Agent:
                         continue  # Don't clear the session start
                     else:
                         in_token_sync_session = False
-                if in_token_sync_session:
+                if capture_untagged and in_token_sync_session and _session_token(req) is None:
                     setattr(req, "__delete", True)
 
             # Filter out all requests marked for deletion.

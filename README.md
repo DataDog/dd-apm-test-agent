@@ -367,8 +367,8 @@ Specify trace ids as comma separated values (eg. `12345,7890,2468`)
 
 ### /test/session/start
 
-Initiate a _synchronous_ session. All subsequent traces received will be
-associated with the required test token provided.
+Start a session. By default, untagged requests received before the next session
+start are associated with this session's token.
 
 #### [optional] `?agent_sample_rate_by_service=`
 
@@ -380,6 +380,39 @@ Example: `"{'service:test,env:staging': 0.5, 'service:test2,env:prod': 0.2}"` (n
 #### [optional] `X-Datadog-Test-Session-Token`
 
 Test session token for a test case. **Ensure this value is unique to avoid conflicts between sessions.**
+
+#### [optional] `?capture_untagged=`
+
+Default: `true`. Set to `false` to include only requests explicitly carrying this
+session's token when reading, snapshotting, or clearing the session. A non-empty
+session token is required. Untagged requests remain available through the global
+endpoints but are not included in this session. Existing clients retain the
+default timing-based association of untagged requests.
+
+For retries and concurrent tests, use a fresh `test_session_token` for every
+attempt and propagate it as `X-Datadog-Test-Session-Token` on every producer's
+requests. Start the session with `capture_untagged=false` before sending data.
+Keep the baseline name stable using the snapshot endpoint's `file` parameter.
+A late request carrying an older attempt's token stays with that older attempt.
+
+The token identifies a whole request, not individual spans within a shared
+writer's payload. Producers from concurrent tests must use separate writers or
+processes. Finish and flush producers before comparing or clearing; clearing
+removes stored data but does not close a session or reject later requests.
+
+
+### /test/session/clear
+
+Clear stored requests carrying the supplied `test_session_token` query parameter
+or `X-Datadog-Test-Session-Token` header. Session start markers and configuration
+are retained, so the session can still be queried and accept new requests.
+Requests explicitly carrying another token are preserved.
+
+By default, this also clears untagged requests received between this token's
+session starts and the following session starts. Sessions started with
+`capture_untagged=false` clear only requests carrying their exact token.
+Repeated clears are safe, but each call also removes any matching data that
+arrived since the previous call. **Omitting the token clears all stored requests.**
 
 
 ### /test/session/snapshot

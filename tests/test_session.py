@@ -203,3 +203,118 @@ async def test_session_results_with_token_but_no_session_start(
     resp = await agent.get("/test/session/traces", params={"test_session_token": "nosessionstart"})
     assert resp.status == 200
     assert await resp.json() == v04_reference_http_trace_payload_data_raw
+
+
+@pytest.mark.parametrize("capture_untagged", [None, "true", "false"])
+@pytest.mark.parametrize("token_source", ["params", "headers"])
+@pytest.mark.parametrize(
+    "producer_fixture",
+    ["do_reference_v04_http_trace", "do_reference_v06_http_stats", "do_reference_v2_http_apmtelemetry"],
+)
+async def test_session_clear_preserves_other_tokens(agent, request, producer_fixture, capture_untagged, token_source):
+    send = request.getfixturevalue(producer_fixture)
+    resp = await agent.get("/test/session/start", params={"test_session_token": "other"})
+    assert resp.status == 200
+    token_key = "test_session_token" if token_source == "params" else "X-Datadog-Test-Session-Token"
+    session_args = {token_source: {token_key: "target"}}
+    start_args = {token_source: {token_key: "target"}}
+    if capture_untagged is not None:
+        start_args.setdefault("params", {})["capture_untagged"] = capture_untagged
+    resp = await agent.get("/test/session/start", **start_args)
+    assert resp.status == 200
+
+    for token in ("target", "other", None):
+        resp = await send(token=token)
+        assert resp.status == 200
+
+    for _ in range(2):
+        resp = await agent.get("/test/session/clear", **session_args)
+        assert resp.status == 200
+        resp = await agent.get("/test/session/requests", **session_args)
+        assert resp.status == 200
+        assert await resp.json() == []
+        resp = await agent.get("/test/session/requests", params={"test_session_token": "other"})
+        assert resp.status == 200
+        assert len(await resp.json()) == 1
+        resp = await agent.get("/test/session/requests")
+        assert resp.status == 200
+        assert len(await resp.json()) == (1 if capture_untagged == "false" else 0)
+
+
+async def test_token_only_sessions_isolate_retries(
+    agent, do_reference_v04_http_trace, v04_reference_http_trace_payload_data_raw
+):
+    for token in ("attempt-1", "attempt-2", "concurrent"):
+        resp = await agent.get("/test/session/start", params={"test_session_token": token, "capture_untagged": "false"})
+        assert resp.status == 200
+        resp = await do_reference_v04_http_trace(token=token)
+        assert resp.status == 200
+    resp = await do_reference_v04_http_trace()
+    assert resp.status == 200
+
+    resp = await agent.get("/test/session/clear", params={"test_session_token": "attempt-1"})
+    assert resp.status == 200
+    # A late delivery from a cleared attempt must not become part of its retry.
+    resp = await do_reference_v04_http_trace(token="attempt-1")
+    assert resp.status == 200
+    for token in ("attempt-1", "attempt-2", "concurrent"):
+        resp = await agent.get("/test/session/requests", params={"test_session_token": token})
+        assert resp.status == 200
+        assert len(await resp.json()) == 1
+        resp = await agent.get("/test/session/traces", params={"test_session_token": token})
+        assert resp.status == 200
+        assert await resp.json() == v04_reference_http_trace_payload_data_raw
+
+
+async def test_token_only_session_snapshot_uses_stable_filename(
+    agent, do_reference_v04_http_trace, snapshot_dir, v04_reference_http_trace_payload_data_raw
+):
+    snapshot_file = str(snapshot_dir / "stable-test-name")
+    for token in ("attempt-1", "attempt-2"):
+        resp = await agent.get("/test/session/start", params={"test_session_token": token, "capture_untagged": "false"})
+        assert resp.status == 200
+        if token == "attempt-2":
+            v04_reference_http_trace_payload_data_raw[0][0]["resource"] = "unrelated request"
+            payload = msgpack.packb(v04_reference_http_trace_payload_data_raw)
+            for unrelated_token in (None, "attempt-1", "concurrent"):
+                resp = await do_reference_v04_http_trace(token=unrelated_token, payload_override=payload)
+                assert resp.status == 200
+        resp = await do_reference_v04_http_trace(token=token)
+        assert resp.status == 200
+        resp = await agent.get("/test/session/snapshot", params={"test_session_token": token, "file": snapshot_file})
+        assert resp.status == 200, await resp.text()
+        resp = await agent.get("/test/session/clear", params={"test_session_token": token})
+        assert resp.status == 200
+    assert (snapshot_dir / "stable-test-name.json").is_file()
+
+
+async def test_session_restart_restores_default_capture_mode(agent, do_reference_v04_http_trace):
+    resp = await agent.get("/test/session/start", params={"test_session_token": "target", "capture_untagged": "false"})
+    assert resp.status == 200
+    resp = await agent.get("/test/session/start", params={"test_session_token": "target"})
+    assert resp.status == 200
+    resp = await do_reference_v04_http_trace()
+    assert resp.status == 200
+    resp = await agent.get("/test/session/requests", params={"test_session_token": "target"})
+    assert resp.status == 200
+    assert len(await resp.json()) == 1
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"capture_untagged": "false"},
+        {"capture_untagged": "false", "test_session_token": ""},
+        {"capture_untagged": "invalid", "test_session_token": "target"},
+    ],
+)
+async def test_invalid_session_capture_mode_does_not_start_session(agent, params, do_reference_v04_http_trace):
+    resp = await agent.get("/test/session/start", params={"test_session_token": "previous"})
+    assert resp.status == 200
+    resp = await agent.get("/test/session/start", params=params)
+    assert resp.status == 400
+    resp = await do_reference_v04_http_trace()
+    assert resp.status == 200
+    resp = await agent.get("/test/session/requests", params={"test_session_token": "previous"})
+    assert resp.status == 200
+    assert len(await resp.json()) == 1
