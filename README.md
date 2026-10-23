@@ -91,7 +91,7 @@ INFO:ddapm_test_agent.agent:end of payload -------------------------------------
 An opt-in mode for tracers that send many spans, enabled with `ENABLE_TRACE_FAST_PATH=true` (or `--enable-trace-fast-path`). Responses and logs are the same as without it:
 
 - `/test/session/traces` renders each stored trace payload to JSON once instead of decoding and serializing every payload again on every request.
-- When the optional native extension is installed (it is built from the sdist and in the Docker image when a C compiler is available), v0.4 msgpack payloads are validated and transcoded in C. This applies when no [checks](#trace-invariant-checks) are enabled and the log level is above `INFO`, because `INFO` logs every span tree. Payloads the extension cannot prove it handles identically, for example ones with span links or span events, take the regular Python path.
+- When the optional native extension is installed (it is built from the sdist and in the Docker image when a C compiler is available), v0.4 and v1 msgpack payloads are validated and transcoded in C. This applies when no [checks](#trace-invariant-checks) are enabled and the log level is above `INFO`, because `INFO` logs every span tree. Payloads the extension cannot prove it handles identically, for example ones with span links, span events, or v1 bytes and array attributes, take the regular Python path.
 
 
 ### Proxy

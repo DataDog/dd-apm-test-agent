@@ -368,27 +368,6 @@ def test_transcode_v04_handles_reference_payload(v04_reference_http_trace_payloa
 
 
 # ---- HTTP -------------------------------------------------------------------------------------
-class _Records(logging.Handler):
-    def __init__(self) -> None:
-        super().__init__(logging.WARNING)
-        self.messages: List[str] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.messages.append("%s %s" % (record.levelname, record.getMessage()))
-
-
-@pytest.fixture
-def agent_log_above_info():
-    logger = logging.getLogger("ddapm_test_agent.agent")
-    level = logger.level
-    logger.setLevel(logging.WARNING)
-    records = _Records()
-    logger.addHandler(records)
-    yield records
-    logger.removeHandler(records)
-    logger.setLevel(level)
-
-
 def _app(tmp_path: Any, fast_path: bool) -> Any:
     return make_app(
         enabled_checks=[],
