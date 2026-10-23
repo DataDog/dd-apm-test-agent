@@ -1,5 +1,6 @@
 ---
 fixes:
   - |
-    Clearing a session no longer deletes requests carrying another session's token.
-    Untagged requests associated by session timing are still cleared.
+    Calling ``/test/session/clear`` with ``test_session_token`` or the
+    ``X-Datadog-Test-Session-Token`` header now preserves requests tagged for other sessions.
+    Untagged requests associated with the cleared session by timing are still removed.
