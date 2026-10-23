@@ -413,7 +413,7 @@ def _app(tmp_path: Any, fast_path: bool) -> Any:
 
 
 def _v05_payload(r: random.Random) -> bytes:
-    strings = ["", "svc", "op", "res", "gpu", "k", "v", "m"]
+    strings = ["", "svc", "op", "res", "db", "k", "v", "m"]
     v05_span = [1, 2, 3, r.getrandbits(63), r.getrandbits(63), 0, 10, 20, 0, {5: 6}, {7: 1.5}, 4]
     return cast(bytes, msgpack.packb([strings, [[v05_span]]]))
 
