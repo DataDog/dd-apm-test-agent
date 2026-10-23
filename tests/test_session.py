@@ -206,16 +206,20 @@ async def test_session_results_with_token_but_no_session_start(
 
 
 async def test_session_clear_preserves_other_tokens(agent, do_reference_v04_http_trace):
-    for token in ("other", "target"):
+    for token, trace_tokens in (
+        ("other", (None,)),
+        ("target", ("target", "other", None)),
+        ("next", (None, "target")),
+    ):
         resp = await agent.get("/test/session/start", params={"test_session_token": token})
         assert resp.status == 200
-    for token in ("target", "other", None):
-        resp = await do_reference_v04_http_trace(token=token)
-        assert resp.status == 200
+        for trace_token in trace_tokens:
+            resp = await do_reference_v04_http_trace(token=trace_token)
+            assert resp.status == 200
 
     resp = await agent.get("/test/session/clear", params={"test_session_token": "target"})
     assert resp.status == 200
-    for token, count in (("target", 0), ("other", 1)):
+    for token, count in (("target", 0), ("other", 2), ("next", 1)):
         resp = await agent.get("/test/session/requests", params={"test_session_token": token})
         assert resp.status == 200
         assert len(await resp.json()) == count

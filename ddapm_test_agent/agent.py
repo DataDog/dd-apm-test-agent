@@ -1664,31 +1664,25 @@ class Agent:
         return web.HTTPOk()
 
     async def handle_session_clear(self, request: Request) -> web.Response:
-        """Clear traces by session token or all traces if none is provided."""
+        """Clear requests for a session token, or all requests if none is provided."""
         session_token = request["session_token"]
-        if session_token is not None:
-            # Clear any synchronous sessions.
-            in_token_sync_session = False
-            for req in self._requests:
-                if req.match_info.handler == self.handle_session_start:
-                    if _session_token(req) == session_token:
-                        in_token_sync_session = True
-                        continue  # Don't clear the session start
-                    else:
-                        in_token_sync_session = False
-                if in_token_sync_session and _session_token(req) is None:
-                    setattr(req, "__delete", True)
-
-            # Filter out all requests marked for deletion.
-            # Keep session starts.
-            self._requests = [
-                r
-                for r in self._requests
-                if (_session_token(r) != session_token or r.match_info.handler == self.handle_session_start)
-                and not hasattr(r, "__delete")
-            ]
-        else:
+        if session_token is None:
             self._requests = []
+            return web.HTTPOk()
+
+        remaining: List[Request] = []
+        in_target_session = False
+        for req in self._requests:
+            token = _session_token(req)
+            if req.match_info.handler == self.handle_session_start:
+                in_target_session = token == session_token
+            elif token == session_token:
+                continue
+            elif token is None and in_target_session:
+                continue
+            remaining.append(req)
+
+        self._requests = remaining
         return web.HTTPOk()
 
     async def handle_trace_analyze(self, request: Request) -> web.Response:
