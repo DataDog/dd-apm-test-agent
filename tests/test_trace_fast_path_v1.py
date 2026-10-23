@@ -110,7 +110,7 @@ def rand_attrs(r: random.Random, keys: List[str], weird: bool) -> List[Any]:
 def rand_span(r: random.Random, ids: List[int], keys: List[str], weird: bool) -> Any:
     sid = r.getrandbits(63) or 1
     ids.append(sid)
-    items: List[Tuple[Any, Any]] = [(4, sid), (2, S(r.choice(["gpu.kernel", "op", rand_text(r, 6) or "n"])))]
+    items: List[Tuple[Any, Any]] = [(4, sid), (2, S(r.choice(["db.query", "op", rand_text(r, 6) or "n"])))]
     if r.random() < 0.9:
         items.append((1, S(r.choice(["svc", rand_text(r, 6)]))))
     if r.random() < 0.8:
@@ -126,7 +126,7 @@ def rand_span(r: random.Random, ids: List[int], keys: List[str], weird: bool) ->
     if r.random() < 0.8:
         items.append((9, rand_attrs(r, keys, weird)))
     if r.random() < 0.6:
-        items.append((10, S(r.choice(["gpu", "web", ""]))))
+        items.append((10, S(r.choice(["db", "web", ""]))))
     for key in (13, 14, 15):
         if r.random() < 0.3:
             items.append((key, S(r.choice(["", "prod", "1.2.3", rand_text(r, 5)]))))
