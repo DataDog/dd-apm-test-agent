@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    Speed up trace ingestion and ``/test/session/traces`` without changing any response. Each stored
+    trace payload is now rendered to JSON once instead of on every query, and when the optional native
+    extension is built, v0.4 msgpack payloads are validated and transcoded outside the event loop.
+    Set ``DD_DISABLE_TRACE_FAST_PATH=true`` to always use the Python path.

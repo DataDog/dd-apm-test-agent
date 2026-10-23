@@ -23,7 +23,14 @@ ADD README.md setup.py test_deps.txt ./
 ADD ddapm_test_agent ./ddapm_test_agent
 ADD lapdog ./lapdog
 ADD .git ./.git
-RUN pip install /src && \
-    rm -rf /root/.cache/pip
+# gcc and Cython build the native trace fast path and are removed afterwards.
+RUN apt update && \
+    apt install -y --no-install-recommends gcc libc6-dev && \
+    pip install cython && \
+    pip install /src && \
+    pip uninstall -y cython && \
+    apt purge -y gcc libc6-dev && \
+    apt autoremove -y && \
+    rm -rf /var/lib/apt/lists/* /root/.cache/pip
 
 CMD ["ddapm-test-agent"]
