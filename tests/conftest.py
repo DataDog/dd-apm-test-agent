@@ -48,7 +48,6 @@ from ddapm_test_agent.traces_otlp import TRACES_ENDPOINT
 from lapdog import model_pricing
 from lapdog.server import make_app as make_lapdog_app
 
-
 # Fix the service name to make tests consistently pass local and in CI.
 config.service = ""
 
@@ -140,6 +139,12 @@ def pool_trace_check_failures() -> Generator[bool, None, None]:
 @pytest.fixture
 def disable_error_responses() -> Generator[bool, None, None]:
     yield False
+
+
+@pytest.fixture
+def trace_fast_path() -> Generator[bool, None, None]:
+    # CI also runs the suite with the opt-in trace fast path enabled.
+    yield os.environ.get("ENABLE_TRACE_FAST_PATH", "").lower() in ("true", "1", "yes")
 
 
 @pytest.fixture
@@ -257,6 +262,7 @@ async def agent_app(
     dd_site,
     dd_api_key,
     disable_llmobs_data_forwarding,
+    trace_fast_path,
 ):
     app = await aiohttp_server(
         make_app(
@@ -281,6 +287,7 @@ async def agent_app(
             dd_site=dd_site,
             dd_api_key=dd_api_key,
             disable_llmobs_data_forwarding=disable_llmobs_data_forwarding,
+            trace_fast_path=trace_fast_path,
         )
     )
     yield app
@@ -316,6 +323,7 @@ async def lapdog_agent_app(
     dd_site,
     dd_api_key,
     disable_llmobs_data_forwarding,
+    trace_fast_path,
 ):
     app = await aiohttp_server(
         make_lapdog_app(
@@ -340,6 +348,7 @@ async def lapdog_agent_app(
             dd_site=dd_site,
             dd_api_key=dd_api_key,
             disable_llmobs_data_forwarding=disable_llmobs_data_forwarding,
+            trace_fast_path=trace_fast_path,
         )
     )
     yield app

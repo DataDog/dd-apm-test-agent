@@ -44,3 +44,8 @@ htmlcov/
 
 # nix 
 /result
+
+# Native trace fast path build outputs
+ddapm_test_agent/_native.c
+ddapm_test_agent/*.so
+ddapm_test_agent/*.pyd
