@@ -24,13 +24,14 @@ from .conftest import v04_trace
 from .trace_utils import random_trace
 
 
-@pytest.mark.parametrize("token", ["test_case", None])
+@pytest.mark.parametrize("token,producer_token", [("test_case", "test_case"), (None, None), (None, "tagged")])
 @pytest.mark.parametrize("snapshot_ci_mode", [False, True])
 async def test_snapshot_single_trace(
     agent,
     snapshot_dir,
     snapshot_ci_mode,
     token,
+    producer_token,
     do_reference_v04_http_trace,
 ):
     """
@@ -45,7 +46,7 @@ async def test_snapshot_single_trace(
     params = {"test_session_token": token} if token is not None else {"file": str(snapshot_dir / "test_case")}
 
     # Send a trace
-    resp = await do_reference_v04_http_trace(token=token)
+    resp = await do_reference_v04_http_trace(token=producer_token)
     assert resp.status == 200
 
     # Do the snapshot
@@ -63,7 +64,7 @@ async def test_snapshot_single_trace(
             assert "".join(f.readlines()) != ""
 
         # Do the snapshot again to actually perform a comparison
-        resp = await do_reference_v04_http_trace(token=token)
+        resp = await do_reference_v04_http_trace(token=producer_token)
         assert resp.status == 200, await resp.text()
 
         resp = await agent.get("/test/session/snapshot", params=params)

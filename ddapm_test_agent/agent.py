@@ -552,7 +552,7 @@ class Agent:
     def _requests_by_session(self, token: Optional[str]) -> List[Request]:
         """Return matching requests since the token's latest session start.
 
-        Without a token, return untagged requests since the latest session start.
+        Without a token, return all requests since the latest session start.
         """
         session_reqs: List[Request] = []
         matched = token is None
@@ -562,7 +562,7 @@ class Agent:
                     matched = True
                     break
                 continue
-            if _session_token(req) == token:
+            if token is None or _session_token(req) == token:
                 session_reqs.append(req)
 
         if not matched and not session_reqs:
@@ -584,7 +584,7 @@ class Agent:
     async def _traces_by_session(self, token: Optional[str]) -> List[Trace]:
         """Return the traces that belong to the given session token.
 
-        Without a token, use untagged requests since the latest session start.
+        Without a token, use all requests since the latest session start.
 
         Spans are aggregated by trace_id (no ordering is performed).
         """
@@ -602,7 +602,7 @@ class Agent:
     async def _apmtelemetry_by_session(self, token: Optional[str]) -> List[TelemetryEvent]:
         """Return the telemetry events that belong to the given session token.
 
-        Without a token, use untagged requests since the latest session start.
+        Without a token, use all requests since the latest session start.
         """
         events: List[TelemetryEvent] = []
         for req in self._requests_by_session(token):
@@ -615,7 +615,7 @@ class Agent:
     async def _tracerflares_by_session(self, token: Optional[str]) -> List[TracerFlareEvent]:
         """Return the tracer-flare events that belong to the given session token.
 
-        Without a token, use untagged requests since the latest session start.
+        Without a token, use all requests since the latest session start.
         """
         events: List[TracerFlareEvent] = []
         for req in self._requests_by_session(token):
@@ -634,7 +634,7 @@ class Agent:
     async def _logs_by_session(self, token: Optional[str]) -> List[Dict[str, Any]]:
         """Return the logs that belong to the given session token.
 
-        Without a token, use untagged requests since the latest session start.
+        Without a token, use all requests since the latest session start.
         """
         logs: List[Dict[str, Any]] = []
         for req in self._requests_by_session(token):
@@ -646,7 +646,7 @@ class Agent:
     async def _metrics_by_session(self, token: Optional[str]) -> List[Dict[str, Any]]:
         """Return the metrics that belong to the given session token.
 
-        Without a token, use untagged requests since the latest session start.
+        Without a token, use all requests since the latest session start.
         """
         metrics: List[Dict[str, Any]] = []
         for req in self._requests_by_session(token):
@@ -658,7 +658,7 @@ class Agent:
     async def _traces_otlp_by_session(self, token: Optional[str]) -> List[Dict[str, Any]]:
         """Return the OTLP traces that belong to the given session token.
 
-        Without a token, use untagged requests since the latest session start.
+        Without a token, use all requests since the latest session start.
         """
         traces: List[Dict[str, Any]] = []
         for req in self._requests_by_session(token):

@@ -5,4 +5,5 @@ upgrade:
   - |
     Session reads and snapshots with a token now include only requests carrying
     that token. Clients supplying a token must attach it to every producer request.
-    Operations without a token retain their existing behavior.
+    Without a token, reads and snapshots include all requests since the latest
+    session start; clearing still removes all requests.

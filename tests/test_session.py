@@ -63,9 +63,9 @@ async def test_concurrent_session(
         result = await resp.json()
         assert result == v04_reference_http_trace_payload_data_raw, result
 
-    resp = await agent.get("/test/session/traces")
+    resp = await agent.get("/test/session/requests")
     assert resp.status == 200
-    assert await resp.json() == []
+    assert len(await resp.json()) == 2
 
     resp = await agent.get("/test/session/clear")
     assert resp.status == 200
@@ -184,11 +184,11 @@ async def test_session_token_isolates_reads_and_clear(agent, do_reference_v04_ht
         params = {"test_session_token": token} if token is not None else {}
         resp = await agent.get("/test/session/requests", params=params)
         assert resp.status == 200
-        assert len(await resp.json()) == 1
+        assert len(await resp.json()) == (3 if token is None else 1)
 
     resp = await agent.get("/test/session/clear", params={"test_session_token": "target"})
     assert resp.status == 200
-    for token, count in (("target", 0), ("other", 1), (None, 1)):
+    for token, count in (("target", 0), ("other", 1), (None, 2)):
         params = {"test_session_token": token} if token is not None else {}
         resp = await agent.get("/test/session/requests", params=params)
         assert resp.status == 200

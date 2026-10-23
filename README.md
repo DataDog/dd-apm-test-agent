@@ -124,14 +124,14 @@ This can be used to write integration tests by having test cases use the tracer 
 
 To do snapshot testing with the test agent:
 
-1. Ensure traces are associated with a session token (typically the name of the test case) by either:
-   - Calling the `/test/session/start` with the token endpoint before emitting the traces; or
-   - Attaching an additional query string parameter or header specifying the session token on `/vX.Y/trace` requests (see below for
-     the API specifics). (Required for concurrent test running)
+1. Start capture with `/test/session/start`. For isolated tests, supply a unique
+   token and attach it to every producer request using the query parameter or header.
 2. Emit traces (run the integration test).
-3. Signal the end of the session and perform the snapshot comparison by calling the `/tests/session/snapshot` endpoint
-   with the session token. The endpoint will return a `400` response code if the snapshot failed along with a plain-text
-   trace of the error which can be forwarded to the test framework to help triage the issue.
+3. Compare with `/test/session/snapshot`, supplying the same token and a stable `file` name.
+   A mismatch returns `400` with error details.
+
+For sequential capture without tokens, reads and snapshots include all requests
+since the latest session start. Supply `file` to name the snapshot baseline.
 
 
 #### Snapshot output
@@ -368,7 +368,7 @@ Specify trace ids as comma separated values (eg. `12345,7890,2468`)
 ### /test/session/start
 
 Start a session. Reads and snapshots with a token include only requests carrying
-that token since its latest session start. Without a token, they use untagged
+that token since its latest session start. Without a token, they use all
 requests since the latest session start.
 
 #### [optional] `?agent_sample_rate_by_service=`
@@ -403,7 +403,7 @@ Native traces, trace stats and OTLP traces are snapshotted to `<token>.json`, `<
 #### [optional\*] `?test_session_token=`
 #### [optional\*] `X-Datadog-Test-Session-Token`
 With a token, snapshots include only requests carrying that token. Without one,
-they use untagged requests since the latest session start; supply `file` for the
+they use all requests since the latest session start; supply `file` for the
 baseline name. This applies to native traces, trace stats, and OTLP traces.
 
 \* Required for concurrent tests. Either via query param or HTTP header.
