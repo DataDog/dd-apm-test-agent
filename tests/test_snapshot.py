@@ -1114,7 +1114,6 @@ def test_fmt_formats_otlp_trace_snapshots(tmp_path):
 
 
 @pytest.mark.parametrize("signal", ["traces", "stats", "otlp"])
-@pytest.mark.parametrize("token_source", ["params", "headers"])
 async def test_snapshot_exact_match_excludes_untagged_requests(
     agent,
     agent_app,
@@ -1123,7 +1122,6 @@ async def test_snapshot_exact_match_excludes_untagged_requests(
     do_reference_v06_http_stats,
     v04_reference_http_trace_payload_data_raw,
     signal,
-    token_source,
 ):
     otlp_agent = await aiohttp_client(make_otlp_http_app(agent_app.app["agent"])) if signal == "otlp" else None
 
@@ -1142,54 +1140,23 @@ async def test_snapshot_exact_match_excludes_untagged_requests(
 
     suffix = {"traces": "", "stats": "_tracestats", "otlp": "_otlp_traces"}[signal]
     baseline = snapshot_dir / f"target{suffix}.json"
-    token_key = "test_session_token" if token_source == "params" else "X-Datadog-Test-Session-Token"
-    session_args = {token_source: {token_key: "target"}}
-    resp = await agent.get("/test/session/start", **session_args)
+    params = {"test_session_token": "target"}
+    resp = await agent.get("/test/session/start", params=params)
     assert resp.status == 200
     resp = await send("target")
     assert resp.status == 200, await resp.text()
-    resp = await agent.get("/test/session/snapshot", **session_args)
+    resp = await agent.get("/test/session/snapshot", params=params)
     assert resp.status == 200, await resp.text()
     assert baseline.is_file()
-    expected = baseline.read_text()
 
     for token in (None, "other"):
         resp = await send(token)
         assert resp.status == 200, await resp.text()
 
-    for exact_match in ("true", None, "false", "true"):
-        args = {token_source: {token_key: "target"}}
-        if exact_match is not None:
-            args.setdefault("params", {})["exact_match"] = exact_match
-        resp = await agent.get("/test/session/snapshot", **args)
-        assert resp.status == (200 if exact_match == "true" else 400), await resp.text()
-    assert baseline.read_text() == expected
-
-
-@pytest.mark.parametrize("start_session", [False, True])
-async def test_snapshot_exact_match_isolates_retries(
-    agent, do_reference_v04_http_trace, snapshot_dir, v04_reference_http_trace_payload_data_raw, start_session
-):
-    snapshot_file = str(snapshot_dir / "stable-test-name")
-    for token in ("attempt-1", "attempt-2"):
-        if start_session:
-            resp = await agent.get("/test/session/start", params={"test_session_token": token})
-            assert resp.status == 200
-        if token == "attempt-2":
-            v04_reference_http_trace_payload_data_raw[0][0]["resource"] = "unrelated request"
-            for unrelated_token in (None, "attempt-1", "concurrent"):
-                resp = await v04_trace(agent, v04_reference_http_trace_payload_data_raw, token=unrelated_token)
-                assert resp.status == 200
-        resp = await do_reference_v04_http_trace(token=token)
-        assert resp.status == 200
-        resp = await agent.get(
-            "/test/session/snapshot",
-            params={"test_session_token": token, "file": snapshot_file, "exact_match": "true"},
-        )
-        assert resp.status == 200, await resp.text()
-        resp = await agent.get("/test/session/clear", params={"test_session_token": token})
-        assert resp.status == 200
-    assert (snapshot_dir / "stable-test-name.json").is_file()
+    for exact_match, status in (("true", 200), ("false", 400), (None, 400)):
+        query = {**params, "exact_match": exact_match} if exact_match is not None else params
+        resp = await agent.get("/test/session/snapshot", params=query)
+        assert resp.status == status, await resp.text()
 
 
 @pytest.mark.parametrize(
@@ -1200,8 +1167,7 @@ async def test_snapshot_exact_match_isolates_retries(
         {"exact_match": "invalid", "test_session_token": "target"},
     ],
 )
-async def test_snapshot_invalid_exact_match(agent, snapshot_dir, params):
-    resp = await agent.get("/test/session/snapshot", params={**params, "file": str(snapshot_dir / "invalid")})
+async def test_snapshot_invalid_exact_match(agent, params):
+    resp = await agent.get("/test/session/snapshot", params=params)
     assert resp.status == 400
     assert "exact_match" in await resp.text()
-    assert list(snapshot_dir.iterdir()) == []

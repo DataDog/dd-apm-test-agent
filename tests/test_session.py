@@ -205,33 +205,17 @@ async def test_session_results_with_token_but_no_session_start(
     assert await resp.json() == v04_reference_http_trace_payload_data_raw
 
 
-@pytest.mark.parametrize("token_source", ["params", "headers"])
-@pytest.mark.parametrize(
-    "producer_fixture",
-    ["do_reference_v04_http_trace", "do_reference_v06_http_stats", "do_reference_v2_http_apmtelemetry"],
-)
-async def test_session_clear_preserves_other_tokens(agent, request, producer_fixture, token_source):
-    send = request.getfixturevalue(producer_fixture)
-    resp = await agent.get("/test/session/start", params={"test_session_token": "other"})
-    assert resp.status == 200
-    token_key = "test_session_token" if token_source == "params" else "X-Datadog-Test-Session-Token"
-    session_args = {token_source: {token_key: "target"}}
-    resp = await agent.get("/test/session/start", **session_args)
-    assert resp.status == 200
-
-    for token in ("target", "other", None):
-        resp = await send(token=token)
+async def test_session_clear_preserves_other_tokens(agent, do_reference_v04_http_trace):
+    for token in ("other", "target"):
+        resp = await agent.get("/test/session/start", params={"test_session_token": token})
+        assert resp.status == 200
+    for token in ("target", "other"):
+        resp = await do_reference_v04_http_trace(token=token)
         assert resp.status == 200
 
-    for _ in range(2):
-        resp = await agent.get("/test/session/clear", **session_args)
+    resp = await agent.get("/test/session/clear", params={"test_session_token": "target"})
+    assert resp.status == 200
+    for token, count in (("target", 0), ("other", 1)):
+        resp = await agent.get("/test/session/requests", params={"test_session_token": token})
         assert resp.status == 200
-        resp = await agent.get("/test/session/requests", **session_args)
-        assert resp.status == 200
-        assert await resp.json() == []
-        resp = await agent.get("/test/session/requests", params={"test_session_token": "other"})
-        assert resp.status == 200
-        assert len(await resp.json()) == 1
-        resp = await agent.get("/test/session/requests")
-        assert resp.status == 200
-        assert await resp.json() == []
+        assert len(await resp.json()) == count

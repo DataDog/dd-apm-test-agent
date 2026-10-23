@@ -1,11 +1,7 @@
 ---
 fixes:
-  - |
-    Clearing a test session no longer deletes requests explicitly carrying another
-    session's token, even when they arrive during the cleared session's capture window.
+  - Clearing a session now preserves requests carrying another session's token.
 features:
   - |
     Add ``exact_match=true`` to ``/test/session/snapshot`` to compare only requests
-    explicitly carrying the supplied session token. The default is ``false`` to
-    support legacy clients that send untagged requests. New clients should supply
-    a fresh token for each attempt and enable exact matching.
+    carrying the supplied token. Defaults to ``false`` for legacy clients.

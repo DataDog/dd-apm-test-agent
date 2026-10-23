@@ -383,15 +383,9 @@ Test session token for a test case. **Ensure this value is unique to avoid confl
 
 ### /test/session/clear
 
-Clear stored requests carrying the supplied `test_session_token` query parameter
-or `X-Datadog-Test-Session-Token` header. Session start markers and configuration
-are retained, so the session can still be queried and accept new requests.
-Requests explicitly carrying another token are preserved.
-
-By default, this also clears untagged requests received between this token's
-session starts and the following session starts.
-Repeated clears are safe, but each call also removes any matching data that
-arrived since the previous call. **Omitting the token clears all stored requests.**
+Clear requests for the supplied session token, including untagged requests
+associated by session timing. Requests carrying another token are preserved.
+Omitting the token clears all requests; session configuration is retained.
 
 
 ### /test/session/snapshot
@@ -414,33 +408,16 @@ cases sharing a test token will be grouped.
 
 #### [optional] `?exact_match=`
 
-Default: `false`, to support legacy clients that start a session with a token but
-send untagged requests. Omitting this option or setting it to `false` preserves
-that timing-based association, even when the comparison supplies a token.
+Default: `false`, preserving legacy clients that send untagged requests.
+Set to `true` to snapshot only requests explicitly carrying the supplied token;
+a non-empty token is required. This applies only to the snapshot operation.
 
-New clients should always supply a session token and `exact_match=true`, so only
-requests explicitly carrying that token are included in the comparison.
-Untagged requests and requests carrying another token are excluded from native
-trace, trace-stat, and OTLP trace snapshots. A non-empty token is required in
-exact-match mode. This option applies only to this snapshot operation; it does
-not change ingestion, session reads, or clearing.
-
-For example:
+New clients should use `exact_match=true` with a fresh token per attempt and send
+that token on every producer request. Use `file` to keep the baseline name stable:
 
 ```text
 /test/session/snapshot?test_session_token=attempt-2&exact_match=true&file=stable-test-name
 ```
-
-Use a fresh token for each attempt and propagate it as
-`X-Datadog-Test-Session-Token` on every producer's requests. Keep the baseline name
-stable using `file`. Late requests carrying an older attempt's token are excluded
-from the new attempt's comparison. Starting a session is optional when requests
-already carry tokens.
-
-Tokens identify whole requests, not individual spans within a shared writer's
-payload. Concurrent tests must avoid mixing spans into one writer payload.
-Finish and flush producers before comparing or clearing. Clearing removes stored
-data but does not close a session or reject later requests.
 
 #### [optional] `?ignores=`
 
