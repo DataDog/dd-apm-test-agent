@@ -5,6 +5,8 @@ decode_v04 + pprint_trace + json.dumps for payloads, and an app with the fast pa
 for HTTP responses and log records.
 """
 
+import asyncio
+import base64
 from collections import OrderedDict
 import inspect
 import json
@@ -13,6 +15,7 @@ import math
 import os
 import random
 import struct
+import threading
 from typing import Any
 from typing import Dict
 from typing import List
@@ -534,6 +537,74 @@ async def test_info_logging_uses_python_path(
     finally:
         logging.getLogger("ddapm_test_agent.agent").setLevel(logging.NOTSET)
     assert calls == [], "span trees are logged at INFO, so the payload must be decoded in Python"
+
+
+@requires_native
+async def test_concurrent_puts_match_a_sequential_replay(aiohttp_client, tmp_path, agent_log_above_info, monkeypatch):
+    threads = []
+    transcode = trace_fast_path.transcode_v04
+
+    def recording_transcode(data: bytes) -> Optional[trace_fast_path.Fragments]:
+        threads.append(threading.current_thread().name)
+        res: Optional[trace_fast_path.Fragments] = transcode(data)
+        return res
+
+    monkeypatch.setattr(trace_fast_path, "transcode_v04", recording_transcode)
+    fast = await aiohttp_client(_app(tmp_path / "fast", True))
+    slow = await aiohttp_client(_app(tmp_path / "slow", False))
+    r = random.Random(4)
+    corpus = [
+        data for data in (rand_payload(r, weird=i % 3 == 0) for i in range(300)) if not may_hang_python_path(data)
+    ]
+    headers = {"Content-Type": MP, "X-Datadog-Test-Session-Token": "c"}
+
+    async def put(data: bytes) -> Tuple[int, bytes]:
+        resp = await fast.put("/v0.4/traces", data=data, headers=headers)
+        return resp.status, await resp.read()
+
+    # Many uploads in flight at once: their transcodes overlap in worker threads.
+    responses = dict(zip(corpus, await asyncio.gather(*(put(data) for data in corpus))))
+    assert any(name.startswith("ddapm-trace-fast-path") for name in threads)
+
+    # Whatever order the fast app stored them in, a sequential replay of that order on the
+    # Python path must give the same responses and the same session.
+    resp = await fast.get("/test/session/requests?test_session_token=c")
+    stored = [
+        base64.b64decode(entry["body"])
+        for entry in await resp.json()  # oldest first
+        if entry["url"].endswith("/v0.4/traces")  # not the EVP requests synthesized from _llmobs
+    ]
+    assert sorted(stored) == sorted(corpus)
+    for data in stored:
+        resp = await slow.put("/v0.4/traces", data=data, headers=headers)
+        assert (resp.status, await resp.read()) == responses[data]
+    for path in ("/test/session/traces", "/test/trace_check/failures?use_json=true"):
+        a = await fast.get(path + ("&" if "?" in path else "?") + "test_session_token=c")
+        b = await slow.get(path + ("&" if "?" in path else "?") + "test_session_token=c")
+        assert (a.status, a.reason, await a.read()) == (b.status, b.reason, await b.read()), path
+
+
+def _named_pipe_put(app: Any, data: bytes) -> bytes:
+    agent = next(
+        route.handler.__self__
+        for route in app.router.routes()
+        if getattr(route.handler, "__name__", "") == "handle_v04_traces"
+    )
+    head = "PUT /v0.4/traces HTTP/1.1\r\nContent-Type: application/msgpack\r\nContent-Length: %d\r\n\r\n" % len(data)
+    return cast(bytes, agent._process_named_pipe_request(head.encode() + data, app))
+
+
+@requires_native
+async def test_named_pipe_requests_transcode_inline(tmp_path, agent_log_above_info):
+    # Named pipe requests skip _store_request, so the handler transcodes them itself.
+    loop = asyncio.get_running_loop()
+    r = random.Random(6)
+    for data in [rand_payload(r, weird=i % 2 == 1) for i in range(40)]:
+        if may_hang_python_path(data):
+            continue
+        fast = await loop.run_in_executor(None, _named_pipe_put, _app(tmp_path / "fast", True), data)
+        slow = await loop.run_in_executor(None, _named_pipe_put, _app(tmp_path / "slow", False), data)
+        assert fast == slow, data
 
 
 def test_trace_fast_path_is_opt_in():

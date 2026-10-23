@@ -118,6 +118,9 @@ log = logging.getLogger(__name__)
 
 # Request key holding (decode key, cached JSON or None) for the trace fast path (see trace_fast_path.py).
 _TRACE_FRAGMENTS = "_testagent_trace_fragments"
+# Request key holding the native transcode of a trace payload, done while the request was stored.
+_TRACE_TRANSCODED = "_testagent_trace_transcoded"
+_NOT_TRANSCODED: Any = object()
 
 
 def _trace_decode_key(app: web.Application) -> Any:
@@ -549,6 +552,12 @@ class Agent:
         # result in: RuntimeError: readany() called while another coroutine is already waiting for incoming data
         # See: https://github.com/DataDog/dd-apm-test-agent/pull/101 for more info
         request["_testagent_data"] = await request.read()
+        if request.match_info.handler == self.handle_v04_traces and self._trace_fast_path_ingest(request):
+            # Transcode in a worker thread before the request becomes visible, like a slower upload:
+            # the handler then uses the result without yielding, as atomically as the Python decode.
+            request[_TRACE_TRANSCODED] = await trace_fast_path.transcode_in_worker(
+                trace_fast_path.transcode_v04, request["_testagent_data"]
+            )
         self._requests.append(request)
 
     def _request_data(self, request: Request) -> bytes:
@@ -1332,8 +1341,9 @@ class Agent:
 
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5", "v0.7", "v1"]) -> web.Response:
         if version == "v0.4" and self._trace_fast_path_ingest(request):
-            # Synchronous like the Python decode below, so the request is handled without yielding.
-            fragments = trace_fast_path.transcode_v04(self._request_data(request))
+            fragments = request.get(_TRACE_TRANSCODED, _NOT_TRANSCODED)
+            if fragments is _NOT_TRANSCODED:  # not stored through _store_request (named pipes)
+                fragments = trace_fast_path.transcode_v04(self._request_data(request))
             if fragments is not None:
                 request[_TRACE_FRAGMENTS] = (_trace_decode_key(request.app), fragments)
                 token = request["session_token"]
