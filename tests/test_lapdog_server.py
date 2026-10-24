@@ -140,11 +140,12 @@ async def test_coding_agent_cors_response(lapdog_agent, exit_code):
     process.communicate = mock.AsyncMock(return_value=(b"output", b""))
     with (
         mock.patch("lapdog.headless_coding_agent_interactions.shutil.which", return_value="/bin/lapdog"),
+        mock.patch("lapdog.headless_coding_agent_interactions._codex_remote", return_value="unix:///tmp/rc.sock"),
         mock.patch("lapdog.headless_coding_agent_interactions.asyncio.create_subprocess_exec", return_value=process),
     ):
         response = await lapdog_agent.post(
             "/lapdog/coding_agent/send",
-            json={"coding_agent": "claude-code", "session_id": "session", "message": "hello"},
+            json={"coding_agent": "codex", "session_id": "session", "message": "hello"},
             headers={"Origin": "https://app.datadoghq.com"},
         )
     assert response.status == (200 if exit_code == 0 else 502)

@@ -13,6 +13,8 @@ from typing import Dict
 from typing import Iterator
 from typing import List
 from typing import Optional
+from typing import Set
+from typing import Tuple
 import uuid
 
 from aiohttp import WSMsgType
@@ -26,6 +28,20 @@ from .claude_hooks import ClaudeHooksAPI
 
 COMMAND_TIMEOUT = 300
 DELIVERY_TIMEOUT = 10
+
+
+def _process_may_be_running(pid: int) -> bool:
+    if sys.platform == "win32":
+        # Windows os.kill does not provide the POSIX signal-0 existence probe.
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # Permission failures and other errors do not prove that the process exited.
+        return True
+    return True
 
 
 @dataclass
@@ -69,6 +85,23 @@ class HeadlessCodingAgentInteractionsAPI:
     def __init__(self, hooks_api: Optional[ClaudeHooksAPI] = None) -> None:
         self._hooks_api = hooks_api
         self._connections: Dict[str, _PiConnection] = {}
+        self._headless_inflight: Set[Tuple[str, str]] = set()
+
+    def _resume_cwd(self, agent: str, session_id: str) -> str:
+        session = self._hooks_api._sessions.get(session_id) if self._hooks_api else None
+        pids = session.coding_agent_pids.get(agent) if session else None
+        if session is None or not pids:
+            raise web.HTTPConflict(
+                text="Session process ownership is unknown. Open it once with the updated Lapdog launcher "
+                "before using closed-session resume."
+            )
+        if any(_process_may_be_running(pid) for pid in pids):
+            raise web.HTTPConflict(
+                text=f"The {agent} session process may still be running. Reconnect Pi or close the terminal session first."
+            )
+        if not session.cwd or not Path(session.cwd).is_dir():
+            raise web.HTTPConflict(text="The session's recorded working directory is unavailable.")
+        return session.cwd
 
     async def handle_send(self, request: web.Request) -> web.Response:
         try:
@@ -91,7 +124,11 @@ class HeadlessCodingAgentInteractionsAPI:
         if agent is None:
             raise web.HTTPBadRequest(text=f"coding_agent must match a span ml_app: {', '.join(agent_names)}.")
         session_id, message = payload["session_id"], payload["message"]
-        if agent == "pi":
+        key = (agent, session_id)
+        if key in self._headless_inflight:
+            raise web.HTTPConflict(text="A headless turn is already running for this session.")
+        connection = self._connections.get(session_id) if agent == "pi" else None
+        if connection is not None and not connection.socket.closed:
             message_id = await self._send_pi(session_id, message)
             return web.json_response(
                 {
@@ -102,7 +139,7 @@ class HeadlessCodingAgentInteractionsAPI:
                 },
                 status=202,
             )
-        launcher = "lapdog" if agent == "claude" else agent
+        launcher = "codex" if agent == "codex" else "lapdog"
         binary = shutil.which(launcher)
         if binary is None:
             raise web.HTTPServiceUnavailable(text=f"{launcher} was not found on the server PATH.")
@@ -112,11 +149,27 @@ class HeadlessCodingAgentInteractionsAPI:
             )
 
         args: List[str]
+        cwd = None
         if agent == "codex":
             remote = await asyncio.to_thread(_codex_remote)
             args = ["--remote", remote, "queue", "--thread", session_id, "--message", message]
         else:
-            args = ["claude", "--resume", session_id, "-p", message]
+            cwd = self._resume_cwd(agent, session_id)
+            args = (
+                ["claude", "--resume", session_id, "-p", message]
+                if agent == "claude"
+                else ["pi", "--session", session_id, "--print", message]
+            )
+
+        self._headless_inflight.add(key)
+        try:
+            return await self._run_command(binary, args, payload["coding_agent"], session_id, cwd)
+        finally:
+            self._headless_inflight.discard(key)
+
+    async def _run_command(
+        self, binary: str, args: List[str], coding_agent: str, session_id: str, cwd: Optional[str]
+    ) -> web.Response:
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -125,9 +178,10 @@ class HeadlessCodingAgentInteractionsAPI:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
             )
         except OSError:
-            raise web.HTTPServiceUnavailable(text=f"Could not start {agent}.")
+            raise web.HTTPServiceUnavailable(text=f"Could not start {coding_agent}.")
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=COMMAND_TIMEOUT)
         except (asyncio.TimeoutError, asyncio.CancelledError) as error:
@@ -139,11 +193,11 @@ class HeadlessCodingAgentInteractionsAPI:
             await process.wait()
             if isinstance(error, asyncio.CancelledError):
                 raise
-            raise web.HTTPGatewayTimeout(text=f"{agent} exceeded the {COMMAND_TIMEOUT}-second limit.")
+            raise web.HTTPGatewayTimeout(text=f"{coding_agent} exceeded the {COMMAND_TIMEOUT}-second limit.")
 
         return web.json_response(
             {
-                "coding_agent": payload["coding_agent"],
+                "coding_agent": coding_agent,
                 "session_id": session_id,
                 "exit_code": process.returncode,
                 "stdout": stdout.decode("utf-8", errors="replace"),

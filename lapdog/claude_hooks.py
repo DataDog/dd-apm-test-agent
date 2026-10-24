@@ -171,6 +171,7 @@ class SessionState:
         self.conversation_title: str = ""
         self.session_name: str = ""
         self.cwd: str = ""
+        self.coding_agent_pids: Dict[str, Set[int]] = {}
         self.custom_tags: Dict[str, str] = {}
         self.custom_tag_sequences: Dict[str, int] = {}
         self.project_metadata = resolve_project_metadata()
@@ -787,6 +788,13 @@ class ClaudeHooksAPI:
         stop_reason = response_data.get("stop_reason", "")
         if stop_reason:
             active.stop_reason = stop_reason
+
+    def register_coding_agent_process(self, agent: str, session_id: str, body: Dict[str, Any]) -> None:
+        """Remember process ownership so a disconnected session is not resumed twice."""
+        pid = body.get("lapdog_process_id")
+        if type(pid) is int and pid > 0:
+            session = self._get_or_create_session(session_id)
+            session.coding_agent_pids.setdefault(agent, set()).add(pid)
 
     def _handle_session_start(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle SessionStart hook event."""
@@ -1952,6 +1960,7 @@ class ClaudeHooksAPI:
         session_token = body.pop("lapdog_session_token", "")
         if isinstance(session_token, str) and session_token:
             self._register_session_token(session_token, session_id)
+        self.register_coding_agent_process("claude", session_id, body)
         self._raw_events.append(body)
 
         hook_event_name = body.get("hook_event_name", "")

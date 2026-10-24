@@ -236,6 +236,31 @@ Useful flags:
   Code plugin.
 - `-p <port>` / `--port <port>` — bind to a different port (default `8126`).
 
+### Send messages to captured sessions
+
+`POST /lapdog/coding_agent/send` accepts `coding_agent` (the span's `ml_app`
+value), `session_id`, and `message`.
+
+- Codex sends through the existing daemon queue. It requires a reachable
+  app-server socket.
+- Pi sends to the running extension when connected. HTTP 202 means that the
+  extension accepted the message, not that the turn finished.
+- Closed Pi and Claude sessions resume through `lapdog pi` or `lapdog claude`
+  in the recorded working directory. The response includes the process exit
+  code and output.
+
+Closed-session resume requires process IDs captured by the updated extension
+or intercept. Lapdog checks that all recorded processes have exited. Unknown
+ownership, a process that may still be running, or another headless turn returns
+HTTP 409. A disconnected Pi extension alone does not prove that Pi exited.
+The process check currently supports macOS and Linux; native Windows does not
+automatically resume closed sessions.
+
+To test the fallback, restart the Lapdog server, start a session with the
+updated `lapdog pi` or `lapdog claude`, close that session, then send a message
+from the web app. Keep Lapdog running: process ownership is held in memory and
+must be learned again after a server restart.
+
 ### Git commit tagging
 
 Captured coding-agent spans are tagged with `git.commit.sha` — the commit that

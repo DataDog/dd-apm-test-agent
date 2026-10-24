@@ -50,6 +50,7 @@ async function post(event: string, sessionId: string, data: Record<string, unkno
 				hook_event_name: event,
 				session_id: sessionId,
 				lapdog_session_token: LAPDOG_SESSION_TOKEN || undefined,
+				lapdog_process_id: process.pid,
 				cwd: getCwd(ctx),
 				...data,
 			}),

@@ -179,6 +179,7 @@ if (!child_process.spawn?.[CP_SPAWN_PATCH_MARKER]) {
       try {
         const parsed = JSON.parse(typeof data === 'string' ? data.trim() : data);
         if (parsed?.hook_event_name) {
+          parsed.lapdog_process_id = proc?.pid;
           if (parsed.hook_event_name === 'SessionStart') log('SessionStart hook observed');
           if (parsed.hook_event_name === 'SessionStart') {
             parsed.lapdog_instrumented = true;

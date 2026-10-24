@@ -1047,6 +1047,7 @@ class PiHooksAPI:
         session_token = body.pop("lapdog_session_token", "")
         if isinstance(session_token, str) and session_token:
             self._hooks_api._register_session_token(session_token, session_id)
+        self._hooks_api.register_coding_agent_process("pi", session_id, body)
         self._raw_events.append(body)
         self._dispatch(body)
 

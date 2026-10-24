@@ -19,12 +19,22 @@ def isolated_codex_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-async def client(aiohttp_client):
-    app = web.Application()
+def hooks_api(tmp_path):
     hooks = ClaudeHooksAPI()
     hooks._register_session_token("token-a", "session-a")
     hooks._register_session_token("token-b", "session-b")
-    api = headless_coding_agent_interactions.HeadlessCodingAgentInteractionsAPI(hooks_api=hooks)
+    for session_id in ("session", "s"):
+        session = hooks._get_or_create_session(session_id)
+        session.cwd = str(tmp_path)
+        session.coding_agent_pids = {"claude": {12345}, "pi": {12345}}
+    return hooks
+
+
+@pytest.fixture
+async def client(aiohttp_client, hooks_api, monkeypatch):
+    monkeypatch.setattr(headless_coding_agent_interactions, "_process_may_be_running", lambda pid: False)
+    app = web.Application()
+    api = headless_coding_agent_interactions.HeadlessCodingAgentInteractionsAPI(hooks_api=hooks_api)
     app.add_routes(api.get_routes())
     app.on_shutdown.append(api.close)
     return await aiohttp_client(app)
@@ -35,17 +45,18 @@ async def client(aiohttp_client):
     [
         ("codex", "codex", ["--remote", "unix:///tmp/rc.sock", "queue", "--thread", "session", "--message"]),
         ("claude-code", "lapdog", ["claude", "--resume", "session", "-p"]),
+        ("pi-coding-agent", "lapdog", ["pi", "--session", "session", "--print"]),
     ],
 )
 @pytest.mark.parametrize("exit_code", [0, 1])
 @pytest.mark.parametrize("custom_name", [False, True])
-async def test_send(client, agent, binary_name, flags, exit_code, custom_name, monkeypatch):
+async def test_send(client, agent, binary_name, flags, exit_code, custom_name, monkeypatch, tmp_path):
     if custom_name:
         agent = f"custom-{agent}"
         if binary_name == "codex":
             monkeypatch.setenv("DD_CODEX_ML_APP", agent)
         else:
-            setting = "CLAUDE_CODE_ML_APP" if binary_name == "lapdog" else "PI_CODING_AGENT_ML_APP"
+            setting = "CLAUDE_CODE_ML_APP" if flags[0] == "claude" else "PI_CODING_AGENT_ML_APP"
             monkeypatch.setattr(headless_coding_agent_interactions, setting, agent)
     message = 'hello "world"; $(touch /tmp/should-not-exist)\nnext line'
     process = mock.Mock(returncode=exit_code)
@@ -74,6 +85,7 @@ async def test_send(client, agent, binary_name, flags, exit_code, custom_name, m
         "stderr": "error",
     }
     assert spawn.call_args.args == ("/bin/agent", *flags, message)
+    assert spawn.call_args.kwargs["cwd"] == (None if binary_name == "codex" else str(tmp_path))
     which.assert_called_once_with(binary_name)
 
 
@@ -133,6 +145,101 @@ async def test_timeout_kills_process(client):
     assert response.status == 504
     process.kill.assert_called_once()
     process.wait.assert_awaited_once()
+
+
+@pytest.mark.parametrize("agent", ["claude-code", "pi-coding-agent"])
+async def test_running_process_prevents_headless_resume(client, monkeypatch, agent):
+    monkeypatch.setattr(headless_coding_agent_interactions, "_process_may_be_running", lambda pid: True)
+    with (
+        mock.patch.object(headless_coding_agent_interactions.shutil, "which", return_value="/bin/lapdog"),
+        mock.patch("asyncio.create_subprocess_exec") as spawn,
+    ):
+        response = await client.post(
+            "/lapdog/coding_agent/send",
+            json={"coding_agent": agent, "session_id": "session", "message": "hello"},
+        )
+    assert response.status == 409
+    assert "may still be running" in await response.text()
+    spawn.assert_not_called()
+
+
+async def test_resume_requires_existing_working_directory(client, hooks_api):
+    hooks_api._sessions["session"].cwd = ""
+    with (
+        mock.patch.object(headless_coding_agent_interactions.shutil, "which", return_value="/bin/lapdog"),
+        mock.patch("asyncio.create_subprocess_exec") as spawn,
+    ):
+        response = await _send_pi(client, "session")
+    assert response.status == 409
+    assert "working directory" in await response.text()
+    spawn.assert_not_called()
+
+
+async def test_concurrent_resume_is_rejected_and_guard_is_released(client):
+    started = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def communicate():
+        started.set()
+        await finish.wait()
+        return b"done", b""
+
+    process = mock.Mock(returncode=0, communicate=communicate)
+    with (
+        mock.patch.object(headless_coding_agent_interactions.shutil, "which", return_value="/bin/lapdog"),
+        mock.patch("asyncio.create_subprocess_exec", return_value=process) as spawn,
+    ):
+        first = asyncio.create_task(_send_pi(client, "session"))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1)
+            second = await _send_pi(client, "session")
+            assert second.status == 409
+            spawn.assert_awaited_once()
+        finally:
+            finish.set()
+            await first
+        assert (await _send_pi(client, "session")).status == 200
+
+
+@pytest.mark.parametrize("error,expected", [(None, True), (ProcessLookupError(), False), (PermissionError(), True)])
+def test_process_check_only_accepts_confirmed_exit(error, expected):
+    with mock.patch.object(headless_coding_agent_interactions.os, "kill", side_effect=error):
+        assert headless_coding_agent_interactions._process_may_be_running(12345) is expected
+
+
+@pytest.mark.parametrize(
+    "agent,route,event,command",
+    [
+        ("claude-code", "/claude/hooks", "SessionStart", "claude"),
+        ("pi-coding-agent", "/pi/hooks", "session_start", "pi"),
+    ],
+)
+async def test_hook_process_metadata_enables_closed_session_resume(
+    lapdog_agent, tmp_path, agent, route, event, command
+):
+    response = await lapdog_agent.post(
+        route,
+        json={
+            "session_id": "closed-session",
+            "hook_event_name": event,
+            "lapdog_process_id": 12345,
+            "cwd": str(tmp_path),
+        },
+    )
+    assert response.status == 200
+    process = mock.Mock(returncode=0, communicate=mock.AsyncMock(return_value=(b"done", b"")))
+    with (
+        mock.patch.object(headless_coding_agent_interactions.shutil, "which", return_value="/bin/lapdog"),
+        mock.patch.object(headless_coding_agent_interactions, "_process_may_be_running", return_value=False),
+        mock.patch("asyncio.create_subprocess_exec", return_value=process) as spawn,
+    ):
+        response = await lapdog_agent.post(
+            "/lapdog/coding_agent/send",
+            json={"coding_agent": agent, "session_id": "closed-session", "message": "continue"},
+        )
+    assert response.status == 200
+    assert spawn.call_args.args[:2] == ("/bin/lapdog", command)
+    assert spawn.call_args.kwargs["cwd"] == str(tmp_path)
 
 
 def test_socket_discovery(tmp_path):
