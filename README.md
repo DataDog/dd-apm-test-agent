@@ -382,6 +382,13 @@ Example: `"{'service:test,env:staging': 0.5, 'service:test2,env:prod': 0.2}"` (n
 Test session token for a test case. **Ensure this value is unique to avoid conflicts between sessions.**
 
 
+### /test/session/clear
+
+Clear requests for the supplied token, including untagged requests associated
+by session timing. Requests carrying another token are preserved.
+Omitting the token clears all requests; session configuration is retained.
+
+
 ### /test/session/snapshot
 
 Perform a snapshot generation or comparison on the data received during the session.
