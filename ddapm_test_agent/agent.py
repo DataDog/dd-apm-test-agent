@@ -51,6 +51,7 @@ from yarl import URL
 
 from . import _get_version
 from . import otlp_trace_snapshot
+from . import trace_fast_path
 from . import trace_snapshot
 from . import tracestats_snapshot
 from .apmtelemetry import TelemetryEvent
@@ -114,6 +115,17 @@ _Handler = Callable[[Request], Awaitable[web.Response]]
 
 
 log = logging.getLogger(__name__)
+
+# Request key holding (decode key, cached JSON or None) for the trace fast path (see trace_fast_path.py).
+_TRACE_FRAGMENTS = "_testagent_trace_fragments"
+# Request key holding the native transcode of a trace payload, done while the request was stored.
+_TRACE_TRANSCODED = "_testagent_trace_transcoded"
+_NOT_TRANSCODED: Any = object()
+
+
+def _trace_decode_key(app: web.Application) -> Any:
+    """App settings that change how a stored trace request decodes (/test/settings can change them)."""
+    return app["suppress_trace_parse_errors"]
 
 
 def _parse_csv(s: str) -> List[str]:
@@ -540,6 +552,12 @@ class Agent:
         # result in: RuntimeError: readany() called while another coroutine is already waiting for incoming data
         # See: https://github.com/DataDog/dd-apm-test-agent/pull/101 for more info
         request["_testagent_data"] = await request.read()
+        if request.match_info.handler == self.handle_v04_traces and self._trace_fast_path_ingest(request):
+            # Transcode in a worker thread before the request becomes visible, like a slower upload:
+            # the handler then uses the result without yielding, as atomically as the Python decode.
+            request[_TRACE_TRANSCODED] = await trace_fast_path.transcode_in_worker(
+                trace_fast_path.transcode_v04, request["_testagent_data"]
+            )
         self._requests.append(request)
 
     def _request_data(self, request: Request) -> bytes:
@@ -1304,7 +1322,33 @@ class Agent:
             info["org_prop_marker"] = org_prop_marker
         return web.json_response(info, headers=headers)
 
+    def _trace_fast_path_ingest(self, request: Request) -> bool:
+        """Whether nothing observable depends on decoding the payload in Python.
+
+        With no checks enabled and logging above INFO, the Python path only decodes the payload
+        to validate it and to render span trees that are never logged. The native transcoder
+        replicates exactly that and defers to the Python path for anything else.
+        """
+        app = request.app
+        return bool(
+            trace_fast_path.NATIVE_AVAILABLE
+            and app.get("trace_fast_path", False)
+            and request.content_type == "application/msgpack"
+            and not app["checks"].enabled
+            and app["log_span_fmt"] == trace_fast_path.NATIVE_LOG_SPAN_FMT
+            and not log.isEnabledFor(logging.INFO)
+        )
+
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5", "v0.7", "v1"]) -> web.Response:
+        if version == "v0.4" and self._trace_fast_path_ingest(request):
+            fragments = request.get(_TRACE_TRANSCODED, _NOT_TRANSCODED)
+            if fragments is _NOT_TRANSCODED:  # not stored through _store_request (named pipes)
+                fragments = trace_fast_path.transcode_v04(self._request_data(request))
+            if fragments is not None:
+                request[_TRACE_FRAGMENTS] = (_trace_decode_key(request.app), fragments)
+                token = request["session_token"]
+                return web.json_response(data={"rate_by_service": self._sessions[token].sample_rate_by_service_env})
+
         token = request["session_token"]
         checks: Checks = request.app["checks"]
         headers = request.headers
@@ -1534,8 +1578,48 @@ class Agent:
                 log.info("wrote new OTLP trace snapshot to %r", os.path.abspath(otlp_trace_snap_file))
         return web.HTTPOk()
 
+    async def _trace_fragments(self, req: Request) -> Optional[trace_fast_path.Fragments]:
+        """Return cached JSON for one stored trace request, or None if only the Python path may render it."""
+        key = _trace_decode_key(req.app)
+        cached = req.get(_TRACE_FRAGMENTS)
+        if cached is not None and cached[0] == key:
+            fragments: Optional[trace_fast_path.Fragments] = cached[1]
+            return fragments
+        try:
+            fragments = trace_fast_path.fragments_from_traces(await self._traces_from_request(req))
+        except Exception:
+            # Decoding or serializing fails: the Python path raises the exact same error.
+            fragments = None
+        req[_TRACE_FRAGMENTS] = (key, fragments)
+        return fragments
+
+    async def _session_traces_fast_path(self, token: Optional[str]) -> Optional[bytes]:
+        """Build the /test/session/traces body from cached JSON; None means use the Python path."""
+        try:
+            reqs = self._requests_by_session(token)
+        except NoSuchSessionException:
+            return None
+        trace_handlers = (self.handle_v04_traces, self.handle_v05_traces, self.handle_v07_traces, self.handle_v1_traces)
+        fragment_lists: List[trace_fast_path.Fragments] = []
+        for req in reqs:
+            if req.match_info.handler not in trace_handlers:
+                continue
+            fragments = await self._trace_fragments(req)
+            if fragments is None:
+                return None
+            fragment_lists.append(fragments)
+        try:
+            return trace_fast_path.session_traces_body(fragment_lists)
+        except Exception:
+            return None  # e.g. an unhashable trace_id: the Python path raises the same error
+
     async def handle_session_traces(self, request: Request) -> web.Response:
         token = request["session_token"]
+        if request.app.get("trace_fast_path", False):
+            body = await self._session_traces_fast_path(token)
+            if body is not None:
+                # Same headers and bytes as web.json_response(traces) below.
+                return web.Response(body=body, content_type="application/json", charset="utf-8")
         traces = []
         try:
             traces = await self._traces_by_session(token)
@@ -1738,8 +1822,10 @@ class Agent:
         agent_url = request.app["agent_url"]
         proxy_to_agent = request.get("_proxy_to_agent", request.app["proxy_to_agent"])
 
-        log.debug(f"New request: {request} with headers: {headers}")
-        log.debug(f"Request Data: {data!r}")
+        if log.isEnabledFor(logging.DEBUG):
+            # Guarded: the f-strings would otherwise repr() every request body.
+            log.debug(f"New request: {request} with headers: {headers}")
+            log.debug(f"Request Data: {data!r}")
 
         if agent_url and proxy_to_agent:
             agent_response = await _prepare_and_send_request(data, request, headers)
@@ -2082,6 +2168,7 @@ def make_app(
     disable_llmobs_data_forwarding: bool,
     org_prop_marker: str = "",
     enable_web_ui: bool = False,
+    trace_fast_path: bool = False,
 ) -> web.Application:
     agent = Agent()
 
@@ -2187,6 +2274,7 @@ def make_app(
     app["suppress_trace_parse_errors"] = suppress_trace_parse_errors
     app["pool_trace_check_failures"] = pool_trace_check_failures
     app["disable_error_responses"] = disable_error_responses
+    app["trace_fast_path"] = trace_fast_path
     app["snapshot_removed_attrs"] = snapshot_removed_attrs
     app["snapshot_regex_placeholders"] = snapshot_regex_placeholders
     app["vcr_cassettes_directory"] = vcr_cassettes_directory
@@ -2582,6 +2670,15 @@ def main(
         default=os.environ.get("DISABLE_LLMOBS_DATA_FORWARDING", "").lower() in ("true", "1", "yes"),
         help="Disable data forwarding to Datadog.",
     )
+    parser.add_argument(
+        "--enable-trace-fast-path",
+        action="store_true",
+        default=os.environ.get("ENABLE_TRACE_FAST_PATH", "").lower() in ("true", "1", "yes"),
+        help=(
+            "Cache rendered /test/session/traces responses and, when the native extension is installed, "
+            "decode v0.4 msgpack payloads natively. Responses are identical to the default path."
+        ),
+    )
     parsed_args = parser.parse_args(args=args)
     logging.basicConfig(level=parsed_args.log_level)
 
@@ -2645,6 +2742,7 @@ def main(
         disable_llmobs_data_forwarding=parsed_args.disable_llmobs_data_forwarding,
         org_prop_marker=parsed_args.org_prop_marker,
         enable_web_ui=parsed_args.web_ui_port > 0,
+        trace_fast_path=parsed_args.enable_trace_fast_path,
     )
 
     # Validate port configuration
