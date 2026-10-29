@@ -2,6 +2,7 @@ import json
 import platform
 import time
 
+import msgpack
 import pytest
 
 from .conftest import v04_trace
@@ -160,3 +161,54 @@ async def test_meta_events_is_valid_json_missing(agent, agent_enabled_checks):
     s = span()
     resp = await v04_trace(agent, [[s]], "msgpack")
     assert resp.status == 200, await resp.text()
+
+
+def _v1_servlet_trace_request(agent, trace):
+    return agent.put(
+        "/v0.4/traces",
+        headers={
+            "Content-Type": "application/msgpack",
+            "X-Datadog-Trace-Count": "1",
+            "Datadog-Meta-Tracer-Version": "v0.1",
+            "X-Datadog-Trace-Env-Variables": "DD_SERVICE=my-service,DD_TRACE_SPAN_ATTRIBUTE_SCHEMA=v1",
+        },
+        data=msgpack.packb([trace]),
+    )
+
+
+def _servlet_spans(forward_service="ctx"):
+    root = span(
+        name="servlet.request",
+        type="web",
+        service="ctx",
+        meta={"component": "undertow-http-server", "servlet.context": "/ctx"},
+    )
+    forward = span(
+        name="servlet.forward",
+        type="web",
+        service=forward_service,
+        parent_id=root["span_id"],
+        meta={"component": "java-web-servlet-dispatcher"},
+    )
+    return root, forward
+
+
+@pytest.mark.parametrize("agent_enabled_checks", [["trace_dd_service"]])
+@pytest.mark.parametrize("root_first", [True, False])
+async def test_trace_dd_service_servlet_context(agent, agent_enabled_checks, root_first):
+    """Spans without servlet.context can use the context from another span, in either order."""
+    root, forward = _servlet_spans()
+    trace = [root, forward] if root_first else [forward, root]
+    resp = await _v1_servlet_trace_request(agent, trace)
+    assert resp.status == 200, await resp.text()
+
+
+@pytest.mark.parametrize("agent_enabled_checks", [["trace_dd_service"]])
+@pytest.mark.parametrize("root_first", [True, False])
+async def test_trace_dd_service_servlet_context_mismatch(agent, agent_enabled_checks, root_first):
+    """A span whose service matches neither DD_SERVICE nor the servlet context fails."""
+    root, forward = _servlet_spans(forward_service="other")
+    trace = [root, forward] if root_first else [forward, root]
+    resp = await _v1_servlet_trace_request(agent, trace)
+    assert resp.status == 400, await resp.text()
+    assert "Check 'trace_dd_service' failed" in await resp.text()
