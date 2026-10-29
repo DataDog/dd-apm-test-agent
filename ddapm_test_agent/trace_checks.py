@@ -161,8 +161,16 @@ The ``service`` name is correctly set to ``DD_SERVICE`` for V1 auto-instrumented
     def check(self, trace: List[Span], dd_config_env: Dict[str, str]) -> None:
         log.info("Performing ``DD_SERVICE`` Trace Check")
 
-        # trace context can be set to service for each span
-        trace_context = None
+        # Web spans can use the servlet context as their service. Only some spans carry the
+        # servlet.context tag, and a trace's spans can arrive in any order, so look it up first.
+        trace_context = next(
+            (
+                span["meta"]["servlet.context"].replace("/", "")
+                for span in trace
+                if "servlet.context" in span.get("meta", {})
+            ),
+            None,
+        )
 
         whitelisted_components = ["rabbitmq", "jms", "kafka", "java-web-servlet-response"]
 
@@ -211,11 +219,6 @@ The ``service`` name is correctly set to ``DD_SERVICE`` for V1 auto-instrumented
                 if service != dd_service:
                     # check for special case where span is of type web and has context as service
                     if "servlet.context" in meta.keys() or trace_context:
-                        trace_context = (
-                            trace_context
-                            if trace_context is not None
-                            else meta.get("servlet.context", "").replace("/", "")
-                        )
                         if service != trace_context:
                             self.fail(
                                 json.dumps(span, indent=4)
