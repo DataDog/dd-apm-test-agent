@@ -5,20 +5,21 @@ from typing import Any
 
 import pytest
 
+from lapdog import codex_args
 from lapdog.codex_cursor import CursorState
 from lapdog.codex_cursor import load_cursor
 from lapdog.codex_cursor import save_cursor_atomic
+from lapdog.codex_watcher import FileState
 from lapdog.codex_watcher import MAX_BUFFER_RECORDS
 from lapdog.codex_watcher import MAX_LINE_BYTES
-from lapdog.codex_watcher import _maybe_save_cursor
-from lapdog.codex_watcher import _prune_cursor
-from lapdog.codex_watcher import _sync_cursor
-from lapdog.codex_watcher import FileState
 from lapdog.codex_watcher import _default_session_dir
 from lapdog.codex_watcher import _drain_file
 from lapdog.codex_watcher import _initial_offset_for_file
 from lapdog.codex_watcher import _is_under
+from lapdog.codex_watcher import _maybe_save_cursor
 from lapdog.codex_watcher import _prime_file_state
+from lapdog.codex_watcher import _prune_cursor
+from lapdog.codex_watcher import _sync_cursor
 from lapdog.codex_watcher import watch_codex_sessions
 
 
@@ -664,13 +665,15 @@ def test_proxy_watcher_ignores_existing_files_after_start(monkeypatch, tmp_path)
     assert posts == []
 
 
-@pytest.mark.parametrize("selected_id", [None, "sess-resumed"])
-def test_resume_watcher_captures_new_records_without_replaying_old_turns(monkeypatch, tmp_path, selected_id):
+@pytest.mark.parametrize("command", [["resume"], ["exec", "resume"]])
+@pytest.mark.parametrize("selected_id", [None, "123e4567-e89b-12d3-a456-426614174000"])
+def test_resume_watcher_captures_new_records_without_replaying_old_turns(monkeypatch, tmp_path, selected_id, command):
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     resumed_file = tmp_path / "rollout-resumed.jsonl"
     unrelated_file = tmp_path / "rollout-unrelated.jsonl"
-    for path, session_id in ((resumed_file, "sess-resumed"), (unrelated_file, "sess-unrelated")):
+    resumed_id = "123e4567-e89b-12d3-a456-426614174000"
+    for path, session_id in ((resumed_file, resumed_id), (unrelated_file, "sess-unrelated")):
         _append(path, {"type": "session_meta", "payload": {"id": session_id, "cwd": str(tmp_path)}})
         _append(path, {"type": "event_msg", "payload": {"type": "user_message", "message": "old"}})
 
@@ -688,6 +691,9 @@ def test_resume_watcher_captures_new_records_without_replaying_old_turns(monkeyp
         return False
 
     monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
+    resume_mode, resume_session_id, resume_all_cwds = codex_args.resume_options(
+        command + ([selected_id] if selected_id else ["--last"])
+    )
     watch_codex_sessions(
         lapdog_url="http://localhost:8126",
         cwd=str(tmp_path),
@@ -698,11 +704,12 @@ def test_resume_watcher_captures_new_records_without_replaying_old_turns(monkeyp
         proxy_session_key="proxy-key",
         cursor_path=None,
         discovery_interval=0,
-        resume_mode=True,
-        resume_session_id=selected_id,
+        resume_mode=resume_mode,
+        resume_session_id=resume_session_id,
+        resume_all_cwds=resume_all_cwds,
     )
 
-    assert {post["session_id"] for post in posts} == {"sess-resumed"}
+    assert {post["session_id"] for post in posts} == {resumed_id}
     assert [post["record"]["type"] for post in posts].count("session_meta") == 1
     messages = [
         post["record"]["payload"]["message"]
@@ -1157,6 +1164,7 @@ def test_watch_codex_sessions_continues_after_per_file_error(monkeypatch, capsys
 def test_process_exists_falls_back_when_psutil_missing(monkeypatch):
     """When psutil is unavailable, _process_exists uses a safe fallback."""
     import builtins
+
     from lapdog import codex_watcher
 
     # Force ImportError for psutil even if it happens to be installed.
@@ -1176,6 +1184,7 @@ def test_process_exists_falls_back_when_psutil_missing(monkeypatch):
 
 def test_process_exists_uses_windows_probe_when_psutil_missing(monkeypatch):
     import builtins
+
     from lapdog import codex_watcher
 
     real_import = builtins.__import__

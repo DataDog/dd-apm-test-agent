@@ -16,12 +16,19 @@ _CODEX_FLAGS_WITH_VALUES = {
     "--config",
     "-C",
     "--cd",
+    "--color",
+    "--cyber-access-program",
     "--download-url",
     "--enable",
     "--disable",
+    "-i",
+    "--image",
     "--local-provider",
     "-m",
     "--model",
+    "-o",
+    "--output-last-message",
+    "--output-schema",
     "-p",
     "--profile",
     "--profile-v2",
@@ -29,6 +36,7 @@ _CODEX_FLAGS_WITH_VALUES = {
     "--remote-auth-token-env",
     "-s",
     "--sandbox",
+    "--thread-source",
 }
 
 
@@ -67,10 +75,16 @@ def _command_index(args: List[str]) -> Optional[int]:
     idx = 0
     while idx < len(args):
         arg = args[idx]
-        if arg == "--":
-            return idx + 1 if idx + 1 < len(args) else None
+        if arg == "--" or arg == "-":
+            return None
         if not arg.startswith("-"):
             return idx
+        if arg in ("-i", "--image"):
+            # Before a subcommand, --image consumes all following file paths.
+            idx += 1
+            while idx < len(args) and not args[idx].startswith("-"):
+                idx += 1
+            continue
         if arg in _CODEX_FLAGS_WITH_VALUES:
             idx += 2
             continue
@@ -86,23 +100,36 @@ def is_app_command(args: List[str]) -> bool:
 def resume_options(args: List[str]) -> Tuple[bool, Optional[str], bool]:
     """Return whether Codex resumes, its selected ID, and whether --all is set."""
     command_idx = _command_index(args)
+    exec_mode = command_idx is not None and args[command_idx] in ("exec", "e")
+    if exec_mode and command_idx is not None:
+        exec_args_start = command_idx + 1
+        subcommand_idx = _command_index(args[exec_args_start:])
+        command_idx = exec_args_start + subcommand_idx if subcommand_idx is not None else None
     if command_idx is None or args[command_idx] != "resume":
         return False, None, False
     resume_args = args[command_idx + 1 :]
-    resume_all_cwds = "--all" in resume_args
+    resume_all_cwds = False
+    resume_last = False
     selection: Optional[str] = None
     idx = 0
     while idx < len(resume_args):
         arg = resume_args[idx]
-        if arg in _CODEX_FLAGS_WITH_VALUES or arg in ("-i", "--image"):
+        if arg == "--":
+            if selection is None and idx + 1 < len(resume_args):
+                selection = resume_args[idx + 1]
+            break
+        if arg in _CODEX_FLAGS_WITH_VALUES:
             idx += 2
             continue
-        if arg.startswith("-"):
-            idx += 1
-            continue
-        selection = arg
-        break
-    if selection is None:
+        if arg == "--all":
+            resume_all_cwds = True
+        elif arg == "--last":
+            resume_last = True
+        elif selection is None and (not arg.startswith("-") or arg == "-"):
+            selection = arg
+        idx += 1
+    # In exec mode, --last selects the session; the positional may be a prompt.
+    if selection is None or (exec_mode and resume_last):
         return True, None, resume_all_cwds
     try:
         session_id = str(uuid.UUID(selection))

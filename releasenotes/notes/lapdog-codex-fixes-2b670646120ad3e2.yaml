@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    Lapdog: Fix missing traces when you resume Codex sessions with
+    ``lapdog codex exec resume`` or ``lapdog codex e resume``.
+    Capture new turns without sending previous turns again.
