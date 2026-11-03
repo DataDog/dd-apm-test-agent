@@ -1,5 +1,11 @@
+import os
+from typing import Any
+from typing import List
+
+from setuptools import Extension
 from setuptools import find_packages
 from setuptools import setup
+from setuptools.command.build_ext import build_ext
 
 
 with open("README.md", "r") as f:
@@ -7,6 +13,42 @@ with open("README.md", "r") as f:
 
 with open("test_deps.txt") as f:
     testing_deps = [line.strip() for line in f.readlines()]
+
+
+class OptionalBuildExt(build_ext):
+    """Skip the native extension when it cannot be built; the pure-Python install behaves the same."""
+
+    def run(self) -> None:
+        try:
+            super().run()
+        except Exception as e:
+            print("WARNING: not building the native trace fast path: %s" % e)
+
+    def build_extension(self, ext: Any) -> None:
+        try:
+            super().build_extension(ext)
+        except Exception as e:
+            print("WARNING: not building %s: %s" % (ext.name, e))
+
+
+ext_modules: List[Any] = []
+# DDAPM_TEST_AGENT_PURE_PYTHON=1 builds a pure-Python (py3-none-any) wheel.
+if os.environ.get("DDAPM_TEST_AGENT_PURE_PYTHON", "").lower() not in ("1", "true", "yes"):
+    try:
+        from Cython.Build import cythonize
+    except ImportError:
+        if os.path.exists("ddapm_test_agent/_native.c"):  # generated C shipped in the sdist
+            ext_modules = [Extension("ddapm_test_agent._native", ["ddapm_test_agent/_native.c"])]
+        else:
+            print("WARNING: Cython is not installed, not building the native trace fast path")
+    else:
+        try:
+            ext_modules = cythonize(
+                [Extension("ddapm_test_agent._native", ["ddapm_test_agent/_native.pyx"])],
+                compiler_directives={"language_level": "3"},
+            )
+        except Exception as e:
+            print("WARNING: not building the native trace fast path: %s" % e)
 
 setup(
     name="ddapm-test-agent",
@@ -25,7 +67,7 @@ setup(
     license="BSD 3",
     packages=find_packages(exclude=["tests*", "releasenotes", "scripts"]),
     package_data={
-        "ddapm_test_agent": ["py.typed", "templates/*", "static/*",],
+        "ddapm_test_agent": ["py.typed", "templates/*", "static/*", "_native.pyi", "_native.pyx",],
         "lapdog": ["py.typed", "claude_intercept.mjs", "pi_lapdog_extension.ts", "bootstrap/*", "lapdog-initialize.mjs"],
     },
     python_requires=">=3.8",
@@ -61,6 +103,8 @@ setup(
         "testing": testing_deps,
         "ddtrace": ["ddtrace"],  # todo: pin?
     },
+    ext_modules=ext_modules,
+    cmdclass={"build_ext": OptionalBuildExt},
     # Required for mypy compatibility, see
     # https://mypy.readthedocs.io/en/stable/installed_packages.html#making-pep-561-compatible-packages
     zip_safe=False,

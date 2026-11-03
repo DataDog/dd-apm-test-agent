@@ -3,3 +3,4 @@ pytest
 riot==0.20.1
 PyYAML==6.0.3
 pytest-xdist
+cython>=3.0

@@ -23,6 +23,9 @@ jobs:
           python-version: '3.12'
 
       - name: Build wheels
+        env:
+          # Keep publishing a single py3-none-any wheel; the sdist builds the native fast path.
+          DDAPM_TEST_AGENT_PURE_PYTHON: "1"
         run: |
           pip install wheel
           pip wheel --no-deps -w dist .
