@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    Receive DogStatsD metrics over UDP, on port 8125 by default (``--dogstatsd-port`` or ``DOGSTATSD_PORT``, ``0``
+    disables it), and return them from ``/test/session/dogstatsd``.
