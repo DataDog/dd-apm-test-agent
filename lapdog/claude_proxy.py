@@ -38,6 +38,7 @@ from .claude_link_tracker import ClaudeLinkTracker
 from .claude_link_tracker import SpanLink
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .model_pricing import compute_cost_metrics
+from .span_store import trace_key
 from .utils import set_hidden_metadata
 
 log = logging.getLogger(__name__)
@@ -450,6 +451,7 @@ class ClaudeProxyAPI:
         # Spans created before any session existed; re-parented when a session appears.
         self._orphan_spans: List[Dict[str, Any]] = []
         self._orphan_naming_spans: Set[str] = set()
+        hooks_api._assembled_spans.add_active_trace_source(lambda: [trace_key(span) for span in self._orphan_spans])
 
     async def _get_http_session(self) -> aiohttp.ClientSession:
         if self._http_session is None or self._http_session.closed:
