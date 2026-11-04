@@ -42,6 +42,10 @@ from .coding_agent_metadata import git_commit_sha_tags
 from .coding_agent_metadata import project_metadata_tags
 from .coding_agent_metadata import resolve_project_metadata
 from .model_pricing import COST_METRIC_KEYS
+from .span_store import RawEventLog
+from .span_store import SpanStore
+from .span_store import raw_event_budget
+from .span_store import span_budget
 from .utils import set_hidden_metadata
 
 log = logging.getLogger(__name__)
@@ -331,17 +335,24 @@ def _extract_intent(tool_name: str, tool_input: Any) -> str:
 class ClaudeHooksAPI:
     """Handler for Claude Code hook events."""
 
-    def __init__(self, link_tracker: Optional[ClaudeLinkTracker] = None) -> None:
+    def __init__(
+        self, link_tracker: Optional[ClaudeLinkTracker] = None, max_memory_bytes: Optional[int] = None
+    ) -> None:
         self._sessions: Dict[str, SessionState] = {}
         self._session_ids_by_token: Dict[str, Set[str]] = {}
         self._session_tokens_by_id: Dict[str, Set[str]] = {}
         self._pending_tags_by_token: Dict[str, Dict[str, str]] = {}
         self._tag_update_sequence = 0
-        self._assembled_spans: List[Dict[str, Any]] = []
+        self.max_memory_bytes = max_memory_bytes
+        self._assembled_spans = SpanStore(span_budget(max_memory_bytes))
+        self._assembled_spans.add_active_trace_source(self._active_trace_ids)
         self._pending_claude_auto_reviews: Dict[str, Dict[str, Any]] = {}
-        self._raw_events: List[Dict[str, Any]] = []
+        self._raw_events = RawEventLog(raw_event_budget(max_memory_bytes))
         self._link_tracker = link_tracker
         self._app: Optional[web.Application] = None
+
+    def _active_trace_ids(self) -> List[str]:
+        return [session.trace_id for session in self._sessions.values() if not session.root_span_emitted]
 
     def set_app(self, app: web.Application) -> None:
         """Set the aiohttp app reference for backend forwarding."""
@@ -2077,6 +2088,20 @@ class ClaudeHooksAPI:
         """Handle GET /claude/hooks/raw — return all raw received events for debugging."""
         return web.json_response({"events": self._raw_events})
 
+    async def handle_memory(self, request: Request) -> web.Response:
+        """Handle GET /lapdog/memory — report the retained-data budget and eviction counts."""
+        store = self._assembled_spans
+        return web.json_response(
+            {
+                "max_memory_bytes": self.max_memory_bytes,
+                "span_budget_bytes": store.max_bytes,
+                "estimated_span_bytes": store.estimated_bytes if store.max_bytes is not None else None,
+                "retained_spans": len(store),
+                "evicted_spans": store.evicted_spans,
+                "evicted_traces": store.evicted_traces,
+            }
+        )
+
     async def handle_backfill_session(self, request: Request) -> web.Response:
         """Ingest a historical Claude transcript as a batch of spans.
 
@@ -2127,6 +2152,7 @@ class ClaudeHooksAPI:
         """Return the routes for this API."""
         return [
             web.post("/claude/hooks", with_cors(self.handle_hook)),
+            web.route("*", "/lapdog/memory", with_cors(self.handle_memory)),
             web.post("/lapdog/session/tags", with_cors(self.handle_session_tags)),
             web.post("/claude/hooks/session/tags", with_cors(self.handle_session_tags)),
             web.post("/claude/hooks/backfill_session", with_cors(self.handle_backfill_session)),

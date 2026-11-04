@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    lapdog: add ``--max-memory`` (or ``LAPDOG_MAX_MEMORY``) to bound memory retained by the local agent. Once the
+    approximate budget is exceeded, the oldest finished traces and raw hook events are dropped.

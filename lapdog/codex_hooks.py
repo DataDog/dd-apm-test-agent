@@ -35,6 +35,9 @@ from .coding_agent_metadata import extract_agent_project_name
 from .coding_agent_metadata import extract_git_repository_url
 from .coding_agent_metadata import resolve_project_metadata
 from .model_pricing import compute_cost_metrics
+from .span_store import RawEventLog
+from .span_store import raw_event_budget
+from .span_store import trace_key
 from .utils import set_hidden_metadata
 
 log = logging.getLogger(__name__)
@@ -394,21 +397,29 @@ class CodexHooksAPI:
         self._hooks_api = hooks_api
         self._config = CodexConfig()
         self._sessions: Dict[str, CodexSession] = {}
-        self._raw_events: List[Dict[str, Any]] = []
+        self._raw_events = RawEventLog(raw_event_budget(hooks_api.max_memory_bytes))
         self._last_session_id = ""
         self._proxy_session_ids: Dict[str, str] = {}
         self._orphan_proxy_llm_spans: List[OrphanProxySpan] = []
         self._child_session_ids: Dict[str, str] = {}
         self._ignored_session_ids: Set[str] = set()
         self._auto_review_sessions: Dict[str, Dict[str, Any]] = {}
+        hooks_api._assembled_spans.add_active_trace_source(self._active_trace_ids)
+
+    def _active_trace_ids(self) -> List[str]:
+        active = [
+            session.active_turn.trace_id
+            for session in self._sessions.values()
+            if session.active_turn is not None and not session.active_turn.closed
+        ]
+        active.extend(trace_key(span) for _, span in self._orphan_proxy_llm_spans)
+        return active
 
     def _classify_auto_review_session(self, session_id: str, start_ns: int) -> None:
         existing = self._sessions.pop(session_id, None)
         if existing is not None and existing.active_turn is not None:
             start_ns = existing.active_turn.start_ns
-        self._hooks_api._assembled_spans = [
-            span for span in self._hooks_api._assembled_spans if span.get("session_id") != session_id
-        ]
+        self._hooks_api._assembled_spans.remove_where(lambda span: span.get("session_id") == session_id)
         self._hooks_api._sessions.pop(session_id, None)
         self._proxy_session_ids = {key: value for key, value in self._proxy_session_ids.items() if value != session_id}
         self._auto_review_sessions[session_id] = {"review": {"start_ns": start_ns, "review_session_id": session_id}}
@@ -867,9 +878,7 @@ class CodexHooksAPI:
             return
         if step["meta"].get("output", {}).get("value"):
             return
-        self._hooks_api._assembled_spans = [
-            span for span in self._hooks_api._assembled_spans if span.get("span_id") != step_span_id
-        ]
+        self._hooks_api._assembled_spans.remove_where(lambda span: span.get("span_id") == step_span_id)
         turn.step_span_refs.pop(step_span_id, None)
         if step.get("name") == f"inference-{turn.step_count - 1}" and turn.step_count > 0:
             turn.step_count -= 1

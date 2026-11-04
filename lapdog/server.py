@@ -17,6 +17,7 @@ from .codex_hooks import CodexHooksAPI
 from .codex_proxy import CodexProxyAPI
 from .llmobs_event_platform import LLMObsEventPlatformAPI
 from .pi_hooks import PiHooksAPI
+from .span_store import max_memory_from_env
 
 
 def _inject_lapdog_forwarded(data: bytes, content_encoding: str) -> bytes:
@@ -51,7 +52,7 @@ def extend_app(app: web.Application) -> web.Application:
 
     llmobs_event_platform_api = LLMObsEventPlatformAPI(agent)
     claude_link_tracker = ClaudeLinkTracker()
-    claude_hooks_api = ClaudeHooksAPI(link_tracker=claude_link_tracker)
+    claude_hooks_api = ClaudeHooksAPI(link_tracker=claude_link_tracker, max_memory_bytes=max_memory_from_env())
     claude_hooks_api.set_app(app)
     llmobs_event_platform_api.set_claude_hooks_api(claude_hooks_api)
 

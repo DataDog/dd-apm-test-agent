@@ -1,10 +1,12 @@
 """Start, stop, and status commands."""
 
+import json
 import os
 import signal
 import sys
 from typing import List
 from typing import Optional
+import urllib.request
 
 from lapdog.cli.ascii_art import build_status_banner
 from lapdog.cli.runtime import http_get_status
@@ -59,6 +61,31 @@ def cmd_stop(pid: Optional[int] = None) -> None:
     print("[lapdog] Lapdog stopped.")
 
 
+def _format_bytes(size: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}GB"
+
+
+def _memory_summary(port: int) -> Optional[str]:
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://127.0.0.1:{port}/lapdog/memory", timeout=2) as resp:
+            data = json.load(resp)
+    except Exception:
+        return None
+    if not data.get("max_memory_bytes"):
+        return "unbounded"
+    summary = (
+        f"~{_format_bytes(data['estimated_span_bytes'] or 0)} of {_format_bytes(data['span_budget_bytes'])} span budget"
+    )
+    if data.get("evicted_spans"):
+        summary += f", {data['evicted_spans']} spans evicted"
+    return summary
+
+
 def cmd_status() -> None:
     """Print lapdog status (from /info). Only works when lapdog was started by this CLI (pid file exists)."""
     pid, port = read_pid_file()
@@ -70,7 +97,7 @@ def cmd_status() -> None:
         status = http_get_status(url, timeout=2)
         if status >= 400:
             raise OSError(f"HTTP {status}")
-        print(build_status_banner(port=port, pid=pid, logs_path=log_file_path()))
+        print(build_status_banner(port=port, pid=pid, logs_path=log_file_path(), memory=_memory_summary(port)))
     except Exception as e:
         print(f"[lapdog] Lapdog not reachable at {url}: {e}", file=sys.stderr)
         sys.exit(1)

@@ -235,6 +235,13 @@ Useful flags:
 - `--no-plugin-install` — skip the `lapdog claude` auto-install of the Claude
   Code plugin.
 - `-p <port>` / `--port <port>` — bind to a different port (default `8126`).
+- `--max-memory <size>`: approximate budget for data Lapdog keeps in memory
+  (e.g. `512MB`, `2GB`). Once exceeded, the oldest finished traces are dropped;
+  traces still in progress are kept. 70% of the budget goes to spans and 10%
+  each to the Claude, Codex, and Pi raw hook event logs. The estimate covers
+  retained data only, so process memory runs somewhat higher. Only applies when
+  the command starts Lapdog; set `LAPDOG_MAX_MEMORY` when running
+  `python -m lapdog.server` directly. `lapdog status` shows current usage.
 
 ### Git commit tagging
 
