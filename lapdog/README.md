@@ -236,12 +236,14 @@ Useful flags:
   Code plugin.
 - `-p <port>` / `--port <port>` — bind to a different port (default `8126`).
 - `--max-memory <size>`: approximate budget for data Lapdog keeps in memory
-  (e.g. `512MB`, `2GB`). Once exceeded, the oldest finished traces are dropped;
-  traces still in progress are kept. 70% of the budget goes to spans and 10%
-  each to the Claude, Codex, and Pi raw hook event logs. The estimate covers
-  retained data only, so process memory runs somewhat higher. Only applies when
-  the command starts Lapdog; set `LAPDOG_MAX_MEMORY` when running
-  `python -m lapdog.server` directly. `lapdog status` shows current usage.
+  (default `4GB`; e.g. `512MB`, `8GB`, or `unlimited`). Once exceeded, the
+  oldest finished traces are dropped; traces still in progress are kept. 50% of
+  the budget goes to coding-agent spans, 20% to data from instrumented apps
+  (`lapdog python app.py`), and 10% each to the Claude, Codex, and Pi raw hook
+  event logs. The estimate covers retained data only, so process memory runs
+  somewhat higher. Only applies when the command starts Lapdog; set
+  `LAPDOG_MAX_MEMORY` when running `python -m lapdog.server` directly.
+  `lapdog status` shows current usage.
 
 ### Git commit tagging
 

@@ -108,6 +108,7 @@ DEFAULT_DOGSTATSD_PORT = 8125
 
 # Path of the stored requests that hold DogStatsD datagrams. No HTTP request is stored with it.
 DOGSTATSD_PATH = "/dogstatsd"
+_REQUEST_OVERHEAD_BYTES = 4096
 
 
 class NoSuchSessionException(Exception):
@@ -416,6 +417,10 @@ class Agent:
         """
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
+        self.max_request_bytes: Optional[int] = None
+        self.request_eviction_listener: Optional[Callable[[List[Request]], None]] = None
+        self.evicted_requests = 0
+        self._request_bytes = 0
         self._rc_server = RemoteConfigServer()
         self._trace_failures: Dict[str, List[Tuple[CheckTrace, str]]] = defaultdict(default_value_trace_failures)
         self._trace_check_results_by_check: Dict[str, Dict[str, Dict[str, int]]] = defaultdict(
@@ -557,7 +562,57 @@ class Agent:
         # result in: RuntimeError: readany() called while another coroutine is already waiting for incoming data
         # See: https://github.com/DataDog/dd-apm-test-agent/pull/101 for more info
         request["_testagent_data"] = await request.read()
+        self._append_request(request)
+
+    @property
+    def stored_request_bytes(self) -> int:
+        return self._request_bytes
+
+    def _append_request(self, request: Request) -> None:
         self._requests.append(request)
+        if self.max_request_bytes is None:
+            return
+        size = len(request.get("_testagent_data") or b"") + _REQUEST_OVERHEAD_BYTES
+        request["_testagent_size"] = size
+        self._request_bytes += size
+        if self._request_bytes > self.max_request_bytes:
+            self._evict_requests()
+
+    def add_request_bytes(self, request: Request, size: int) -> None:
+        """Count memory derived from a stored request (e.g. decoded payloads) against the request budget."""
+        if self.max_request_bytes is None:
+            return
+        request["_testagent_size"] = (request.get("_testagent_size") or 0) + size
+        self._request_bytes += size
+
+    def _evict_requests(self) -> None:
+        """Drop the oldest stored requests until under 90% of the budget. Session starts are kept."""
+        assert self.max_request_bytes is not None
+        target = self.max_request_bytes * 0.9
+        newest = self._requests[-1]
+        kept: List[Request] = []
+        evicted: List[Request] = []
+        for req in self._requests:
+            if (
+                self._request_bytes > target
+                and req is not newest
+                and req.match_info.handler != self.handle_session_start
+            ):
+                self._request_bytes -= req.get("_testagent_size") or 0
+                evicted.append(req)
+            else:
+                kept.append(req)
+        if not evicted:
+            return
+        self._requests = kept
+        self.evicted_requests += len(evicted)
+        log.info("Evicted %d stored requests; ~%d bytes retained", len(evicted), self._request_bytes)
+        if self.request_eviction_listener is not None:
+            self.request_eviction_listener(evicted)
+
+    def _recount_request_bytes(self) -> None:
+        if self.max_request_bytes is not None:
+            self._request_bytes = sum(req.get("_testagent_size") or 0 for req in self._requests)
 
     def _request_data(self, request: Request) -> bytes:
         """Return the data from the request.
@@ -834,7 +889,7 @@ class Agent:
             handler=self.handle_evp_proxy_v4_api_v2_llmobs,
             session_token=token,
         )
-        self._requests.append(cast(Request, synthetic))
+        self._append_request(cast(Request, synthetic))
 
     def _store_dogstatsd_datagram(self, data: bytes) -> None:
         """Store a DogStatsD datagram like a request without a session token.
@@ -849,7 +904,7 @@ class Agent:
             handler=None,
             session_token=None,
         )
-        self._requests.append(cast(Request, synthetic))
+        self._append_request(cast(Request, synthetic))
 
     def _decode_v05_traces(self, request: Request) -> v04TracePayload:
         raw_data = self._request_data(request)
@@ -1403,7 +1458,7 @@ class Agent:
 
     async def handle_session_start(self, request: Request) -> web.Response:
         rates = json.loads(request.url.query.get("agent_sample_rate_by_service", "{}"))
-        self._requests.append(request)
+        self._append_request(request)
         session = self._sessions[_session_token(request)]
         session.sample_rate_by_service_env = rates
         log.info("Starting new session with token %r: %r", _session_token(request), session)
@@ -1700,7 +1755,7 @@ class Agent:
 
     async def handle_v1_profiling(self, request: Request) -> web.Response:
         await request.read()
-        self._requests.append(request)
+        self._append_request(request)
         # TODO: valid response?
         return web.HTTPOk()
 
@@ -1709,6 +1764,7 @@ class Agent:
         session_token = request["session_token"]
         if session_token is None:
             self._requests = []
+            self._recount_request_bytes()
             return web.HTTPOk()
 
         remaining: List[Request] = []
@@ -1724,6 +1780,7 @@ class Agent:
             remaining.append(req)
 
         self._requests = remaining
+        self._recount_request_bytes()
         return web.HTTPOk()
 
     async def handle_trace_analyze(self, request: Request) -> web.Response:

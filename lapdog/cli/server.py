@@ -78,11 +78,15 @@ def _memory_summary(port: int) -> Optional[str]:
         return None
     if not data.get("max_memory_bytes"):
         return "unbounded"
-    summary = (
-        f"~{_format_bytes(data['estimated_span_bytes'] or 0)} of {_format_bytes(data['span_budget_bytes'])} span budget"
-    )
-    if data.get("evicted_spans"):
-        summary += f", {data['evicted_spans']} spans evicted"
+    used = (data.get("estimated_span_bytes") or 0) + (data.get("estimated_request_bytes") or 0)
+    summary = f"~{_format_bytes(used)} retained, limit {_format_bytes(data['max_memory_bytes'])}"
+    evicted = [
+        f"{data[key]} {label}"
+        for key, label in (("evicted_spans", "spans"), ("evicted_requests", "tracer requests"))
+        if data.get(key)
+    ]
+    if evicted:
+        summary += f" ({', '.join(evicted)} evicted)"
     return summary
 
 

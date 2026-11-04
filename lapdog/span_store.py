@@ -13,17 +13,19 @@ from typing import List
 from typing import Optional
 from typing import Set
 
-
 log = logging.getLogger(__name__)
 
 MAX_MEMORY_ENV = "LAPDOG_MAX_MEMORY"
+DEFAULT_MAX_MEMORY = "4GB"
+_UNLIMITED_VALUES = {"unlimited", "none", "off"}
 
 # Python object overhead for a span's dicts, lists, and small strings beyond its JSON size.
 _SPAN_OVERHEAD_BYTES = 3500
 _LOW_WATERMARK = 0.9
-# Fraction of the memory budget given to each raw hook event log; spans get the rest.
+# Fractions of the memory budget; spans get what is left.
 RAW_EVENT_LOG_SHARE = 0.1
 _RAW_EVENT_LOG_COUNT = 3
+REQUEST_SHARE = 0.2
 
 _SIZE_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmgt]?i?b?)?\s*$", re.IGNORECASE)
 _SIZE_UNITS = {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4}
@@ -41,21 +43,32 @@ def parse_memory_size(value: str) -> int:
     return size
 
 
+def parse_memory_limit(value: str) -> Optional[int]:
+    """Like ``parse_memory_size``, but ``unlimited``, ``none``, or ``off`` disable the limit."""
+    if value.strip().lower() in _UNLIMITED_VALUES:
+        return None
+    return parse_memory_size(value)
+
+
 def max_memory_from_env() -> Optional[int]:
-    value = os.environ.get(MAX_MEMORY_ENV, "").strip()
-    if not value:
-        return None
+    value = os.environ.get(MAX_MEMORY_ENV, "").strip() or DEFAULT_MAX_MEMORY
     try:
-        return parse_memory_size(value)
+        return parse_memory_limit(value)
     except ValueError as e:
-        log.warning("Ignoring %s: %s", MAX_MEMORY_ENV, e)
-        return None
+        log.warning("Ignoring %s (using %s): %s", MAX_MEMORY_ENV, DEFAULT_MAX_MEMORY, e)
+        return parse_memory_size(DEFAULT_MAX_MEMORY)
 
 
 def span_budget(max_memory_bytes: Optional[int]) -> Optional[int]:
     if max_memory_bytes is None:
         return None
-    return int(max_memory_bytes * (1 - RAW_EVENT_LOG_SHARE * _RAW_EVENT_LOG_COUNT))
+    return int(max_memory_bytes * (1 - RAW_EVENT_LOG_SHARE * _RAW_EVENT_LOG_COUNT - REQUEST_SHARE))
+
+
+def request_budget(max_memory_bytes: Optional[int]) -> Optional[int]:
+    if max_memory_bytes is None:
+        return None
+    return int(max_memory_bytes * REQUEST_SHARE)
 
 
 def raw_event_budget(max_memory_bytes: Optional[int]) -> Optional[int]:

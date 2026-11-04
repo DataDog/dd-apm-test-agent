@@ -1,17 +1,25 @@
+import gzip
 import importlib
 import json
 from unittest import mock
 
+import msgpack
 import pytest
+
+from ddapm_test_agent.agent import Agent
 
 from lapdog.claude_hooks import ClaudeHooksAPI
 from lapdog.span_store import MAX_MEMORY_ENV
 from lapdog.span_store import RawEventLog
 from lapdog.span_store import SpanStore
 from lapdog.span_store import estimate_size
+from lapdog.span_store import DEFAULT_MAX_MEMORY
 from lapdog.span_store import max_memory_from_env
+from lapdog.span_store import parse_memory_limit
+from lapdog.span_store import raw_event_budget
+from lapdog.span_store import request_budget
+from lapdog.span_store import span_budget
 from lapdog.span_store import parse_memory_size
-
 
 cli_main = importlib.import_module("lapdog.cli.main")
 
@@ -44,10 +52,22 @@ def test_parse_memory_size_rejects_invalid(value):
 def test_max_memory_from_env(monkeypatch):
     monkeypatch.setenv(MAX_MEMORY_ENV, "1MB")
     assert max_memory_from_env() == 1024**2
+    monkeypatch.setenv(MAX_MEMORY_ENV, "unlimited")
+    assert max_memory_from_env() is None
     monkeypatch.setenv(MAX_MEMORY_ENV, "garbage")
-    assert max_memory_from_env() is None
+    assert max_memory_from_env() == parse_memory_size(DEFAULT_MAX_MEMORY)
     monkeypatch.delenv(MAX_MEMORY_ENV)
-    assert max_memory_from_env() is None
+    assert max_memory_from_env() == parse_memory_size(DEFAULT_MAX_MEMORY)
+
+
+@pytest.mark.parametrize("value", ["unlimited", "NONE", " off "])
+def test_parse_memory_limit_disables_limit(value):
+    assert parse_memory_limit(value) is None
+
+
+def test_budget_shares_do_not_exceed_limit():
+    total = 1000 * 1024**2
+    assert span_budget(total) + request_budget(total) + 3 * raw_event_budget(total) <= total
 
 
 def test_estimate_size_counts_utf8_bytes():
@@ -213,8 +233,9 @@ async def test_memory_endpoint_reports_budget(lapdog_agent):
     resp = await lapdog_agent.get("/lapdog/memory")
     assert resp.status == 200, await resp.text()
     data = await resp.json()
-    assert data["max_memory_bytes"] is None
+    assert data["max_memory_bytes"] == max_memory_from_env()
     assert data["evicted_spans"] == 0
+    assert data["evicted_requests"] == 0
 
 
 def test_max_memory_flag_sets_server_env(monkeypatch):
@@ -240,3 +261,78 @@ def test_parse_command_consumes_max_memory_value(argv):
     lapdog_args, remaining = cli_main._parse_command(argv)
     assert remaining == ["codex", "exec"]
     assert cli_main._parse_lapdog_args(lapdog_args).max_memory == "1GB"
+
+
+def test_agent_request_budget_is_off_by_default():
+    agent = Agent()
+    for _ in range(50):
+        agent._store_dogstatsd_datagram(b"x" * 10_000)
+    assert len(agent._requests) == 50
+    assert agent.evicted_requests == 0
+
+
+def test_agent_evicts_oldest_requests_over_budget():
+    agent = Agent()
+    agent.max_request_bytes = 100_000
+    evicted = []
+    agent.request_eviction_listener = evicted.extend
+    for i in range(30):
+        agent._store_dogstatsd_datagram(str(i).encode() + b"x" * 10_000)
+
+    bodies = [req.get("_testagent_data")[:2] for req in agent._requests]
+    assert bodies[-1] == b"29"
+    assert agent.stored_request_bytes <= agent.max_request_bytes
+    assert agent.evicted_requests == len(evicted) == 30 - len(agent._requests)
+    assert evicted[0].get("_testagent_data").startswith(b"0x")
+
+
+async def test_agent_recounts_request_bytes_after_session_clear(agent):
+    test_agent = agent.app["agent"]
+    test_agent.max_request_bytes = 10 * 1024**2
+    test_agent._store_dogstatsd_datagram(b"x" * 10_000)
+    assert test_agent.stored_request_bytes > 0
+    resp = await agent.get("/test/session/clear")
+    assert resp.status == 200
+    assert test_agent.stored_request_bytes == 0
+
+
+def _llmobs_request_body(index):
+    payload = {
+        "ml_app": "app",
+        "spans": [
+            {
+                "name": f"span-{index}",
+                "span_id": f"span-{index}",
+                "trace_id": f"trace-{index}",
+                "parent_id": "undefined",
+                "start_ns": index,
+                "duration": 1,
+                "meta": {"span": {"kind": "llm"}, "input": {"value": "q" * 20_000}, "model_name": "gpt-4o"},
+                "metrics": {"input_tokens": 10, "output_tokens": 10},
+            }
+        ],
+    }
+    return gzip.compress(msgpack.packb(payload))
+
+
+async def test_lapdog_evicts_oldest_tracer_llmobs_requests(lapdog_agent):
+    app = lapdog_agent.server.app
+    test_agent = app["agent"]
+    platform = app["llmobs_event_platform_api"]
+    test_agent.max_request_bytes = 300_000
+    for index in range(20):
+        resp = await lapdog_agent.post(
+            "/evp_proxy/v2/api/v2/llmobs",
+            headers={"Content-Type": "application/msgpack", "Content-Encoding": "gzip"},
+            data=_llmobs_request_body(index),
+        )
+        assert resp.status == 200, await resp.text()
+        platform.get_llmobs_spans()
+
+    span_ids = {span["span_id"] for span in platform.get_llmobs_spans()}
+    assert "span-19" in span_ids
+    assert "span-0" not in span_ids
+    assert test_agent.evicted_requests > 0
+    assert test_agent.stored_request_bytes <= test_agent.max_request_bytes
+    retained_ids = {id(span) for req in test_agent._requests for span in req.get("_lapdog_llmobs_spans") or []}
+    assert platform._locally_priced_spans <= retained_ids

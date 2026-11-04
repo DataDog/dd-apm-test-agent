@@ -28,13 +28,24 @@ from lapdog.cli.server import cmd_stop
 from lapdog.cli.tags import cmd_tags
 from lapdog.cli.uninstall import cmd_uninstall
 from lapdog.span_store import MAX_MEMORY_ENV
-from lapdog.span_store import parse_memory_size
-
+from lapdog.span_store import DEFAULT_MAX_MEMORY
+from lapdog.span_store import parse_memory_limit
 
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "ollama", "tags", "uninstall"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
+    "\n"
+    "Options:\n"
+    "  --forward            Also forward LLM Observability data to Datadog (needs DD_API_KEY and DD_SITE)\n"
+    "  --max-memory SIZE    Approximate memory budget for retained data, e.g. 512MB or 8GB\n"
+    f"                       (default {DEFAULT_MAX_MEMORY}, 'unlimited' to disable). Applies when lapdog starts\n"
+    "  --no-plugin-install  Do not auto-install the lapdog Claude Code plugin\n"
+    "  --backfill           Import past sessions from disk for claude, codex, or pi, then exit\n"
+    "  --version            Print version info and exit\n"
+    "  --help               Print this message and exit\n"
+    "\n"
+    "Commands:\n"
     "  start      Start lapdog (background)\n"
     "  stop       Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
     "  status     Show lapdog status (from /info)\n"
@@ -91,7 +102,7 @@ def _parse_command(cmd_args: List[str]) -> Tuple[List[str], Optional[List[str]]]
 
 def _memory_size(value: str) -> str:
     try:
-        parse_memory_size(value)
+        parse_memory_limit(value)
     except ValueError as e:
         raise argparse.ArgumentTypeError(str(e))
     return value
@@ -138,8 +149,9 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
         type=_memory_size,
         default=None,
         help=(
-            "Approximate budget for data retained in memory (e.g. 512MB, 2GB). Once exceeded, the oldest "
-            "finished traces are dropped. Only applies when this command starts lapdog."
+            f"Approximate budget for data retained in memory (e.g. 512MB, 8GB, or 'unlimited'; default "
+            f"{DEFAULT_MAX_MEMORY}). Once exceeded, the oldest finished traces are dropped. Only applies when "
+            "this command starts lapdog."
         ),
     )
 

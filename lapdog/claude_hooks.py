@@ -2089,8 +2089,9 @@ class ClaudeHooksAPI:
         return web.json_response({"events": self._raw_events})
 
     async def handle_memory(self, request: Request) -> web.Response:
-        """Handle GET /lapdog/memory — report the retained-data budget and eviction counts."""
+        """Handle GET /lapdog/memory: report the retained-data budget and eviction counts."""
         store = self._assembled_spans
+        agent = request.app["agent"]
         return web.json_response(
             {
                 "max_memory_bytes": self.max_memory_bytes,
@@ -2099,6 +2100,12 @@ class ClaudeHooksAPI:
                 "retained_spans": len(store),
                 "evicted_spans": store.evicted_spans,
                 "evicted_traces": store.evicted_traces,
+                "request_budget_bytes": agent.max_request_bytes,
+                "estimated_request_bytes": (
+                    agent.stored_request_bytes if agent.max_request_bytes is not None else None
+                ),
+                "retained_requests": len(agent._requests),
+                "evicted_requests": agent.evicted_requests,
             }
         )
 
