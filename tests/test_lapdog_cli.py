@@ -1007,19 +1007,102 @@ def test_run_pi_injects_lapdog_session_context(monkeypatch):
 def test_cmd_pi_injects_unique_session_token():
     with mock.patch("lapdog.cli.pi.ensure_lapdog_running", return_value=8126) as ensure:
         with mock.patch("lapdog.cli.pi._install_pi_extension") as install_ext:
-            with mock.patch("lapdog.cli.pi._run_pi") as run_pi:
-                with mock.patch("lapdog.cli.pi.uuid.uuid4", return_value=mock.Mock(hex="pi-launch-token")):
-                    with mock.patch("lapdog.cli.pi.build_running_banner", return_value="banner"):
-                        cli_pi.cmd_pi(["--model", "anthropic/claude-opus-4-1"], forward_data=True)
+            with mock.patch(
+                "lapdog.cli.pi._ensure_pi_context_inspector", return_value="/pi/inspector/index.ts"
+            ) as ensure_inspector:
+                with mock.patch("lapdog.cli.pi._run_pi") as run_pi:
+                    with mock.patch("lapdog.cli.pi.uuid.uuid4", return_value=mock.Mock(hex="pi-launch-token")):
+                        with mock.patch("lapdog.cli.pi.build_running_banner", return_value="banner"):
+                            cli_pi.cmd_pi(["--model", "anthropic/claude-opus-4-1"], forward_data=True)
 
     ensure.assert_called_once_with(True, detached=True)
     install_ext.assert_called_once_with()
+    ensure_inspector.assert_called_once_with(None)
     run_pi.assert_called_once_with(
         args=["--model", "anthropic/claude-opus-4-1"],
         port=8126,
         session_token="pi-launch-token",
         launch_bin=None,
+        context_inspector_path="/pi/inspector/index.ts",
     )
+
+
+def test_run_pi_passes_context_inspector_path(monkeypatch):
+    monkeypatch.setattr(cli_pi.shutil, "which", lambda name: "/usr/local/bin/pi")
+    monkeypatch.setenv("LAPDOG_PI_CONTEXT_INSPECTOR_PATH", "/stale/path.ts")
+    run = mock.Mock()
+    monkeypatch.setattr(cli_pi, "run", run)
+
+    cli_pi._run_pi([], port=8126, context_inspector_path="/pi/inspector/index.ts")
+    assert run.call_args.kwargs["env"]["LAPDOG_PI_CONTEXT_INSPECTOR_PATH"] == "/pi/inspector/index.ts"
+
+    cli_pi._run_pi([], port=8126)
+    assert "LAPDOG_PI_CONTEXT_INSPECTOR_PATH" not in run.call_args.kwargs["env"]
+
+
+@pytest.fixture
+def pi_inspector_paths(monkeypatch, tmp_path):
+    entry = tmp_path / "npm" / "node_modules" / "pi-context-inspector" / "src" / "index.ts"
+    marker = tmp_path / "lapdog" / "pi-context-inspector-installed"
+    monkeypatch.setattr(cli_pi, "_PI_CONTEXT_INSPECTOR_ENTRY", str(entry))
+    monkeypatch.setattr(cli_pi, "_PI_CONTEXT_INSPECTOR_MARKER", str(marker))
+    monkeypatch.setattr(cli_pi, "LAPDOG_DIR", str(marker.parent))
+    return entry, marker
+
+
+def test_ensure_pi_context_inspector_reuses_existing_install(pi_inspector_paths):
+    entry, marker = pi_inspector_paths
+    entry.parent.mkdir(parents=True)
+    entry.write_text("export {};\n")
+
+    with mock.patch("lapdog.cli.pi.subprocess.run") as run:
+        assert cli_pi._ensure_pi_context_inspector("/usr/local/bin/pi") == str(entry)
+
+    run.assert_not_called()
+    assert not marker.exists()
+
+
+def test_ensure_pi_context_inspector_installs_pinned_package(pi_inspector_paths):
+    entry, marker = pi_inspector_paths
+
+    def fake_install(argv, **kwargs):
+        entry.parent.mkdir(parents=True)
+        entry.write_text("export {};\n")
+        return subprocess.CompletedProcess(argv, 0, stdout="Installed", stderr="")
+
+    with mock.patch("lapdog.cli.pi.subprocess.run", side_effect=fake_install) as run:
+        assert cli_pi._ensure_pi_context_inspector("/usr/local/bin/pi") == str(entry)
+
+    assert run.call_args.args[0] == ["/usr/local/bin/pi", "install", "npm:pi-context-inspector@1.3.0"]
+    assert marker.exists()
+
+
+def test_ensure_pi_context_inspector_install_failure_is_not_fatal(pi_inspector_paths, capsys):
+    _, marker = pi_inspector_paths
+    failed = subprocess.CompletedProcess([], 1, stdout="", stderr="npm ERR! network\n")
+
+    with mock.patch("lapdog.cli.pi.subprocess.run", return_value=failed):
+        assert cli_pi._ensure_pi_context_inspector("/usr/local/bin/pi") is None
+
+    assert "continuing without it" in capsys.readouterr().err
+    assert not marker.exists()
+
+
+def test_uninstall_pi_context_inspector_only_removes_lapdog_install(pi_inspector_paths, monkeypatch):
+    _, marker = pi_inspector_paths
+    monkeypatch.setattr(cli_pi.shutil, "which", lambda name: "/usr/local/bin/pi")
+
+    with mock.patch("lapdog.cli.pi.subprocess.run") as run:
+        cli_pi._uninstall_pi_context_inspector()
+    run.assert_not_called()
+
+    marker.parent.mkdir(parents=True)
+    marker.write_text("npm:pi-context-inspector@1.3.0\n")
+    with mock.patch(
+        "lapdog.cli.pi.subprocess.run", return_value=subprocess.CompletedProcess([], 0, stdout="", stderr="")
+    ) as run:
+        cli_pi._uninstall_pi_context_inspector()
+    assert run.call_args.args[0] == ["/usr/local/bin/pi", "remove", "npm:pi-context-inspector"]
 
 
 def test_run_codex_falls_back_without_openai_api_key(monkeypatch):

@@ -258,6 +258,7 @@ Knowing this up front makes the uninstall list below easy to verify.
 | `~/.lapdog/lapdog.log` | same | stdout/stderr of the background agent |
 | `~/.claude/plugins/...` | `lapdog claude` (first run) | the auto-installed `lapdog@lapdog` Claude Code plugin lives entirely under here |
 | `~/.pi/agent/extensions/lapdog.ts` | `lapdog pi` | Pi extension that reports tool calls to the local agent |
+| `~/.pi/agent/npm/node_modules/pi-context-inspector` (+ an entry in `~/.pi/agent/settings.json`) | `lapdog pi`, only if not already installed | [pi-context-inspector](https://pi.dev/packages/pi-context-inspector), installed with `pi install`; lapdog uses it to break down context-window usage on each LLM call (and Pi gains its `/context` command) |
 
 No other state is created. There is no daemon installed at the OS level
 (launchd / systemd) — the background process is a plain detached child.
@@ -278,7 +279,7 @@ This will:
 lsof -ti tcp:8126 | xargs kill
 ```
 2. Remove the Claude Code plugin (if installed)
-3. Remove the Pi extension (only if you used `lapdog pi`)
+3. Remove the Pi extension (only if you used `lapdog pi`), and `pi-context-inspector` if lapdog installed it
 4. Removes Lapdog's working directory (at `~/.lapdog`)
 
 ### 2. Uninstall the package

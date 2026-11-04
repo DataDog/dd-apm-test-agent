@@ -1,0 +1,7 @@
+---
+features:
+  - |
+    lapdog: Pi LLM spans now report context-window usage and a per-section breakdown (system prompt,
+    tool definitions, tool calls, skills, messages), and turn root spans report the context delta.
+    ``lapdog pi`` installs the ``pi-context-inspector`` Pi package to compute the breakdown; Pi tracing
+    continues without it if the install fails.

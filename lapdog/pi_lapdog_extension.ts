@@ -7,6 +7,10 @@
  *   - LLM calls (assistant message_start → message_end with token usage)
  *   - Tool executions (tool_execution_start → tool_execution_end)
  *
+ * When the pi-context-inspector package is available (lapdog installs it and
+ * passes its module path in LAPDOG_PI_CONTEXT_INSPECTOR_PATH), each LLM call
+ * also carries a context-window breakdown computed by its buildTokenBreakdown().
+ *
  * Install: copy to ~/.pi/agent/extensions/lapdog.ts
  * Configure: set LAPDOG_URL to override the default http://localhost:8126
  *
@@ -19,6 +23,7 @@ import { convertToLlm, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 const LAPDOG_URL = process.env.LAPDOG_URL || "http://localhost:8126";
 const LAPDOG_SESSION_TOKEN = process.env.LAPDOG_SESSION_TOKEN || "";
 const HOOKS_ENDPOINT = `${LAPDOG_URL}/pi/hooks`;
+const CONTEXT_INSPECTOR_PATH = process.env.LAPDOG_PI_CONTEXT_INSPECTOR_PATH || "";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -58,6 +63,49 @@ function post(event: string, sessionId: string, data: Record<string, unknown>, c
 	} catch {
 		// fetch itself can throw synchronously in some edge cases
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Context breakdown (pi-context-inspector)
+// ---------------------------------------------------------------------------
+
+type ToolDefinitionView = { name: string; description?: string; parameters?: unknown };
+type InspectorEntry =
+	| { type: "message"; message: unknown }
+	| { type: "compaction"; summary: string }
+	| { type: "branch_summary"; summary: string };
+type InspectorUsage = { tokens: number; contextWindow: number; percent: number | null };
+type BuildTokenBreakdown = (
+	systemPrompt: string,
+	activeToolDefs: ToolDefinitionView[],
+	branch: InspectorEntry[],
+	usage: InspectorUsage,
+) => Record<string, number> | null;
+
+/** Import buildTokenBreakdown from the installed pi-context-inspector, or null if unavailable. */
+async function loadBuildTokenBreakdown(): Promise<BuildTokenBreakdown | null> {
+	if (!CONTEXT_INSPECTOR_PATH) return null;
+	try {
+		const mod = await import(CONTEXT_INSPECTOR_PATH);
+		return typeof mod.buildTokenBreakdown === "function" ? (mod.buildTokenBreakdown as BuildTokenBreakdown) : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Wrap the AgentMessage[] from the `context` event as the session entries
+ * buildTokenBreakdown() expects. The inspector's own /context command walks
+ * the whole branch, which still holds messages replaced by compaction; the
+ * `context` messages are exactly what is sent, with summaries inlined.
+ */
+function toInspectorEntries(messages: unknown[]): InspectorEntry[] {
+	return messages.map((message) => {
+		const m = message as { role?: string; summary?: string };
+		if (m?.role === "compactionSummary") return { type: "compaction", summary: m.summary ?? "" };
+		if (m?.role === "branchSummary") return { type: "branch_summary", summary: m.summary ?? "" };
+		return { type: "message", message };
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -109,12 +157,48 @@ export default function lapdog(pi: ExtensionAPI): void {
 	// compactionSummary). We feed it through pi's own `convertToLlm()` so the
 	// snapshot matches what the provider actually receives.
 	let pendingContextMessages: LlmMessage[] = [];
+	// Same `context` snapshot before convertToLlm(), shaped for buildTokenBreakdown().
+	let pendingContextEntries: InspectorEntry[] = [];
+
+	// Resolved once at session_start so message_end can stay synchronous and
+	// keep its POST ordered before the tool events that follow it.
+	let buildTokenBreakdown: BuildTokenBreakdown | null = null;
+	let breakdownLoad: Promise<void> | null = null;
+
+	/** Context breakdown for one LLM call, or undefined when it can't be computed. */
+	function computeContextBreakdown(
+		usage: { input?: number; cacheRead?: number; cacheWrite?: number } | undefined,
+		ctx: { model?: { contextWindow?: number }; getContextUsage?: () => { contextWindow: number } | undefined },
+	): Record<string, number> | undefined {
+		if (!buildTokenBreakdown || !usage) return undefined;
+		// Total prompt size for this call: Anthropic reports cached tokens outside `input`.
+		const tokens = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+		const contextWindow = ctx.model?.contextWindow || ctx.getContextUsage?.()?.contextWindow || 0;
+		if (tokens <= 0 || contextWindow <= 0) return undefined;
+		try {
+			// Only the fields declared to the model; ToolInfo also carries sourceInfo etc.
+			const activeNames = new Set(pi.getActiveTools());
+			const toolDefs = pi
+				.getAllTools()
+				.filter((tool) => activeNames.has(tool.name))
+				.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
+			return (
+				buildTokenBreakdown(currentSystemPrompt, toolDefs, pendingContextEntries, {
+					tokens,
+					contextWindow,
+					percent: null,
+				}) ?? undefined
+			);
+		} catch {
+			return undefined;
+		}
+	}
 
 	// ------------------------------------------------------------------
 	// Session lifecycle
 	// ------------------------------------------------------------------
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		sessionId = ctx.sessionManager.getSessionId();
 		process.env.PI_SESSION_ID = sessionId;
 		const model = ctx.model;
@@ -127,6 +211,10 @@ export default function lapdog(pi: ExtensionAPI): void {
 			model_provider: currentProvider,
 			model_id: currentModel,
 		}, ctx);
+		breakdownLoad ??= loadBuildTokenBreakdown().then((fn) => {
+			buildTokenBreakdown = fn;
+		});
+		await breakdownLoad;
 	});
 
 	pi.on("session_shutdown", (_event?: unknown, ctx?: CwdContext) => {
@@ -238,6 +326,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 		} catch {
 			pendingContextMessages = [];
 		}
+		pendingContextEntries = toInspectorEntries(event.messages);
 	});
 
 	// ------------------------------------------------------------------
@@ -287,6 +376,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 			// Forward it so the LLM span can be marked as an error with detail.
 			error_message: msg.errorMessage ?? "",
 			content: msg.content,
+			context_breakdown: computeContextBreakdown(msg.usage, ctx),
 		}, ctx);
 	});
 

@@ -1385,8 +1385,6 @@ class ClaudeHooksAPI:
         if last_span is None:
             return None
         last_input_tokens = last_span.get("metrics", {}).get("input_tokens", 0)
-        primary_model = last_span.get("meta", {}).get("model_name", "")
-        window = _get_context_limit(primary_model)
         delta_tokens = max(last_input_tokens - first_input_tokens, 0)
         # Extract sections from first and last LLM spans' context_breakdown
         first_span = next(
@@ -1399,6 +1397,11 @@ class ClaudeHooksAPI:
             else None
         )
         last_breakdown = last_span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("context_breakdown")
+        # Prefer the window the agent reported for this call (e.g. Pi's model registry)
+        # over the Claude model-name lookup.
+        window = (last_breakdown or {}).get("context_window_size") or _get_context_limit(
+            last_span.get("meta", {}).get("model_name", "")
+        )
         context_delta: Dict[str, Any] = {
             "first_input_tokens": first_input_tokens,
             "last_input_tokens": last_input_tokens,

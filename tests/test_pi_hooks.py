@@ -1157,3 +1157,98 @@ async def test_interrupted_turn_preserves_model_provider(agent):
     llm_spans = _by_kind(session_spans, "llm")
     assert llm_spans
     assert {s["meta"]["model_provider"] for s in llm_spans} == {provider}
+
+
+def _inspector_breakdown(total, context_window=400_000):
+    """Shape of pi-context-inspector's buildTokenBreakdown() return value."""
+    return {
+        "total": total,
+        "contextWindow": context_window,
+        "percent": total / context_window * 100,
+        "reserveTokens": 16384,
+        "safeAvailable": context_window - 16384 - total,
+        "systemPrompt": total // 4,
+        "systemTools": total // 4,
+        "tools": total // 4,
+        "skills": 0,
+        "messages": total - 3 * (total // 4),
+        "other": 0,
+    }
+
+
+async def _run_turn(agent, sid, message_ends):
+    await _post(agent, _session_start(sid))
+    await _post(agent, _agent_start(sid))
+    for i, message_end in enumerate(message_ends):
+        await _post(agent, _turn_start(sid, turn_index=i))
+        await _post(agent, _message_start(sid))
+        await _post(agent, message_end)
+        await _post(agent, _turn_end(sid, turn_index=i))
+    await _post(agent, _agent_end(sid))
+    resp = await agent.get("/claude/hooks/spans")
+    return [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+
+
+async def test_pi_context_breakdown_on_llm_span(agent):
+    sid = "pi-context-breakdown"
+    usage = {"input": 2000, "output": 50, "cacheRead": 6000, "cacheWrite": 0, "totalTokens": 8050}
+    end = {**_message_end(sid, usage=usage), "context_breakdown": _inspector_breakdown(8000)}
+
+    session_spans = await _run_turn(agent, sid, [end])
+
+    [llm] = _by_kind(session_spans, "llm")
+    breakdown = llm["meta"]["metadata"]["_dd"]["context_breakdown"]
+    assert breakdown["context_window_size"] == 400_000
+    assert breakdown["total_input_tokens"] == 8000
+    assert breakdown["context_usage_pct"] == 2.0
+    assert breakdown["reserve_tokens"] == 16384
+    assert breakdown["available_tokens"] == 400_000 - 16384 - 8000
+    assert breakdown["source"] == "pi-context-inspector"
+    # Zero-token categories (skills, other) are omitted.
+    assert [(s["name"], s["tokens"]) for s in breakdown["sections"]] == [
+        ("system", 2000),
+        ("tools", 2000),
+        ("tool_calls", 2000),
+        ("messages", 2000),
+    ]
+    assert all(s["pct"] == 25.0 for s in breakdown["sections"])
+
+
+async def test_pi_context_delta_uses_reported_context_window(agent):
+    sid = "pi-context-delta"
+    first = {
+        **_message_end(sid, usage={"input": 10_000, "output": 10, "cacheRead": 0, "cacheWrite": 0}),
+        "context_breakdown": _inspector_breakdown(10_000),
+    }
+    second = {
+        **_message_end(sid, usage={"input": 4_000, "output": 10, "cacheRead": 16_000, "cacheWrite": 0}),
+        "context_breakdown": _inspector_breakdown(20_000),
+    }
+
+    session_spans = await _run_turn(agent, sid, [first, second])
+
+    [root] = [s for s in session_spans if s["parent_id"] == "undefined"]
+    delta = root["meta"]["metadata"]["_dd"]["context_delta"]
+    assert delta["first_input_tokens"] == 0
+    assert delta["last_input_tokens"] == 20_000
+    assert delta["delta_tokens"] == 20_000
+    # Pi's model registry window, not the 200k Claude fallback.
+    assert delta["context_window_size"] == 400_000
+    assert delta["last_usage_pct"] == 5.0
+    assert [s["name"] for s in delta["first_sections"]] == ["system", "tools", "tool_calls", "messages"]
+
+
+@pytest.mark.parametrize(
+    "context_breakdown",
+    [None, {}, {"total": 0, "contextWindow": 400_000}, {"total": 100, "contextWindow": 0}, "bogus"],
+)
+async def test_pi_llm_span_without_usable_breakdown(agent, context_breakdown):
+    sid = "pi-no-context-breakdown"
+    end = _message_end(sid)
+    if context_breakdown is not None:
+        end["context_breakdown"] = context_breakdown
+
+    session_spans = await _run_turn(agent, sid, [end])
+
+    [llm] = _by_kind(session_spans, "llm")
+    assert "context_breakdown" not in llm["meta"]["metadata"].get("_dd", {})
