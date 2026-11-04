@@ -87,21 +87,22 @@ def _compute_pi_cost_metrics(
     )
 
 
-# buildTokenBreakdown() field → context_breakdown section name, in display order.
+# buildTokenBreakdown() fields → context_breakdown section name, in display order.
+# Names must be ones the lapdog dashboard's context bar knows, or it drops the section.
 _PI_CONTEXT_SECTIONS = (
-    ("systemPrompt", "system"),
-    ("systemTools", "tools"),
-    ("tools", "tool_calls"),
-    ("skills", "skills"),
-    ("messages", "messages"),
-    ("other", "other"),
+    (("systemPrompt",), "System prompt"),
+    (("systemTools",), "System tools"),
+    (("tools",), "tools"),
+    (("skills",), "Skills"),
+    # `other` is the rounding remainder; keep it so the sections sum to the total.
+    (("messages", "other"), "Messages"),
 )
 
 
 def _pi_context_breakdown(raw: Any) -> Optional[Dict[str, Any]]:
     """Convert pi-context-inspector's buildTokenBreakdown() output to the Claude ``context_breakdown`` shape.
 
-    ``tools`` is the tool definitions declared to the model; ``tool_calls`` is
+    ``System tools`` is the tool definitions declared to the model; ``tools`` is
     tool calls and their results in the conversation.
     """
     if not isinstance(raw, dict):
@@ -115,11 +116,11 @@ def _pi_context_breakdown(raw: Any) -> Optional[Dict[str, Any]]:
         return None
 
     sections: List[Dict[str, Any]] = []
-    for field, name in _PI_CONTEXT_SECTIONS:
-        tokens = raw.get(field)
-        if not isinstance(tokens, (int, float)) or tokens <= 0:
+    for fields, name in _PI_CONTEXT_SECTIONS:
+        tokens = sum(int(v) for v in (raw.get(f) for f in fields) if isinstance(v, (int, float)) and v > 0)
+        if tokens <= 0:
             continue
-        sections.append({"name": name, "tokens": int(tokens), "pct": round(tokens / total * 100, 1)})
+        sections.append({"name": name, "tokens": tokens, "pct": round(tokens / total * 100, 1)})
 
     breakdown: Dict[str, Any] = {
         "context_window_size": window,

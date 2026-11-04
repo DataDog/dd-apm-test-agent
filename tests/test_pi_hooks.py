@@ -1204,14 +1204,27 @@ async def test_pi_context_breakdown_on_llm_span(agent):
     assert breakdown["reserve_tokens"] == 16384
     assert breakdown["available_tokens"] == 400_000 - 16384 - 8000
     assert breakdown["source"] == "pi-context-inspector"
-    # Zero-token categories (skills, other) are omitted.
+    # Names the lapdog dashboard's context bar renders; zero-token categories (skills) are omitted.
     assert [(s["name"], s["tokens"]) for s in breakdown["sections"]] == [
-        ("system", 2000),
+        ("System prompt", 2000),
+        ("System tools", 2000),
         ("tools", 2000),
-        ("tool_calls", 2000),
-        ("messages", 2000),
+        ("Messages", 2000),
     ]
     assert all(s["pct"] == 25.0 for s in breakdown["sections"])
+
+
+async def test_pi_context_breakdown_folds_remainder_into_messages(agent):
+    sid = "pi-context-breakdown-remainder"
+    raw = {**_inspector_breakdown(8000), "messages": 1990, "other": 10, "skills": 300, "tools": 1700}
+    end = {**_message_end(sid), "context_breakdown": raw}
+
+    session_spans = await _run_turn(agent, sid, [end])
+
+    [llm] = _by_kind(session_spans, "llm")
+    sections = {s["name"]: s["tokens"] for s in llm["meta"]["metadata"]["_dd"]["context_breakdown"]["sections"]}
+    assert sections == {"System prompt": 2000, "System tools": 2000, "tools": 1700, "Skills": 300, "Messages": 2000}
+    assert sum(sections.values()) == 8000
 
 
 async def test_pi_context_delta_uses_reported_context_window(agent):
@@ -1235,7 +1248,7 @@ async def test_pi_context_delta_uses_reported_context_window(agent):
     # Pi's model registry window, not the 200k Claude fallback.
     assert delta["context_window_size"] == 400_000
     assert delta["last_usage_pct"] == 5.0
-    assert [s["name"] for s in delta["first_sections"]] == ["system", "tools", "tool_calls", "messages"]
+    assert [s["name"] for s in delta["first_sections"]] == ["System prompt", "System tools", "tools", "Messages"]
 
 
 @pytest.mark.parametrize(
