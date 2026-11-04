@@ -1105,15 +1105,17 @@ class LLMObsEventPlatformAPI:
                     data = self.agent._request_data(req)
                     content_type = req.content_type or ""
                     spans = req.get(_DECODED_SPANS_KEY)
+                    decoded = spans is None
                     if spans is None:
                         events = decode_llmobs_payload(data, content_type)
                         spans = extract_spans_from_events(events)
                         req[_DECODED_SPANS_KEY] = spans
-                        self.agent.add_request_bytes(req, sum(estimate_size(span) for span in spans))
                     for span in spans:
                         if estimate_span_cost(span):
                             self._locally_priced_spans.add(id(span))
                     all_spans.extend(spans)
+                    if decoded:
+                        self.agent.add_request_bytes(req, sum(estimate_size(span) for span in spans))
                 except Exception as e:
                     log.warning(f"Failed to extract spans from request: {e}")
 

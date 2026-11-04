@@ -1059,6 +1059,7 @@ class PiHooksAPI:
             await self._hooks_api._forward_trace_to_backend(session_id)
             await self._hooks_api._forward_eval_metrics_to_backend(session_id)
 
+        self._hooks_api._assembled_spans.refresh()
         return web.json_response({"status": "ok"})
 
     async def handle_raw_events(self, request: Request) -> web.Response:

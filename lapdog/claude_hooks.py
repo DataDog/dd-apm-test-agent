@@ -1986,6 +1986,7 @@ class ClaudeHooksAPI:
             await self._forward_trace_to_backend(session_id)
             await self._forward_eval_metrics_to_backend(session_id)
 
+        self._assembled_spans.refresh()
         return web.json_response({"status": "ok"})
 
     async def handle_sessions(self, request: Request) -> web.Response:

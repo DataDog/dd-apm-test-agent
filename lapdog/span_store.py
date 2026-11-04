@@ -153,6 +153,12 @@ class SpanStore(List[Dict[str, Any]]):
             self._sizes[id(span)] = size
             self._total += size
             self._unsettled[id(span)] = span
+        self.refresh()
+
+    def refresh(self) -> None:
+        """Re-measure finished traces and evict if over budget. Call when a trace may have finished."""
+        if self.max_bytes is None:
+            return
         active = self._active_trace_ids()
         if active != self._last_active:
             self._last_active = active

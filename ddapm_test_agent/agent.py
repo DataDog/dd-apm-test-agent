@@ -584,10 +584,14 @@ class Agent:
             return
         request["_testagent_size"] = (request.get("_testagent_size") or 0) + size
         self._request_bytes += size
+        if self._request_bytes > self.max_request_bytes:
+            self._evict_requests()
 
     def _evict_requests(self) -> None:
         """Drop the oldest stored requests until under 90% of the budget. Session starts are kept."""
         assert self.max_request_bytes is not None
+        if not self._requests:
+            return
         target = self.max_request_bytes * 0.9
         newest = self._requests[-1]
         kept: List[Request] = []

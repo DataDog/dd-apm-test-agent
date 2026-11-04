@@ -2537,6 +2537,7 @@ class CodexHooksAPI:
                 await self._hooks_api._forward_eval_metrics_to_backend(
                     completed_session_id, trace_id=completed_trace_id
                 )
+        self._hooks_api._assembled_spans.refresh()
         return web.json_response({"status": "ok"})
 
     async def handle_raw_events(self, request: Request) -> web.Response:

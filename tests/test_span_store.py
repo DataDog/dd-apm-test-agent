@@ -336,3 +336,57 @@ async def test_lapdog_evicts_oldest_tracer_llmobs_requests(lapdog_agent):
     assert test_agent.stored_request_bytes <= test_agent.max_request_bytes
     retained_ids = {id(span) for req in test_agent._requests for span in req.get("_lapdog_llmobs_spans") or []}
     assert platform._locally_priced_spans <= retained_ids
+
+
+def test_refresh_evicts_trace_that_finished_over_budget():
+    span_size = estimate_size(_span("t0", "0"))
+    active = {"big"}
+    store = SpanStore(max_bytes=span_size * 3)
+    store.add_active_trace_source(lambda: active)
+    store.extend([_span("big", str(i)) for i in range(6)])
+    assert len(store) == 6
+
+    active.clear()
+    store.refresh()
+    assert len(store) == 0
+    assert store.estimated_bytes == 0
+
+
+async def test_claude_stop_evicts_large_final_turn_without_new_spans(lapdog_agent):
+    hooks = lapdog_agent.server.app["llmobs_event_platform_api"]._claude_hooks_api
+    hooks._assembled_spans.max_bytes = 50_000
+    session_id = "big-final-turn"
+    for event in (
+        {"hook_event_name": "UserPromptSubmit", "prompt": "read everything"},
+        {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "t1", "tool_input": {"command": "cat"}},
+        {"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "t1", "tool_response": "o" * 100_000},
+    ):
+        await lapdog_agent.post("/claude/hooks", json={"session_id": session_id, **event})
+    assert hooks._assembled_spans.estimated_bytes > 50_000
+
+    resp = await lapdog_agent.post("/claude/hooks", json={"session_id": session_id, "hook_event_name": "Stop"})
+    assert resp.status == 200
+    assert hooks._assembled_spans.estimated_bytes <= 50_000
+    assert hooks._assembled_spans.evicted_traces == 1
+
+
+async def test_lapdog_evicts_requests_when_decoding_exceeds_budget(lapdog_agent):
+    app = lapdog_agent.server.app
+    test_agent = app["agent"]
+    platform = app["llmobs_event_platform_api"]
+    test_agent.max_request_bytes = 600_000
+    for index in range(20):
+        resp = await lapdog_agent.post(
+            "/evp_proxy/v2/api/v2/llmobs",
+            headers={"Content-Type": "application/msgpack", "Content-Encoding": "gzip"},
+            data=_llmobs_request_body(index),
+        )
+        assert resp.status == 200, await resp.text()
+    assert test_agent.evicted_requests == 0
+
+    platform.get_llmobs_spans()
+
+    assert test_agent.evicted_requests > 0
+    assert test_agent.stored_request_bytes <= test_agent.max_request_bytes
+    retained_ids = {id(span) for req in test_agent._requests for span in req.get("_lapdog_llmobs_spans") or []}
+    assert platform._locally_priced_spans <= retained_ids
