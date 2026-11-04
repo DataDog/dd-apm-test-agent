@@ -7,14 +7,13 @@ from unittest import mock
 import pytest
 
 from lapdog import cli
-from lapdog import codex_args
 from lapdog.cli import claude as cli_claude
 from lapdog.cli import codex as cli_codex
+from lapdog.cli import codex as codex_args
 from lapdog.cli import os_runner as cli_os_runner
 from lapdog.cli import pi as cli_pi
 from lapdog.cli import runtime as cli_runtime
 from lapdog.cli import tags as cli_tags
-
 
 cli_main = importlib.import_module("lapdog.cli.main")
 
@@ -149,6 +148,7 @@ def test_cmd_codex_starts_watcher_and_execs_codex():
         parent_pid=cli_codex.os.getpid(),
         singleton_key=None,
         include_all_cwds=False,
+        client_log_path=mock.ANY,
     )
     run_codex.assert_called_once_with(
         args=["--model", "gpt-5.5"],
@@ -157,6 +157,7 @@ def test_cmd_codex_starts_watcher_and_execs_codex():
         session_token="proxy-key",
         launch_bin=None,
         capture_proxy=True,
+        client_log_path=start_watcher.call_args.kwargs["client_log_path"],
     )
 
 
@@ -179,6 +180,7 @@ def test_cmd_codex_starts_watcher_with_forwarded_cd(monkeypatch, tmp_path):
         parent_pid=cli_codex.os.getpid(),
         singleton_key=None,
         include_all_cwds=False,
+        client_log_path=mock.ANY,
     )
 
 
@@ -189,6 +191,14 @@ def test_cmd_codex_starts_watcher_with_forwarded_cd(monkeypatch, tmp_path):
         (["resume", "--last"], None, False),
         (["resume", "123e4567-e89b-12d3-a456-426614174000"], "123e4567-e89b-12d3-a456-426614174000", False),
         (["resume", "--all"], None, True),
+        (
+            ["exec", "resume", "123e4567-e89b-12d3-a456-426614174000", "continue"],
+            "123e4567-e89b-12d3-a456-426614174000",
+            False,
+        ),
+        (["exec", "--json", "--color", "never", "resume", "--last", "continue"], None, False),
+        (["-C", "/tmp", "exec", "resume", "--last", "--all", "continue"], None, True),
+        (["e", "resume", "named-session", "continue"], None, True),
     ],
 )
 def test_cmd_codex_resume_starts_resume_watcher(args, session_id, all_cwds):
@@ -207,6 +217,75 @@ def test_resume_options_skip_flag_values_and_handle_session_names():
     session_id = "123e4567-e89b-12d3-a456-426614174000"
     assert codex_args.resume_options(["resume", "-c", "model=o3", session_id]) == (True, session_id, False)
     assert codex_args.resume_options(["resume", "named-session"]) == (True, None, True)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--color", "never"],
+        ["--output-schema", "schema.json"],
+        ["-o", "answer.txt"],
+        ["--output-last-message", "answer.txt"],
+        ["-i", "image.png", "--json"],
+        ["--image", "image.png", "--json"],
+        ["--thread-source", "cli"],
+        ["--cyber-access-program", "standard"],
+        ["--config", 'model="o3"'],
+        ["--color=never", "--output-schema=schema.json", "-oanswer.txt"],
+    ],
+)
+def test_exec_resume_options_skip_exec_flag_values(options):
+    session_id = "123e4567-e89b-12d3-a456-426614174000"
+    assert codex_args.resume_options(["exec", *options, "resume", session_id, "continue"]) == (True, session_id, False)
+
+
+@pytest.mark.parametrize(
+    "args, session_id, all_cwds",
+    [
+        (["exec", "resume", "--last"], None, False),
+        (["exec", "resume", "--last", "--image", "image.png", "continue"], None, False),
+        (["exec", "resume", "continue", "--last", "--all"], None, True),
+        (["exec", "resume", "--last", "123e4567-e89b-12d3-a456-426614174000"], None, False),
+        (
+            ["exec", "resume", "-o", "answer.txt", "123e4567-e89b-12d3-a456-426614174000"],
+            "123e4567-e89b-12d3-a456-426614174000",
+            False,
+        ),
+        (
+            ["exec", "resume", "--", "123e4567-e89b-12d3-a456-426614174000", "--all"],
+            "123e4567-e89b-12d3-a456-426614174000",
+            False,
+        ),
+        (["exec", "resume", "--last", "--", "--all"], None, False),
+        (["exec", "resume", "--last", "-o", "--all", "continue"], None, False),
+        (
+            ["exec", "resume", "-o", "--last", "123e4567-e89b-12d3-a456-426614174000"],
+            "123e4567-e89b-12d3-a456-426614174000",
+            False,
+        ),
+    ],
+)
+def test_exec_resume_options_distinguish_selection_from_prompt_and_options(args, session_id, all_cwds):
+    assert codex_args.resume_options(args) == (True, session_id, all_cwds)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["exec"],
+        ["exec", "review"],
+        ["exec", "explain resume"],
+        ["exec", "--", "resume"],
+        ["--", "resume"],
+        ["exec", "-", "resume"],
+        ["exec", "--output-schema", "resume", "explain this"],
+        ["exec", "-o", "resume", "explain this"],
+        ["exec", "-i", "image.png", "resume"],
+        ["exec", "--image", "image.png", "resume"],
+    ],
+)
+def test_resume_options_do_not_treat_prompts_or_option_values_as_commands(args):
+    assert codex_args.resume_options(args) == (False, None, False)
 
 
 def test_cmd_codex_app_starts_watcher_with_app_path_and_lapdog_pid(monkeypatch, tmp_path):
@@ -231,6 +310,7 @@ def test_cmd_codex_app_starts_watcher_with_app_path_and_lapdog_pid(monkeypatch, 
         parent_pid=4242,
         singleton_key=codex_args.app_watcher_key(8126),
         include_all_cwds=True,
+        client_log_path=None,
     )
     run_codex.assert_called_once_with(
         args=["app", str(target_cwd)],
@@ -239,6 +319,7 @@ def test_cmd_codex_app_starts_watcher_with_app_path_and_lapdog_pid(monkeypatch, 
         session_token="app-token",
         launch_bin=None,
         capture_proxy=True,
+        client_log_path=None,
     )
 
 
@@ -352,6 +433,7 @@ def test_start_codex_watcher_waits_for_ready_file(tmp_path, monkeypatch):
         resume_mode=True,
         resume_session_id="123e4567-e89b-12d3-a456-426614174000",
         resume_all_cwds=True,
+        client_log_path=str(tmp_path / "client.jsonl"),
     )
 
     assert ready_paths
@@ -361,6 +443,23 @@ def test_start_codex_watcher_waits_for_ready_file(tmp_path, monkeypatch):
     assert "--resume" in popen_args[0]
     assert popen_args[0][popen_args[0].index("--resume-session-id") + 1] == "123e4567-e89b-12d3-a456-426614174000"
     assert "--resume-all-cwds" in popen_args[0]
+    assert popen_args[0][popen_args[0].index("--client-log") + 1] == str(tmp_path / "client.jsonl")
+
+
+def test_start_codex_watcher_reports_startup_timeout(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli_codex, "log_file_path", lambda: str(tmp_path / "lapdog.log"))
+    monkeypatch.setattr(cli_codex.subprocess, "Popen", lambda *a, **kw: mock.Mock(poll=lambda: None))
+    clock = iter([0, 0, 3])
+    monkeypatch.setattr(cli_codex.time, "time", lambda: next(clock))
+    monkeypatch.setattr(cli_codex.time, "sleep", lambda seconds: None)
+    cli_codex._start_codex_watcher(8126, cwd=str(tmp_path))
+    assert "did not confirm startup" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("args", [["-Crepo"], ["app", "--", "repo"]])
+def test_codex_cwd_additional_argument_forms(monkeypatch, tmp_path, args):
+    monkeypatch.setattr(cli_codex.os, "getcwd", lambda: str(tmp_path))
+    assert cli_codex.resolve_cwd(args) == str(tmp_path / "repo")
 
 
 def test_start_codex_watcher_uses_parent_pid(tmp_path, monkeypatch):
@@ -741,12 +840,16 @@ def test_run_codex_injects_lapdog_provider(monkeypatch):
         port=8126,
         proxy_session_key="proxy-key",
         session_token="session-token",
+        client_log_path="/tmp/lapdog-client.jsonl",
     )
 
     assert run_call["binary"] == "/usr/local/bin/codex"
     assert run_call["env"]["OPENAI_BASE_URL"] == "http://localhost:8126/codex/proxy/proxy-key/v1"
     assert run_call["env"]["LAPDOG_URL"] == "http://localhost:8126"
     assert run_call["env"]["LAPDOG_SESSION_TOKEN"] == "session-token"
+    assert run_call["env"]["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] == "lapdog_session-token"
+    assert run_call["env"]["CODEX_TUI_RECORD_SESSION"] == "1"
+    assert run_call["env"]["CODEX_TUI_SESSION_LOG_PATH"] == "/tmp/lapdog-client.jsonl"
     assert "CODEX_THREAD_ID" not in run_call["env"]
     assert "PI_SESSION_ID" not in run_call["env"]
     assert run_call["argv"][:5] == [

@@ -1,17 +1,26 @@
 """Codex session JSONL -> LLM Observability spans."""
 
+from collections import OrderedDict
+from collections import deque
 import datetime
+from decimal import Decimal
+import hashlib
 import json
 import logging
+import math
 import os
 import re
+import shlex
 import socket
+import time
 from typing import Any
+from typing import Deque
 from typing import Dict
 from typing import List
 from typing import Optional
-from typing import Set
+from typing import OrderedDict as OrderedDictType
 from typing import Tuple
+from typing import TypeVar
 
 from aiohttp import web
 from aiohttp.web import Request
@@ -19,17 +28,10 @@ from aiohttp.web import Request
 from ddapm_test_agent.cors import with_cors
 
 from .claude_hooks import ClaudeHooksAPI
-from .claude_hooks import PendingToolSpan
 from .claude_hooks import SessionState
 from .claude_hooks import _format_span_id
 from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
-from .codex_exec import display_tool_name
-from .codex_exec import extract_exec_calls
-from .codex_exec import extract_exec_results
-from .codex_items import matches_call
-from .codex_items import matches_tool_name
-from .codex_items import tool_completion
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .coding_agent_metadata import extract_agent_project_name
 from .coding_agent_metadata import extract_git_repository_url
@@ -39,8 +41,17 @@ from .utils import set_hidden_metadata
 
 log = logging.getLogger(__name__)
 
-CompletedTrace = Tuple[str, str]
-OrphanProxySpan = Tuple[Optional[str], Dict[str, Any]]
+
+def _item_interval(event: Dict[str, Any], earliest_ns: int, latest_ns: int) -> Optional[Tuple[int, int]]:
+    start, end = event.get("started_at_ms"), event.get("completed_at_ms")
+    if not isinstance(start, int) or isinstance(start, bool) or not isinstance(end, int) or isinstance(end, bool):
+        return None
+    start_ns, end_ns = start * 1_000_000, end * 1_000_000
+    # Sub-millisecond commands can have equal millisecond timestamps. Keep
+    # their finer duration fallback in that case.
+    if earliest_ns <= start_ns < end_ns <= latest_ns:
+        return start_ns, end_ns
+    return None
 
 
 def _optional_limit(name: str) -> Optional[int]:
@@ -73,7 +84,7 @@ def _timestamp_to_ns(timestamp: str) -> int:
         return int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1_000_000_000)
     try:
         dt = datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-        return int(dt.timestamp() * 1_000_000_000)
+        return int(dt.replace(microsecond=0).timestamp()) * 1_000_000_000 + dt.microsecond * 1_000
     except ValueError:
         return int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1_000_000_000)
 
@@ -103,6 +114,44 @@ def _is_user_authored_message(payload: Dict[str, Any]) -> bool:
     if not isinstance(content_item_kinds, list):
         return True
     return any(str(kind).startswith("user.") for kind in content_item_kinds)
+
+
+def _event_type(kind: str, payload: Dict[str, Any]) -> str:
+    """Map JSONL record formats to span operations before changing state."""
+    event = str(payload.get("type") or "")
+    if kind == "turn_context":
+        return "start" if payload.get("turn_id") else ""
+    if kind == "token_usage_record":
+        return "usage"
+    if kind == "compacted" or event == "context_compacted":
+        return "compaction"
+    if kind == "response_item":
+        if event == "message":
+            if payload.get("role") == "user" and _is_user_authored_message(payload):
+                return "prompt"
+            return "model" if payload.get("role") == "assistant" else ""
+        if event in ("reasoning", "function_call", "custom_tool_call"):
+            return "model"
+        if event in ("function_call_output", "custom_tool_call_output"):
+            return "tool_output"
+    if kind == "event_msg" and event in ("task_started", "user_message"):
+        return "start" if event == "task_started" else "prompt"
+    return {
+        "item_started": "item",
+        "item_completed": "item",
+        "web_search_call": "tool_result",
+        "patch_apply_end": "tool_result",
+        "task_complete": "finish",
+        "turn_aborted": "finish",
+        "shutdown_complete": "finish",
+        "collab_agent_spawn_begin": "subagent",
+        "collab_agent_spawn_end": "subagent",
+        "exec_approval_request": "approval",
+        "apply_patch_approval_request": "approval",
+        "token_count": "token_count",
+        "agent_message": "agent_message",
+        "session_name": "session_name",
+    }.get(event, "")
 
 
 def _copy_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -230,147 +279,120 @@ def _extract_reasoning_metadata(payload: Dict[str, Any]) -> Dict[str, Any]:
     return reasoning
 
 
-def _append_unique_message(messages: List[Dict[str, Any]], message: Dict[str, Any]) -> None:
-    if message not in messages:
-        messages.append(message)
+# The parser owns task structure. The proxy supplies measurements only.
+# Completed span dictionaries belong to the shared UI store; these indexes
+# retain references, not a second copy of transcript bodies.
+RECENT_TURNS = 128
+RECENT_RESPONSES = 2048
+RECENT_RECORDS = 8192
+LATE_EVENT_SECONDS = 300
+RAW_EVENT_LIMIT = 256
+Span = Dict[str, Any]
+CompletedTrace = Tuple[str, str]
+_K = TypeVar("_K")
+_V = TypeVar("_V")
 
 
-def _append_or_update_tool_call_message(messages: List[Dict[str, Any]], message: Dict[str, Any]) -> None:
-    tool_calls = message.get("tool_calls", [])
-    if not tool_calls:
-        _append_unique_message(messages, message)
-        return
-
-    call_id = tool_calls[0].get("id", "")
-    for existing in messages:
-        existing_tool_calls = existing.get("tool_calls", [])
-        if not isinstance(existing_tool_calls, list):
-            continue
-        for existing_tool_call in existing_tool_calls:
-            if isinstance(existing_tool_call, dict) and existing_tool_call.get("id") == call_id:
-                incoming_tool_call = tool_calls[0]
-                if not existing_tool_call.get("arguments") and incoming_tool_call.get("arguments") is not None:
-                    existing_tool_call["arguments"] = incoming_tool_call.get("arguments")
-                if not existing_tool_call.get("name") and incoming_tool_call.get("name"):
-                    existing_tool_call["name"] = incoming_tool_call.get("name")
-                if incoming_tool_call.get("status"):
-                    existing_tool_call["status"] = incoming_tool_call.get("status")
-                if incoming_tool_call.get("reasoning") and not existing_tool_call.get("reasoning"):
-                    existing_tool_call["reasoning"] = incoming_tool_call.get("reasoning")
-                if not existing.get("content") and message.get("content"):
-                    existing["content"] = message["content"]
-                return
-    messages.append(message)
+def _remember(index: OrderedDictType[_K, _V], key: _K, value: _V, limit: int) -> None:
+    index[key] = value
+    index.move_to_end(key)
+    while len(index) > limit:
+        index.popitem(last=False)
 
 
-def _is_assistant_tool_call_message(message: Dict[str, Any]) -> bool:
-    return message.get("role") == "assistant" and bool(message.get("tool_calls"))
+TOOL_DISPLAY_NAMES = {"write_stdin": "Ran", "apply_patch": "Apply patch", "web__run": "Web", "view_image": "View image"}
+SHELL_COMMAND_DISPLAY_NAMES = {"cat": "Read", "sed": "Read", "find": "List", "ls": "List", "rg": "List", "curl": "Web"}
 
 
-def _has_llm_output(messages: List[Dict[str, Any]]) -> bool:
-    return any(message.get("content") or message.get("tool_calls") for message in messages)
-
-
-def _llm_has_text_output(span: Optional[Dict[str, Any]], message: str) -> bool:
-    if span is None:
-        return False
-    output_messages = span.get("meta", {}).get("output", {}).get("messages", [])
-    if not isinstance(output_messages, list):
-        return False
-    return any(output.get("role") == "assistant" and output.get("content") == message for output in output_messages)
-
-
-def _normalized_text(value: Any) -> str:
-    return " ".join(str(value).split())
-
-
-def _canonical_json_value(value: Any) -> str:
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except (TypeError, ValueError):
-            return _normalized_text(value)
+def _shell_command_name(arguments: Any) -> str:
+    if not isinstance(arguments, dict) or not isinstance(arguments.get("cmd"), str):
+        return "Ran"
     try:
-        return json.dumps(value, sort_keys=True, separators=(",", ":"))
-    except (TypeError, ValueError):
-        return _normalized_text(value)
+        lexer = shlex.shlex(arguments["cmd"], posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return "Ran"
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "cd":
+            while index < len(tokens) and tokens[index] not in ("&&", ";"):
+                index += 1
+            index += 1
+            continue
+        if token in ("env", "command") or re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", token):
+            index += 1
+            continue
+        command = os.path.basename(token)
+        return SHELL_COMMAND_DISPLAY_NAMES.get(command, "Ran")
+    return "Ran"
 
 
-class CodexTurn:
-    def __init__(self, turn_id: str, trace_id: str, root_span_id: str, step_span_id: str, start_ns: int) -> None:
-        self.turn_id = turn_id
-        self.trace_id = trace_id
-        self.root_span_id = root_span_id
-        self.step_span_id = step_span_id
-        self.start_ns = start_ns
-        self.root_span_ref: Optional[Dict[str, Any]] = None
-        self.step_span_ref: Optional[Dict[str, Any]] = None
-        self.step_span_refs: Dict[str, Dict[str, Any]] = {}
-        self.step_count = 0
-        self.current_step_start_ns: Optional[int] = None
-        self.current_step_last_ns: Optional[int] = None
-        self.current_step_has_llm = False
-        self.llm_start_ns: Optional[int] = None
-        self.llm_input_messages: List[Dict[str, Any]] = []
-        self.active_llm_input_messages: Optional[List[Dict[str, Any]]] = None
-        self.llm_output_messages: List[Dict[str, Any]] = []
-        self.pending_llm_input_messages: List[Dict[str, Any]] = []
-        self.pending_llm_usage: Optional[Dict[str, Any]] = None
-        self.pending_llm_end_ns: Optional[int] = None
-        self.reasoning_items: List[Dict[str, Any]] = []
-        self.last_step_span_ref: Optional[Dict[str, Any]] = None
-        self.last_llm_span_ref: Optional[Dict[str, Any]] = None
-        self.last_ns = start_ns
-        self.closed = False
-        self.proxy_llm_calls_started = 0
-        self.proxy_llm_spans_completed = 0
-        self.proxy_llm_calls_failed = 0
-        self.proxy_llm_usage_events_seen = 0
-        # Newer Codex versions write each user prompt twice: once as a
-        # response_item and once as a legacy user_message event. Remember only
-        # the first representation in the pair so repeated prompt text in a
-        # later occurrence is not discarded.
-        self.pending_user_prompt_duplicate: Optional[Tuple[str, str]] = None
+def _display_tool_name(name: str, arguments: Any = None) -> str:
+    if name == "exec_command":
+        return _shell_command_name(arguments)
+    if name in TOOL_DISPLAY_NAMES:
+        return TOOL_DISPLAY_NAMES[name]
+    return name.rsplit("__", 1)[-1].replace("_", " ").strip().capitalize() or name
 
 
-class CodexSession:
-    def __init__(self, session_id: str, start_ns: int) -> None:
-        self.raw_session_id = session_id
-        self.session_id = session_id
-        self.start_ns = start_ns
-        self.pending_auto_reviews: List[Dict[str, Any]] = []
-        self.auto_reviews_by_tool_id: Dict[str, List[Dict[str, Any]]] = {}
-        self.cwd = ""
-        self.originator = ""
-        self.cli_version = ""
-        self.model_provider = "openai"
-        self.model = ""
-        self.effort = ""
-        self.project_metadata = resolve_project_metadata()
-        self.user_prompts: List[str] = []
-        self.tools_used: Set[str] = set()
-        self.pending_tools: Dict[str, PendingToolSpan] = {}
-        self.pending_tool_ids_by_span_id: Dict[str, str] = {}
-        self.pending_tool_statuses: Dict[str, str] = {}
-        self.pending_tool_reasoning: Dict[str, List[Dict[str, Any]]] = {}
-        self.shell_sessions: Dict[str, Dict[str, Any]] = {}
-        self.structured_tools: List[Dict[str, Any]] = []
-        self.fallback_tools: List[Dict[str, Any]] = []
-        self.exec_start_times: Dict[str, int] = {}
-        self.active_turn: Optional[CodexTurn] = None
-        self.completed_turns: List[str] = []
-        self.seen_records: Set[str] = set()
-        # Codex reuses tool call_ids like "web_search_2" across turns. Track
-        # how many times each id has been seen and the unique id currently in
-        # flight so PendingToolSpan keys stay unique and outputs pair correctly.
-        self.seen_tool_use_ids: Dict[str, int] = {}
-        self.tool_use_id_map: Dict[str, str] = {}
-        # Subagent (collab_agent_spawn) stack — mirrors the Claude agent_span_stack
-        # pattern so spans emitted while a subagent is active nest beneath it.
-        self.agent_span_stack: List[Dict[str, Any]] = []
-        self.pending_subagents: Dict[str, Dict[str, Any]] = {}
-        self.task_id = ""
-        self.proxy_session_keys: Set[str] = set()
+def _tool_item(item: Dict[str, Any]) -> Optional[Tuple[str, Any, Any, Dict[str, Any]]]:
+    """Normalize recorded tool results. Never interpret JavaScript or printed output."""
+    kind = item.get("type")
+    if kind == "CommandExecution":
+        command = item.get("command") or []
+        if not isinstance(command, list) or not command:
+            return None
+        return (
+            "exec_command",
+            {
+                "cmd": (
+                    command[-1] if len(command) >= 3 and command[-2] in ("-c", "-lc") else shlex.join(map(str, command))
+                )
+            },
+            item.get("aggregated_output", ""),
+            {key: item[key] for key in ("process_id", "exit_code", "cwd") if key in item},
+        )
+    if kind == "FileChange":
+        return "apply_patch", item.get("changes", {}), str(item.get("stdout") or "") + str(item.get("stderr") or ""), {}
+    if kind == "McpToolCall":
+        server, name = item.get("server", ""), item.get("tool", "")
+        if server != "codex" and name not in ("read_mcp_resource", "list_mcp_resources", "list_mcp_resource_templates"):
+            name = f"mcp__{server}__{name}"
+        name = re.sub(r"[^a-zA-Z0-9_]", "_", name)
+        return name, item.get("arguments", {}), item.get("result", item.get("error", "")), {"server": server}
+    if kind == "Extension":
+        name = "web__run" if str(item.get("kind", "")).startswith("web.") else str(item.get("kind") or "extension")
+        return name, item.get("action", {}), item.get("results", item.get("result", "")), {}
+    return None
+
+
+def _matches_tool_input(name: str, recorded: str, arguments: Any, cwd: str) -> bool:
+    """Compare the fields available in both a direct call and its structured item."""
+    if recorded == _to_json_str(arguments):
+        return True
+    try:
+        original = json.loads(recorded)
+    except ValueError:
+        original = recorded
+    if name == "exec_command":
+        return isinstance(original, dict) and original.get("cmd") == arguments.get("cmd")
+    if name == "apply_patch" and isinstance(original, str) and isinstance(arguments, dict):
+        paths = [
+            line.split(": ", 1)[1]
+            for line in original.splitlines()
+            if line.startswith(("*** Update File: ", "*** Add File: ", "*** Delete File: "))
+        ]
+        # Resolve relative paths against the recorded workspace, not Lapdog's cwd.
+        return (
+            bool(paths)
+            and len(paths) == len(arguments)
+            and {os.path.normpath(os.path.join(cwd, path)) for path in paths}
+            == {os.path.normpath(os.path.join(cwd, path)) for path in arguments}
+        )
+    return bool(original == arguments)
 
 
 class CodexConfig:
@@ -383,2158 +405,962 @@ class CodexConfig:
         self.user_handle = os.environ.get("DD_USER_HANDLE", "")
 
 
-class CodexHooksAPI:
-    """Handler for Codex session JSONL records.
+class Response:
+    def __init__(self, step: Span, start: int) -> None:
+        self.step = step
+        self.start = start
+        self.timing = "record_timestamp"
+        self.output: List[Dict[str, Any]] = []
+        self.reasoning: List[Dict[str, Any]] = []
+        self.llm: Optional[Span] = None
+        self.response_id = ""
+        self.usage: Optional[Tuple[Dict[str, Any], int, bool]] = None
+        self.inputs: List[Dict[str, Any]] = []
 
-    Codex already writes a structured session JSONL. Lapdog tails those files
-    and posts each record here, wrapped with the Codex session id.
-    """
+
+class Turn:
+    def __init__(self, turn_id: str, root: Span) -> None:
+        self.turn_id = turn_id
+        self.root = root
+        self.responses: List[Response] = []
+        self.current: Optional[Response] = None
+        self.calls: Dict[str, Tuple[Response, Optional[Span]]] = {}
+        self.tools: Dict[str, Span] = {}
+        self.item_starts: Dict[str, int] = {}
+        self.messages: List[Dict[str, Any]] = []
+        self.subagents: Dict[str, Span] = {}
+        self.closed = False
+        self.closed_at = 0.0
+        self.last_ns = root["start_ns"]
+        self.last_prompt: Optional[Tuple[str, str]] = None
+        self.modern_usage = False
+        self.provisional = False
+        self.call_counts: Dict[str, int] = {}
+
+
+class CodexSession:
+    def __init__(self, session_id: str) -> None:
+        self.raw_session_id = session_id
+        self.session_id = session_id
+        self.cwd = ""
+        self.model = ""
+        self.effort = ""
+        self.cli_version = ""
+        self.model_provider = "openai"
+        self.project_metadata = resolve_project_metadata()
+        self.active_turn: Optional[Turn] = None
+        self.last_seen = time.monotonic()
+        self.replayed_turn = False
+
+
+class CodexHooksAPI:
+    """Normalize JSONL records and update each identified operation in one place."""
 
     def __init__(self, hooks_api: ClaudeHooksAPI) -> None:
         self._hooks_api = hooks_api
         self._config = CodexConfig()
         self._sessions: Dict[str, CodexSession] = {}
-        self._raw_events: List[Dict[str, Any]] = []
-        self._last_session_id = ""
-        self._proxy_session_ids: Dict[str, str] = {}
-        self._orphan_proxy_llm_spans: List[OrphanProxySpan] = []
-        self._child_session_ids: Dict[str, str] = {}
-        self._ignored_session_ids: Set[str] = set()
-        self._auto_review_sessions: Dict[str, Dict[str, Any]] = {}
+        self._turns: OrderedDictType[Tuple[str, str], Tuple[CodexSession, Turn]] = OrderedDict()
+        self._responses: OrderedDictType[Tuple[str, str], Tuple[CodexSession, Turn, Response]] = OrderedDict()
+        self._pending_proxy: OrderedDictType[str, Tuple[float, Span]] = OrderedDict()
+        self._seen: OrderedDictType[bytes, bool] = OrderedDict()
+        self._raw_events: Deque[Dict[str, Any]] = deque(maxlen=RAW_EVENT_LIMIT)
+        self._child_session_ids: OrderedDictType[str, str] = OrderedDict()
+        self._reviews: OrderedDictType[str, Dict[str, Any]] = OrderedDict()
+        self._pending_reviews: OrderedDictType[Tuple[str, str, str, str], Tuple[float, Dict[str, Any]]] = OrderedDict()
 
-    def _classify_auto_review_session(self, session_id: str, start_ns: int) -> None:
-        existing = self._sessions.pop(session_id, None)
-        if existing is not None and existing.active_turn is not None:
-            start_ns = existing.active_turn.start_ns
-        self._hooks_api._assembled_spans = [
-            span for span in self._hooks_api._assembled_spans if span.get("session_id") != session_id
-        ]
-        self._hooks_api._sessions.pop(session_id, None)
-        self._proxy_session_ids = {key: value for key, value in self._proxy_session_ids.items() if value != session_id}
-        self._auto_review_sessions[session_id] = {"review": {"start_ns": start_ns, "review_session_id": session_id}}
-
-    def _handle_auto_review_record(self, session_id: str, record: Dict[str, Any]) -> None:
-        state = self._auto_review_sessions[session_id]
-        fingerprint = json.dumps(record, sort_keys=True, separators=(",", ":"))
-        seen_records = state.setdefault("seen_records", set())
-        if fingerprint in seen_records:
-            return
-        seen_records.add(fingerprint)
-        payload = record.get("payload", {})
-        if not isinstance(payload, dict):
-            return
-        record_type = record.get("type")
-        event_type = payload.get("type")
-        timestamp_ns = _timestamp_to_ns(record.get("timestamp", ""))
-        if record_type == "event_msg" and event_type == "task_started":
-            state["review"] = {"start_ns": timestamp_ns, "review_session_id": session_id}
-        review = state.get("review")
-        if not isinstance(review, dict):
-            return
-        if record_type == "turn_context" and payload.get("model"):
-            review["model"] = str(payload["model"])
-        if record_type == "response_item" and event_type == "message":
-            content = _content_text(payload.get("content"))
-            if payload.get("role") == "user":
-                parent_match = re.search(r"Reviewed Codex session id:\s*(\S+)", content)
-                if parent_match and not state.get("parent_session_id"):
-                    state["parent_session_id"] = parent_match.group(1)
-                marker = "Planned action JSON:"
-                if marker in content:
-                    try:
-                        action, _ = json.JSONDecoder().raw_decode(content.split(marker, 1)[1].lstrip())
-                    except (ValueError, TypeError):
-                        action = None
-                    if isinstance(action, dict):
-                        review["planned_action"] = action
-            elif payload.get("role") == "assistant":
-                try:
-                    decision = json.loads(content)
-                except (ValueError, TypeError):
-                    decision = None
-                if isinstance(decision, dict):
-                    review["outcome"] = decision.get("outcome", "")
-                    review["risk_level"] = decision.get("risk_level", "")
-                    review["explanation"] = decision.get("rationale") or decision.get("explanation") or ""
-        elif record_type == "event_msg" and event_type == "token_count":
-            info = payload.get("info") or {}
-            usage = info.get("last_token_usage") if isinstance(info, dict) else None
-            if isinstance(usage, dict):
-                review["usage"] = dict(usage)
-        elif record_type == "event_msg" and event_type == "task_complete":
-            review["end_ns"] = timestamp_ns
-            if state.get("parent_session_id"):
-                parent = self._get_or_create_session(state["parent_session_id"], timestamp_ns)
-                parent.pending_auto_reviews.append(review)
-                self._attach_pending_auto_reviews(parent)
-            state["review"] = None
-
-    def _attach_pending_auto_reviews(self, session: CodexSession) -> None:
-        turn = session.active_turn
-        remaining = []
-        for review in session.pending_auto_reviews:
-            action = review.get("planned_action", {})
-            command = action.get("command", []) if isinstance(action, dict) else []
-            command_text = str(command[-1]) if isinstance(command, list) and command else ""
-            candidates = []
-            if turn is not None and not turn.closed:
-                candidates = [
-                    (tool_id, pending)
-                    for tool_id, pending in session.pending_tools.items()
-                    if pending.start_ns <= review["start_ns"]
-                    and tool_id not in session.auto_reviews_by_tool_id
-                    and (not command_text or command_text in str(pending.tool_input))
-                ]
-            pending = None
-            tool_span = None
-            if candidates:
-                tool_id, pending = max(candidates, key=lambda item: item[1].start_ns)
-                parent_id = pending.parent_id
-            else:
-                completed = [
-                    span
-                    for span in self._hooks_api._assembled_spans
-                    if span.get("session_id") == session.session_id
-                    and span.get("meta", {}).get("span", {}).get("kind") == "tool"
-                    and span.get("start_ns", 0) <= review["start_ns"]
-                    and span.get("start_ns", 0) + span.get("duration", 0) >= review["end_ns"]
-                    and not span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("auto_reviews")
-                    and (
-                        not command_text or command_text in str(span.get("meta", {}).get("input", {}).get("value", ""))
-                    )
-                ]
-                if not completed:
-                    remaining.append(review)
-                    continue
-                tool_span = max(completed, key=lambda span: span["start_ns"])
-                tool_id = str(tool_span["meta"]["metadata"]["tool_id"])
-                parent_id = str(tool_span["parent_id"])
-            step = next((span for span in self._hooks_api._assembled_spans if span.get("span_id") == parent_id), None)
-            if step is None or step.get("meta", {}).get("span", {}).get("kind") != "step":
-                remaining.append(review)
-                continue
-            usage = dict(review.get("usage", {}))
-            input_tokens = usage.get("input_tokens", 0)
-            cached_tokens = usage.get("cached_input_tokens", 0)
-            cache_write_tokens = usage.get("cache_write_input_tokens", 0)
-            output_tokens = usage.get("output_tokens", 0)
-            review_model = str(review.get("model") or "")
-            cost = compute_cost_metrics(
-                model_id=review_model,
-                provider_id="openai",
-                non_cached_input_tokens=max(input_tokens - cached_tokens - cache_write_tokens, 0),
-                cache_write_tokens=cache_write_tokens,
-                cache_read_tokens=cached_tokens,
-                output_tokens=output_tokens,
-                when=review["start_ns"],
-            )
-            usage["estimated_total_cost"] = cost["estimated_total_cost"] if cost else None
-            usage["estimated_total_cost_usd"] = cost["estimated_total_cost"] / 1_000_000_000 if cost else None
-            usage["estimated_cost_model"] = review_model if cost else None
-            entry = {
-                "outcome": review.get("outcome", ""),
-                "risk_level": review.get("risk_level", ""),
-                "explanation": review.get("explanation", ""),
-                "usage": usage,
-                "tool_id": (
-                    tool_span["meta"]["metadata"].get("exec_call_id", tool_id) if tool_span is not None else tool_id
-                ),
-            }
-            if review_model:
-                entry["model"] = review_model
-            if pending is not None:
-                session.auto_reviews_by_tool_id.setdefault(tool_id, []).append(entry)
-                pending.start_ns = max(pending.start_ns, review["end_ns"])
-            elif tool_span is not None:
-                set_hidden_metadata(tool_span, auto_reviews=[entry])
-                end_ns = tool_span["start_ns"] + tool_span["duration"]
-                tool_span["start_ns"] = max(tool_span["start_ns"], review["end_ns"])
-                tool_span["duration"] = max(end_ns - tool_span["start_ns"], 0)
-            step["duration"] = max(step.get("duration", 0), review["end_ns"] - step["start_ns"])
-        session.pending_auto_reviews = remaining
-
-    def _append_span(self, span: Dict[str, Any]) -> None:
-        self._hooks_api._append_span(span)
-
-    def _replace_session_id_tag(self, span: Dict[str, Any], old_session_id: str, new_session_id: str) -> None:
-        tags = span.get("tags", [])
-        if not isinstance(tags, list):
-            return
-        span["tags"] = [tag for tag in tags if tag != f"session_id:{old_session_id}"]
-        if new_session_id and f"session_id:{new_session_id}" not in span["tags"]:
-            span["tags"].append(f"session_id:{new_session_id}")
-
-    def _set_session_group(self, raw_session_id: str, group_session_id: str) -> None:
-        if not raw_session_id or not group_session_id or raw_session_id == group_session_id:
-            return
-        self._child_session_ids[raw_session_id] = group_session_id
-        session = self._sessions.get(raw_session_id)
-        if session is not None:
-            old_session_id = session.session_id
-            session.session_id = group_session_id
-            for span in self._hooks_api._assembled_spans:
-                if span.get("session_id") != old_session_id:
-                    continue
-                span["session_id"] = group_session_id
-                self._replace_session_id_tag(span, old_session_id, group_session_id)
-                self._hooks_api._apply_registered_session_tags(span)
-        shared_session = self._hooks_api._sessions.get(raw_session_id)
-        if shared_session is not None:
-            shared_session.session_id = group_session_id
-            parent_session = self._hooks_api._sessions.get(group_session_id)
-            if parent_session and parent_session.session_name:
-                self._hooks_api._set_session_name(parent_session, parent_session.session_name)
-            else:
-                shared_session.session_name = ""
-                for span in self._hooks_api._assembled_spans:
-                    if span.get("session_id") == group_session_id:
-                        span.get("meta", {}).get("metadata", {}).pop("session_name", None)
-            self._hooks_api._synchronize_session_tags(group_session_id)
-
-    def _get_or_create_session(self, session_id: str, start_ns: int) -> CodexSession:
-        if session_id not in self._sessions:
-            group_session_id = self._child_session_ids.get(session_id, session_id)
-            self._sessions[session_id] = CodexSession(session_id=group_session_id, start_ns=start_ns)
-            if session_id not in self._hooks_api._sessions:
-                self._hooks_api._sessions[session_id] = SessionState(
-                    session_id=group_session_id,
+    def _session(self, sid: str) -> CodexSession:
+        if sid not in self._sessions:
+            session = CodexSession(sid)
+            session.session_id = self._child_session_ids.get(sid, sid)
+            self._sessions[sid] = session
+            if sid not in self._hooks_api._sessions:
+                self._hooks_api._sessions[sid] = SessionState(
+                    session_id=session.session_id,
                     trace_id=_format_trace_id(),
                     root_span_id=_format_span_id(),
-                    start_ns=start_ns,
+                    start_ns=0,
                 )
-        elif session_id in self._child_session_ids:
-            self._set_session_group(session_id, self._child_session_ids[session_id])
-        return self._sessions[session_id]
+        return self._sessions[sid]
 
-    def _update_project_metadata(
+    def _expire(self) -> None:
+        now = time.monotonic()
+        for key, (session, turn) in list(self._turns.items()):
+            if turn.closed and (now - turn.closed_at > LATE_EVENT_SECONDS or len(self._turns) > RECENT_TURNS):
+                del self._turns[key]
+                if session.active_turn is turn:
+                    session.active_turn = None
+        for key, (session, turn, response) in list(self._responses.items()):
+            if (session.raw_session_id, turn.turn_id) not in self._turns:
+                del self._responses[key]
+        for response_id, (created, span) in list(self._pending_proxy.items()):
+            if now - created > LATE_EVENT_SECONDS:
+                del self._pending_proxy[response_id]
+        for review_key, (created, review) in list(self._pending_reviews.items()):
+            if now - created > LATE_EVENT_SECONDS:
+                del self._pending_reviews[review_key]
+        for sid, session in list(self._sessions.items()):
+            if (
+                session.active_turn is None
+                and now - session.last_seen > LATE_EVENT_SECONDS
+                and not any(owner is session for owner, _ in self._turns.values())
+            ):
+                del self._sessions[sid]
+
+    def _span(
         self,
         session: CodexSession,
-        payload: Dict[str, Any],
-        record: Dict[str, Any],
-        cwd_changed: bool = False,
-    ) -> None:
-        project_name = extract_agent_project_name(payload) or extract_agent_project_name(record)
-        git_repository_url = extract_git_repository_url(record) or extract_git_repository_url(payload)
-        session.project_metadata = resolve_project_metadata(
-            cwd=session.cwd,
-            project_name=project_name or ("" if cwd_changed else session.project_metadata.project_name),
-            git_repository_url=git_repository_url
-            or ("" if cwd_changed else session.project_metadata.git_repository_url),
-        )
-
-    def _agent_manifest(self, session: CodexSession) -> Dict[str, Any]:
-        model_settings: Dict[str, Any] = {}
-        if session.effort:
-            model_settings["reasoning_effort"] = session.effort
-        return {
-            "name": self._config.agent_name,
-            "instructions": "",
-            "handoff_description": "",
-            "model": session.model,
-            "model_provider": session.model_provider,
-            "model_settings": model_settings,
-            "tools": [{"name": name} for name in sorted(session.tools_used)],
-            "handoffs": [],
-            "guardrails": [],
-        }
-
-    def _update_agent_manifest(self, session: CodexSession) -> None:
-        turn = session.active_turn
-        if turn is None or not turn.root_span_ref:
-            return
-        set_hidden_metadata(turn.root_span_ref, agent_manifest=self._agent_manifest(session))
-
-    def _llm_input_messages(self, session: CodexSession, turn: CodexTurn) -> List[Dict[str, Any]]:
-        if turn.llm_input_messages:
-            return _copy_messages(turn.llm_input_messages)
-        prompt = "\n\n".join(session.user_prompts)
-        if prompt:
-            return [{"role": "user", "content": prompt}]
-        return []
-
-    def _llm_input_value(self, session: CodexSession, turn: CodexTurn) -> str:
-        messages = [
-            message
-            for message in self._llm_input_messages(session, turn)
-            if not _is_assistant_tool_call_message(message)
-        ]
-        if not messages:
-            return ""
-        if len(messages) == 1 and messages[0].get("role") == "user":
-            return str(messages[0].get("content", ""))
-        return _to_json_str(messages)
-
-    def _proxy_span_user_inputs(self, span: Dict[str, Any]) -> Set[str]:
-        messages = span.get("meta", {}).get("input", {}).get("messages", [])
-        if not isinstance(messages, list):
-            return set()
-        values: Set[str] = set()
-        for message in messages:
-            if not isinstance(message, dict):
-                continue
-            if message.get("role") not in ("user", None):
-                continue
-            text = _normalized_text(message.get("content", ""))
-            if text:
-                values.add(text)
-        return values
-
-    def _session_user_inputs(self, session: CodexSession) -> Set[str]:
-        values = {_normalized_text(prompt) for prompt in session.user_prompts if _normalized_text(prompt)}
-        joined_prompts = _normalized_text("\n\n".join(session.user_prompts))
-        if joined_prompts:
-            values.add(joined_prompts)
-        turn = session.active_turn
-        if turn is not None:
-            for message in turn.llm_input_messages:
-                if message.get("role") != "user":
-                    continue
-                text = _normalized_text(message.get("content", ""))
-                if text:
-                    values.add(text)
-        return values
-
-    def _proxy_span_matches_session(self, span: Dict[str, Any], session: CodexSession) -> bool:
-        proxy_inputs = self._proxy_span_user_inputs(span)
-        if not proxy_inputs:
-            return False
-        return bool(proxy_inputs & self._session_user_inputs(session))
-
-    def _matching_proxy_span_session(
-        self, proxy_session_key: Optional[str], span: Dict[str, Any]
-    ) -> Optional[CodexSession]:
-        active_sessions: List[CodexSession] = []
-        for session in reversed(list(self._sessions.values())):
-            turn = session.active_turn
-            if turn is None or turn.closed:
-                continue
-            active_sessions.append(session)
-
-        candidates = active_sessions
-        if proxy_session_key:
-            keyed_candidates = [
-                session for session in active_sessions if proxy_session_key in session.proxy_session_keys
-            ]
-            candidates = keyed_candidates or [session for session in active_sessions if not session.proxy_session_keys]
-
-        for session in candidates:
-            if self._proxy_span_matches_session(span, session):
-                if proxy_session_key:
-                    self._proxy_session_ids[proxy_session_key] = session.raw_session_id
-                return session
-        return None
-
-    def _set_step_input(self, session: CodexSession, turn: CodexTurn, step: Dict[str, Any]) -> None:
-        input_value = self._llm_input_value(session, turn)
-        if input_value:
-            step["meta"]["input"]["value"] = input_value
-
-    def _mark_llm_start(self, session: CodexSession, turn: CodexTurn, start_ns: int) -> None:
-        if turn.llm_start_ns is None:
-            turn.llm_start_ns = start_ns
-        if turn.active_llm_input_messages is None:
-            turn.active_llm_input_messages = self._llm_input_messages(session, turn)
-
-    def _begin_llm_in_step(self, session: CodexSession, turn: CodexTurn, start_ns: int) -> None:
-        if turn.step_span_ref is not None and turn.current_step_has_llm:
-            self._close_current_step(turn)
-        self._ensure_step(session, turn, start_ns)
-        self._mark_llm_start(session, turn, start_ns)
-
-    def _set_step_output(self, turn: CodexTurn, message: str) -> None:
-        if not message:
-            return
-        step = turn.step_span_ref or turn.last_step_span_ref
-        if step is not None:
-            step["meta"]["output"]["value"] = message
-
-    def _add_step_tool_use_id(self, turn: CodexTurn, step_span_id: str, tool_use_id: str) -> None:
-        if not tool_use_id:
-            return
-        step = turn.step_span_refs.get(step_span_id)
-        if not step:
-            return
-        metadata = step["meta"].setdefault("metadata", {})
-        tool_use_ids = metadata.setdefault("tool_use_ids", [])
-        if tool_use_id not in tool_use_ids:
-            tool_use_ids.append(tool_use_id)
-
-    def _update_tool_call_status(self, turn: Optional[CodexTurn], tool_use_id: str, status: str) -> None:
-        if turn is None or not tool_use_id or not status:
-            return
-        message_groups = [
-            turn.llm_input_messages,
-            turn.llm_output_messages,
-            turn.pending_llm_input_messages,
-        ]
-        if turn.active_llm_input_messages is not None:
-            message_groups.append(turn.active_llm_input_messages)
-        if turn.last_llm_span_ref is not None:
-            output_messages = turn.last_llm_span_ref.get("meta", {}).get("output", {}).get("messages", [])
-            if isinstance(output_messages, list):
-                message_groups.append(output_messages)
-        for messages in message_groups:
-            for message in messages:
-                if not isinstance(message, dict):
-                    continue
-                tool_calls = message.get("tool_calls", [])
-                if not isinstance(tool_calls, list):
-                    continue
-                for tool_call in tool_calls:
-                    if isinstance(tool_call, dict) and tool_call.get("id") == tool_use_id:
-                        tool_call["status"] = status
-
-    def _update_approval_status(self, session: CodexSession, call_id: str, status: str, end_ns: int) -> None:
-        if not call_id or not status:
-            return
-        turn = session.active_turn
-        if turn is None or turn.root_span_ref is None:
-            return
-        approvals = turn.root_span_ref.get("meta", {}).get("metadata", {}).get("_dd", {}).get("codex_approvals", [])
-        if not isinstance(approvals, list):
-            return
-        updated = [
-            (
-                {**approval, "status": status, "resolved_timestamp_ns": end_ns}
-                if isinstance(approval, dict) and approval.get("call_id") == call_id
-                else approval
-            )
-            for approval in approvals
-        ]
-        if updated != approvals:
-            set_hidden_metadata(turn.root_span_ref, codex_approvals=updated)
-
-    def _llm_tool_call_matches(
-        self,
-        message: Dict[str, Any],
-        tool_use_id: str,
-        tool_name: str,
-        tool_input: Any,
-    ) -> bool:
-        tool_calls = message.get("tool_calls", [])
-        if not isinstance(tool_calls, list):
-            tool_calls = []
-        expected_arguments = _canonical_json_value(tool_input)
-        for tool_call in tool_calls:
-            if not isinstance(tool_call, dict):
-                continue
-            if tool_call.get("id") == tool_use_id:
-                return True
-            if tool_name and tool_call.get("name") and tool_call.get("name") != tool_name:
-                continue
-            if _canonical_json_value(tool_call.get("arguments", "")) == expected_arguments:
-                return True
-        content = message.get("content", "")
-        return bool(content) and _canonical_json_value(content) == expected_arguments
-
-    def _find_llm_step_for_tool_call(
-        self,
-        turn: CodexTurn,
-        tool_use_id: str,
-        tool_name: str,
-        tool_input: Any,
-    ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-        for span in reversed(self._hooks_api._assembled_spans):
-            if span.get("trace_id") != turn.trace_id:
-                continue
-            if span.get("meta", {}).get("span", {}).get("kind") != "llm":
-                continue
-            parent_id = span.get("parent_id")
-            if parent_id not in turn.step_span_refs:
-                continue
-            output_messages = span.get("meta", {}).get("output", {}).get("messages", [])
-            if not isinstance(output_messages, list):
-                continue
-            for message in output_messages:
-                if isinstance(message, dict) and self._llm_tool_call_matches(
-                    message, tool_use_id, tool_name, tool_input
-                ):
-                    return str(parent_id), span
-        return None, None
-
-    def _step_has_children(self, turn: CodexTurn, step_span_id: str) -> bool:
-        for span in self._hooks_api._assembled_spans:
-            if span.get("trace_id") == turn.trace_id and span.get("parent_id") == step_span_id:
-                return True
-        return False
-
-    def _discard_current_step_if_empty(self, turn: CodexTurn) -> None:
-        step = turn.step_span_ref
-        if step is None or turn.current_step_has_llm:
-            return
-        step_span_id = step["span_id"]
-        if self._step_has_children(turn, step_span_id):
-            return
-        if step["meta"].get("output", {}).get("value"):
-            return
-        self._hooks_api._assembled_spans = [
-            span for span in self._hooks_api._assembled_spans if span.get("span_id") != step_span_id
-        ]
-        turn.step_span_refs.pop(step_span_id, None)
-        if step.get("name") == f"inference-{turn.step_count - 1}" and turn.step_count > 0:
-            turn.step_count -= 1
-        turn.step_span_ref = None
-        turn.step_span_id = ""
-        turn.current_step_start_ns = None
-        turn.current_step_last_ns = None
-
-    def _set_llm_output(self, turn: CodexTurn, message: str) -> None:
-        if not message:
-            return
-        output_message = {"role": "assistant", "content": message}
-        if turn.llm_start_ns is not None and not turn.current_step_has_llm:
-            _append_unique_message(turn.llm_output_messages, output_message)
-        if turn.last_llm_span_ref is not None and not turn.last_llm_span_ref["meta"]["output"].get("messages"):
-            turn.last_llm_span_ref["meta"]["output"]["messages"] = [dict(output_message)]
-
-    def _append_llm_span(self, turn: CodexTurn, span: Dict[str, Any]) -> None:
-        insert_at: Optional[int] = None
-        for index, existing in enumerate(self._hooks_api._assembled_spans):
-            if existing.get("parent_id") != span["parent_id"]:
-                continue
-            if existing.get("meta", {}).get("span", {}).get("kind") != "tool":
-                continue
-            if existing.get("start_ns", 0) >= span["start_ns"]:
-                insert_at = index
-                break
-        if insert_at is None:
-            self._append_span(span)
-        else:
-            self._hooks_api._append_span(span, index=insert_at)
-        turn.last_llm_span_ref = span
-
-    def _apply_turn_context(self, session: CodexSession, record: Dict[str, Any]) -> None:
-        payload = record.get("payload", {})
-        previous_cwd = session.cwd
-        session.cwd = payload.get("cwd", session.cwd)
-        self._update_project_metadata(
-            session, payload, record, cwd_changed=bool(session.cwd and session.cwd != previous_cwd)
-        )
-        session.model = payload.get("model", session.model)
-        session.effort = payload.get("effort", session.effort)
-        turn = session.active_turn
-        if turn is None or turn.closed or not turn.root_span_ref:
-            return
-        turn.root_span_ref["meta"]["model_name"] = session.model
-        metadata = turn.root_span_ref["meta"]["metadata"]
-        metadata["cwd"] = session.cwd
-        apply_project_metadata_to_span(turn.root_span_ref, session.project_metadata)
-        metadata["reasoning_effort"] = session.effort
-        self._update_agent_manifest(session)
-
-    def _update_active_turn_context(self, session: CodexSession, record: Dict[str, Any]) -> bool:
-        payload = record.get("payload", {})
-        turn_id = payload.get("turn_id") or payload.get("id")
-        turn = session.active_turn
-        if not turn_id or turn is None or turn.closed or turn.turn_id != turn_id:
-            return False
-
-        self._apply_turn_context(session, record)
-        return True
-
-    def _handle_turn_context(self, session: CodexSession, record: Dict[str, Any]) -> List[CompletedTrace]:
-        payload = record.get("payload", {})
-        turn_id = payload.get("turn_id") or payload.get("id")
-        if not turn_id:
-            self._apply_turn_context(session, record)
-            return []
-        return self._start_turn(session, record)
-
-    def _start_turn(self, session: CodexSession, record: Dict[str, Any]) -> List[CompletedTrace]:
-        if self._update_active_turn_context(session, record):
-            return []
-
-        completed = self._finalize_turn(session, status="ok")
-
-        payload = record.get("payload", {})
-        timestamp_ns = _timestamp_to_ns(record.get("timestamp", ""))
-        turn_id = payload.get("turn_id") or payload.get("id") or _format_span_id()
-        previous_cwd = session.cwd
-        session.cwd = payload.get("cwd", session.cwd)
-        self._update_project_metadata(
-            session, payload, record, cwd_changed=bool(session.cwd and session.cwd != previous_cwd)
-        )
-        session.model = payload.get("model", session.model)
-        session.effort = payload.get("effort", session.effort)
-        trace_id = _format_trace_id()
-        root_span_id = _format_span_id()
-        shared_session = self._hooks_api._sessions.get(session.session_id)
-        if shared_session is not None:
-            shared_session.trace_id = trace_id
-            shared_session.root_span_id = root_span_id
-            shared_session.start_ns = timestamp_ns
-
-        turn = CodexTurn(
-            turn_id=turn_id,
-            trace_id=trace_id,
-            root_span_id=root_span_id,
-            step_span_id="",
-            start_ns=timestamp_ns,
-        )
-        session.active_turn = turn
-        session.user_prompts = []
-        session.tools_used = set()
-        session.pending_tools = {}
-        session.pending_tool_ids_by_span_id = {}
-        session.pending_tool_statuses = {}
-        session.pending_tool_reasoning = {}
-        session.structured_tools = []
-        session.fallback_tools = []
-        session.exec_start_times = {}
-        session.shell_sessions = {
-            key: value for key, value in session.shell_sessions.items() if not value.get("completed")
-        }
-        session.tool_use_id_map = {}
-        session.agent_span_stack = []
-        session.pending_subagents = {}
-
-        root_tags = self._hooks_api.base_tags(
-            session,
-            source="codex-jsonl",
-            ml_app=self._config.ml_app,
-            user_handle=self._config.user_handle,
-        ) + ["trajectory.semantic_type:turn"]
-        root_span: Dict[str, Any] = {
-            "span_id": root_span_id,
-            "trace_id": trace_id,
-            "parent_id": "undefined",
-            "name": "codex-request",
-            "status": "ok",
-            "start_ns": timestamp_ns,
-            "duration": 0,
-            "ml_app": self._config.ml_app,
-            "service": self._config.service,
-            "env": self._config.env,
-            "session_id": session.session_id,
-            "tags": root_tags,
-            "meta": {
-                "span": {"kind": "agent"},
-                "input": {"value": ""},
-                "output": {"value": ""},
-                "model_name": session.model,
-                "model_provider": session.model_provider,
-                "metadata": {
-                    "turn_id": turn_id,
-                    "cwd": session.cwd,
-                    "reasoning_effort": session.effort,
-                    "codex_cli_version": session.cli_version,
-                },
-            },
-            "metrics": {},
-        }
-        set_hidden_metadata(root_span, agent_manifest=self._agent_manifest(session))
-        apply_project_metadata_to_span(root_span, session.project_metadata)
-        self._append_span(root_span)
-        turn.root_span_ref = root_span
-        self._adopt_orphan_proxy_llm_spans(session, turn)
-        return completed
-
-    def _ensure_step(self, session: CodexSession, turn: CodexTurn, start_ns: int) -> Dict[str, Any]:
-        if turn.step_span_ref is not None:
-            return turn.step_span_ref
-
-        step_span_id = _format_span_id()
-        turn.step_span_id = step_span_id
-        turn.current_step_start_ns = start_ns
-        turn.current_step_last_ns = start_ns
-        turn.current_step_has_llm = False
-        step_tags = self._hooks_api.base_tags(
-            session,
-            source="codex-jsonl",
-            ml_app=self._config.ml_app,
-            user_handle=self._config.user_handle,
-        ) + ["trajectory.semantic_type:agent_message"]
-        step_span: Dict[str, Any] = {
-            "span_id": step_span_id,
-            "trace_id": turn.trace_id,
-            "parent_id": turn.root_span_id,
-            "name": f"inference-{turn.step_count}",
-            "status": "ok",
-            "start_ns": start_ns,
-            "duration": 0,
-            "ml_app": self._config.ml_app,
-            "service": self._config.service,
-            "env": self._config.env,
-            "session_id": session.session_id,
-            "tags": step_tags,
-            "meta": {
-                "span": {"kind": "step"},
-                "input": {},
-                "output": {"value": ""},
-                "metadata": {"turn_id": turn.turn_id, "message_index": turn.step_count},
-            },
-            "metrics": {},
-        }
-        self._set_step_input(session, turn, step_span)
-        self._append_span(step_span)
-        turn.step_span_ref = step_span
-        turn.step_span_refs[step_span_id] = step_span
-        turn.step_count += 1
-        return step_span
-
-    def _update_step_end(self, turn: CodexTurn, step_span_id: str, end_ns: int) -> None:
-        step = turn.step_span_refs.get(step_span_id)
-        if not step:
-            return
-        step["duration"] = max(end_ns - step["start_ns"], step.get("duration", 0))
-        if step is turn.step_span_ref:
-            turn.current_step_last_ns = max(turn.current_step_last_ns or end_ns, end_ns)
-
-    def _close_current_step(self, turn: CodexTurn, end_ns: Optional[int] = None) -> None:
-        step = turn.step_span_ref
-        if step is None:
-            return
-        if end_ns is None:
-            end_ns = turn.current_step_last_ns or turn.last_ns
-        step["duration"] = max(end_ns - step["start_ns"], step.get("duration", 0))
-        turn.last_step_span_ref = step
-        turn.step_span_ref = None
-        turn.step_span_id = ""
-        turn.current_step_start_ns = None
-        turn.current_step_last_ns = None
-        turn.current_step_has_llm = False
-        turn.llm_start_ns = None
-        turn.active_llm_input_messages = None
-        turn.llm_output_messages = []
-        turn.pending_llm_usage = None
-        turn.pending_llm_end_ns = None
-        turn.reasoning_items = []
-
-    def _begin_llm_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
-        turn = self._active_turn(session, record)
-        ns = _timestamp_to_ns(record.get("timestamp", ""))
-        self._begin_llm_in_step(session, turn, ns)
-        turn.last_ns = max(turn.last_ns, ns)
-
-    def _finalize_turn(
-        self, session: CodexSession, status: str = "ok", end_ns: Optional[int] = None
-    ) -> List[CompletedTrace]:
-        turn = session.active_turn
-        if turn is None or turn.closed:
-            return []
-        if end_ns is None:
-            end_ns = turn.last_ns
-        duration = max(end_ns - turn.start_ns, 0)
-        if turn.root_span_ref:
-            turn.root_span_ref["duration"] = duration
-            turn.root_span_ref["status"] = status
-            turn.root_span_ref["meta"]["input"]["value"] = "\n\n".join(session.user_prompts)
-            turn.root_span_ref["meta"]["metadata"]["tools"] = sorted(session.tools_used)
-            self._update_agent_manifest(session)
-        self._emit_pending_llm_span(session, turn)
-        for pending in list(session.pending_tools.values()):
-            if any(entry["span"]["span_id"] == pending.span_id for entry in session.structured_tools):
-                continue
-            tool_id = session.pending_tool_ids_by_span_id.get(pending.span_id, pending.span_id)
-            session.pending_tool_statuses[tool_id] = "failed"
-            self._update_tool_call_status(turn, tool_id, "failed")
-            if pending.tool_name not in _EXEC_WRAPPER_NAMES:
-                self._emit_tool_span(session, pending, end_ns, output_value="", is_error=True)
-            else:
-                session.auto_reviews_by_tool_id.pop(tool_id, None)
-        session.pending_tools.clear()
-        session.pending_tool_ids_by_span_id.clear()
-        session.pending_tool_statuses.clear()
-        session.pending_tool_reasoning.clear()
-        session.tool_use_id_map.clear()
-        # Any subagent that never received a spawn_end is finalized here so its
-        # span has a non-zero duration rather than hanging open.
-        for entry in session.agent_span_stack:
-            span = entry.get("_span_ref")
-            if isinstance(span, dict):
-                span["duration"] = max(end_ns - int(span.get("start_ns", end_ns)), 0)
-                span["status"] = "error"
-                span["meta"].setdefault("metadata", {}).setdefault("subagent", {})["status"] = "unterminated"
-        session.agent_span_stack.clear()
-        session.pending_subagents.clear()
-        self._close_current_step(turn, end_ns=turn.current_step_last_ns or end_ns)
-        turn.closed = True
-        session.completed_turns.append(turn.turn_id)
-        session.task_id = ""
-        return [(session.session_id, turn.trace_id)]
-
-    def _active_turn(self, session: CodexSession, record: Dict[str, Any]) -> CodexTurn:
-        if session.active_turn is None or session.active_turn.closed:
-            self._start_turn(session, record)
-        assert session.active_turn is not None
-        return session.active_turn
-
-    def _update_last_ns(self, session: CodexSession, record: Dict[str, Any]) -> int:
-        ns = _timestamp_to_ns(record.get("timestamp", ""))
-        turn = session.active_turn
-        if turn is not None:
-            turn.last_ns = max(turn.last_ns, ns)
-            # The static LLM Observability UI treats root duration == 0 as a
-            # running trace. Keep the active root live until _finalize_turn
-            # replaces it with the completed duration.
-            if turn.step_span_ref and turn.current_step_last_ns is not None:
-                if not turn.current_step_has_llm or session.pending_tools:
-                    self._update_step_end(turn, turn.step_span_ref["span_id"], ns)
-        return ns
-
-    def _handle_session_meta(self, session: CodexSession, record: Dict[str, Any]) -> None:
-        payload = record.get("payload", {})
-        previous_cwd = session.cwd
-        session.cwd = payload.get("cwd", session.cwd)
-        session.originator = payload.get("originator", session.originator)
-        session.cli_version = payload.get("cli_version", session.cli_version)
-        session.model_provider = payload.get("model_provider", session.model_provider) or "openai"
-        self._update_project_metadata(
-            session, payload, record, cwd_changed=bool(session.cwd and session.cwd != previous_cwd)
-        )
-
-    def _handle_event_msg(self, session: CodexSession, record: Dict[str, Any]) -> List[CompletedTrace]:
-        event = record.get("payload", {})
-        event_type = event.get("type", "")
-
-        if event_type == "task_started":
-            task_id = str(event.get("id", "") or event.get("turn_id", ""))
-            if task_id:
-                active_turn = session.active_turn
-                if active_turn is not None and not active_turn.closed and not session.task_id:
-                    active_turn.turn_id = task_id
-                    session.task_id = task_id
-                    if active_turn.root_span_ref:
-                        active_turn.root_span_ref["meta"]["metadata"]["turn_id"] = task_id
-                    return []
-                session.task_id = task_id
-                for other_session in self._sessions.values():
-                    if other_session is session:
-                        continue
-                    other_turn = other_session.active_turn
-                    if (
-                        other_turn is not None and other_turn.turn_id == task_id
-                    ) or task_id in other_session.completed_turns:
-                        self._ignored_session_ids.add(session.raw_session_id)
-                        return []
-                record = {**record, "payload": {**event, "turn_id": task_id}}
-                return self._start_turn(session, record)
-            return []
-
-        if event_type == "item_completed":
-            self._handle_tool_completion(session, record)
-            return []
-
-        if event_type == "token_count":
-            self._handle_token_count(session, record)
-            return []
-
-        if event_type == "collab_agent_spawn_begin":
-            self._update_last_ns(session, record)
-            self._handle_collab_agent_spawn_begin(session, record, event)
-            return []
-
-        if event_type == "collab_agent_spawn_end":
-            self._update_last_ns(session, record)
-            self._handle_collab_agent_spawn_end(session, record, event)
-            return []
-
-        if event_type == "context_compacted":
-            self._update_last_ns(session, record)
-            self._handle_compaction(session, record, trigger="context_compacted")
-            return []
-
-        if event_type in ("exec_approval_request", "apply_patch_approval_request"):
-            self._update_last_ns(session, record)
-            tool_name = "apply_patch" if event_type == "apply_patch_approval_request" else "exec_command"
-            self._handle_approval_request(session, record, event, tool_name=tool_name)
-            return []
-
-        if event_type == "patch_apply_end":
-            self._update_last_ns(session, record)
-            self._handle_patch_apply_end(session, record, event)
-            return []
-
-        if event_type == "shutdown_complete":
-            turn = session.active_turn
-            if turn is None or turn.closed:
-                return []
-            ns = self._update_last_ns(session, record)
-            return self._finalize_turn(session, status="ok", end_ns=ns)
-
-        if event_type == "user_message":
-            message = event.get("message", "")
-            completed: List[CompletedTrace] = []
-            active_turn = session.active_turn
-            normalized_message = _normalized_text(message)
-            if (
-                normalized_message
-                and active_turn is not None
-                and not active_turn.closed
-                and active_turn.pending_user_prompt_duplicate == ("response_item", normalized_message)
-            ):
-                active_turn.pending_user_prompt_duplicate = None
-                return []
-            if message and session.active_turn is not None and not session.active_turn.closed and session.user_prompts:
-                completed = self._finalize_turn(session, status="ok")
-            turn = self._active_turn(session, record)
-            self._update_last_ns(session, record)
-            if message:
-                session.user_prompts.append(message)
-                turn.llm_input_messages.append({"role": "user", "content": message})
-                if turn.root_span_ref:
-                    turn.root_span_ref["meta"]["input"]["value"] = "\n\n".join(session.user_prompts)
-                if turn.step_span_ref:
-                    self._set_step_input(session, turn, turn.step_span_ref)
-                self._adopt_orphan_proxy_llm_spans(session, turn)
-                turn.pending_user_prompt_duplicate = ("event_msg", normalized_message)
-            return completed
-
-        ns = self._update_last_ns(session, record)
-
-        if event_type == "agent_message":
-            turn = self._active_turn(session, record)
-            message = event.get("message", "")
-            if message:
-                if turn.root_span_ref:
-                    turn.root_span_ref["meta"]["output"]["value"] = message
-                self._set_step_output(turn, message)
-                self._set_llm_output(turn, message)
-                self._emit_pending_llm_span(session, turn)
-            return []
-
-        if event_type == "task_complete":
-            turn = self._active_turn(session, record)
-            message = event.get("last_agent_message", "")
-            if message:
-                if turn.root_span_ref and not turn.root_span_ref["meta"]["output"]["value"]:
-                    turn.root_span_ref["meta"]["output"]["value"] = message
-                step = turn.step_span_ref or turn.last_step_span_ref
-                if step is None or not step["meta"]["output"]["value"]:
-                    self._set_step_output(turn, message)
-                self._set_llm_output(turn, message)
-                self._emit_pending_llm_span(session, turn)
-            return self._finalize_turn(session, status="ok", end_ns=ns)
-
-        if event_type == "turn_aborted":
-            return self._finalize_turn(session, status="error", end_ns=ns)
-
-        return []
-
-    def _handle_response_item(self, session: CodexSession, record: Dict[str, Any]) -> List[CompletedTrace]:
-        payload = record.get("payload", {})
-        item_type = payload.get("type", "")
-        self._update_last_ns(session, record)
-
-        if item_type == "message" and payload.get("role") == "user" and _is_user_authored_message(payload):
-            message = _content_text(payload.get("content"))
-            normalized_message = _normalized_text(message)
-            active_turn = session.active_turn
-            if (
-                normalized_message
-                and active_turn is not None
-                and not active_turn.closed
-                and active_turn.pending_user_prompt_duplicate == ("event_msg", normalized_message)
-            ):
-                active_turn.pending_user_prompt_duplicate = None
-                return []
-            completed: List[CompletedTrace] = []
-            if message and active_turn is not None and not active_turn.closed and session.user_prompts:
-                completed = self._finalize_turn(session, status="ok")
-            if message:
-                turn = self._active_turn(session, record)
-                session.user_prompts.append(message)
-                turn.llm_input_messages.append({"role": "user", "content": message})
-                if turn.root_span_ref:
-                    turn.root_span_ref["meta"]["input"]["value"] = "\n\n".join(session.user_prompts)
-                if turn.step_span_ref:
-                    self._set_step_input(session, turn, turn.step_span_ref)
-                self._adopt_orphan_proxy_llm_spans(session, turn)
-                turn.pending_user_prompt_duplicate = ("response_item", normalized_message)
-            return completed
-        elif item_type == "function_call":
-            self._handle_function_call(session, record)
-        elif item_type == "function_call_output":
-            self._handle_function_call_output(session, record)
-        elif item_type == "web_search_call":
-            self._handle_web_search_call(session, record)
-        elif item_type == "custom_tool_call":
-            self._handle_custom_tool_call(session, record)
-        elif item_type == "custom_tool_call_output":
-            self._handle_custom_tool_call_output(session, record)
-        elif item_type == "reasoning":
-            turn = self._active_turn(session, record)
-            ns = _timestamp_to_ns(record.get("timestamp", ""))
-            self._begin_llm_in_step(session, turn, ns)
-            reasoning = _extract_reasoning_metadata(payload)
-            if reasoning:
-                turn.reasoning_items.append(reasoning)
-        elif item_type == "message" and payload.get("role") == "assistant":
-            turn = self._active_turn(session, record)
-            ns = _timestamp_to_ns(record.get("timestamp", ""))
-            message = _content_text(payload.get("content"))
-            if turn.current_step_has_llm and _llm_has_text_output(turn.last_llm_span_ref, message):
-                if turn.root_span_ref:
-                    turn.root_span_ref["meta"]["output"]["value"] = message
-                self._set_step_output(turn, message)
-                return []
-            self._begin_llm_in_step(session, turn, ns)
-            if message:
-                _append_unique_message(turn.llm_output_messages, {"role": "assistant", "content": message})
-                if turn.root_span_ref:
-                    turn.root_span_ref["meta"]["output"]["value"] = message
-                self._set_step_output(turn, message)
-                if turn.last_llm_span_ref is not None and not turn.last_llm_span_ref["meta"]["output"].get("messages"):
-                    turn.last_llm_span_ref["meta"]["output"]["messages"] = [{"role": "assistant", "content": message}]
-                self._emit_pending_llm_span(session, turn)
-        return []
-
-    def _emit_pending_llm_span(self, session: CodexSession, turn: CodexTurn) -> None:
-        usage = turn.pending_llm_usage
-        if usage is None or turn.pending_llm_end_ns is None:
-            return
-        if turn.current_step_has_llm or not _has_llm_output(turn.llm_output_messages):
-            return
-        if turn.step_span_ref is None:
-            self._ensure_step(session, turn, turn.pending_llm_end_ns)
-        self._mark_llm_start(session, turn, turn.llm_start_ns or turn.current_step_start_ns or turn.pending_llm_end_ns)
-        llm_start_ns = turn.llm_start_ns or turn.current_step_start_ns or turn.pending_llm_end_ns
-        end_ns = turn.pending_llm_end_ns
-        llm_input_messages = turn.active_llm_input_messages or self._llm_input_messages(session, turn)
-        llm_output_messages = _copy_messages(turn.llm_output_messages)
-        limited_input_messages, input_truncated = _copy_messages_with_limits(llm_input_messages)
-        limited_output_messages, output_truncated = _copy_messages_with_limits(llm_output_messages)
-        cached_input_tokens = usage.get("cached_input_tokens", 0)
-        input_tokens = usage.get("input_tokens", 0)
-        output_tokens = usage.get("output_tokens", 0)
-        non_cached_input_tokens = max(input_tokens - cached_input_tokens, 0)
-        metrics = {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": usage.get("total_tokens", 0),
-            "cache_read_input_tokens": cached_input_tokens,
-            "cached_input_tokens": cached_input_tokens,
-            "cache_write_input_tokens": 0,
-            "non_cached_input_tokens": non_cached_input_tokens,
-            "reasoning_output_tokens": usage.get("reasoning_output_tokens", 0),
-            **(
-                compute_cost_metrics(
-                    model_id=session.model,
-                    provider_id="openai",
-                    non_cached_input_tokens=non_cached_input_tokens,
-                    cache_write_tokens=0,
-                    cache_read_tokens=cached_input_tokens,
-                    output_tokens=output_tokens,
-                    when=llm_start_ns,
-                )
-                or {}
-            ),
-        }
-        metadata: Dict[str, Any] = {"turn_id": turn.turn_id, "reasoning_effort": session.effort}
-        if turn.reasoning_items:
-            metadata["reasoning"] = _copy_reasoning_items(turn.reasoning_items)
-        span: Dict[str, Any] = {
+        kind: str,
+        name: str,
+        start: int,
+        parent: Optional[str] = None,
+        trace: Optional[str] = None,
+    ) -> Span:
+        span = {
             "span_id": _format_span_id(),
-            "trace_id": turn.trace_id,
-            "parent_id": turn.step_span_id,
-            "name": session.model or "unknown",
-            "status": "ok",
-            "start_ns": llm_start_ns,
-            "duration": max(end_ns - llm_start_ns, 0),
-            "ml_app": self._config.ml_app,
-            "service": self._config.service,
-            "env": self._config.env,
-            "session_id": session.session_id,
-            "tags": self._hooks_api.base_tags(
-                session,
-                source="codex-jsonl",
-                ml_app=self._config.ml_app,
-                user_handle=self._config.user_handle,
-            ),
-            "meta": {
-                "span": {"kind": "llm"},
-                "model_name": session.model,
-                "model_provider": session.model_provider,
-                "input": {"messages": limited_input_messages},
-                "output": {"messages": limited_output_messages},
-                "metadata": metadata,
-            },
-            "metrics": metrics,
-        }
-        if input_truncated or output_truncated:
-            set_hidden_metadata(
-                span,
-                truncated_input_messages=input_truncated,
-                truncated_output_messages=output_truncated,
-                max_message_chars=MAX_LLM_MESSAGE_CHARS,
-            )
-        self._append_llm_span(turn, span)
-        turn.llm_input_messages = _copy_messages(limited_input_messages)
-        turn.llm_input_messages.extend(_copy_messages(limited_output_messages))
-        turn.llm_input_messages.extend(_copy_messages(turn.pending_llm_input_messages))
-        turn.pending_llm_input_messages = []
-        turn.current_step_has_llm = True
-        self._update_step_end(turn, turn.step_span_id, end_ns)
-        turn.llm_start_ns = None
-        turn.active_llm_input_messages = None
-        turn.llm_output_messages = []
-        turn.pending_llm_usage = None
-        turn.pending_llm_end_ns = None
-
-    def _handle_token_count(self, session: CodexSession, record: Dict[str, Any]) -> None:
-        turn = self._active_turn(session, record)
-        event = record.get("payload", {})
-        info = event.get("info") or {}
-        if not info:
-            self._begin_llm_call(session, record)
-            return
-        usage = info.get("last_token_usage") or info.get("total_token_usage") or {}
-        if not usage:
-            return
-        proxy_calls_expected = max(turn.proxy_llm_calls_started - turn.proxy_llm_calls_failed, 0)
-        if proxy_calls_expected > turn.proxy_llm_usage_events_seen:
-            turn.proxy_llm_usage_events_seen += 1
-            self._update_last_ns(session, record)
-            return
-
-        end_ns = self._update_last_ns(session, record)
-        if turn.current_step_has_llm and not turn.llm_output_messages:
-            return
-        if turn.step_span_ref is None:
-            self._ensure_step(session, turn, end_ns)
-        self._mark_llm_start(session, turn, turn.llm_start_ns or turn.current_step_start_ns or end_ns)
-        turn.pending_llm_usage = dict(usage)
-        turn.pending_llm_end_ns = end_ns
-        self._emit_pending_llm_span(session, turn)
-
-    def _active_proxy_session(self, maybe_session_id: Optional[str] = None) -> Optional[CodexSession]:
-        if maybe_session_id:
-            mapped_session_id = self._proxy_session_ids.get(maybe_session_id)
-            if mapped_session_id:
-                session = self._sessions.get(mapped_session_id)
-                if session is not None:
-                    return session
-            for session in reversed(list(self._sessions.values())):
-                if maybe_session_id in session.proxy_session_keys:
-                    return session
-            session = self._sessions.get(maybe_session_id)
-            if session is not None:
-                return session
-            return None
-        for session in reversed(list(self._sessions.values())):
-            turn = session.active_turn
-            if turn is not None and not turn.closed:
-                return session
-        if self._sessions:
-            return next(reversed(self._sessions.values()))
-        return None
-
-    def begin_proxy_llm_call(self, maybe_session_id: Optional[str], start_ns: int) -> Optional[str]:
-        """Reserve the active Codex step for a proxied LLM call."""
-        session = self._active_proxy_session(maybe_session_id)
-        if session is None or session.active_turn is None or session.active_turn.closed:
-            return maybe_session_id
-        turn = session.active_turn
-        if turn.step_span_ref is not None and turn.current_step_has_llm:
-            self._close_current_step(turn)
-        turn.proxy_llm_calls_started += 1
-        turn.last_ns = max(turn.last_ns, start_ns)
-        return session.raw_session_id
-
-    def finish_proxy_llm_call(self, maybe_session_id: Optional[str], succeeded: bool) -> None:
-        if succeeded:
-            return
-        session = self._active_proxy_session(maybe_session_id)
-        if session is None or session.active_turn is None or session.active_turn.closed:
-            return
-        session.active_turn.proxy_llm_calls_failed += 1
-
-    def register_proxy_llm_span(
-        self,
-        maybe_session_id: Optional[str],
-        span: Dict[str, Any],
-        start_ns: int,
-        end_ns: int,
-    ) -> None:
-        """Attach a proxied LLM span to the active Codex turn, or buffer it."""
-        session = self._active_proxy_session(maybe_session_id)
-        if session is None or session.active_turn is None or session.active_turn.closed:
-            session = self._matching_proxy_span_session(maybe_session_id, span)
-        if session is None or session.active_turn is None or session.active_turn.closed:
-            span["parent_id"] = "undefined"
-            self._orphan_proxy_llm_spans.append((maybe_session_id, span))
-            self._append_span(span)
-            return
-
-        self._attach_proxy_llm_span(session, session.active_turn, span, start_ns, end_ns)
-
-    def _attach_proxy_llm_span(
-        self,
-        session: CodexSession,
-        turn: CodexTurn,
-        span: Dict[str, Any],
-        start_ns: int,
-        end_ns: int,
-        append: bool = True,
-    ) -> None:
-        if turn.step_span_ref is not None and turn.current_step_has_llm:
-            self._close_current_step(turn)
-        if turn.step_span_ref is None:
-            self._ensure_step(session, turn, start_ns)
-        elif start_ns < int(turn.step_span_ref.get("start_ns", start_ns)):
-            turn.step_span_ref["start_ns"] = start_ns
-            turn.current_step_start_ns = start_ns
-        if turn.proxy_llm_calls_started <= turn.proxy_llm_spans_completed:
-            turn.proxy_llm_calls_started += 1
-
-        span["trace_id"] = turn.trace_id
-        span["parent_id"] = turn.step_span_id
-        span["session_id"] = session.session_id
-        span["ml_app"] = self._config.ml_app
-        span["service"] = self._config.service
-        span["env"] = self._config.env
-        span["tags"] = self._hooks_api.base_tags(
-            session,
-            source="codex-proxy",
-            ml_app=self._config.ml_app,
-            user_handle=self._config.user_handle,
-        )
-        self._hooks_api._apply_registered_session_tags(span)
-        tool_call_ids = self._normalize_proxy_tool_call_ids(session, span)
-        if append:
-            self._append_llm_span(turn, span)
-        else:
-            turn.last_llm_span_ref = span
-
-        turn.proxy_llm_spans_completed += 1
-        turn.current_step_has_llm = True
-        turn.last_ns = max(turn.last_ns, end_ns)
-        self._update_step_end(turn, turn.step_span_id, end_ns)
-        for tool_call_id in tool_call_ids:
-            self._add_step_tool_use_id(turn, turn.step_span_id, tool_call_id)
-        self._reparent_tool_calls_to_step(session, turn, tool_call_ids)
-        turn.llm_start_ns = None
-        turn.active_llm_input_messages = None
-        turn.llm_output_messages = []
-
-    def _normalize_proxy_tool_call_ids(self, session: CodexSession, span: Dict[str, Any]) -> List[str]:
-        output_messages = span.get("meta", {}).get("output", {}).get("messages", [])
-        if not isinstance(output_messages, list):
-            return []
-        tool_call_ids: List[str] = []
-        for message in output_messages:
-            if not isinstance(message, dict):
-                continue
-            tool_calls = message.get("tool_calls", [])
-            if not isinstance(tool_calls, list):
-                continue
-            for tool_call in tool_calls:
-                if not isinstance(tool_call, dict):
-                    continue
-                raw_id = tool_call.get("id")
-                if not raw_id:
-                    continue
-                unique_id = session.tool_use_id_map.get(str(raw_id), str(raw_id))
-                tool_call["id"] = unique_id
-                tool_call_ids.append(unique_id)
-        return tool_call_ids
-
-    def _reparent_tool_calls_to_step(self, session: CodexSession, turn: CodexTurn, tool_call_ids: List[str]) -> None:
-        if not tool_call_ids or not turn.step_span_id:
-            return
-        tool_call_id_set = set(tool_call_ids)
-        for tool_call_id in tool_call_id_set:
-            pending = session.pending_tools.get(tool_call_id)
-            if pending is not None and pending.parent_id != turn.step_span_id:
-                pending.parent_id = turn.step_span_id
-        for span in self._hooks_api._assembled_spans:
-            if span.get("trace_id") != turn.trace_id:
-                continue
-            if span.get("meta", {}).get("span", {}).get("kind") != "tool":
-                continue
-            tool_id = span.get("meta", {}).get("metadata", {}).get("tool_id")
-            if tool_id in tool_call_id_set:
-                span["parent_id"] = turn.step_span_id
-
-    def _adopt_orphan_proxy_llm_spans(self, session: CodexSession, turn: CodexTurn) -> None:
-        if not self._orphan_proxy_llm_spans:
-            return
-        remaining: List[OrphanProxySpan] = []
-        for maybe_session_id, span in self._orphan_proxy_llm_spans:
-            if maybe_session_id:
-                mapped_session_id = self._proxy_session_ids.get(maybe_session_id)
-                if mapped_session_id:
-                    if mapped_session_id != session.raw_session_id:
-                        remaining.append((maybe_session_id, span))
-                        continue
-                elif maybe_session_id in session.proxy_session_keys and self._proxy_span_matches_session(span, session):
-                    self._proxy_session_ids[maybe_session_id] = session.raw_session_id
-                elif session.proxy_session_keys or any(
-                    maybe_session_id in existing.proxy_session_keys for existing in self._sessions.values()
-                ):
-                    remaining.append((maybe_session_id, span))
-                    continue
-                elif self._proxy_span_matches_session(span, session):
-                    self._proxy_session_ids[maybe_session_id] = session.raw_session_id
-                else:
-                    remaining.append((maybe_session_id, span))
-                    continue
-            elif span.get("session_id") and span.get("session_id") != session.session_id:
-                remaining.append((maybe_session_id, span))
-                continue
-            start_ns = int(span.get("start_ns", turn.start_ns))
-            end_ns = start_ns + int(span.get("duration", 0))
-            self._attach_proxy_llm_span(session, turn, span, start_ns, end_ns, append=False)
-        self._orphan_proxy_llm_spans = remaining
-
-    def _tool_parent_id(self, session: CodexSession, turn: CodexTurn) -> str:
-        """Return the parent span id for a new tool span.
-
-        When a subagent (``collab_agent_spawn_begin``) is active, tool spans
-        nest under the subagent span; otherwise they hang off the active step.
-        """
-        if session.agent_span_stack:
-            return str(session.agent_span_stack[-1]["span_id"])
-        return turn.step_span_id
-
-    def _current_active_span_ref(self, session: CodexSession) -> Optional[Dict[str, Any]]:
-        """Return the span dict most appropriate to annotate (e.g. compaction)."""
-        if session.agent_span_stack:
-            return session.agent_span_stack[-1].get("_span_ref")
-        turn = session.active_turn
-        if turn is None:
-            return None
-        return turn.step_span_ref or turn.last_step_span_ref or turn.root_span_ref
-
-    def _handle_collab_agent_spawn_begin(
-        self, session: CodexSession, record: Dict[str, Any], event: Dict[str, Any]
-    ) -> None:
-        turn = self._active_turn(session, record)
-        start_ns = _timestamp_to_ns(record.get("timestamp", ""))
-        self._ensure_step(session, turn, start_ns)
-        call_id = str(event.get("call_id", "")) or _format_span_id()
-        prompt = event.get("prompt", "")
-        sender_thread_id = event.get("sender_thread_id", "")
-        agent_name = event.get("new_agent_nickname") or event.get("agent_nickname") or "subagent"
-        parent_id = self._tool_parent_id(session, turn)
-        span_id = _format_span_id()
-        span: Dict[str, Any] = {
-            "span_id": span_id,
-            "trace_id": turn.trace_id,
-            "parent_id": parent_id,
-            "name": str(agent_name),
-            "status": "ok",
-            "start_ns": start_ns,
+            "trace_id": trace or _format_trace_id(),
+            "parent_id": parent or "undefined",
+            "name": name,
+            "start_ns": start,
             "duration": 0,
+            "status": "ok",
+            "session_id": session.session_id,
             "ml_app": self._config.ml_app,
             "service": self._config.service,
             "env": self._config.env,
-            "session_id": session.session_id,
             "tags": self._hooks_api.base_tags(
-                session,
-                source="codex-jsonl",
-                ml_app=self._config.ml_app,
-                user_handle=self._config.user_handle,
-            )
-            + ["subagent:true"],
-            "meta": {
-                "span": {"kind": "agent"},
-                "input": {"value": prompt if isinstance(prompt, str) else _to_json_str(prompt)},
-                "output": {"value": ""},
-                "metadata": {
-                    "subagent": {
-                        "call_id": call_id,
-                        "sender_thread_id": sender_thread_id,
-                        "agent_nickname": str(agent_name),
-                    }
-                },
-            },
+                session, source="codex-jsonl", ml_app=self._config.ml_app, user_handle=self._config.user_handle
+            ),
+            "meta": {"span": {"kind": kind}, "input": {}, "output": {}, "metadata": {}},
             "metrics": {},
-            "span_links": [],
         }
-        self._append_span(span)
-        entry: Dict[str, Any] = {
-            "span_id": span_id,
-            "parent_id": parent_id,
-            "call_id": call_id,
-            "start_ns": start_ns,
-            "agent_name": str(agent_name),
-            "_span_ref": span,
-        }
-        session.pending_subagents[call_id] = entry
-        session.agent_span_stack.append(entry)
-
-    def _handle_collab_agent_spawn_end(
-        self, session: CodexSession, record: Dict[str, Any], event: Dict[str, Any]
-    ) -> None:
-        call_id = str(event.get("call_id", ""))
-        entry = session.pending_subagents.pop(call_id, None)
-        if entry is None:
-            return
-        end_ns = _timestamp_to_ns(record.get("timestamp", ""))
-        # Unwind any subagents stacked above this one (out-of-order completion).
-        try:
-            idx = session.agent_span_stack.index(entry)
-        except ValueError:
-            idx = -1
-        if idx >= 0:
-            stale = session.agent_span_stack[idx + 1 :]
-            del session.agent_span_stack[idx:]
-            for stale_entry in stale:
-                stale_span = stale_entry.get("_span_ref")
-                if isinstance(stale_span, dict):
-                    stale_span["duration"] = max(end_ns - int(stale_span.get("start_ns", end_ns)), 0)
-                    stale_span["status"] = "error"
-                    stale_span["meta"].setdefault("metadata", {}).setdefault("subagent", {})["status"] = "unwound"
-                session.pending_subagents.pop(str(stale_entry.get("call_id", "")), None)
-        span = entry.get("_span_ref")
-        if isinstance(span, dict):
-            span["duration"] = max(end_ns - int(span.get("start_ns", end_ns)), 0)
-            status = str(event.get("status", "")) or "ok"
-            span["status"] = "ok" if status in ("ok", "success", "") else "error"
-            metadata = span["meta"].setdefault("metadata", {}).setdefault("subagent", {})
-            metadata["status"] = status
-            new_thread_id = event.get("new_thread_id")
-            if new_thread_id:
-                child_session_id = str(new_thread_id)
-                metadata["child_session_id"] = child_session_id
-                self._set_session_group(child_session_id, session.session_id)
-            new_agent_role = event.get("new_agent_role")
-            if new_agent_role:
-                metadata["agent_role"] = str(new_agent_role)
-            new_agent_nickname = event.get("new_agent_nickname")
-            if new_agent_nickname:
-                metadata["agent_nickname"] = str(new_agent_nickname)
-                # Only nickname becomes available at spawn_end — backfill the
-                # preliminary span's display name if we haven't already.
-                if span.get("name") in ("", "subagent", entry.get("agent_name")):
-                    span["name"] = str(new_agent_nickname)
-
-    def _handle_compaction(self, session: CodexSession, record: Dict[str, Any], trigger: str) -> None:
-        span_ref = self._current_active_span_ref(session)
-        if span_ref is None:
-            return
-        compactions = span_ref.get("meta", {}).get("metadata", {}).get("_dd", {}).get("compactions", [])
-        set_hidden_metadata(
-            span_ref,
-            compactions=compactions
-            + [{"trigger": trigger, "timestamp_ns": _timestamp_to_ns(record.get("timestamp", ""))}],
-        )
-
-    def _deduplicate_tool_use_id(self, session: CodexSession, call_id: str) -> str:
-        """Return a session-unique tool_use_id.
-
-        Codex sometimes reuses ``call_id`` across turns (e.g. ``web_search_2``).
-        Suffix repeats with an occurrence counter so trace consumers can pair
-        each ``function_call`` with its matching ``function_call_output``
-        without collisions. Direct port of trajectory's ``deduplicateToolUseID``
-        (``trajectory/codex/mapper/mapper.go``).
-        """
-        count = session.seen_tool_use_ids.get(call_id, 0) + 1
-        session.seen_tool_use_ids[call_id] = count
-        if count == 1:
-            return call_id
-        return f"{call_id}_{count}"
-
-    def _handle_tool_call(
-        self,
-        session: CodexSession,
-        record: Dict[str, Any],
-        call_id: str,
-        tool_name: str,
-        tool_input: Any,
-        status: Any = "",
-    ) -> str:
-        turn = self._active_turn(session, record)
-        call_id = call_id or _format_span_id()
-        unique_id = self._deduplicate_tool_use_id(session, call_id)
-        session.tool_use_id_map[call_id] = unique_id
-        normalized_status = _canonical_tool_status(status)
-        tool_name = tool_name or "unknown_tool"
-        display_name = display_tool_name(tool_name, tool_input) if tool_name == "exec_command" else tool_name
-        if tool_name not in _EXEC_WRAPPER_NAMES:
-            session.tools_used.add(display_name)
-            self._update_agent_manifest(session)
-        start_ns = _timestamp_to_ns(record.get("timestamp", ""))
-
-        matched_step_id, matched_llm_span = self._find_llm_step_for_tool_call(turn, unique_id, tool_name, tool_input)
-        if matched_step_id and matched_step_id != turn.step_span_id:
-            self._discard_current_step_if_empty(turn)
-        if matched_step_id and matched_step_id in turn.step_span_refs:
-            turn.step_span_id = matched_step_id
-            turn.step_span_ref = turn.step_span_refs[matched_step_id]
-            turn.current_step_start_ns = int(turn.step_span_ref.get("start_ns", start_ns))
-            turn.current_step_last_ns = max(turn.current_step_last_ns or start_ns, start_ns)
-            turn.current_step_has_llm = True
-            if matched_llm_span is not None:
-                turn.last_llm_span_ref = matched_llm_span
-        else:
-            self._ensure_step(session, turn, start_ns)
-
-        appending_to_existing_llm = (
-            turn.current_step_has_llm
-            and turn.last_llm_span_ref is not None
-            and turn.last_llm_span_ref.get("parent_id") == turn.step_span_id
-        )
-        if not appending_to_existing_llm:
-            self._mark_llm_start(session, turn, start_ns)
-        self._update_step_end(turn, turn.step_span_id, start_ns)
-
-        tool_call: Dict[str, Any] = {"id": unique_id, "name": display_name, "arguments": tool_input}
-        if normalized_status:
-            tool_call["status"] = normalized_status
-            session.pending_tool_statuses[unique_id] = normalized_status
-        if turn.reasoning_items:
-            reasoning = _copy_reasoning_items(turn.reasoning_items)
-            tool_call["reasoning"] = reasoning
-            session.pending_tool_reasoning[unique_id] = reasoning
-        tool_call_message = {"role": "assistant", "content": _to_json_str(tool_input), "tool_calls": [tool_call]}
-        llm_span = turn.last_llm_span_ref
-        if appending_to_existing_llm and llm_span is not None:
-            output_messages = llm_span["meta"]["output"].setdefault("messages", [])
-            _append_or_update_tool_call_message(output_messages, tool_call_message)
-        else:
-            _append_or_update_tool_call_message(turn.llm_output_messages, tool_call_message)
-        if turn.step_span_ref is not None and not turn.step_span_ref["meta"]["output"]["value"]:
-            turn.step_span_ref["meta"]["output"]["value"] = _to_json_str(tool_input)
-        self._add_step_tool_use_id(turn, turn.step_span_id, unique_id)
-        self._emit_pending_llm_span(session, turn)
-
-        session.pending_tools[unique_id] = PendingToolSpan(
-            span_id=_format_span_id(),
-            tool_name=tool_name,
-            tool_input=tool_input,
-            parent_id=self._tool_parent_id(session, turn),
-            start_ns=start_ns,
-        )
-        session.pending_tool_ids_by_span_id[session.pending_tools[unique_id].span_id] = unique_id
-        if tool_name in _EXEC_WRAPPER_NAMES:
-            session.exec_start_times[unique_id] = start_ns
-        self._attach_pending_auto_reviews(session)
-        return unique_id
-
-    def _handle_function_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
-        payload = record.get("payload", {})
-        arguments = payload.get("arguments", "")
-        tool_input: Any = arguments
-        if isinstance(arguments, str):
-            try:
-                tool_input = json.loads(arguments)
-            except (ValueError, TypeError):
-                tool_input = arguments
-        self._handle_tool_call(
-            session=session,
-            record=record,
-            call_id=payload.get("call_id", ""),
-            tool_name=payload.get("name", "unknown_tool") or "unknown_tool",
-            tool_input=tool_input,
-            status=payload.get("status", ""),
-        )
-
-    def _emit_tool_span(
-        self,
-        session: CodexSession,
-        pending: PendingToolSpan,
-        end_ns: int,
-        output_value: str,
-        is_error: bool,
-        extra_metadata: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Dict[str, Any]]:
-        if pending.tool_name in _EXEC_WRAPPER_NAMES:
-            tool_id = session.pending_tool_ids_by_span_id.pop(pending.span_id, pending.span_id)
-            session.pending_tool_statuses.pop(tool_id, None)
-            session.pending_tool_reasoning.pop(tool_id, None)
-            session.auto_reviews_by_tool_id.pop(tool_id, None)
-            return None
-        tool_id = session.pending_tool_ids_by_span_id.pop(pending.span_id, pending.span_id)
-        tool_status = _canonical_tool_status(session.pending_tool_statuses.pop(tool_id, ""), is_error=is_error)
-        if not tool_status:
-            tool_status = "failed" if is_error else "completed"
-        is_error = is_error or _tool_status_is_error(tool_status)
-        input_value, input_truncated = _truncate_text(_to_json_str(pending.tool_input), MAX_TOOL_VALUE_CHARS)
-        if pending.tool_name in ("web__run", "web.run"):
-            output_value = re.sub(r"citeturn[^]*[ \t]*", "", output_value)
-        output_value, output_truncated = _truncate_text(output_value, MAX_TOOL_VALUE_CHARS)
-        metadata: Dict[str, Any] = {
-            "tool_id": tool_id,
-            "status": tool_status,
-            "input_format": "json" if not isinstance(pending.tool_input, str) else "text",
-            "output_format": "verbatim",
-            "output_mime_type": "text/plain",
-        }
-        if extra_metadata:
-            metadata.update(extra_metadata)
-        auto_reviews = session.auto_reviews_by_tool_id.pop(tool_id, [])
-        reasoning = session.pending_tool_reasoning.pop(tool_id, [])
-        if reasoning:
-            metadata["reasoning"] = _copy_reasoning_items(reasoning)
-        display_name = (
-            display_tool_name(pending.tool_name, pending.tool_input)
-            if pending.tool_name == "exec_command"
-            else pending.tool_name
-        )
-        span: Dict[str, Any] = {
-            "span_id": pending.span_id,
-            "trace_id": session.active_turn.trace_id if session.active_turn else _format_trace_id(),
-            "parent_id": pending.parent_id,
-            "name": display_name,
-            "status": "error" if is_error else "ok",
-            "start_ns": pending.start_ns,
-            "duration": max(end_ns - pending.start_ns, 0),
-            "ml_app": self._config.ml_app,
-            "service": self._config.service,
-            "env": self._config.env,
-            "session_id": session.session_id,
-            "tags": self._hooks_api.base_tags(
-                session,
-                source="codex-jsonl",
-                ml_app=self._config.ml_app,
-                user_handle=self._config.user_handle,
+        apply_project_metadata_to_span(span, session.project_metadata)
+        index = None
+        if kind == "llm":
+            index = next(
+                (i for i, child in enumerate(self._hooks_api._assembled_spans) if child.get("parent_id") == parent),
+                None,
             )
-            + [f"tool_name:{display_name}"],
-            "meta": {
-                "span": {"kind": "tool"},
-                "input": {"value": input_value},
-                "output": {"value": output_value},
-                "metadata": metadata,
-            },
-            "metrics": {},
-            "span_links": [],
-        }
-        hidden_fields: Dict[str, Any] = {
-            "display": {
-                "input": "code" if not isinstance(pending.tool_input, str) else "text",
-                "output": "code",
-            }
-        }
-        if auto_reviews:
-            hidden_fields["auto_reviews"] = auto_reviews
-        if input_truncated or output_truncated:
-            hidden_fields.update(
-                truncated_input=input_truncated,
-                truncated_output=output_truncated,
-                max_value_chars=MAX_TOOL_VALUE_CHARS,
-            )
-        set_hidden_metadata(span, **hidden_fields)
-        if is_error:
-            span["meta"]["error"] = {"message": output_value or tool_status}
-        self._append_span(span)
-        turn = session.active_turn
-        if turn is not None:
-            self._update_step_end(turn, pending.parent_id, end_ns)
+        self._hooks_api._append_span(span, index=index)
         return span
 
-    def _merge_shell_poll(
-        self, session: CodexSession, arguments: Any, value: Any, end_ns: int, result_error: bool = False
-    ) -> bool:
-        if not isinstance(arguments, dict) or arguments.get("chars") or not isinstance(value, dict):
-            return False
-        session_id = arguments.get("session_id")
-        if session_id is None:
-            return False
-        entry = session.shell_sessions.get(str(session_id))
-        if entry is None:
-            return False
-        if entry.get("completed"):
-            return True
-        span = entry["span"]
-        previous = entry["result"]
-        merged = dict(previous)
-        merged.update(value)
-        merged["output"] = str(previous.get("output") or "") + str(value.get("output") or "")
-        prior_tokens = previous.get("original_token_count")
-        new_tokens = value.get("original_token_count")
-        if isinstance(prior_tokens, int) and isinstance(new_tokens, int):
-            merged["original_token_count"] = prior_tokens + new_tokens
-        entry["result"] = merged
-        output_value, truncated = _truncate_text(_to_json_str(merged), MAX_TOOL_VALUE_CHARS)
-        span["meta"]["output"]["value"] = output_value
-        span["duration"] = max(int(span["duration"]), end_ns - int(span["start_ns"]))
-        metadata = span["meta"]["metadata"]
-        metadata["poll_count"] = metadata.get("poll_count", 0) + 1
-        if truncated:
-            metadata["_dd"].update(truncated_output=True, max_value_chars=MAX_TOOL_VALUE_CHARS)
-        exit_code = value.get("exit_code")
-        if result_error or value.get("isError") or (isinstance(exit_code, int) and exit_code != 0):
-            span["status"] = "error"
-            metadata["status"] = "failed"
-            span["meta"]["error"] = {"message": str(value.get("output") or f"Exit code {exit_code}")}
-        if isinstance(exit_code, int) or result_error or value.get("isError"):
-            session.shell_sessions.pop(str(session_id), None)
-        turn = session.active_turn
-        if turn is not None and turn.trace_id == span.get("trace_id"):
-            self._update_step_end(turn, str(span["parent_id"]), end_ns)
-        return True
+    @staticmethod
+    def _bounds(span: Span, start: int, end: int) -> None:
+        previous_end = span["start_ns"] + span["duration"]
+        span["start_ns"] = min(span["start_ns"], start)
+        span["duration"] = max(previous_end, end) - span["start_ns"]
 
-    def _handle_tool_completion(self, session: CodexSession, record: Dict[str, Any]) -> None:
-        item = record.get("payload", {}).get("item", {})
-        completion = tool_completion(item)
-        if completion is None or not item.get("id"):
-            return
-        if any(entry["item"].get("id") == item["id"] for entry in session.structured_tools):
-            return
-        end_ns = self._update_last_ns(session, record)
-        turn = self._active_turn(session, record)
-        candidates = [
-            entry
-            for entry in session.fallback_tools
-            if entry["span"]["trace_id"] == turn.trace_id
-            and matches_call(completion, entry["name"], entry["arguments"])
-        ]
-        # Running command IDs disambiguate identical concurrent commands.
-        process_id = item.get("process_id")
-        identified = (
-            [
-                entry
-                for entry in candidates
-                if isinstance(entry["value"], dict) and str(entry["value"].get("session_id")) == str(process_id)
-            ]
-            if process_id
-            else []
+    def _start(
+        self, session: CodexSession, turn_id: str, ns: int, provisional: bool = False
+    ) -> Tuple[Turn, List[CompletedTrace]]:
+        key = (session.raw_session_id, turn_id)
+        if key in self._turns:
+            return self._turns[key][1], []
+        previous = session.active_turn
+        if not provisional and previous is not None and previous.provisional and not previous.closed:
+            self._turns.pop((session.raw_session_id, previous.turn_id), None)
+            previous.turn_id = turn_id
+            previous.provisional = False
+            previous.root["meta"]["metadata"]["turn_id"] = turn_id
+            self._turns[key] = (session, previous)
+            return previous, []
+        completed = self._finish(session, session.active_turn, ns)
+        root = self._span(session, "agent", "codex-request", ns)
+        root["meta"].update(model_name=session.model, model_provider=session.model_provider)
+        root["meta"]["metadata"].update(
+            turn_id=turn_id,
+            cwd=session.cwd,
+            codex_cli_version=session.cli_version,
+            reasoning_effort=session.effort,
         )
-        target = identified[0] if len(identified) == 1 else candidates[0] if len(candidates) == 1 else None
-        value = completion["value"]
-        output = value if isinstance(value, str) else _to_json_str(value)
-        is_error = (
-            _tool_status_is_error(item.get("status", ""))
-            or (isinstance(item.get("exit_code"), int) and item["exit_code"] != 0)
-            or (isinstance(value, dict) and bool(value.get("isError")))
-        )
-        details = {
-            **completion["details"],
-            "result_source": "item_completed",
-            "result_matched": True,
-            "raw_tool_name": completion["name"],
-            "item_id": item["id"],
-        }
-        if target is not None:
-            span = target["span"]
-            session.fallback_tools.remove(target)
-            output, truncated = _truncate_text(output, MAX_TOOL_VALUE_CHARS)
-            span["meta"]["output"]["value"] = output
-            span["meta"]["metadata"].update(details, status="failed" if is_error else "completed")
-            span["status"] = "error" if is_error else "ok"
-            span["duration"] = max(span["duration"], end_ns - span["start_ns"])
-            if truncated:
-                set_hidden_metadata(span, truncated_output=True, max_value_chars=MAX_TOOL_VALUE_CHARS)
-            if is_error:
-                span["meta"]["error"] = {"message": str(item.get("status") or "Tool failed")}
-            else:
-                span["meta"].pop("error", None)
-        else:
-            direct_id = session.tool_use_id_map.get(str(item["id"]), str(item["id"]))
-            pending = session.pending_tools.get(direct_id)
-            if pending is None:
-                self._ensure_step(session, turn, end_ns)
-                duration = item.get("duration") or {}
-                duration_ns = int(duration.get("secs", 0)) * 1_000_000_000 + int(duration.get("nanos", 0))
-                pending = PendingToolSpan(
-                    span_id=_format_span_id(),
-                    tool_name=display_tool_name(completion["name"], completion["arguments"]),
-                    tool_input=completion["arguments"],
-                    parent_id=self._tool_parent_id(session, turn),
-                    start_ns=end_ns - duration_ns,
-                )
-                session.pending_tool_ids_by_span_id[pending.span_id] = str(item["id"])
-            span = self._emit_tool_span(session, pending, end_ns, output, is_error, extra_metadata=details)
-            if span is None:
-                return
-        if process_id is not None:
-            session.shell_sessions[str(process_id)] = {"span": span, "completed": True}
-        completion.update(span=span, end_ns=end_ns, claimed=target is not None)
-        session.structured_tools.append(completion)
-        session.tools_used.add(span["name"])
-        self._update_step_end(turn, span["parent_id"], end_ns)
-        self._update_agent_manifest(session)
+        root["meta"]["input"]["value"] = ""
+        root["meta"]["output"]["value"] = ""
+        root["tags"].append("trajectory.semantic_type:turn")
+        turn = Turn(turn_id, root)
+        turn.provisional = provisional
+        self._manifest(session, turn)
+        session.active_turn = turn
+        self._turns[key] = (session, turn)
+        shared = self._hooks_api._sessions[session.raw_session_id]
+        shared.trace_id, shared.root_span_id, shared.start_ns = root["trace_id"], root["span_id"], ns
+        return turn, completed
 
-    def _handle_function_call_output(self, session: CodexSession, record: Dict[str, Any]) -> None:
-        payload = record.get("payload", {})
-        call_id = payload.get("call_id", "")
-        unique_id = session.tool_use_id_map.pop(call_id, call_id)
-        pending = session.pending_tools.pop(unique_id, None)
-        if pending is None:
-            return
-        output = payload.get("output", "")
-        output_value = output if isinstance(output, str) else _to_json_str(output)
-        if pending.tool_name == "wait" and isinstance(output, list) and all(
-            isinstance(block, dict)
-            and block.get("type") in ("input_text", "output_text")
-            and isinstance(block.get("text"), str)
-            for block in output
+    def _finish(self, session: CodexSession, turn: Optional[Turn], ns: int, status: str = "ok") -> List[CompletedTrace]:
+        if turn is None or turn.closed:
+            return []
+        ns = max(ns, turn.last_ns)
+        for span in turn.tools.values():
+            if span["meta"]["metadata"].get("status") in ("running", "pending", "in_progress"):
+                response = next(r for r in turn.responses if r.step["span_id"] == span["meta"]["metadata"]["step_id"])
+                self._end_tool(turn, response, span, ns, "", True)
+        for span in turn.subagents.values():
+            if span["duration"] == 0:
+                span["duration"] = max(ns - span["start_ns"], 0)
+                span["status"] = "error"
+                span["meta"]["metadata"]["subagent"]["status"] = "unterminated"
+        turn.root["duration"] = max(ns - turn.root["start_ns"], 0)
+        turn.root["status"] = status
+        tools = sorted({span["name"] for span in turn.tools.values()})
+        turn.root["meta"]["metadata"]["tools"] = tools
+        self._manifest(session, turn)
+        turn.closed = True
+        turn.closed_at = time.monotonic()
+        self._attach_reviews(session, turn)
+        # Only IDs and references to canonical spans survive for late updates.
+        turn.calls.clear()
+        turn.messages.clear()
+        turn.item_starts.clear()
+        for response in turn.responses:
+            response.output.clear()
+            response.reasoning.clear()
+            response.inputs.clear()
+            response.usage = None
+        return [(session.session_id, turn.root["trace_id"])]
+
+    def _response(self, session: CodexSession, turn: Turn, ns: int) -> Response:
+        if turn.current is None or turn.current.llm is not None:
+            step = self._span(
+                session, "step", f"inference-{len(turn.responses)}", ns, turn.root["span_id"], turn.root["trace_id"]
+            )
+            step["tags"].append("trajectory.semantic_type:agent_message")
+            step["meta"]["metadata"].update(turn_id=turn.turn_id, message_index=len(turn.responses))
+            turn.current = Response(step, ns)
+            turn.current.inputs = list(turn.messages)
+            step["meta"]["input"]["value"] = (
+                _to_json_str([m for m in turn.messages if m["role"] != "assistant"])
+                if turn.responses
+                else turn.root["meta"]["input"]["value"]
+            )
+            turn.responses.append(turn.current)
+        return turn.current
+
+    def _model_start(self, turn: Turn, payload: Dict[str, Any], ns: int) -> Tuple[int, str]:
+        metadata = payload.get("internal_chat_message_metadata_passthrough") or {}
+        created = metadata.get("create_time") if isinstance(metadata, dict) else None
+        if (
+            isinstance(created, (float, int))
+            and not isinstance(created, bool)
+            and math.isfinite(created)
+            and turn.root["start_ns"] / 1e9 <= created <= ns / 1e9
         ):
-            output_value = "\n".join(block["text"] for block in output)
-        final_status = _canonical_tool_status(payload.get("status", "")) or "completed"
-        session.pending_tool_statuses[unique_id] = final_status
-        end_ns = _timestamp_to_ns(record.get("timestamp", ""))
-        self._update_tool_call_status(session.active_turn, unique_id, final_status)
-        self._update_approval_status(session, str(call_id), final_status, end_ns)
-        tool_message = {
-            "role": "tool",
-            "tool_call_id": unique_id,
-            "content": output_value,
-            "status": final_status,
+            return int(Decimal(str(created)) * 1_000_000_000), "response_create_time"
+        return turn.item_starts.get(str(payload.get("id") or ""), ns), (
+            "item_completed" if payload.get("id") in turn.item_starts else "record_timestamp"
+        )
+
+    def _model_item(self, session: CodexSession, turn: Turn, payload: Dict[str, Any], ns: int) -> None:
+        start, source = self._model_start(turn, payload, ns)
+        response = self._response(session, turn, start)
+        if start <= response.start:
+            response.start, response.timing = start, source
+        self._bounds(response.step, start, ns)
+        kind = payload.get("type")
+        if kind == "reasoning":
+            response.reasoning.append(_extract_reasoning_metadata(payload))
+            return
+        if kind == "message":
+            text = _content_text(payload.get("content"))
+            if text:
+                message = {"role": "assistant", "content": text}
+                if message not in response.output:
+                    response.output.append(message)
+                turn.root["meta"]["output"]["value"] = text
+                response.step["meta"]["output"]["value"] = text
+                if response.usage:
+                    pending, end, modern = response.usage
+                    self._usage(session, turn, pending, end, modern)
+            return
+        call_id = str(payload.get("call_id") or payload.get("id") or _format_span_id())
+        # Repeated arguments do not imply repeated identity.
+        existing = turn.calls.get(call_id)
+        if existing and existing[1] is not None and existing[1]["meta"]["metadata"]["status"] == "running":
+            return
+        name = str(payload.get("name") or "unknown_tool")
+        arguments = payload.get("input") if kind == "custom_tool_call" else payload.get("arguments", {})
+        if kind == "function_call" and isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except ValueError:
+                pass
+        response.step["meta"]["output"]["value"] = _to_json_str(arguments)
+        response.output.append(
+            {
+                "role": "assistant",
+                "content": _to_json_str(arguments),
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "name": _display_tool_name(name, arguments) if name not in _EXEC_WRAPPER_NAMES else name,
+                        "arguments": arguments,
+                        "status": payload.get("status", "completed"),
+                        **({"reasoning": _copy_reasoning_items(response.reasoning)} if response.reasoning else {}),
+                    }
+                ],
+            }
+        )
+        span = None
+        if name not in _EXEC_WRAPPER_NAMES:
+            count = turn.call_counts.get(call_id, 0) + 1
+            turn.call_counts[call_id] = count
+            unique_id = call_id if count == 1 else f"{call_id}_{count}"
+            span = self._tool(session, turn, response, unique_id, name, arguments, ns)
+            if response.reasoning:
+                span["meta"]["metadata"]["reasoning"] = _copy_reasoning_items(response.reasoning)
+        turn.calls[call_id] = (response, span)
+        if response.usage:
+            pending, end, modern = response.usage
+            self._usage(session, turn, pending, end, modern)
+
+    def _usage(self, session: CodexSession, turn: Turn, payload: Dict[str, Any], ns: int, modern: bool) -> None:
+        response_id = str(payload.get("response_id") or "")
+        if modern:
+            turn.modern_usage = True
+            key = (session.raw_session_id, response_id)
+            if not response_id or key in self._responses:
+                return
+            usage = payload.get("usage") or {}
+        else:
+            if turn.modern_usage:
+                return
+            info = payload.get("info") or {}
+            usage = info.get("last_token_usage") or info.get("total_token_usage") or {}
+        if not usage:
+            return
+        response = turn.current or self._response(session, turn, ns)
+        if response.llm is not None:
+            return
+        if not response.output:
+            response.usage = (payload, ns, modern)
+            return
+        span = self._span(
+            session, "llm", session.model or "unknown", response.start, response.step["span_id"], turn.root["trace_id"]
+        )
+        span["duration"] = max(ns - response.start, 0)
+        inputs, input_truncated = _copy_messages_with_limits(response.inputs)
+        outputs, output_truncated = _copy_messages_with_limits(response.output)
+        span["meta"].update(model_name=session.model, model_provider=session.model_provider)
+        span["meta"]["input"]["messages"] = inputs
+        span["meta"]["output"]["messages"] = outputs
+        span["meta"]["metadata"].update(
+            turn_id=turn.turn_id, response_id=response_id, timing=response.timing, reasoning_effort=session.effort
+        )
+        if response.reasoning:
+            span["meta"]["metadata"]["reasoning"] = _copy_reasoning_items(response.reasoning)
+        if input_truncated or output_truncated:
+            set_hidden_metadata(span, truncated_input=input_truncated, truncated_output=output_truncated)
+        input_tokens, output_tokens = usage.get("input_tokens", 0), usage.get("output_tokens", 0)
+        cached = usage.get("cached_input_tokens", 0)
+        span["metrics"] = {
+            **usage,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": usage.get("total_tokens", input_tokens + output_tokens),
+            "cache_read_input_tokens": cached,
+            "cache_write_input_tokens": 0,
+            "non_cached_input_tokens": max(input_tokens - cached, 0),
         }
-        if session.active_turn is not None and session.active_turn.active_llm_input_messages is not None:
-            session.active_turn.pending_llm_input_messages.append(tool_message)
-        elif session.active_turn is not None:
-            session.active_turn.llm_input_messages.append(tool_message)
-        if pending.tool_name in _EXEC_WRAPPER_NAMES:
-            calls = extract_exec_calls(pending.tool_input) if isinstance(pending.tool_input, str) else []
-            if calls:
-                self._emit_exec_tool_spans(session, pending, unique_id, end_ns, output, final_status, calls)
-            else:
-                session.exec_start_times.pop(unique_id, None)
-                session.pending_tool_ids_by_span_id.pop(pending.span_id, None)
-                session.pending_tool_statuses.pop(unique_id, None)
-                session.pending_tool_reasoning.pop(unique_id, None)
-                session.auto_reviews_by_tool_id.pop(unique_id, None)
-            return
-        structured = next((entry for entry in session.structured_tools if entry["item"].get("id") == call_id), None)
-        if structured is None:
-            span = self._emit_tool_span(session, pending, end_ns, output_value, _tool_status_is_error(final_status))
-            if span is not None:
-                session.fallback_tools.append(
-                    {"name": pending.tool_name, "arguments": pending.tool_input, "span": span, "value": output}
-                )
-        else:
-            session.pending_tool_ids_by_span_id.pop(pending.span_id, None)
-            session.pending_tool_statuses.pop(unique_id, None)
-
-    def _emit_exec_tool_spans(
-        self,
-        session: CodexSession,
-        pending: PendingToolSpan,
-        outer_id: str,
-        end_ns: int,
-        output: Any,
-        outer_status: str,
-        calls: List[Dict[str, Any]],
-    ) -> None:
-        """Replace a JavaScript exec wrapper with its directly invoked tools."""
-        session.pending_tool_ids_by_span_id.pop(pending.span_id, None)
-        session.pending_tool_statuses.pop(outer_id, None)
-        reviews = session.auto_reviews_by_tool_id.pop(outer_id, [])
-        reasoning = session.pending_tool_reasoning.pop(outer_id, [])
-        results = extract_exec_results(output, len(calls), calls=calls)
-        invocation_start = session.exec_start_times.pop(outer_id, pending.start_ns)
-        for index, call in enumerate(calls):
-            raw_name = call["name"]
-            matching = [
-                entry
-                for entry in session.structured_tools
-                if not entry.get("claimed")
-                and entry["span"]["parent_id"] == pending.parent_id
-                and invocation_start <= entry["end_ns"]
-                and matches_call(entry, raw_name, call["arguments"])
-            ]
-            if not matching and isinstance(call["arguments"], str) and raw_name != "apply_patch":
-                # A call expression inside a loop represents many invocations.
-                # Keep their structured spans; do not invent a span for the expression.
-                covered = [
-                    entry
-                    for entry in session.structured_tools
-                    if not entry.get("claimed")
-                    and entry["span"]["parent_id"] == pending.parent_id
-                    and invocation_start <= entry["end_ns"]
-                    and matches_tool_name(entry, raw_name)
-                ]
-                if covered and sum(c["name"] == raw_name for c in calls) == 1:
-                    for entry in covered:
-                        entry["claimed"] = True
-                        entry["span"]["meta"]["metadata"]["exec_call_id"] = outer_id
-                    continue
-            if matching:
-                entry = matching[0]
-                entry["claimed"] = True
-                metadata = entry["span"]["meta"]["metadata"]
-                metadata.update(exec_call_id=outer_id, tool_id=f"{outer_id}:{index}")
-                if index == 0 and reviews:
-                    set_hidden_metadata(entry["span"], auto_reviews=reviews)
-                if index == 0 and reasoning:
-                    metadata["reasoning"] = _copy_reasoning_items(reasoning)
-                continue
-            result = results.get(index)
-            value = result.get("value", "") if result is not None else ""
-            if isinstance(value, str):
-                try:
-                    parsed_value = json.loads(value)
-                except (ValueError, TypeError):
-                    parsed_value = None
-                if isinstance(parsed_value, dict):
-                    value = parsed_value
-            if raw_name == "write_stdin" and self._merge_shell_poll(
-                session, call["arguments"], value, end_ns, result_error=bool(result and result.get("error"))
-            ):
-                continue
-            display_name = display_tool_name(raw_name, call["arguments"])
-            session.tools_used.add(display_name)
-            child_id = f"{outer_id}:{index}"
-            child = PendingToolSpan(
-                span_id=_format_span_id(),
-                tool_name=display_name,
-                tool_input=call["arguments"],
-                parent_id=pending.parent_id,
-                start_ns=pending.start_ns,
+        span["metrics"].update(
+            compute_cost_metrics(
+                model_id=session.model,
+                provider_id="openai",
+                non_cached_input_tokens=max(input_tokens - cached, 0),
+                cache_write_tokens=0,
+                cache_read_tokens=cached,
+                output_tokens=output_tokens,
+                when=response.start,
             )
-            session.pending_tool_ids_by_span_id[child.span_id] = child_id
-            result_error = bool(result and result.get("error"))
-            if isinstance(value, dict):
-                result_error = result_error or bool(value.get("isError"))
-                if raw_name == "exec_command" and isinstance(value.get("exit_code"), int):
-                    result_error = result_error or value["exit_code"] != 0
-            is_error = _tool_status_is_error(outer_status) or result_error
-            session.pending_tool_statuses[child_id] = "failed" if is_error else "completed"
-            if index == 0:
-                if reviews:
-                    session.auto_reviews_by_tool_id[child_id] = reviews
-                if reasoning:
-                    session.pending_tool_reasoning[child_id] = reasoning
-            span = self._emit_tool_span(
-                session,
-                child,
-                end_ns,
-                _to_json_str(value) if result is not None else "",
-                is_error,
-                extra_metadata={
-                    "raw_tool_name": raw_name,
-                    "exec_call_id": outer_id,
-                    "result_matched": result is not None,
-                    "timing": "exec_envelope",
-                },
+            or {}
+        )
+        response.llm, response.response_id = span, response_id
+        response.usage = None
+        response.inputs.clear()
+        self._bounds(response.step, response.start, ns)
+        turn.messages.extend(response.output)
+        response.output = []
+        if response_id:
+            _remember(
+                self._responses, (session.raw_session_id, response_id), (session, turn, response), RECENT_RESPONSES
             )
-            if span is not None:
-                session.fallback_tools.append(
-                    {"name": raw_name, "arguments": call["arguments"], "span": span, "value": value}
-                )
-            if raw_name == "exec_command" and span is not None and isinstance(value, dict):
-                shell_session_id = value.get("session_id")
-                if shell_session_id is not None:
-                    session.shell_sessions[str(shell_session_id)] = {"span": span, "result": value}
-                    span["meta"]["metadata"]["shell_session_id"] = shell_session_id
-        self._update_agent_manifest(session)
+            pending = self._pending_proxy.pop(response_id, None)
+            if pending:
+                self._enrich(session, turn, response, pending[1])
 
-    def _handle_custom_tool_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
-        payload = record.get("payload", {})
-        tool_input: Any = payload.get("input", "")
-        self._handle_tool_call(
-            session=session,
-            record=record,
-            call_id=payload.get("call_id", ""),
-            tool_name=payload.get("name", "custom_tool") or "custom_tool",
-            tool_input=tool_input,
-            status=payload.get("status", ""),
+    def _tool(
+        self, session: CodexSession, turn: Turn, response: Response, item_id: str, name: str, arguments: Any, start: int
+    ) -> Span:
+        span = turn.tools.get(item_id)
+        if span is None:
+            active_agents = [agent for agent in turn.subagents.values() if agent["duration"] == 0]
+            parent = active_agents[-1] if active_agents else response.step
+            span = self._span(
+                session, "tool", _display_tool_name(name, arguments), start, parent["span_id"], turn.root["trace_id"]
+            )
+            turn.tools[item_id] = span
+        value, truncated = _truncate_text(_to_json_str(arguments), MAX_TOOL_VALUE_CHARS)
+        span["meta"]["input"]["value"] = value
+        span["meta"]["output"].setdefault("value", "")
+        span["meta"]["metadata"].update(
+            tool_id=item_id,
+            raw_tool_name=name,
+            status="running",
+            input_format="json",
+            output_format="verbatim",
+            output_mime_type="text/plain",
+            step_id=response.step["span_id"],
         )
+        set_hidden_metadata(span, display={"input": "code", "output": "code"}, truncated_input=truncated)
+        if f"tool_name:{span['name']}" not in span["tags"]:
+            span["tags"].append(f"tool_name:{span['name']}")
+        self._manifest(session, turn)
+        return span
 
-    def _handle_custom_tool_call_output(self, session: CodexSession, record: Dict[str, Any]) -> None:
-        self._handle_function_call_output(session, record)
-
-    def _handle_web_search_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
-        payload = record.get("payload", {})
-        tool_input = payload.get("query", "")
-        status = _canonical_tool_status(payload.get("status", "")) or "completed"
-        unique_id = self._handle_tool_call(
-            session=session,
-            record=record,
-            call_id=payload.get("call_id", ""),
-            tool_name="web_search",
-            tool_input=tool_input,
-            status=status,
-        )
-        pending = session.pending_tools.pop(unique_id, None)
-        if pending is None:
-            return
-        session.tool_use_id_map.pop(payload.get("call_id", ""), None)
-        session.pending_tool_statuses[unique_id] = status
-        self._update_tool_call_status(session.active_turn, unique_id, status)
-        self._emit_tool_span(
-            session=session,
-            pending=pending,
-            end_ns=_timestamp_to_ns(record.get("timestamp", "")),
-            output_value="",
-            is_error=_tool_status_is_error(status),
-        )
-
-    def _handle_approval_request(
-        self,
-        session: CodexSession,
-        record: Dict[str, Any],
-        event: Dict[str, Any],
-        tool_name: str,
-    ) -> None:
-        turn = self._active_turn(session, record)
-        session.tools_used.add(tool_name)
-        self._update_agent_manifest(session)
-        span_ref = turn.root_span_ref
-        if span_ref is None:
-            return
-        approvals = span_ref.get("meta", {}).get("metadata", {}).get("_dd", {}).get("codex_approvals", [])
-        tool_input: Any = event.get("reason", "")
-        if tool_name == "exec_command":
-            command = event.get("command", "")
-            tool_input = " ".join(str(part) for part in command) if isinstance(command, list) else command
+    def _manifest(self, session: CodexSession, turn: Turn) -> None:
+        tools = sorted({span["name"] for span in turn.tools.values()})
         set_hidden_metadata(
-            span_ref,
-            codex_approvals=approvals
-            + [
-                {
-                    "call_id": str(event.get("call_id", "")),
-                    "tool": tool_name,
-                    "input": tool_input if isinstance(tool_input, str) else _to_json_str(tool_input),
-                    "timestamp_ns": _timestamp_to_ns(record.get("timestamp", "")),
-                    "status": "pending",
-                }
-            ],
+            turn.root,
+            agent_manifest={
+                "name": self._config.agent_name,
+                "instructions": "",
+                "handoff_description": "",
+                "model": session.model,
+                "model_provider": session.model_provider,
+                "model_settings": {"reasoning_effort": session.effort},
+                "tools": [{"name": name} for name in tools],
+                "handoffs": [],
+                "guardrails": [],
+            },
         )
 
-    def _handle_patch_apply_end(self, session: CodexSession, record: Dict[str, Any], event: Dict[str, Any]) -> None:
-        changes = event.get("changes", {})
-        if isinstance(changes, dict):
-            tool_input = ", ".join(sorted(str(path) for path in changes.keys()))
+    def _end_tool(self, turn: Turn, response: Response, span: Span, ns: int, output: Any, error: bool) -> None:
+        value, truncated = _truncate_text(
+            output if isinstance(output, str) else _to_json_str(output), MAX_TOOL_VALUE_CHARS
+        )
+        span["meta"]["output"]["value"] = value
+        span["duration"] = max(ns - span["start_ns"], 0)
+        span["status"] = "error" if error else "ok"
+        span["meta"]["metadata"]["status"] = "failed" if error else "completed"
+        messages = response.llm["meta"]["output"].get("messages", []) if response.llm else response.output
+        for message in messages:
+            for call in message.get("tool_calls", []):
+                if call.get("id") in (span["meta"]["metadata"]["tool_id"], span["meta"]["metadata"].get("call_id")):
+                    call["status"] = span["meta"]["metadata"]["status"]
+        if error:
+            span["meta"]["error"] = {"message": value or "Tool failed"}
         else:
-            tool_input = ""
-        call_id = str(event.get("call_id", "")) or _format_span_id()
-        status = _canonical_tool_status(event.get("status", ""))
-        if not status:
-            status = "failed" if event.get("success") is False else "completed"
-        unique_id = self._handle_tool_call(
-            session=session,
-            record=record,
-            call_id=call_id,
-            tool_name="apply_patch",
-            tool_input=tool_input,
-            status=status,
-        )
-        pending = session.pending_tools.pop(unique_id, None)
-        if pending is None:
+            span["meta"].pop("error", None)
+        if truncated:
+            set_hidden_metadata(span, truncated_output=True)
+        self._bounds(response.step, span["start_ns"], ns)
+        if turn.closed:
+            self._bounds(turn.root, span["start_ns"], ns)
+        for approval in turn.root["meta"]["metadata"].get("_dd", {}).get("codex_approvals", []):
+            if approval.get("call_id") in (
+                span["meta"]["metadata"]["tool_id"],
+                span["meta"]["metadata"].get("call_id"),
+            ):
+                approval.update(status=span["meta"]["metadata"]["status"], resolved_timestamp_ns=ns)
+
+    def _item(self, session: CodexSession, turn: Turn, event: Dict[str, Any], ns: int) -> None:
+        item = event.get("item") or {}
+        item_id = str(item.get("id") or "")
+        if not item_id:
             return
-        session.tool_use_id_map.pop(call_id, None)
-        session.pending_tool_statuses[unique_id] = status
-        end_ns = _timestamp_to_ns(record.get("timestamp", ""))
-        self._update_tool_call_status(session.active_turn, unique_id, status)
-        self._update_approval_status(session, call_id, status, end_ns)
-        stdout = event.get("stdout", "")
-        stderr = event.get("stderr", "")
-        output_value = stdout if isinstance(stdout, str) else _to_json_str(stdout)
-        if stderr:
-            stderr_value = stderr if isinstance(stderr, str) else _to_json_str(stderr)
-            output_value = f"{output_value}\n{stderr_value}" if output_value else stderr_value
-        self._emit_tool_span(
-            session=session,
-            pending=pending,
-            end_ns=end_ns,
-            output_value=output_value,
-            is_error=event.get("success") is False or _tool_status_is_error(status),
+        completed = event.get("type") == "item_completed"
+        if not completed and turn.closed:
+            return
+        interval = _item_interval(event, turn.root["start_ns"], ns)
+        if item.get("type") in ("Reasoning", "AgentMessage"):
+            if not turn.closed:
+                turn.item_starts[item_id] = interval[0] if interval else ns
+            return
+        normalized = _tool_item(item)
+        if normalized is None:
+            return
+        if item_id in turn.tools and turn.tools[item_id]["meta"]["metadata"].get("result_source") == "item_completed":
+            return
+        start, end = interval or (ns, ns)
+        if not interval:
+            duration = item.get("duration") or {}
+            start = ns - int(duration.get("secs", 0)) * 1_000_000_000 - int(duration.get("nanos", 0))
+            start = turn.item_starts.get(item_id, start)
+        # Structured items do not always carry a response ID. Use the recorded
+        # execution time within this explicit turn, never command-text equality.
+        candidates = [r for r in turn.responses if r.start <= start]
+        response = candidates[-1] if candidates else None
+        if response is None:
+            if turn.closed:
+                return
+            response = self._response(session, turn, start)
+        direct = turn.calls.get(item_id)
+        if direct:
+            response = direct[0]
+        existing = turn.tools.get(item_id)
+        if existing:
+            response = next(r for r in turn.responses if r.step["span_id"] == existing["meta"]["metadata"]["step_id"])
+        name, arguments, output, details = normalized
+        if existing is None and direct is None:
+            # Older JSONL has both a direct call ID and a separate item ID.
+            # Reuse a direct call only when its tool and arguments
+            # identify one candidate in this response. Never inspect exec source.
+            matches = [
+                (call_response, call_span)
+                for call_response, call_span in turn.calls.values()
+                if call_span is not None
+                and call_response is response
+                and call_span["meta"]["metadata"].get("raw_tool_name") == name
+                and call_span["meta"]["metadata"].get("result_source") != "item_completed"
+                and _matches_tool_input(name, call_span["meta"]["input"].get("value", ""), arguments, session.cwd)
+                and call_span["start_ns"] <= end
+            ]
+            if len(matches) == 1:
+                response, existing = matches[0]
+                assert existing is not None
+                old_id = existing["meta"]["metadata"]["tool_id"]
+                existing["meta"]["metadata"]["call_id"] = old_id
+                turn.tools.pop(old_id, None)
+                turn.tools[item_id] = existing
+                if not interval:
+                    start = min(start, existing["start_ns"])
+        direct_input = (
+            existing["meta"]["input"].get("value")
+            if existing is not None and existing["meta"]["metadata"].get("call_id")
+            else None
         )
+        span = self._tool(session, turn, response, item_id, name, arguments, start)
+        if direct_input is not None:
+            span["meta"]["input"]["value"] = direct_input
+        span["start_ns"] = start
+        if not completed:
+            turn.item_starts[item_id] = start
+            return
+        span["meta"]["metadata"].update(
+            details,
+            item_id=item_id,
+            result_source="item_completed",
+            timing="item_completed" if interval else "item_duration",
+        )
+        error = (
+            _tool_status_is_error(item.get("status"))
+            or bool(item.get("error"))
+            or (isinstance(item.get("exit_code"), int) and item["exit_code"] != 0)
+            or (isinstance(output, dict) and bool(output.get("isError")))
+        )
+        self._end_tool(turn, response, span, end, output, error)
+        if turn.closed:
+            self._attach_reviews(session, turn)
+
+    def _context(self, session: CodexSession, payload: Dict[str, Any]) -> None:
+        previous_cwd = session.cwd
+        session.cwd = payload.get("cwd", session.cwd)
+        session.model = payload.get("model", session.model)
+        session.effort = payload.get("effort", session.effort)
+        session.cli_version = payload.get("cli_version", session.cli_version)
+        session.model_provider = payload.get("model_provider", session.model_provider)
+        session.project_metadata = resolve_project_metadata(
+            cwd=session.cwd,
+            project_name=extract_agent_project_name(payload)
+            or (session.project_metadata.project_name if session.cwd == previous_cwd else ""),
+            git_repository_url=extract_git_repository_url(payload)
+            or (session.project_metadata.git_repository_url if session.cwd == previous_cwd else ""),
+        )
+        turn = session.active_turn
+        if turn is not None and not turn.closed:
+            turn.root["meta"]["model_name"] = session.model
+            turn.root["meta"]["metadata"].update(cwd=session.cwd, reasoning_effort=session.effort)
+            apply_project_metadata_to_span(turn.root, session.project_metadata)
+
+    def _group(self, child_id: str, session: CodexSession) -> None:
+        _remember(self._child_session_ids, child_id, session.session_id, RECENT_TURNS)
+        child = self._sessions.get(child_id)
+        if child:
+            child.session_id = session.session_id
+        shared = self._hooks_api._sessions.get(child_id)
+        if shared:
+            shared.session_id = session.session_id
+            parent = self._hooks_api._sessions[session.raw_session_id]
+            shared.session_name = parent.session_name
+        for span in self._hooks_api._assembled_spans:
+            if span.get("session_id") == child_id:
+                span["session_id"] = session.session_id
+                span["tags"] = [tag for tag in span.get("tags", []) if not tag.startswith("session_id:")]
+                span["tags"].append(f"session_id:{session.session_id}")
+                metadata = span.setdefault("meta", {}).setdefault("metadata", {})
+                metadata.pop("session_name", None)
+                parent_name = self._hooks_api._sessions[session.raw_session_id].session_name
+                if parent_name:
+                    metadata["session_name"] = parent_name
+        self._hooks_api._synchronize_session_tags(session.session_id)
+
+    def _review(self, sid: str, record: Dict[str, Any]) -> None:
+        # Review sessions are annotations, not user turns. Retain only a bounded
+        # summary and explicit source identity.
+        payload = record["payload"]
+        state = self._reviews.setdefault(sid, {})
+        # A cursor may start at task_started, before review identity is supplied
+        # by turn_context. Remove only empty turns created before that identity.
+        for key, (_, turn) in list(self._turns.items()):
+            if key[0] == sid and not turn.root["meta"]["input"]["value"] and not turn.tools:
+                state.update(
+                    start_ns=turn.root["start_ns"],
+                    turn_id=turn.turn_id,
+                    parent_turn_id=turn.root["meta"]["metadata"].get("parent_turn_id", ""),
+                )
+                del self._turns[key]
+                self._hooks_api._assembled_spans[:] = [
+                    span for span in self._hooks_api._assembled_spans if span["trace_id"] != turn.root["trace_id"]
+                ]
+                self._sessions.pop(sid, None)
+                self._hooks_api._sessions.pop(sid, None)
+        while len(self._reviews) > RECENT_TURNS:
+            self._reviews.popitem(last=False)
+        if record["type"] == "session_meta":
+            state["parent"] = payload.get("parent_thread_id", "")
+        if payload.get("type") == "task_started":
+            parent = state.get("parent", "")
+            state.clear()
+            state.update(
+                parent=parent,
+                turn_id=payload.get("turn_id", ""),
+                parent_turn_id=(payload.get("turn_attribution") or {}).get("parent_turn_id")
+                or payload.get("root_turn_id", ""),
+                start_ns=_timestamp_to_ns(record.get("timestamp", "")),
+            )
+        if payload.get("model"):
+            state["model"] = payload["model"]
+        if payload.get("type") == "message" and payload.get("role") == "assistant":
+            try:
+                state["decision"] = json.loads(_content_text(payload.get("content")))
+            except ValueError:
+                pass
+        if record["type"] == "token_usage_record":
+            state["usage"] = payload.get("usage", {})
+        if payload.get("type") == "token_count" and not state.get("usage"):
+            state["usage"] = (payload.get("info") or {}).get("last_token_usage", {})
+        if payload.get("type") == "task_complete":
+            parent_key = (
+                str(state.get("parent") or ""),
+                str(state.get("parent_turn_id") or payload.get("root_turn_id") or ""),
+            )
+            review_key = (*parent_key, sid, str(state.get("turn_id") or ""))
+            review = {**state, "review_session_id": sid, "end_ns": _timestamp_to_ns(record.get("timestamp", ""))}
+            _remember(self._pending_reviews, review_key, (time.monotonic(), review), RECENT_TURNS)
+            parent_turn = self._turns.get(parent_key)
+            if parent_turn:
+                self._attach_reviews(*parent_turn)
+            elif not parent_key[0]:
+                matches = [entry for (parent_sid, tid), entry in self._turns.items() if tid == parent_key[1]]
+                if len(matches) == 1:
+                    self._attach_reviews(*matches[0])
+
+    def _attach_reviews(self, session: CodexSession, turn: Turn) -> None:
+        # Wait for the turn's tool set before deciding whether the timing match
+        # is unique. A review has parent turn identity, but no tool ID in JSONL.
+        if not turn.closed:
+            return
+        for key, (_, review) in list(self._pending_reviews.items()):
+            if key[1] != turn.turn_id or (key[0] and key[0] != session.raw_session_id):
+                continue
+            if not key[0] and sum(tid == turn.turn_id for _, tid in self._turns) != 1:
+                continue
+            start, end = review.get("start_ns", 0), review["end_ns"]
+            candidates = [
+                span
+                for span in turn.tools.values()
+                if start > 0
+                and end >= start
+                and span["meta"]["metadata"].get("status") in ("completed", "failed")
+                and span["start_ns"] <= start
+                and end <= span["start_ns"] + span["duration"]
+            ]
+            if len(candidates) != 1:
+                continue
+            span = candidates[0]
+            decision = review.get("decision")
+            if not isinstance(decision, dict):
+                continue
+            usage = dict(review.get("usage", {}))
+            model = review.get("model") or ""
+            cost = compute_cost_metrics(
+                model_id=model,
+                provider_id="openai",
+                non_cached_input_tokens=max(usage.get("input_tokens", 0) - usage.get("cached_input_tokens", 0), 0),
+                cache_write_tokens=usage.get("cache_write_input_tokens", 0),
+                cache_read_tokens=usage.get("cached_input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                when=start,
+            )
+            usage.update(
+                estimated_total_cost=cost["estimated_total_cost"] if cost else None,
+                estimated_total_cost_usd=cost["estimated_total_cost"] / 1_000_000_000 if cost else None,
+                estimated_cost_model=model if cost else None,
+            )
+            entry = {
+                "review_session_id": review["review_session_id"],
+                "model": model,
+                "outcome": decision.get("outcome", ""),
+                "risk_level": decision.get("risk_level", ""),
+                "explanation": decision.get("rationale") or decision.get("explanation") or "",
+                "usage": usage,
+                "tool_id": span["meta"]["metadata"]["tool_id"],
+            }
+            existing = span["meta"]["metadata"].get("_dd", {}).get("auto_reviews", [])
+            set_hidden_metadata(span, auto_reviews=existing + [entry])
+            del self._pending_reviews[key]
 
     def _dispatch(
-        self,
-        session_id: str,
-        record: Dict[str, Any],
-        proxy_session_key: Optional[str] = None,
+        self, session_id: str, record: Dict[str, Any], proxy_session_key: Optional[str] = None
     ) -> List[CompletedTrace]:
-        start_ns = _timestamp_to_ns(record.get("timestamp", ""))
-        if record.get("type") == "session_meta":
-            payload = record.get("payload", {})
-            if isinstance(payload, dict) and payload.get("thread_source") == "guardian_review":
-                parent_session_id = str(payload.get("parent_thread_id", ""))
-                if parent_session_id:
-                    self._auto_review_sessions.setdefault(session_id, {"parent_session_id": parent_session_id})
-        if record.get("type") == "turn_context":
-            payload = record.get("payload", {})
-            if isinstance(payload, dict) and payload.get("model") == "codex-auto-review":
-                if session_id not in self._auto_review_sessions:
-                    self._classify_auto_review_session(session_id, start_ns)
-        if record.get("type") == "response_item" and session_id not in self._auto_review_sessions:
-            payload = record.get("payload", {})
-            if isinstance(payload, dict) and payload.get("type") == "message" and payload.get("role") == "user":
-                content = _content_text(payload.get("content"))
-                if "Reviewed Codex session id:" in content and "APPROVAL REQUEST START" in content:
-                    self._classify_auto_review_session(session_id, start_ns)
-        if session_id in self._auto_review_sessions:
-            self._handle_auto_review_record(session_id, record)
+        if not isinstance(record, dict) or not isinstance(record.get("payload"), dict):
             return []
-        if session_id in self._ignored_session_ids:
+        self._expire()
+        fingerprint = hashlib.sha256(json.dumps([session_id, record], sort_keys=True).encode()).digest()
+        if fingerprint in self._seen:
             return []
-        session = self._get_or_create_session(session_id, start_ns=start_ns)
-        if record.get("type") == "event_msg" and record.get("payload", {}).get("type") == "session_name":
-            # A grouped child must not rename the parent session. Handle before
-            # record deduplication so a rename back to an earlier name works.
-            if session.session_id == session_id:
-                name = record["payload"].get("name")
-                if isinstance(name, str):
-                    self._hooks_api._set_session_name(self._hooks_api._sessions[session_id], name)
+        kind, payload = str(record.get("type") or ""), record["payload"]
+        event = _event_type(kind, payload)
+        ns = _timestamp_to_ns(record.get("timestamp", ""))
+        if (
+            payload.get("thread_source") == "guardian_review"
+            or (payload.get("turn_attribution") or {}).get("turn_trigger") == "guardian_review"
+            or payload.get("model") == "codex-auto-review"
+            or session_id in self._reviews
+        ):
+            self._review(session_id, record)
+            _remember(self._seen, fingerprint, True, RECENT_RECORDS)
             return []
+        session = self._session(session_id)
+        session.last_seen = time.monotonic()
         if proxy_session_key:
-            session.proxy_session_keys.add(proxy_session_key)
             self._hooks_api._register_session_token(proxy_session_key, session_id)
-        if session.raw_session_id in self._ignored_session_ids:
+        if kind in ("session_meta", "turn_context"):
+            self._context(session, {**record, **payload})
+        if kind == "session_meta":
+            parent = payload.get("parent_thread_id")
+            if parent in self._sessions:
+                self._group(session_id, self._sessions[parent])
+        if event == "session_name":
+            if session.session_id == session_id:
+                self._hooks_api._set_session_name(self._hooks_api._sessions[session_id], str(payload.get("name") or ""))
             return []
-        try:
-            record_fingerprint = json.dumps(record, sort_keys=True, separators=(",", ":"))
-        except (TypeError, ValueError):
-            record_fingerprint = ""
-        if record_fingerprint:
-            if record_fingerprint in session.seen_records:
-                return []
-            session.seen_records.add(record_fingerprint)
+        turn_id = str(payload.get("turn_id") or (payload.get("id") if event == "start" else "") or "")
+        if turn_id and any(tid == turn_id and sid != session_id for sid, tid in self._turns):
+            session.replayed_turn = True
+            return []  # Forked transcripts can replay their parent's task IDs.
+        if turn_id:
+            session.replayed_turn = False
+        if session.replayed_turn:
+            return []
+        turn = self._turns.get((session_id, turn_id), (None, None))[1] if turn_id else session.active_turn
+        completed: List[CompletedTrace] = []
+        if event == "start":
+            turn, completed = self._start(session, turn_id or str(payload.get("id") or _format_span_id()), ns)
+            parent_turn_id = (payload.get("turn_attribution") or {}).get("parent_turn_id") or payload.get(
+                "root_turn_id"
+            )
+            if parent_turn_id and parent_turn_id != turn.turn_id:
+                turn.root["meta"]["metadata"]["parent_turn_id"] = parent_turn_id
+        elif event == "prompt":
+            message = payload.get("message", "") if kind == "event_msg" else _content_text(payload.get("content"))
+            normalized_message = " ".join(str(message).split())
+            # Codex can record one prompt in both formats. Only collapse the pair.
+            if (
+                turn
+                and not turn.closed
+                and normalized_message
+                and turn.last_prompt == (normalized_message, "response_item" if kind == "event_msg" else "event_msg")
+            ):
+                turn.last_prompt = None
+            else:
+                if turn is None or turn.closed or turn.root["meta"]["input"]["value"]:
+                    turn, completed = self._start(
+                        session, turn_id or _format_span_id(), ns, provisional=not bool(turn_id)
+                    )
+                turn.messages.append({"role": "user", "content": message})
+                turn.root["meta"]["input"]["value"] = message
+                turn.last_prompt = (normalized_message, kind)
+        elif turn is not None:
+            turn.last_ns = max(turn.last_ns, ns)
+            completed = self._apply_event(session, turn, event, payload, ns)
+        _remember(self._seen, fingerprint, True, RECENT_RECORDS)
+        return completed
 
-        record_type = record.get("type", "")
-
-        if record_type == "session_meta":
-            self._handle_session_meta(session, record)
-        elif record_type == "turn_context":
-            return self._handle_turn_context(session, record)
-        elif record_type == "event_msg":
-            return self._handle_event_msg(session, record)
-        elif record_type == "response_item":
-            return self._handle_response_item(session, record)
-        elif record_type == "compacted":
-            self._update_last_ns(session, record)
-            self._handle_compaction(session, record, trigger="compacted")
-        else:
-            self._update_last_ns(session, record)
+    def _apply_event(
+        self, session: CodexSession, turn: Turn, event: str, payload: Dict[str, Any], ns: int
+    ) -> List[CompletedTrace]:
+        # Only recorded tool items may update a closed turn.
+        if event == "item":
+            self._item(session, turn, payload, ns)
+        elif turn.closed:
+            return []
+        elif event in ("usage", "token_count"):
+            if event == "token_count" and (turn.current is None or (not payload.get("info") and not turn.modern_usage)):
+                self._response(session, turn, ns)
+            self._usage(session, turn, payload, ns, event == "usage")
+        elif event == "model":
+            self._model_item(session, turn, payload, ns)
+        elif event in ("agent_message", "finish"):
+            message = payload.get("last_agent_message" if event == "finish" else "message", "")
+            if message:
+                turn.root["meta"]["output"]["value"] = message
+                if turn.current:
+                    turn.current.step["meta"]["output"]["value"] = message
+                    if turn.current.llm is None:
+                        self._model_item(session, turn, {"type": "message", "content": message}, ns)
+            if event == "finish":
+                return self._finish(session, turn, ns, "error" if payload.get("type") == "turn_aborted" else "ok")
+        elif event == "tool_output":
+            call_id = str(payload.get("call_id") or "")
+            call = turn.calls.get(call_id)
+            if call:
+                response, span = call
+                output = payload.get("output", "")
+                if span is not None and span["meta"]["metadata"].get("result_source") != "item_completed":
+                    self._end_tool(turn, response, span, ns, output, _tool_status_is_error(payload.get("status")))
+                turn.messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": _to_json_str(output),
+                        "status": span["meta"]["metadata"]["status"] if span else "completed",
+                    }
+                )
+        elif event == "tool_result":
+            response = self._response(session, turn, ns)
+            item_id = str(payload.get("call_id") or payload.get("id") or _format_span_id())
+            search = payload.get("type") == "web_search_call"
+            name = "web_search" if search else "apply_patch"
+            args = payload.get("action", payload.get("query", "")) if search else payload.get("changes", {})
+            span = self._tool(session, turn, response, item_id, name, args, ns)
+            self._end_tool(
+                turn,
+                response,
+                span,
+                ns,
+                payload.get("stdout", "") + payload.get("stderr", ""),
+                payload.get("success") is False or _tool_status_is_error(payload.get("status")),
+            )
+        elif event == "subagent":
+            self._subagent(session, turn, payload, ns)
+        elif event == "compaction":
+            target = turn.current.step if turn.current else turn.root
+            entries = target["meta"]["metadata"].get("_dd", {}).get("compactions", [])
+            set_hidden_metadata(
+                target, compactions=entries + [{"trigger": payload.get("type") or "compacted", "timestamp_ns": ns}]
+            )
+        elif event == "approval":
+            entries = turn.root["meta"]["metadata"].get("_dd", {}).get("codex_approvals", [])
+            approval = {
+                **payload,
+                "tool": "apply_patch" if payload.get("type") == "apply_patch_approval_request" else "exec_command",
+                "input": _to_json_str(payload.get("command", payload.get("reason", ""))),
+                "timestamp_ns": ns,
+                "status": "pending",
+            }
+            set_hidden_metadata(turn.root, codex_approvals=entries + [approval])
         return []
 
-    def _unwrap_body(self, body: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Optional[str]]:
-        record = body.get("record", body)
-        session_id = body.get("session_id", "")
-        proxy_session_key = body.get("proxy_session_key") or None
-        if isinstance(record, dict):
-            payload = record.get("payload", {})
-            if not isinstance(payload, dict):
-                payload = {}
-            if not session_id:
-                session_id = record.get("session_id", "") or payload.get("session_id", "")
-            if not session_id and record.get("type") == "session_meta":
-                session_id = payload.get("id", "")
-            if not session_id:
-                session_id = self._last_session_id
-            if not session_id and len(self._sessions) == 1:
-                session_id = next(iter(self._sessions))
-        return session_id, record, proxy_session_key
+    def _subagent(self, session: CodexSession, turn: Turn, payload: Dict[str, Any], ns: int) -> None:
+        call_id = str(payload.get("call_id") or "")
+        nickname = payload.get("new_agent_nickname") or payload.get("agent_nickname") or ""
+        if payload.get("type") == "collab_agent_spawn_begin":
+            response = self._response(session, turn, ns)
+            span = self._span(
+                session, "agent", nickname or "subagent", ns, response.step["span_id"], turn.root["trace_id"]
+            )
+            span["meta"]["input"]["value"] = payload.get("prompt", "")
+            span["tags"].append("subagent:true")
+            span["meta"]["metadata"]["subagent"] = {
+                "call_id": call_id,
+                "sender_thread_id": payload.get("sender_thread_id", ""),
+                "agent_nickname": nickname or "subagent",
+            }
+            turn.subagents[call_id] = span
+        elif call_id in turn.subagents:
+            span = turn.subagents[call_id]
+            span["duration"] = max(ns - span["start_ns"], 0)
+            span["status"] = "error" if _tool_status_is_error(payload.get("status")) else "ok"
+            span["meta"]["metadata"]["subagent"].update(
+                {
+                    **payload,
+                    "child_session_id": payload.get("new_thread_id", ""),
+                    "agent_nickname": nickname or span["meta"]["metadata"]["subagent"]["agent_nickname"],
+                    "agent_role": payload.get("new_agent_role", ""),
+                }
+            )
+            if payload.get("new_thread_id"):
+                self._group(payload["new_thread_id"], session)
+            if nickname:
+                span["name"] = nickname
+
+    def _enrich(self, session: CodexSession, turn: Turn, response: Response, proxy: Span) -> None:
+        span = response.llm
+        if span is None:
+            return
+        identity = {key: span[key] for key in ("span_id", "trace_id", "parent_id", "session_id")}
+        metadata = {**span["meta"]["metadata"], **proxy["meta"]["metadata"]}
+        forwarded = "lapdog_forwarded:true" in span["tags"]
+        span.update(proxy)
+        span.update(identity)
+        span["tags"] = self._hooks_api.base_tags(
+            session, source="codex-proxy", ml_app=self._config.ml_app, user_handle=self._config.user_handle
+        )
+        span["meta"]["metadata"] = {**metadata, "turn_id": turn.turn_id, "timing": "proxy"}
+        if forwarded:
+            span["tags"].append("lapdog_forwarded:true")
+        apply_project_metadata_to_span(span, session.project_metadata)
+        self._hooks_api._apply_registered_session_tags(span)
+        self._bounds(response.step, span["start_ns"], span["start_ns"] + span["duration"])
+        if turn.closed:
+            self._bounds(turn.root, span["start_ns"], span["start_ns"] + span["duration"])
+
+    def register_proxy_llm_span(self, maybe_session_id: Optional[str], span: Span, start_ns: int, end_ns: int) -> None:
+        self._expire()
+        response_id = str(span.get("meta", {}).get("metadata", {}).get("response_id") or "")
+        matches = [entry for (sid, rid), entry in self._responses.items() if rid == response_id]
+        if response_id and len(matches) == 1:
+            self._enrich(*matches[0], span)
+        elif response_id:
+            _remember(self._pending_proxy, response_id, (time.monotonic(), span), RECENT_RESPONSES)
+        # An unmatched response is not classified as a title and never discarded
+        # based on text. It remains available through /codex/hooks/raw-proxy.
 
     async def handle_hook(self, request: Request) -> web.Response:
         try:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
-
-        session_id, record, proxy_session_key = self._unwrap_body(body)
-        if not session_id:
-            return web.json_response({"error": "missing session_id"}, status=400)
-
-        raw_body = dict(body)
-        raw_body.pop("proxy_session_key", None)
-        self._raw_events.append(raw_body)
-        is_backfill = body.get("backfill") is True
-        completed = self._dispatch(session_id, record, proxy_session_key=proxy_session_key)
-        if session_id not in self._auto_review_sessions:
-            self._last_session_id = session_id
-        if not is_backfill:
-            for completed_session_id, completed_trace_id in completed:
-                await self._hooks_api._forward_trace_to_backend(
-                    completed_session_id, trace_id=completed_trace_id, span_source="Codex"
-                )
-                await self._hooks_api._forward_eval_metrics_to_backend(
-                    completed_session_id, trace_id=completed_trace_id
-                )
+        if not isinstance(body, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+        record = body.get("record", body)
+        if not isinstance(record, dict) or not isinstance(record.get("payload"), dict):
+            return web.json_response({"error": "a JSONL record is required"}, status=400)
+        sid = body.get("session_id") or (
+            record.get("payload", {}).get("id") if record.get("type") == "session_meta" else None
+        )
+        if not sid and len(self._sessions) == 1:
+            sid = next(iter(self._sessions))
+        if not isinstance(sid, str) or not sid:
+            return web.json_response({"error": "session_id and a JSONL record are required"}, status=400)
+        completed = self._dispatch(sid, record, body.get("proxy_session_key"))
+        raw = dict(body)
+        raw.pop("proxy_session_key", None)
+        self._raw_events.append(raw)
+        if body.get("backfill") is not True:
+            for completed_sid, trace_id in completed:
+                await self._hooks_api._forward_trace_to_backend(completed_sid, trace_id=trace_id, span_source="Codex")
+                await self._hooks_api._forward_eval_metrics_to_backend(completed_sid, trace_id=trace_id)
         return web.json_response({"status": "ok"})
 
     async def handle_raw_events(self, request: Request) -> web.Response:
-        return web.json_response({"events": self._raw_events})
+        return web.json_response({"events": list(self._raw_events)})
+
+    async def handle_raw_proxy(self, request: Request) -> web.Response:
+        self._expire()
+        return web.json_response({"spans": [span for _, span in self._pending_proxy.values()]})
 
     def get_routes(self) -> List[web.RouteDef]:
         return [
             web.post("/codex/hooks", with_cors(self.handle_hook)),
-            web.route("*", "/codex/hooks/raw", with_cors(self.handle_raw_events)),
+            web.get("/codex/hooks/raw", with_cors(self.handle_raw_events)),
+            web.get("/codex/hooks/raw-proxy", with_cors(self.handle_raw_proxy)),
         ]

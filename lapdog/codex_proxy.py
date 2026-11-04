@@ -162,7 +162,7 @@ def _format_input_messages(body: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "content": _content_to_text(item.get("content", "")),
                 }
             )
-        elif item_type == "function_call_output":
+        elif item_type in ("function_call_output", "custom_tool_call_output"):
             messages.append(
                 {
                     "role": "tool",
@@ -195,12 +195,14 @@ def _format_output_messages(response: Dict[str, Any]) -> List[Dict[str, Any]]:
             reasoning = _extract_reasoning_metadata(item)
             if reasoning:
                 reasoning_items.append(reasoning)
-        elif item_type == "function_call":
-            arguments = item.get("arguments", "")
-            try:
-                parsed_arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
-            except (TypeError, ValueError):
-                parsed_arguments = arguments
+        elif item_type in ("function_call", "custom_tool_call"):
+            arguments = item.get("input", "") if item_type == "custom_tool_call" else item.get("arguments", "")
+            parsed_arguments = arguments
+            if item_type == "function_call" and isinstance(arguments, str):
+                try:
+                    parsed_arguments = json.loads(arguments)
+                except (TypeError, ValueError):
+                    pass
             tool_call = {
                 "id": item.get("call_id", item.get("id", "")),
                 "name": item.get("name", ""),
@@ -223,16 +225,6 @@ def _format_output_messages(response: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _has_output_messages(messages: List[Dict[str, Any]]) -> bool:
     return any(message.get("content") or message.get("tool_calls") for message in messages)
-
-
-def _is_auto_review_request(body: Dict[str, Any]) -> bool:
-    if body.get("model") == "codex-auto-review":
-        return True
-    return any(
-        "Reviewed Codex session id:" in str(message.get("content", ""))
-        and "APPROVAL REQUEST START" in str(message.get("content", ""))
-        for message in _format_input_messages(body)
-    )
 
 
 def _usage_metrics(model: str, usage: Dict[str, Any]) -> Dict[str, Any]:
@@ -349,8 +341,6 @@ class CodexProxyAPI:
             pass
 
         start_ns = monotonic_wall_ns()
-        capture_span = not _is_auto_review_request(request_body)
-        maybe_session_id = self._hooks_api.begin_proxy_llm_call(proxy_session_key, start_ns) if capture_span else None
         headers = {key: value for key, value in request.headers.items() if key.lower() not in SKIP_REQUEST_HEADERS}
         http_session = await self._get_http_session()
 
@@ -363,14 +353,10 @@ class CodexProxyAPI:
             ) as upstream_resp:
                 if request_body.get("stream", False):
                     return await self._handle_streaming(
-                        request, upstream_resp, request_body, maybe_session_id, start_ns, capture_span
+                        request, upstream_resp, request_body, proxy_session_key, start_ns
                     )
-                return await self._handle_non_streaming(
-                    upstream_resp, request_body, maybe_session_id, start_ns, capture_span
-                )
+                return await self._handle_non_streaming(upstream_resp, request_body, proxy_session_key, start_ns)
         except Exception as exc:
-            if capture_span:
-                self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
             if _is_client_disconnect_error(exc):
                 log.debug("Codex proxy client disconnected while forwarding to %s: %s", target_url, exc)
                 return web.Response(status=499)
@@ -382,9 +368,8 @@ class CodexProxyAPI:
         request: Request,
         upstream_resp: aiohttp.ClientResponse,
         request_body: Dict[str, Any],
-        maybe_session_id: Optional[str],
+        proxy_session_key: Optional[str],
         start_ns: int,
-        capture_span: bool = True,
     ) -> web.StreamResponse:
         response = web.StreamResponse(status=upstream_resp.status)
         for key, value in upstream_resp.headers.items():
@@ -406,8 +391,6 @@ class CodexProxyAPI:
                 break
             buffered_chunks.append(chunk)
         if downstream_closed:
-            if capture_span:
-                self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
             return response
         if not downstream_closed:
             try:
@@ -417,8 +400,6 @@ class CodexProxyAPI:
                     raise
                 log.debug("Codex proxy client disconnected before stream EOF: %s", exc)
 
-        if not capture_span:
-            return response
         if upstream_resp.status == 200:
             end_ns = monotonic_wall_ns()
             raw = b"".join(buffered_chunks)
@@ -426,14 +407,9 @@ class CodexProxyAPI:
                 response_data = _response_from_sse(_parse_sse_events(raw))
                 span = self._create_llm_span(request_body, response_data, start_ns, end_ns - start_ns)
                 if span is not None:
-                    self._hooks_api.register_proxy_llm_span(maybe_session_id, span, start_ns, end_ns)
-                else:
-                    self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
+                    self._hooks_api.register_proxy_llm_span(proxy_session_key, span, start_ns, end_ns)
             except Exception as exc:
-                self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
                 log.error("Failed to create Codex LLM span from SSE: %s", exc, exc_info=True)
-        else:
-            self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
 
         return response
 
@@ -441,25 +417,19 @@ class CodexProxyAPI:
         self,
         upstream_resp: aiohttp.ClientResponse,
         request_body: Dict[str, Any],
-        maybe_session_id: Optional[str],
+        proxy_session_key: Optional[str],
         start_ns: int,
-        capture_span: bool = True,
     ) -> web.Response:
         body = await upstream_resp.read()
-        if capture_span and upstream_resp.status == 200:
+        if upstream_resp.status == 200:
             end_ns = monotonic_wall_ns()
             try:
                 response_data = json.loads(body)
                 span = self._create_llm_span(request_body, response_data, start_ns, end_ns - start_ns)
                 if span is not None:
-                    self._hooks_api.register_proxy_llm_span(maybe_session_id, span, start_ns, end_ns)
-                else:
-                    self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
+                    self._hooks_api.register_proxy_llm_span(proxy_session_key, span, start_ns, end_ns)
             except Exception as exc:
-                self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
                 log.error("Failed to create Codex LLM span: %s", exc, exc_info=True)
-        elif capture_span:
-            self._hooks_api.finish_proxy_llm_call(maybe_session_id, succeeded=False)
 
         response = web.Response(body=body, status=upstream_resp.status)
         for key, value in upstream_resp.headers.items():

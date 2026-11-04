@@ -1,30 +1,418 @@
 import json
 import os
 from pathlib import Path
+import signal
+import subprocess
+import sys
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from lapdog.codex_cursor import CursorState
-from lapdog.codex_cursor import load_cursor
-from lapdog.codex_cursor import save_cursor_atomic
+from lapdog.cli import codex as codex_args
+from lapdog.codex_watcher import CursorState
+from lapdog.codex_watcher import FileState
 from lapdog.codex_watcher import MAX_BUFFER_RECORDS
 from lapdog.codex_watcher import MAX_LINE_BYTES
-from lapdog.codex_watcher import _maybe_save_cursor
-from lapdog.codex_watcher import _prune_cursor
-from lapdog.codex_watcher import _sync_cursor
-from lapdog.codex_watcher import FileState
+from lapdog.codex_watcher import SessionOwnership
 from lapdog.codex_watcher import _default_session_dir
 from lapdog.codex_watcher import _drain_file
 from lapdog.codex_watcher import _initial_offset_for_file
 from lapdog.codex_watcher import _is_under
+from lapdog.codex_watcher import _maybe_save_cursor
 from lapdog.codex_watcher import _prime_file_state
+from lapdog.codex_watcher import _prune_cursor
+from lapdog.codex_watcher import _sync_cursor
+from lapdog.codex_watcher import load_cursor
+from lapdog.codex_watcher import save_cursor_atomic
 from lapdog.codex_watcher import watch_codex_sessions
+
+
+@pytest.fixture(autouse=True)
+def isolate_process_inventory(monkeypatch):
+    monkeypatch.setattr("lapdog.codex_watcher.subprocess.run", lambda *a, **kw: SimpleNamespace(stdout=""))
 
 
 def _append(path: Path, record: Any) -> None:
     with path.open("a") as f:
         f.write(json.dumps(record) + "\n")
+
+
+def test_cli_ownership_rejects_unrelated_session_before_marked_session(tmp_path):
+    owner = SessionOwnership(0, "launch")
+    unrelated = {"type": "session_meta", "payload": {"id": "other", "source": "cli", "originator": "codex-tui"}}
+    assert not owner.accepts(unrelated)
+    marked = {"type": "session_meta", "payload": {"id": "owned", "source": "cli", "originator": "lapdog_launch"}}
+    assert owner.accepts(marked)
+    assert not owner.accepts(unrelated)
+    child = {"type": "session_meta", "payload": {"id": "child", "parent_thread_id": "owned", "cwd": "/different"}}
+    assert owner.accepts(child)
+
+
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("log_first", [False, True])
+def test_shared_daemon_capture_uses_client_id_and_preserves_resume_boundary(monkeypatch, tmp_path, resume, log_first):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *a, **kw: posts.append(kw["json"]))
+    # Neither CLI owns an open rollout: one independent daemon writes both files.
+    monkeypatch.setattr(SessionOwnership, "refresh", lambda self: None)
+    session_dir = tmp_path / "sessions"
+    session_dir.mkdir()
+    client_log = tmp_path / "client.jsonl"
+    files = [(session_dir / "other.jsonl", "other"), (session_dir / "owned.jsonl", "owned")]
+
+    def metadata(sid):
+        return {
+            "type": "session_meta",
+            "payload": {
+                "id": sid,
+                "source": "vscode",
+                "originator": "codex-tui",
+                "cwd": str(tmp_path),
+                "thread_source": "user",
+            },
+        }
+
+    def message(client_id):
+        return {
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "item": {
+                    "type": "UserMessage",
+                    "client_id": client_id,
+                    "content": [],
+                },
+            },
+        }
+
+    if resume:
+        for path, sid in files:
+            _append(path, metadata(sid))
+            # An old matching ID must not establish ownership of the other file.
+            _append(path, message("owned"))
+
+    def write_log():
+        _append(
+            client_log,
+            {
+                "dir": "from_tui",
+                "kind": "op",
+                "payload": {
+                    "UserTurn": {"client_user_message_id": "owned"},
+                },
+            },
+        )
+
+    def write_rollouts():
+        for path, sid in files:
+            if not resume:
+                _append(path, metadata(sid))
+            _append(path, {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "new-turn"}})
+            _append(path, message(sid))
+
+    polls = 0
+
+    def alive(*args, **kwargs):
+        nonlocal polls
+        polls += 1
+        if polls == 1:
+            (write_log if log_first else write_rollouts)()
+        elif polls == 2:
+            (write_rollouts if log_first else write_log)()
+        return polls < 3
+
+    monkeypatch.setattr("lapdog.codex_watcher._process_exists", alive)
+    watch_codex_sessions(
+        "http://localhost:8126",
+        str(tmp_path),
+        123,
+        session_dir,
+        poll_interval=0,
+        flush_seconds=0,
+        discovery_interval=0,
+        proxy_session_key="launch",
+        resume_mode=resume,
+        client_log=client_log,
+    )
+    assert {post["session_id"] for post in posts} == {"owned"}
+    records = [post["record"] for post in posts]
+    assert [record["type"] for record in records].count("session_meta") == 1
+    assert sum(record.get("payload", {}).get("type") == "task_started" for record in records) == 1
+    assert sum(record.get("payload", {}).get("type") == "item_completed" for record in records) == 1
+
+
+def test_client_identity_waits_for_complete_jsonl_and_ignores_other_item_ids(tmp_path):
+    log = tmp_path / "client.jsonl"
+    rollout = tmp_path / "rollout.jsonl"
+    owner = SessionOwnership(0, client_log=log)
+    log.write_text(
+        'null\n[]\ninvalid\n{"dir":"from_tui","kind":"op","payload":{"UserTurn":{"client_user_message_id":"id"}}}'
+    )
+    _append(
+        rollout,
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "item": {
+                    "type": "UserMessage",
+                    "client_id": "id",
+                },
+            },
+        },
+    )
+    assert not owner.owns_path(rollout)
+    with log.open("a") as stream:
+        stream.write("\n")
+    assert owner.owns_path(rollout)
+    other = tmp_path / "other.jsonl"
+    _append(
+        other,
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "item": {
+                    "type": "AgentMessage",
+                    "client_id": "id",
+                },
+            },
+        },
+    )
+    assert not owner.owns_path(other)
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_watcher_removes_its_temporary_client_recording(monkeypatch, tmp_path, fails):
+    from lapdog import codex_watcher
+
+    log = tmp_path / "client.jsonl"
+    log.write_text("temporary recording\n")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "watcher",
+            "--lapdog-url",
+            "http://localhost:8126",
+            "--cwd",
+            str(tmp_path),
+            "--parent-pid",
+            "123",
+            "--client-log",
+            str(log),
+        ],
+    )
+
+    def watch(**kwargs):
+        assert kwargs["client_log"] == log
+        if fails:
+            raise RuntimeError("watcher failed")
+
+    monkeypatch.setattr(codex_watcher, "watch_codex_sessions", watch)
+    if fails:
+        with pytest.raises(RuntimeError, match="watcher failed"):
+            codex_watcher.main()
+    else:
+        codex_watcher.main()
+    assert not log.exists()
+
+
+@pytest.mark.parametrize("offset", [0, 1])
+def test_app_capture_excludes_cli_even_with_saved_cursor(monkeypatch, tmp_path, offset):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *a, **kw: posts.append(kw["json"]))
+    for sid, source, originator in (
+        ("desktop", "vscode", "Codex Desktop"),
+        ("cli", "cli", "codex-tui"),
+        ("exec", "exec", "codex_exec"),
+        ("daemon-cli", "vscode", "codex-tui"),
+        ("wrapped-cli", "vscode", "lapdog_launch"),
+    ):
+        path = tmp_path / f"{sid}.jsonl"
+        _append(
+            path,
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": sid,
+                    "source": source,
+                    "originator": originator,
+                    "cwd": str(tmp_path),
+                },
+            },
+        )
+        after_meta = path.stat().st_size
+        _append(path, {"type": "event_msg", "payload": {"type": "user_message", "message": source}})
+        state = FileState(after_meta if offset else 0)
+        if offset:
+            _prime_file_state(path, state, str(tmp_path), after_meta, include_all_cwds=True)
+        _drain_file(
+            path,
+            state,
+            "http://localhost:8126",
+            str(tmp_path),
+            include_all_cwds=True,
+            session_ownership=SessionOwnership(0, app=True),
+        )
+    assert {post["session_id"] for post in posts} == {"desktop"}
+
+
+def test_app_ownership_includes_multiple_workspaces_and_children():
+    owner = SessionOwnership(0, app=True)
+    for sid in ("one", "two"):
+        assert owner.accepts({"payload": {"id": sid, "source": "vscode", "cwd": "/" + sid}})
+    assert owner.accepts({"payload": {"id": "child", "source": "cli", "parent_thread_id": "one"}})
+    assert not owner.accepts({"payload": {"id": "unrelated", "source": "cli"}})
+
+
+def test_resume_selection_reads_open_files_from_codex_process_tree(monkeypatch):
+    from types import SimpleNamespace
+
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[0] == "ps":
+            return SimpleNamespace(stdout="10 1\n11 10\n12 11\n99 1\n")
+        return SimpleNamespace(stdout="p12\nn/tmp/selected.jsonl\nn/tmp/other.txt\n")
+
+    monkeypatch.setattr("lapdog.codex_watcher.subprocess.run", run)
+    monkeypatch.setattr("lapdog.codex_watcher.shutil.which", lambda name: "/usr/sbin/lsof")
+    monkeypatch.setattr("lapdog.codex_watcher.Path.is_dir", lambda path: False)
+    owner = SessionOwnership(0, "launch", parent_pid=10)
+    owner.open_paths.add("/tmp/stale.jsonl")
+    owner.refresh()
+    assert owner.open_paths == {"/tmp/selected.jsonl"}
+    assert commands[-1] == ["/usr/sbin/lsof", "-a", "-p", "10,11,12", "-Fn"]
+    assert owner.claim_resumed("root")
+    commands.clear()
+    owner.refresh()
+    assert commands == []
+    assert not owner.claim_resumed("different-root")
+
+
+def test_linux_resume_selection_handles_inaccessible_child(monkeypatch):
+    monkeypatch.setattr("lapdog.codex_watcher.subprocess.run", lambda *a, **kw: SimpleNamespace(stdout="10 1\n11 10\n"))
+    monkeypatch.setattr(Path, "is_dir", lambda path: path == Path("/proc/self/fd"))
+
+    def entries(path):
+        if path == Path("/proc/10/fd"):
+            return iter([Path("/tmp/owned.jsonl"), Path("/tmp/unrelated.txt")])
+        raise PermissionError("child exited")
+
+    monkeypatch.setattr(Path, "iterdir", entries)
+    monkeypatch.setattr(Path, "resolve", lambda path: path)
+    owner = SessionOwnership(0, parent_pid=10)
+    owner.refresh()
+    assert owner.open_paths == {str(Path("/tmp/owned.jsonl"))}
+
+
+def test_client_identity_skips_oversized_lines_and_resets_after_truncation(monkeypatch, tmp_path):
+    monkeypatch.setattr("lapdog.codex_watcher.MAX_LINE_BYTES", 200)
+    path = tmp_path / "client.jsonl"
+    path.write_text("x" * 300 + "\n")
+    _append(path, {"dir": "from_tui", "kind": "op", "payload": {"UserTurn": {"client_user_message_id": "old"}}})
+    owner = SessionOwnership(0, client_log=path)
+    assert owner._read_client_ids(path) == {"old"}
+    path.write_text("")
+    _append(path, {"dir": "from_tui", "kind": "op", "payload": {"UserTurn": {"client_user_message_id": "new"}}})
+    assert owner._read_client_ids(path) == {"new"}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX SIGTERM cleanup")
+def test_sigterm_removes_client_recording(tmp_path):
+    log = tmp_path / "client.jsonl"
+    log.write_text("private prompt\n")
+    script = """
+import time
+from lapdog import codex_watcher
+def watch(**kwargs):
+    print('ready', flush=True)
+    while True:
+        time.sleep(0.1)
+codex_watcher.watch_codex_sessions = watch
+codex_watcher.main()
+"""
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            script,
+            "--lapdog-url",
+            "http://unused",
+            "--cwd",
+            str(tmp_path),
+            "--parent-pid",
+            str(os.getpid()),
+            "--client-log",
+            str(log),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout.readline().strip() == "ready"
+        process.send_signal(signal.SIGTERM)
+        _, errors = process.communicate(timeout=5)
+        assert process.returncode == 0, errors
+        assert not log.exists()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
+
+
+def test_resume_keeps_existing_child_reviews_from_launch_offset(monkeypatch, tmp_path):
+    from lapdog.codex_watcher import _prepare_resumed_file
+
+    path = tmp_path / "child.jsonl"
+    meta = {
+        "type": "session_meta",
+        "payload": {"id": "child", "parent_thread_id": "parent", "thread_source": "guardian_review"},
+    }
+    _append(path, meta)
+    _append(path, {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "old"}})
+    state = FileState(path.stat().st_size)
+    state.session_meta, state.session_id, state.resume_candidate = meta, "child", True
+    _append(path, {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "new"}})
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *a, **kw: posts.append(kw["json"]))
+    owner = SessionOwnership(0)
+    assert not _prepare_resumed_file(path, state, "http://unused", owner, "launch", "parent", False)
+    assert not state.ignored
+    owner.claim_resumed("parent")
+    assert _prepare_resumed_file(path, state, "http://unused", owner, "launch", "parent", False)
+    _drain_file(path, state, "http://unused", str(tmp_path), session_ownership=owner)
+    assert [post["record"] for post in posts] == [
+        meta,
+        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "new"}},
+    ]
+
+
+def test_failed_buffer_flush_retries_only_unacknowledged_records(monkeypatch, tmp_path):
+    path = tmp_path / "buffered.jsonl"
+    records = [
+        {"type": "session_meta", "payload": {"id": "s"}},
+        {"type": "event_msg", "payload": {"type": "task_started"}},
+        {"type": "turn_context", "payload": {"cwd": str(tmp_path)}},
+    ]
+    for record in records:
+        _append(path, record)
+    attempts = []
+
+    def post(*args, **kwargs):
+        attempts.append(kwargs["json"]["record"])
+        return SimpleNamespace(status_code=500 if len(attempts) == 2 else 200)
+
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", post)
+    state = FileState()
+    _drain_file(path, state, "http://unused", str(tmp_path))
+    assert state.offset == state.scan_offset < path.stat().st_size
+    _drain_file(path, state, "http://unused", str(tmp_path))
+    assert attempts == [records[0], records[1], records[1], records[2]]
+    assert state.offset == path.stat().st_size
 
 
 def test_default_session_dir_uses_codex_home(monkeypatch, tmp_path):
@@ -272,20 +660,27 @@ def test_drain_file_does_not_advance_durable_offset_past_buffered_records(monkey
     assert len(state.buffer) == 3
 
 
-def test_drain_file_flushes_buffer_after_late_session_meta(monkeypatch, tmp_path):
+@pytest.mark.parametrize("early_cwd", [False, True])
+def test_drain_file_flushes_buffer_after_late_session_meta(monkeypatch, tmp_path, early_cwd):
     """Three pre-meta records get flushed once session_meta arrives, and the
     durable cursor advances all the way to the file's end.
     """
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
-    _append(session_file, {"type": "event_msg", "payload": {"type": "task_started"}})
+    _append(
+        session_file,
+        {"type": "event_msg", "payload": {"type": "task_started", **({"cwd": str(tmp_path)} if early_cwd else {})}},
+    )
     _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "hi"}})
     _append(session_file, {"type": "event_msg", "payload": {"type": "agent_message", "message": "thinking"}})
+    state = FileState()
+    _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
+    assert posts == []
+    assert state.offset == 0
     _append(session_file, {"type": "session_meta", "payload": {"id": "sess-late", "cwd": str(tmp_path)}})
     _append(session_file, {"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "done"}})
 
-    state = FileState()
     _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
 
     # All five records delivered in order.
@@ -485,21 +880,30 @@ def test_save_cursor_atomic_leaves_no_temp_file(tmp_path):
     assert leftovers == []
 
 
-def test_drain_file_drops_oversized_line(monkeypatch, capsys, tmp_path):
+@pytest.mark.parametrize("partial", [False, True])
+def test_drain_file_drops_oversized_line(monkeypatch, capsys, tmp_path, partial):
     """Lines larger than MAX_LINE_BYTES are dropped and the cursor advances."""
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
     # First a normal session_meta so cwd resolves.
     _append(session_file, {"type": "session_meta", "payload": {"id": "sess-big", "cwd": str(tmp_path)}})
+    after_meta = session_file.stat().st_size
+    state = FileState()
     # Then an oversized JSONL line (slightly above MAX_LINE_BYTES).
     huge_payload = "x" * (MAX_LINE_BYTES + 100)
     with session_file.open("a") as f:
-        f.write(json.dumps({"type": "event_msg", "payload": {"data": huge_payload}}) + "\n")
+        f.write(json.dumps({"type": "event_msg", "payload": {"data": huge_payload}}))
+        if not partial:
+            f.write("\n")
+    if partial:
+        _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
+        assert state.offset == state.scan_offset == after_meta
+        # This valid JSON is still part of the oversized line, not a record.
+        _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "discard"}})
     # Then a normal record after the over-cap line.
     _append(session_file, {"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "ok"}})
 
-    state = FileState()
     _drain_file(session_file, state, "http://localhost:8126", str(tmp_path))
 
     types_posted = [post["record"]["type"] for post in posts]
@@ -576,12 +980,15 @@ def test_drain_file_resets_offset_on_truncation(monkeypatch, tmp_path):
     assert posts[0]["session_id"] == "sess-trunc"
 
 
-def test_drain_file_resets_session_state_on_truncation(monkeypatch, tmp_path):
+@pytest.mark.parametrize("acknowledged_offset", [0, 10_000])
+def test_drain_file_resets_session_state_on_truncation(monkeypatch, tmp_path, acknowledged_offset):
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
     _append(session_file, {"type": "session_meta", "payload": {"id": "sess-new", "cwd": str(tmp_path)}})
-    state = FileState(offset=10_000)
+    state = FileState(offset=acknowledged_offset)
+    state.scan_offset = 10_000
+    state.buffer.append((10_000, {"type": "event_msg", "payload": {"type": "user_message", "message": "old"}}))
     state.session_id = "sess-old"
     state.matches_cwd = False
 
@@ -590,6 +997,8 @@ def test_drain_file_resets_session_state_on_truncation(monkeypatch, tmp_path):
     assert posts[0]["session_id"] == "sess-new"
     assert state.session_id == "sess-new"
     assert state.matches_cwd is True
+    assert len(posts) == 1
+    assert state.buffer == []
 
 
 def test_ignored_file_remains_ignored_after_truncation(monkeypatch, tmp_path):
@@ -664,13 +1073,15 @@ def test_proxy_watcher_ignores_existing_files_after_start(monkeypatch, tmp_path)
     assert posts == []
 
 
-@pytest.mark.parametrize("selected_id", [None, "sess-resumed"])
-def test_resume_watcher_captures_new_records_without_replaying_old_turns(monkeypatch, tmp_path, selected_id):
+@pytest.mark.parametrize("command", [["resume"], ["exec", "resume"]])
+@pytest.mark.parametrize("selected_id", [None, "123e4567-e89b-12d3-a456-426614174000"])
+def test_resume_watcher_captures_new_records_without_replaying_old_turns(monkeypatch, tmp_path, selected_id, command):
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     resumed_file = tmp_path / "rollout-resumed.jsonl"
     unrelated_file = tmp_path / "rollout-unrelated.jsonl"
-    for path, session_id in ((resumed_file, "sess-resumed"), (unrelated_file, "sess-unrelated")):
+    resumed_id = "123e4567-e89b-12d3-a456-426614174000"
+    for path, session_id in ((resumed_file, resumed_id), (unrelated_file, "sess-unrelated")):
         _append(path, {"type": "session_meta", "payload": {"id": session_id, "cwd": str(tmp_path)}})
         _append(path, {"type": "event_msg", "payload": {"type": "user_message", "message": "old"}})
 
@@ -688,6 +1099,12 @@ def test_resume_watcher_captures_new_records_without_replaying_old_turns(monkeyp
         return False
 
     monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
+    resume_mode, resume_session_id, resume_all_cwds = codex_args.resume_options(
+        command + ([selected_id] if selected_id else ["--last"])
+    )
+    monkeypatch.setattr(
+        "lapdog.codex_watcher.SessionOwnership.refresh", lambda owner: owner.open_paths.add(str(resumed_file.resolve()))
+    )
     watch_codex_sessions(
         lapdog_url="http://localhost:8126",
         cwd=str(tmp_path),
@@ -698,11 +1115,12 @@ def test_resume_watcher_captures_new_records_without_replaying_old_turns(monkeyp
         proxy_session_key="proxy-key",
         cursor_path=None,
         discovery_interval=0,
-        resume_mode=True,
-        resume_session_id=selected_id,
+        resume_mode=resume_mode,
+        resume_session_id=resume_session_id,
+        resume_all_cwds=resume_all_cwds,
     )
 
-    assert {post["session_id"] for post in posts} == {"sess-resumed"}
+    assert {post["session_id"] for post in posts} == {resumed_id}
     assert [post["record"]["type"] for post in posts].count("session_meta") == 1
     messages = [
         post["record"]["payload"]["message"]
@@ -772,6 +1190,10 @@ def test_resume_picker_ignores_unrelated_old_file_that_grows_first(monkeypatch, 
         return False
 
     monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
+    monkeypatch.setattr(
+        "lapdog.codex_watcher.SessionOwnership.refresh",
+        lambda owner: owner.open_paths.add(str(selected_file.resolve())),
+    )
     watch_codex_sessions(
         lapdog_url="http://localhost:8126",
         cwd=str(tmp_path),
@@ -808,6 +1230,9 @@ def test_resume_watcher_keeps_startup_offset_when_file_grows_before_discovery(mo
 
     monkeypatch.setattr(codex_watcher, "_iter_jsonl_files", files_with_early_append)
     monkeypatch.setattr(codex_watcher, "_process_exists", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "lapdog.codex_watcher.SessionOwnership.refresh", lambda owner: owner.open_paths.add(str(session_file.resolve()))
+    )
     watch_codex_sessions(
         lapdog_url="http://localhost:8126",
         cwd=str(tmp_path),
@@ -842,7 +1267,12 @@ def test_proxy_watcher_captures_only_its_first_new_top_level_session(monkeypatch
                 owned_file,
                 {
                     "type": "session_meta",
-                    "payload": {"id": "sess-owned", "cwd": str(tmp_path), "thread_source": "user"},
+                    "payload": {
+                        "id": "sess-owned",
+                        "cwd": str(tmp_path),
+                        "thread_source": "user",
+                        "originator": "lapdog_proxy-key",
+                    },
                 },
             )
             return True
@@ -911,7 +1341,12 @@ def test_proxy_watcher_rejects_delayed_file_for_session_started_before_watcher(m
                 owned_file,
                 {
                     "type": "session_meta",
-                    "payload": {"id": "sess-owned", "cwd": str(tmp_path), "thread_source": "user"},
+                    "payload": {
+                        "id": "sess-owned",
+                        "cwd": str(tmp_path),
+                        "thread_source": "user",
+                        "originator": "lapdog_proxy-key",
+                    },
                 },
             )
             return True
@@ -949,7 +1384,12 @@ def test_proxy_watcher_captures_subagent_of_owned_session(monkeypatch, tmp_path)
                 owned_file,
                 {
                     "type": "session_meta",
-                    "payload": {"id": "sess-owned", "cwd": str(tmp_path), "thread_source": "user"},
+                    "payload": {
+                        "id": "sess-owned",
+                        "cwd": str(tmp_path),
+                        "thread_source": "user",
+                        "originator": "lapdog_proxy-key",
+                    },
                 },
             )
             return True
@@ -991,7 +1431,9 @@ def test_watch_codex_sessions_resumes_from_cursor(monkeypatch, tmp_path):
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout.jsonl"
-    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-c", "cwd": str(tmp_path)}})
+    _append(
+        session_file, {"type": "session_meta", "payload": {"source": "vscode", "id": "sess-c", "cwd": str(tmp_path)}}
+    )
     primed_offset = session_file.stat().st_size
     _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "after-restart"}})
 
@@ -1001,6 +1443,7 @@ def test_watch_codex_sessions_resumes_from_cursor(monkeypatch, tmp_path):
     save_cursor_atomic(cursor_path, CursorState(files={str(session_file): primed_offset}))
 
     watch_codex_sessions(
+        include_all_cwds=True,
         lapdog_url="http://localhost:8126",
         cwd=str(tmp_path),
         parent_pid=999999,
@@ -1051,7 +1494,10 @@ def test_app_watch_codex_sessions_replays_recent_nonmatching_file(monkeypatch, t
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
     session_file = tmp_path / "rollout-app.jsonl"
     outside = tmp_path.parent / (tmp_path.name + "-app-workspace")
-    _append(session_file, {"type": "session_meta", "payload": {"id": "sess-app-recent", "cwd": str(outside)}})
+    _append(
+        session_file,
+        {"type": "session_meta", "payload": {"source": "vscode", "id": "sess-app-recent", "cwd": str(outside)}},
+    )
     _append(session_file, {"type": "event_msg", "payload": {"type": "user_message", "message": "hello world"}})
 
     watch_codex_sessions(
@@ -1116,8 +1562,10 @@ def test_watch_codex_sessions_continues_after_per_file_error(monkeypatch, capsys
 
     bad_file = tmp_path / "rollout-bad.jsonl"
     good_file = tmp_path / "rollout-good.jsonl"
-    _append(bad_file, {"type": "session_meta", "payload": {"id": "sess-bad", "cwd": str(tmp_path)}})
-    _append(good_file, {"type": "session_meta", "payload": {"id": "sess-good", "cwd": str(tmp_path)}})
+    _append(bad_file, {"type": "session_meta", "payload": {"source": "vscode", "id": "sess-bad", "cwd": str(tmp_path)}})
+    _append(
+        good_file, {"type": "session_meta", "payload": {"source": "vscode", "id": "sess-good", "cwd": str(tmp_path)}}
+    )
 
     real_drain = __import__("lapdog.codex_watcher", fromlist=["_drain_file"])._drain_file
 
@@ -1137,6 +1585,7 @@ def test_watch_codex_sessions_continues_after_per_file_error(monkeypatch, capsys
     monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
 
     watch_codex_sessions(
+        include_all_cwds=True,
         lapdog_url="http://localhost:8126",
         cwd=str(tmp_path),
         parent_pid=12345,
@@ -1157,6 +1606,7 @@ def test_watch_codex_sessions_continues_after_per_file_error(monkeypatch, capsys
 def test_process_exists_falls_back_when_psutil_missing(monkeypatch):
     """When psutil is unavailable, _process_exists uses a safe fallback."""
     import builtins
+
     from lapdog import codex_watcher
 
     # Force ImportError for psutil even if it happens to be installed.
@@ -1176,6 +1626,7 @@ def test_process_exists_falls_back_when_psutil_missing(monkeypatch):
 
 def test_process_exists_uses_windows_probe_when_psutil_missing(monkeypatch):
     import builtins
+
     from lapdog import codex_watcher
 
     real_import = builtins.__import__
@@ -1263,7 +1714,10 @@ def test_watch_codex_sessions_respects_discovery_interval(monkeypatch, tmp_path)
         if poll_count["n"] == 2:
             # Write the file just before second poll; with discovery_interval
             # of 0 it should be picked up immediately.
-            _append(session_file, {"type": "session_meta", "payload": {"id": "sess-disc", "cwd": str(tmp_path)}})
+            _append(
+                session_file,
+                {"type": "session_meta", "payload": {"source": "vscode", "id": "sess-disc", "cwd": str(tmp_path)}},
+            )
             return True
         # After a few more polls, signal parent died so watcher exits.
         return False
@@ -1271,6 +1725,7 @@ def test_watch_codex_sessions_respects_discovery_interval(monkeypatch, tmp_path)
     monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
 
     watch_codex_sessions(
+        include_all_cwds=True,
         lapdog_url="http://localhost:8126",
         cwd=str(tmp_path),
         parent_pid=12345,
