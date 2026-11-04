@@ -1,3 +1,4 @@
+import re
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -58,6 +59,7 @@ SHADOW = "\033[38;5;54m"  # deep purple
 DIM = "\033[2m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
+_ANSI_ESCAPE = re.compile(r"\033\[[0-9;]*m")
 
 
 def _render_lapdog_art(face: str, shadow: str, reset: str) -> List[str]:
@@ -145,6 +147,9 @@ def _build(text_lines: List[str]) -> str:
     padded_right = [""] * pad_top + text_lines
     while len(padded_right) < len(art_lines):
         padded_right.append("")
+    art_width = len(_ANSI_ESCAPE.sub("", art_lines[0])) if art_lines else 0
+    while len(art_lines) < len(padded_right):
+        art_lines.append(" " * art_width)
 
     ascii_lines = [""]
     for art, text in zip(art_lines, padded_right):
