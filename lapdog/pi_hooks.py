@@ -99,6 +99,16 @@ _PI_CONTEXT_SECTIONS = (
 )
 
 
+def _context_breakdown(total: int, window: int, sections: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Build a ``context_breakdown`` with exactly the keys Claude spans carry (see claude_proxy)."""
+    return {
+        "context_window_size": window,
+        "total_input_tokens": total,
+        "context_usage_pct": round(total / window * 100, 1),
+        "sections": sections,
+    }
+
+
 def _pi_context_breakdown(raw: Any) -> Optional[Dict[str, Any]]:
     """Convert pi-context-inspector's buildTokenBreakdown() output to the Claude ``context_breakdown`` shape.
 
@@ -121,19 +131,14 @@ def _pi_context_breakdown(raw: Any) -> Optional[Dict[str, Any]]:
         if tokens <= 0:
             continue
         sections.append({"name": name, "tokens": tokens, "pct": round(tokens / total * 100, 1)})
+    return _context_breakdown(total, window, sections)
 
-    breakdown: Dict[str, Any] = {
-        "context_window_size": window,
-        "total_input_tokens": total,
-        "context_usage_pct": round(total / window * 100, 1),
-        "sections": sections,
-        "source": "pi-context-inspector",
-    }
-    for field, key in (("reserveTokens", "reserve_tokens"), ("safeAvailable", "available_tokens")):
-        value = raw.get(field)
-        if isinstance(value, (int, float)):
-            breakdown[key] = int(value)
-    return breakdown
+
+def _pi_usage_only_breakdown(total: int, window: Any) -> Optional[Dict[str, Any]]:
+    """Window and usage without sections, for when pi-context-inspector is unavailable."""
+    if not isinstance(window, (int, float)) or window <= 0 or total <= 0:
+        return None
+    return _context_breakdown(total, int(window), [])
 
 
 class PendingLLMSpan:
@@ -667,8 +672,14 @@ class PiHooksAPI:
             output_value = body.get("output", "")  # fallback for older extension format
 
         tool_usage = self._hooks_api._aggregate_tool_usage(session.trace_id)
+        # A continuation (after auto-compaction or retry) re-finalizes the same root span; keep the
+        # baseline from the turn's first agent_end rather than the intermediate one it advanced to.
+        previous_root = getattr(session, "_root_span_ref", None) or {}
+        previous_delta = previous_root.get("meta", {}).get("metadata", {}).get("_dd", {}).get("context_delta") or {}
         context_delta = self._hooks_api._compute_context_delta(
-            session.trace_id, session.root_span_id, session.last_known_input_tokens
+            session.trace_id,
+            session.root_span_id,
+            previous_delta.get("first_input_tokens", session.last_known_input_tokens),
         )
         if context_delta:
             session.last_known_input_tokens = context_delta["last_input_tokens"]
@@ -935,7 +946,9 @@ class PiHooksAPI:
         }
         if is_error:
             span["meta"]["error"] = {"message": error_message or "LLM call failed"}
-        context_breakdown = _pi_context_breakdown(body.get("context_breakdown"))
+        context_breakdown = _pi_context_breakdown(body.get("context_breakdown")) or _pi_usage_only_breakdown(
+            input_tokens + cache_read + cache_write, body.get("context_window")
+        )
         if context_breakdown:
             set_hidden_metadata(span, context_breakdown=context_breakdown)
         self._append_span(span)

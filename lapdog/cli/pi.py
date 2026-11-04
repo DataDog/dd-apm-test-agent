@@ -6,6 +6,7 @@ import subprocess
 import sys
 from typing import List
 from typing import Optional
+from typing import Tuple
 import uuid
 
 from lapdog import backfill_pi
@@ -20,12 +21,15 @@ _PI_EXT_DEST = os.path.join(_PI_GLOBAL_EXT_DIR, "lapdog.ts")
 _PI_EXT_SOURCE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pi_lapdog_extension.ts")
 
 # pi-context-inspector supplies the per-call context-window breakdown (see pi_lapdog_extension.ts).
-_PI_CONTEXT_INSPECTOR_SOURCE = "npm:pi-context-inspector@1.3.0"
-_PI_CONTEXT_INSPECTOR_REMOVE_SOURCE = "npm:pi-context-inspector"
-_PI_CONTEXT_INSPECTOR_ENTRY = os.path.expanduser("~/.pi/agent/npm/node_modules/pi-context-inspector/src/index.ts")
+_PI_CONTEXT_INSPECTOR_NAME = "pi-context-inspector"
+_PI_CONTEXT_INSPECTOR_SOURCE = f"npm:{_PI_CONTEXT_INSPECTOR_NAME}@1.3.0"
+_PI_CONTEXT_INSPECTOR_REMOVE_SOURCE = f"npm:{_PI_CONTEXT_INSPECTOR_NAME}"
+_PI_CONTEXT_INSPECTOR_MODULE = os.path.join("src", "index.ts")
 # Present only when lapdog installed the package, so uninstall leaves a user's own install alone.
 _PI_CONTEXT_INSPECTOR_MARKER = os.path.join(LAPDOG_DIR, "pi-context-inspector-installed")
 _PI_CONTEXT_INSPECTOR_INSTALL_TIMEOUT_S = 120
+_PI_LIST_TIMEOUT_S = 30
+_PI_PACKAGE_SOURCE_PREFIXES = ("npm:", "git:", "http://", "https://")
 
 
 def _install_pi_extension() -> None:
@@ -64,22 +68,51 @@ def _install_pi_extension() -> None:
         print(f"[lapdog] Installed pi extension → {_PI_EXT_DEST}")
 
 
-def _ensure_pi_context_inspector(launch_bin: Optional[str]) -> Optional[str]:
-    """Return the pi-context-inspector module path, installing the pinned package with ``pi install`` if missing.
+def _find_pi_context_inspector(pi_bin: str) -> Optional[Tuple[bool, Optional[str]]]:
+    """Return (declared, module_path) for pi-context-inspector according to ``pi list``, or None if it can't run.
 
-    An existing install (any version) is used as-is. Returns None when the
-    package can't be installed; Pi tracing then runs without context breakdowns.
+    ``pi list`` prints each declared package source followed by the directory Pi
+    resolved it to, which may be the legacy global npm location rather than
+    ~/.pi/agent/npm, so the path is taken from Pi instead of assumed.
     """
-    if os.path.isfile(_PI_CONTEXT_INSPECTOR_ENTRY):
-        return _PI_CONTEXT_INSPECTOR_ENTRY
-
-    launch_bin = launch_bin or shutil.which("pi")
-    if not launch_bin:
+    try:
+        result = subprocess.run([pi_bin, "list"], capture_output=True, text=True, timeout=_PI_LIST_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired):
         return None
+    if result.returncode != 0:
+        return None
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        if not line.startswith(_PI_PACKAGE_SOURCE_PREFIXES) or _PI_CONTEXT_INSPECTOR_NAME not in line:
+            continue
+        install_dir = lines[index + 1] if index + 1 < len(lines) else ""
+        module_path = os.path.join(install_dir, _PI_CONTEXT_INSPECTOR_MODULE) if os.path.isabs(install_dir) else None
+        return True, module_path if module_path and os.path.isfile(module_path) else None
+    return False, None
+
+
+def _ensure_pi_context_inspector(launch_bin: Optional[str]) -> Optional[str]:
+    """Return the pi-context-inspector module path, installing the pinned package with ``pi install`` if undeclared.
+
+    A package the user already declared (any version, any install location) is
+    used as-is and never reinstalled or claimed. Returns None when the package
+    is unavailable; Pi tracing then reports usage without a section breakdown.
+    """
+    pi_bin = launch_bin or shutil.which("pi")
+    if not pi_bin:
+        return None
+    found = _find_pi_context_inspector(pi_bin)
+    if found is None:
+        # Can't tell what is declared; installing could replace the user's declaration.
+        return None
+    declared, module_path = found
+    if declared:
+        return module_path
+
     print(f"[lapdog] Installing {_PI_CONTEXT_INSPECTOR_SOURCE} for context usage breakdowns...")
     try:
         result = subprocess.run(
-            [launch_bin, "install", _PI_CONTEXT_INSPECTOR_SOURCE],
+            [pi_bin, "install", _PI_CONTEXT_INSPECTOR_SOURCE],
             capture_output=True,
             text=True,
             timeout=_PI_CONTEXT_INSPECTOR_INSTALL_TIMEOUT_S,
@@ -87,7 +120,7 @@ def _ensure_pi_context_inspector(launch_bin: Optional[str]) -> Optional[str]:
     except (OSError, subprocess.TimeoutExpired) as e:
         print(f"[lapdog] Could not install pi-context-inspector ({e}); continuing without it.", file=sys.stderr)
         return None
-    if result.returncode != 0 or not os.path.isfile(_PI_CONTEXT_INSPECTOR_ENTRY):
+    if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip().splitlines()[-1:] or ["unknown error"]
         print(f"[lapdog] Could not install pi-context-inspector ({detail[0]}); continuing without it.", file=sys.stderr)
         return None
@@ -98,7 +131,8 @@ def _ensure_pi_context_inspector(launch_bin: Optional[str]) -> Optional[str]:
             f.write(f"{_PI_CONTEXT_INSPECTOR_SOURCE}\n")
     except OSError:
         pass
-    return _PI_CONTEXT_INSPECTOR_ENTRY
+    found = _find_pi_context_inspector(pi_bin)
+    return found[1] if found else None
 
 
 def _uninstall_pi_context_inspector() -> None:

@@ -75,6 +75,10 @@ type InspectorEntry =
 	| { type: "compaction"; summary: string }
 	| { type: "branch_summary"; summary: string };
 type InspectorUsage = { tokens: number; contextWindow: number; percent: number | null };
+type ContextWindowSource = {
+	model?: { contextWindow?: number };
+	getContextUsage?: () => { contextWindow: number } | undefined;
+};
 type BuildTokenBreakdown = (
 	systemPrompt: string,
 	activeToolDefs: ToolDefinitionView[],
@@ -165,15 +169,24 @@ export default function lapdog(pi: ExtensionAPI): void {
 	let buildTokenBreakdown: BuildTokenBreakdown | null = null;
 	let breakdownLoad: Promise<void> | null = null;
 
+	/** Window size of the active model, from Pi's model registry (0 if unknown). */
+	function contextWindowFor(ctx: ContextWindowSource): number {
+		try {
+			return ctx.model?.contextWindow || ctx.getContextUsage?.()?.contextWindow || 0;
+		} catch {
+			return 0;
+		}
+	}
+
 	/** Context breakdown for one LLM call, or undefined when it can't be computed. */
 	function computeContextBreakdown(
 		usage: { input?: number; cacheRead?: number; cacheWrite?: number } | undefined,
-		ctx: { model?: { contextWindow?: number }; getContextUsage?: () => { contextWindow: number } | undefined },
+		ctx: ContextWindowSource,
 	): Record<string, number> | undefined {
 		if (!buildTokenBreakdown || !usage) return undefined;
 		// Total prompt size for this call: Anthropic reports cached tokens outside `input`.
 		const tokens = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
-		const contextWindow = ctx.model?.contextWindow || ctx.getContextUsage?.()?.contextWindow || 0;
+		const contextWindow = contextWindowFor(ctx);
 		if (tokens <= 0 || contextWindow <= 0) return undefined;
 		try {
 			// Only the fields declared to the model; ToolInfo also carries sourceInfo etc.
@@ -377,6 +390,8 @@ export default function lapdog(pi: ExtensionAPI): void {
 			error_message: msg.errorMessage ?? "",
 			content: msg.content,
 			context_breakdown: computeContextBreakdown(msg.usage, ctx),
+			// Sent even without pi-context-inspector so lapdog never falls back to a guessed window.
+			context_window: contextWindowFor(ctx) || undefined,
 		}, ctx);
 	});
 

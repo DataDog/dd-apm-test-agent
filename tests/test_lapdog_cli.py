@@ -1042,49 +1042,106 @@ def test_run_pi_passes_context_inspector_path(monkeypatch):
 
 @pytest.fixture
 def pi_inspector_paths(monkeypatch, tmp_path):
-    entry = tmp_path / "npm" / "node_modules" / "pi-context-inspector" / "src" / "index.ts"
+    install_dir = tmp_path / "npm" / "node_modules" / "pi-context-inspector"
     marker = tmp_path / "lapdog" / "pi-context-inspector-installed"
-    monkeypatch.setattr(cli_pi, "_PI_CONTEXT_INSPECTOR_ENTRY", str(entry))
     monkeypatch.setattr(cli_pi, "_PI_CONTEXT_INSPECTOR_MARKER", str(marker))
     monkeypatch.setattr(cli_pi, "LAPDOG_DIR", str(marker.parent))
-    return entry, marker
+    return install_dir, marker
 
 
-def test_ensure_pi_context_inspector_reuses_existing_install(pi_inspector_paths):
-    entry, marker = pi_inspector_paths
-    entry.parent.mkdir(parents=True)
-    entry.write_text("export {};\n")
+def _write_inspector_module(install_dir):
+    module = install_dir / "src" / "index.ts"
+    module.parent.mkdir(parents=True)
+    module.write_text("export {};\n")
+    return module
 
-    with mock.patch("lapdog.cli.pi.subprocess.run") as run:
-        assert cli_pi._ensure_pi_context_inspector("/usr/local/bin/pi") == str(entry)
 
-    run.assert_not_called()
+def _pi_list_output(*packages):
+    """`pi list` output: each source line followed by the directory Pi resolved it to."""
+    lines = ["User packages:"]
+    for source, install_dir in packages:
+        lines += [f"  {source}", f"    {install_dir}"]
+    return "\n".join(lines) + "\n"
+
+
+class FakePi:
+    """Stands in for `pi list` / `pi install`; install declares the package at install_dir."""
+
+    def __init__(self, install_dir, declared=None, list_returncode=0, install_returncode=0):
+        self.install_dir = install_dir
+        self.declared = declared
+        self.list_returncode = list_returncode
+        self.install_returncode = install_returncode
+        self.calls = []
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append(argv[1:])
+        if argv[1] == "list":
+            packages = [(self.declared, self.install_dir)] if self.declared else []
+            return subprocess.CompletedProcess(argv, self.list_returncode, stdout=_pi_list_output(*packages), stderr="")
+        if argv[1] == "install":
+            if self.install_returncode == 0:
+                _write_inspector_module(self.install_dir)
+                self.declared = argv[2]
+            return subprocess.CompletedProcess(argv, self.install_returncode, stdout="", stderr="npm ERR! network\n")
+        raise AssertionError(f"unexpected pi command {argv}")
+
+
+def test_ensure_pi_context_inspector_reuses_declared_package_at_pi_resolved_path(pi_inspector_paths, tmp_path):
+    _, marker = pi_inspector_paths
+    # e.g. Pi's legacy global npm location rather than ~/.pi/agent/npm
+    legacy_dir = tmp_path / "global" / "lib" / "node_modules" / "pi-context-inspector"
+    module = _write_inspector_module(legacy_dir)
+    fake_pi = FakePi(legacy_dir, declared="npm:pi-context-inspector@1.2.0")
+
+    with mock.patch("lapdog.cli.pi.subprocess.run", side_effect=fake_pi):
+        assert cli_pi._ensure_pi_context_inspector("/usr/local/bin/pi") == str(module)
+
+    assert fake_pi.calls == [["list"]]
+    assert not marker.exists()
+
+
+def test_ensure_pi_context_inspector_does_not_reinstall_declared_but_missing_package(pi_inspector_paths):
+    install_dir, marker = pi_inspector_paths
+    fake_pi = FakePi(install_dir, declared="npm:pi-context-inspector")
+
+    with mock.patch("lapdog.cli.pi.subprocess.run", side_effect=fake_pi):
+        assert cli_pi._ensure_pi_context_inspector("/usr/local/bin/pi") is None
+
+    assert fake_pi.calls == [["list"]]
     assert not marker.exists()
 
 
 def test_ensure_pi_context_inspector_installs_pinned_package(pi_inspector_paths):
-    entry, marker = pi_inspector_paths
+    install_dir, marker = pi_inspector_paths
+    fake_pi = FakePi(install_dir)
 
-    def fake_install(argv, **kwargs):
-        entry.parent.mkdir(parents=True)
-        entry.write_text("export {};\n")
-        return subprocess.CompletedProcess(argv, 0, stdout="Installed", stderr="")
+    with mock.patch("lapdog.cli.pi.subprocess.run", side_effect=fake_pi):
+        assert cli_pi._ensure_pi_context_inspector("/usr/local/bin/pi") == str(install_dir / "src" / "index.ts")
 
-    with mock.patch("lapdog.cli.pi.subprocess.run", side_effect=fake_install) as run:
-        assert cli_pi._ensure_pi_context_inspector("/usr/local/bin/pi") == str(entry)
-
-    assert run.call_args.args[0] == ["/usr/local/bin/pi", "install", "npm:pi-context-inspector@1.3.0"]
+    assert fake_pi.calls == [["list"], ["install", "npm:pi-context-inspector@1.3.0"], ["list"]]
     assert marker.exists()
 
 
 def test_ensure_pi_context_inspector_install_failure_is_not_fatal(pi_inspector_paths, capsys):
-    _, marker = pi_inspector_paths
-    failed = subprocess.CompletedProcess([], 1, stdout="", stderr="npm ERR! network\n")
+    install_dir, marker = pi_inspector_paths
+    fake_pi = FakePi(install_dir, install_returncode=1)
 
-    with mock.patch("lapdog.cli.pi.subprocess.run", return_value=failed):
+    with mock.patch("lapdog.cli.pi.subprocess.run", side_effect=fake_pi):
         assert cli_pi._ensure_pi_context_inspector("/usr/local/bin/pi") is None
 
     assert "continuing without it" in capsys.readouterr().err
+    assert not marker.exists()
+
+
+def test_ensure_pi_context_inspector_skips_install_when_pi_list_fails(pi_inspector_paths):
+    install_dir, marker = pi_inspector_paths
+    fake_pi = FakePi(install_dir, list_returncode=1)
+
+    with mock.patch("lapdog.cli.pi.subprocess.run", side_effect=fake_pi):
+        assert cli_pi._ensure_pi_context_inspector("/usr/local/bin/pi") is None
+
+    assert fake_pi.calls == [["list"]]
     assert not marker.exists()
 
 
