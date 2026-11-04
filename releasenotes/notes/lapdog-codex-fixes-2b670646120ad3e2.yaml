@@ -4,3 +4,9 @@ fixes:
     Lapdog: Fix missing traces when you resume Codex sessions with
     ``lapdog codex exec resume`` or ``lapdog codex e resume``.
     Capture new turns without sending previous turns again.
+  - |
+    Lapdog: Fix LLM and tool spans assigned to the wrong inference step and
+    missing automatic tool-review annotations with newer Codex CLI releases.
+    Prevent unrelated CLI sessions from being captured by CLI or app monitoring.
+    Prevent record loss when session metadata arrives late or rollouts are
+    truncated, and correctly skip oversized records written in parts.

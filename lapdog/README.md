@@ -183,6 +183,9 @@ lapdog claude
 # Or launch Codex with JSONL capture + proxy tracing wired up.
 lapdog codex
 
+# Monitor Codex app sessions across all workspaces.
+lapdog codex app
+
 # Or launch Pi with the lapdog extension installed.
 lapdog pi
 

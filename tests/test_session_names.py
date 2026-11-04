@@ -119,7 +119,7 @@ def test_codex_grouped_names_and_rename_back():
     rename("child", "Child name")
     child_span = {"session_id": "child"}
     hooks._append_span(child_span)
-    codex._set_session_group("child", "parent")
+    codex._dispatch("child", {"type": "session_meta", "payload": {"id": "child", "parent_thread_id": "parent"}})
     rename("child", "Must not replace parent")
     assert child_span["meta"]["metadata"]["session_name"] == "Parent name"
     rename("parent", "New name")
@@ -155,11 +155,11 @@ def test_claude_title_span_before_session_is_adopted():
 def test_codex_child_name_does_not_become_parent_name():
     hooks = ClaudeHooksAPI()
     codex = CodexHooksAPI(hooks)
-    codex._get_or_create_session("parent", 1)
+    codex._dispatch("parent", {"type": "session_meta", "payload": {"id": "parent"}})
     codex._dispatch("child", {"type": "event_msg", "payload": {"type": "session_name", "name": "Child"}})
     child = {"session_id": "child"}
     hooks._append_span(child)
-    codex._set_session_group("child", "parent")
+    codex._dispatch("child", {"type": "session_meta", "payload": {"id": "child", "parent_thread_id": "parent"}})
     assert "session_name" not in child["meta"]["metadata"]
     hooks._set_session_name(hooks._sessions["parent"], "Parent")
     assert child["meta"]["metadata"]["session_name"] == "Parent"
