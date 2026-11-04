@@ -888,34 +888,98 @@ async def test_hook_user_prompt_annotates_session(agent):
     assert "Fix the bug in auth.py" in root["meta"]["input"]["value"]
 
 
+class _FakeClock:
+    def __init__(self, monkeypatch, ns):
+        self.ns = ns
+        monkeypatch.setattr("lapdog.claude_hooks.monotonic_wall_ns", lambda: self.ns)
+
+
+def _root_span(hooks, session_id):
+    (root,) = [
+        s for s in hooks._assembled_spans if s.get("session_id") == session_id and s.get("parent_id") == "undefined"
+    ]
+    return root
+
+
+def _proxy_llm_span(proxy, session, start_ns, duration_ns=500):
+    span = proxy._create_llm_span(
+        session,
+        {"model": "claude-haiku-4-5", "messages": [{"role": "user", "content": "warmup"}]},
+        {"model": "claude-haiku-4-5", "usage": {"input_tokens": 1, "output_tokens": 1}, "content": []},
+        start_ns=start_ns,
+        duration_ns=duration_ns,
+    )
+    proxy._hooks_api._append_span(span)
+    return span
+
+
 def test_first_turn_excludes_idle_time_before_first_prompt(monkeypatch):
     hooks = ClaudeHooksAPI()
     session_id = "sess-first-turn-start"
-    clock = iter([1_000, 5_000, 6_000])
-    monkeypatch.setattr("lapdog.claude_hooks.monotonic_wall_ns", lambda: next(clock))
+    clock = _FakeClock(monkeypatch, 1_000)
 
     hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "SessionStart"})
+    clock.ns = 5_000
     hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "UserPromptSubmit", "user_prompt": "hi"})
+    clock.ns = 6_000
     hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "Stop"})
 
-    (root,) = [s for s in hooks._assembled_spans if s["parent_id"] == "undefined"]
+    root = _root_span(hooks, session_id)
     assert root["start_ns"] == 5_000
     assert root["duration"] == 1_000
 
 
 def test_first_turn_contains_proxy_spans_recorded_before_first_prompt(monkeypatch):
     hooks = ClaudeHooksAPI()
+    proxy = ClaudeProxyAPI(hooks_api=hooks, link_tracker=ClaudeLinkTracker())
     session_id = "sess-first-turn-early-llm"
-    clock = iter([1_000, 5_000, 6_000])
-    monkeypatch.setattr("lapdog.claude_hooks.monotonic_wall_ns", lambda: next(clock))
+    clock = _FakeClock(monkeypatch, 1_000)
 
     hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "SessionStart"})
-    session = hooks._sessions[session_id]
-    hooks._append_span({"span_id": "early", "trace_id": session.trace_id, "start_ns": 2_000, "duration": 100})
+    _proxy_llm_span(proxy, hooks._sessions[session_id], start_ns=2_000)
+    clock.ns = 5_000
     hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "UserPromptSubmit", "user_prompt": "hi"})
+    clock.ns = 6_000
     hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "Stop"})
 
-    (root,) = [s for s in hooks._assembled_spans if s.get("parent_id") == "undefined"]
+    root = _root_span(hooks, session_id)
+    assert root["start_ns"] == 2_000
+    assert root["duration"] == 4_000
+
+
+def test_first_turn_contains_proxy_request_in_flight_at_first_prompt(monkeypatch):
+    hooks = ClaudeHooksAPI()
+    proxy = ClaudeProxyAPI(hooks_api=hooks, link_tracker=ClaudeLinkTracker())
+    session_id = "sess-first-turn-in-flight-llm"
+    clock = _FakeClock(monkeypatch, 1_000)
+
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "SessionStart"})
+    clock.ns = 5_000
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "UserPromptSubmit", "user_prompt": "hi"})
+    # Started at 2_000, before the prompt, but completes after it.
+    _proxy_llm_span(proxy, hooks._sessions[session_id], start_ns=2_000, duration_ns=3_500)
+    clock.ns = 6_000
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "Stop"})
+
+    root = _root_span(hooks, session_id)
+    assert root["start_ns"] == 2_000
+    assert root["duration"] == 4_000
+
+
+def test_finished_turn_extends_to_contain_proxy_span_that_started_before_it(monkeypatch):
+    hooks = ClaudeHooksAPI()
+    proxy = ClaudeProxyAPI(hooks_api=hooks, link_tracker=ClaudeLinkTracker())
+    session_id = "sess-first-turn-late-llm"
+    clock = _FakeClock(monkeypatch, 1_000)
+
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "SessionStart"})
+    clock.ns = 5_000
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "UserPromptSubmit", "user_prompt": "hi"})
+    clock.ns = 6_000
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "Stop"})
+    _proxy_llm_span(proxy, hooks._sessions[session_id], start_ns=2_000, duration_ns=4_500)
+
+    root = _root_span(hooks, session_id)
     assert root["start_ns"] == 2_000
     assert root["duration"] == 4_000
 

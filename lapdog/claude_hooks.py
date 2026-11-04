@@ -893,6 +893,25 @@ class ClaudeHooksAPI:
                 start_ns = min(start_ns, span["start_ns"])
         return start_ns
 
+    def _extend_turn_start(self, session: SessionState, start_ns: int) -> None:
+        """Move the current turn's start back to ``start_ns`` if a span in its trace began earlier.
+
+        A proxy request still in flight when the prompt arrived (one Claude
+        Code starts at launch) joins the trace when it completes, after
+        ``_turn_start_ns`` ran. Without this the root would start after it.
+        """
+        if start_ns >= session.start_ns:
+            return
+        shift = session.start_ns - start_ns
+        session.start_ns = start_ns
+        root_span: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
+        if root_span is None or root_span.get("trace_id") != session.trace_id:
+            return
+        root_span["start_ns"] = start_ns
+        if session.root_span_emitted:
+            # Stop already set the duration from the old start.
+            root_span["duration"] += shift
+
     def _handle_user_prompt_submit(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle UserPromptSubmit hook event — starts a new trace for each user turn.
 
