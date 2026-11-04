@@ -888,6 +888,38 @@ async def test_hook_user_prompt_annotates_session(agent):
     assert "Fix the bug in auth.py" in root["meta"]["input"]["value"]
 
 
+def test_first_turn_excludes_idle_time_before_first_prompt(monkeypatch):
+    hooks = ClaudeHooksAPI()
+    session_id = "sess-first-turn-start"
+    clock = iter([1_000, 5_000, 6_000])
+    monkeypatch.setattr("lapdog.claude_hooks.monotonic_wall_ns", lambda: next(clock))
+
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "SessionStart"})
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "UserPromptSubmit", "user_prompt": "hi"})
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "Stop"})
+
+    (root,) = [s for s in hooks._assembled_spans if s["parent_id"] == "undefined"]
+    assert root["start_ns"] == 5_000
+    assert root["duration"] == 1_000
+
+
+def test_first_turn_contains_proxy_spans_recorded_before_first_prompt(monkeypatch):
+    hooks = ClaudeHooksAPI()
+    session_id = "sess-first-turn-early-llm"
+    clock = iter([1_000, 5_000, 6_000])
+    monkeypatch.setattr("lapdog.claude_hooks.monotonic_wall_ns", lambda: next(clock))
+
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "SessionStart"})
+    session = hooks._sessions[session_id]
+    hooks._append_span({"span_id": "early", "trace_id": session.trace_id, "start_ns": 2_000, "duration": 100})
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "UserPromptSubmit", "user_prompt": "hi"})
+    hooks._dispatch_hook({"session_id": session_id, "hook_event_name": "Stop"})
+
+    (root,) = [s for s in hooks._assembled_spans if s.get("parent_id") == "undefined"]
+    assert root["start_ns"] == 2_000
+    assert root["duration"] == 4_000
+
+
 async def test_hook_agent_manifest(agent):
     session_id = "sess-manifest"
 

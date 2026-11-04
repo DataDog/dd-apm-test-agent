@@ -522,12 +522,16 @@ class PiHooksAPI:
         # second pop from _active_steps is a harmless no-op.
         self._clear_pi_state(session_id)
 
+        # The turn starts now. The session may have been created well before
+        # this (by session_start when pi launched), so never reuse its creation
+        # time for the first turn — that would fold idle time before the first
+        # prompt into the trace duration.
+        session.start_ns = monotonic_wall_ns()
+
         # Start fresh trace
         if session.root_span_emitted:
-            now_ns = monotonic_wall_ns()
             session.trace_id = _format_trace_id()
             session.root_span_id = _format_span_id()
-            session.start_ns = now_ns
             session.user_prompts = []
             session.tools_used = set()
             session.agent_span_stack = []

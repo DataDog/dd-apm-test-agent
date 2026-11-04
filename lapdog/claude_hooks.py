@@ -880,6 +880,19 @@ class ClaudeHooksAPI:
         session.root_span_emitted = True
         log.info("Finalized interrupted turn for session %s (trace %s)", session.session_id, session.trace_id)
 
+    def _turn_start_ns(self, session: SessionState) -> int:
+        """Return the start time for a turn beginning now in ``session.trace_id``.
+
+        The proxy can record LLM spans into a session's first trace before its
+        first prompt (calls Claude Code makes at startup). Start no later than
+        the earliest of them so the root span still contains its children.
+        """
+        start_ns = monotonic_wall_ns()
+        for span in self._assembled_spans:
+            if span.get("trace_id") == session.trace_id and isinstance(span.get("start_ns"), int):
+                start_ns = min(start_ns, span["start_ns"])
+        return start_ns
+
     def _handle_user_prompt_submit(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle UserPromptSubmit hook event — starts a new trace for each user turn.
 
@@ -895,10 +908,8 @@ class ClaudeHooksAPI:
 
         # If the previous turn's root span was emitted, start a fresh trace
         if session.root_span_emitted:
-            now_ns = monotonic_wall_ns()
             session.trace_id = _format_trace_id()
             session.root_span_id = _format_span_id()
-            session.start_ns = now_ns
             session.user_prompts = []
             session.tools_used = set()
             session.agent_span_stack = []
@@ -913,6 +924,11 @@ class ClaudeHooksAPI:
             # subsequent interactions on the same topic reuse the title.
             # The haiku summarization call will update it when the topic changes.
             session.root_span_emitted = False
+
+        # The turn starts at the prompt. SessionStart created the session (and
+        # its start time) when Claude Code launched, so reusing that time would
+        # fold idle time before the first prompt into the first trace.
+        session.start_ns = self._turn_start_ns(session)
 
         prompt = body.get("user_prompt", body.get("prompt", ""))
         if prompt:
