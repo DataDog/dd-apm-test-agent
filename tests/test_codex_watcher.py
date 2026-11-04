@@ -294,10 +294,10 @@ def test_resume_selection_reads_open_files_from_codex_process_tree(monkeypatch):
 
 def test_linux_resume_selection_handles_inaccessible_child(monkeypatch):
     monkeypatch.setattr("lapdog.codex_watcher.subprocess.run", lambda *a, **kw: SimpleNamespace(stdout="10 1\n11 10\n"))
-    monkeypatch.setattr(Path, "is_dir", lambda path: str(path) == "/proc/self/fd")
+    monkeypatch.setattr(Path, "is_dir", lambda path: path == Path("/proc/self/fd"))
 
     def entries(path):
-        if str(path) == "/proc/10/fd":
+        if path == Path("/proc/10/fd"):
             return iter([Path("/tmp/owned.jsonl"), Path("/tmp/unrelated.txt")])
         raise PermissionError("child exited")
 
@@ -305,7 +305,7 @@ def test_linux_resume_selection_handles_inaccessible_child(monkeypatch):
     monkeypatch.setattr(Path, "resolve", lambda path: path)
     owner = SessionOwnership(0, parent_pid=10)
     owner.refresh()
-    assert owner.open_paths == {"/tmp/owned.jsonl"}
+    assert owner.open_paths == {str(Path("/tmp/owned.jsonl"))}
 
 
 def test_client_identity_skips_oversized_lines_and_resets_after_truncation(monkeypatch, tmp_path):

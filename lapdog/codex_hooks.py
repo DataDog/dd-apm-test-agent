@@ -14,9 +14,11 @@ import shlex
 import socket
 import time
 from typing import Any
+from typing import Deque
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import OrderedDict as OrderedDictType
 from typing import Tuple
 from typing import TypeVar
 
@@ -291,7 +293,7 @@ _K = TypeVar("_K")
 _V = TypeVar("_V")
 
 
-def _remember(index: OrderedDict[_K, _V], key: _K, value: _V, limit: int) -> None:
+def _remember(index: OrderedDictType[_K, _V], key: _K, value: _V, limit: int) -> None:
     index[key] = value
     index.move_to_end(key)
     while len(index) > limit:
@@ -458,14 +460,14 @@ class CodexHooksAPI:
         self._hooks_api = hooks_api
         self._config = CodexConfig()
         self._sessions: Dict[str, CodexSession] = {}
-        self._turns: OrderedDict[Tuple[str, str], Tuple[CodexSession, Turn]] = OrderedDict()
-        self._responses: OrderedDict[Tuple[str, str], Tuple[CodexSession, Turn, Response]] = OrderedDict()
-        self._pending_proxy: OrderedDict[str, Tuple[float, Span]] = OrderedDict()
-        self._seen: OrderedDict[bytes, bool] = OrderedDict()
-        self._raw_events: deque[Dict[str, Any]] = deque(maxlen=RAW_EVENT_LIMIT)
-        self._child_session_ids: OrderedDict[str, str] = OrderedDict()
-        self._reviews: OrderedDict[str, Dict[str, Any]] = OrderedDict()
-        self._pending_reviews: OrderedDict[Tuple[str, str, str, str], Tuple[float, Dict[str, Any]]] = OrderedDict()
+        self._turns: OrderedDictType[Tuple[str, str], Tuple[CodexSession, Turn]] = OrderedDict()
+        self._responses: OrderedDictType[Tuple[str, str], Tuple[CodexSession, Turn, Response]] = OrderedDict()
+        self._pending_proxy: OrderedDictType[str, Tuple[float, Span]] = OrderedDict()
+        self._seen: OrderedDictType[bytes, bool] = OrderedDict()
+        self._raw_events: Deque[Dict[str, Any]] = deque(maxlen=RAW_EVENT_LIMIT)
+        self._child_session_ids: OrderedDictType[str, str] = OrderedDict()
+        self._reviews: OrderedDictType[str, Dict[str, Any]] = OrderedDict()
+        self._pending_reviews: OrderedDictType[Tuple[str, str, str, str], Tuple[float, Dict[str, Any]]] = OrderedDict()
 
     def _session(self, sid: str) -> CodexSession:
         if sid not in self._sessions:
