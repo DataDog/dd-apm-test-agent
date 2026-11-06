@@ -110,7 +110,7 @@ def _context_breakdown(total: int, window: int, sections: List[Dict[str, Any]]) 
 
 
 def _pi_context_breakdown(raw: Any) -> Optional[Dict[str, Any]]:
-    """Convert pi-context-inspector's buildTokenBreakdown() output to the Claude ``context_breakdown`` shape.
+    """Convert the extension's buildTokenBreakdown() output to the Claude ``context_breakdown`` shape.
 
     ``System tools`` is the tool definitions declared to the model; ``tools`` is
     tool calls and their results in the conversation.
@@ -135,7 +135,7 @@ def _pi_context_breakdown(raw: Any) -> Optional[Dict[str, Any]]:
 
 
 def _pi_usage_only_breakdown(total: int, window: Any) -> Optional[Dict[str, Any]]:
-    """Window and usage without sections, for when pi-context-inspector is unavailable."""
+    """Window and usage without sections, for when the extension sent no breakdown (e.g. it couldn't compute one)."""
     if not isinstance(window, (int, float)) or window <= 0 or total <= 0:
         return None
     return _context_breakdown(total, int(window), [])

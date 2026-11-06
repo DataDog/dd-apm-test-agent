@@ -1159,8 +1159,8 @@ async def test_interrupted_turn_preserves_model_provider(agent):
     assert {s["meta"]["model_provider"] for s in llm_spans} == {provider}
 
 
-def _inspector_breakdown(total, context_window=400_000):
-    """Shape of pi-context-inspector's buildTokenBreakdown() return value."""
+def _extension_breakdown(total, context_window=400_000):
+    """Shape of the extension's buildTokenBreakdown() return value (posted as message_end.context_breakdown)."""
     return {
         "total": total,
         "contextWindow": context_window,
@@ -1192,7 +1192,7 @@ async def _run_turn(agent, sid, message_ends):
 async def test_pi_context_breakdown_on_llm_span(agent):
     sid = "pi-context-breakdown"
     usage = {"input": 2000, "output": 50, "cacheRead": 6000, "cacheWrite": 0, "totalTokens": 8050}
-    end = {**_message_end(sid, usage=usage), "context_breakdown": _inspector_breakdown(8000)}
+    end = {**_message_end(sid, usage=usage), "context_breakdown": _extension_breakdown(8000)}
 
     session_spans = await _run_turn(agent, sid, [end])
 
@@ -1213,7 +1213,7 @@ async def test_pi_context_breakdown_on_llm_span(agent):
 
 async def test_pi_context_breakdown_folds_remainder_into_messages(agent):
     sid = "pi-context-breakdown-remainder"
-    raw = {**_inspector_breakdown(8000), "messages": 1990, "other": 10, "skills": 300, "tools": 1700}
+    raw = {**_extension_breakdown(8000), "messages": 1990, "other": 10, "skills": 300, "tools": 1700}
     end = {**_message_end(sid), "context_breakdown": raw}
 
     session_spans = await _run_turn(agent, sid, [end])
@@ -1228,11 +1228,11 @@ async def test_pi_context_delta_uses_reported_context_window(agent):
     sid = "pi-context-delta"
     first = {
         **_message_end(sid, usage={"input": 10_000, "output": 10, "cacheRead": 0, "cacheWrite": 0}),
-        "context_breakdown": _inspector_breakdown(10_000),
+        "context_breakdown": _extension_breakdown(10_000),
     }
     second = {
         **_message_end(sid, usage={"input": 4_000, "output": 10, "cacheRead": 16_000, "cacheWrite": 0}),
-        "context_breakdown": _inspector_breakdown(20_000),
+        "context_breakdown": _extension_breakdown(20_000),
     }
 
     session_spans = await _run_turn(agent, sid, [first, second])
@@ -1282,14 +1282,14 @@ def test_pi_context_breakdown_matches_claude_structure():
             {key: type(value) for key, value in sections[0].items()} if sections else None,
         )
 
-    pi_shape = shape(_pi_context_breakdown(_inspector_breakdown(1000)))
+    pi_shape = shape(_pi_context_breakdown(_extension_breakdown(1000)))
     assert pi_shape == shape(claude)
     usage_only = _pi_usage_only_breakdown(1000, 128_000)
     assert shape(usage_only)[0] == shape(claude)[0]
     assert usage_only["sections"] == []
 
 
-async def test_pi_usage_only_breakdown_without_inspector(agent):
+async def test_pi_usage_only_breakdown_without_extension_breakdown(agent):
     sid = "pi-usage-only-breakdown"
     usage = {"input": 4000, "output": 10, "cacheRead": 60_000, "cacheWrite": 0}
     end = {**_message_end(sid, usage=usage), "context_window": 128_000}

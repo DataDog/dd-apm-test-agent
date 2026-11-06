@@ -7,7 +7,6 @@ import sys
 from lapdog.cli.claude import _uninstall_lapdog_claude_code_plugin
 from lapdog.cli.codex import _stop_all_codex_watchers
 from lapdog.cli.pi import _PI_EXT_DEST
-from lapdog.cli.pi import _uninstall_pi_context_inspector
 from lapdog.cli.runtime import read_pid_file
 from lapdog.cli.server import cmd_stop
 from lapdog.paths import LAPDOG_DIR
@@ -20,9 +19,6 @@ def cmd_uninstall() -> None:
     pid, _ = read_pid_file()
     if pid is not None:
         cmd_stop(pid=pid)
-
-    # remove pi-context-inspector (reads its install marker from ~/.lapdog, so before the dir goes)
-    _uninstall_pi_context_inspector()
 
     # remove ~/.lapdog dir
     if os.path.isdir(LAPDOG_DIR):

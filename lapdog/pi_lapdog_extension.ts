@@ -7,9 +7,9 @@
  *   - LLM calls (assistant message_start → message_end with token usage)
  *   - Tool executions (tool_execution_start → tool_execution_end)
  *
- * When the pi-context-inspector package is available (lapdog installs it and
- * passes its module path in LAPDOG_PI_CONTEXT_INSPECTOR_PATH), each LLM call
- * also carries a context-window breakdown computed by its buildTokenBreakdown().
+ * Each LLM call also carries a context-window breakdown (system prompt, tool
+ * definitions, tool calls, skills, messages) computed by buildTokenBreakdown(),
+ * adapted from pi-context-inspector (see the notice below).
  *
  * Install: copy to ~/.pi/agent/extensions/lapdog.ts
  * Configure: set LAPDOG_URL to override the default http://localhost:8126
@@ -18,12 +18,11 @@
  * never blocks the agent.
  */
 
-import { convertToLlm, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { convertToLlm, estimateTokens, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 const LAPDOG_URL = process.env.LAPDOG_URL || "http://localhost:8126";
 const LAPDOG_SESSION_TOKEN = process.env.LAPDOG_SESSION_TOKEN || "";
 const HOOKS_ENDPOINT = `${LAPDOG_URL}/pi/hooks`;
-const CONTEXT_INSPECTOR_PATH = process.env.LAPDOG_PI_CONTEXT_INSPECTOR_PATH || "";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -66,44 +65,198 @@ function post(event: string, sessionId: string, data: Record<string, unknown>, c
 }
 
 // ---------------------------------------------------------------------------
-// Context breakdown (pi-context-inspector)
+// Context breakdown
 // ---------------------------------------------------------------------------
+//
+// isSkillPath(), isSkillReadToolCall() and buildTokenBreakdown() are adapted
+// from pi-context-inspector v1.3.0 (src/index.ts),
+// https://github.com/yuriteixeira/pi-context-inspector, under the MIT License
+// reproduced below. Changes: buildTokenBreakdown() takes the call's token total
+// and window directly and returns only the fields lapdog reports (no compaction
+// reserve or free-space figures), and the types are loosened for this file.
+//
+// MIT License
+//
+// Copyright (c) 2026 Yuri Teixeira
+// Copyright (c) 2026 YuGiMob
+// Copyright (c) 2026 Agnish Chakraborty
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 type ToolDefinitionView = { name: string; description?: string; parameters?: unknown };
-type InspectorEntry =
+type BreakdownEntry =
 	| { type: "message"; message: unknown }
 	| { type: "compaction"; summary: string }
 	| { type: "branch_summary"; summary: string };
-type InspectorUsage = { tokens: number; contextWindow: number; percent: number | null };
 type ContextWindowSource = {
 	model?: { contextWindow?: number };
 	getContextUsage?: () => { contextWindow: number } | undefined;
 };
-type BuildTokenBreakdown = (
-	systemPrompt: string,
-	activeToolDefs: ToolDefinitionView[],
-	branch: InspectorEntry[],
-	usage: InspectorUsage,
-) => Record<string, number> | null;
+type BreakdownBlock = {
+	type?: string;
+	text?: string;
+	thinking?: string;
+	id?: string;
+	name?: string;
+	arguments?: { path?: unknown };
+};
+type BreakdownMessage = {
+	role?: string;
+	content?: string | BreakdownBlock[];
+	toolCallId?: string;
+	command?: string;
+	output?: string;
+};
 
-/** Import buildTokenBreakdown from the installed pi-context-inspector, or null if unavailable. */
-async function loadBuildTokenBreakdown(): Promise<BuildTokenBreakdown | null> {
-	if (!CONTEXT_INSPECTOR_PATH) return null;
-	try {
-		const mod = await import(CONTEXT_INSPECTOR_PATH);
-		return typeof mod.buildTokenBreakdown === "function" ? (mod.buildTokenBreakdown as BuildTokenBreakdown) : null;
-	} catch {
-		return null;
-	}
+const ESTIMATED_IMAGE_CHARS = 4800;
+
+function isSkillPath(path: unknown): boolean {
+	if (typeof path !== "string") return false;
+	return /(^|\/)\.agents\/skills\/|(^|\/)\.pi\/agent\/.*\/skills\/|(^|\/)skills\/[^/]+\/SKILL\.md$/i.test(path);
+}
+
+function isSkillReadToolCall(block: BreakdownBlock): boolean {
+	if (block.name !== "read") return false;
+	return isSkillPath(block.arguments?.path);
 }
 
 /**
- * Wrap the AgentMessage[] from the `context` event as the session entries
- * buildTokenBreakdown() expects. The inspector's own /context command walks
- * the whole branch, which still holds messages replaced by compaction; the
- * `context` messages are exactly what is sent, with summaries inlined.
+ * Split `tokens` (the call's real prompt size) across context categories.
+ * Each category is estimated from raw text (chars / 4, with Pi's own
+ * per-message estimator), then all are scaled by one ratio to sum to `tokens`.
  */
-function toInspectorEntries(messages: unknown[]): InspectorEntry[] {
+function buildTokenBreakdown(
+	systemPrompt: string,
+	activeToolDefs: ToolDefinitionView[],
+	entries: BreakdownEntry[],
+	tokens: number,
+	contextWindow: number,
+): Record<string, number> {
+	const estimateChars = (text: string) => Math.ceil(text.length / 4);
+
+	const systemRaw = estimateChars(systemPrompt);
+	const toolDefsRaw = estimateChars(JSON.stringify(activeToolDefs));
+
+	let msgTokensRaw = 0;
+	let toolsRaw = 0;
+	let skillsRaw = 0;
+	const skillToolCallIds = new Set<string>();
+
+	for (const entry of entries) {
+		if (entry.type === "message") {
+			const message = entry.message as BreakdownMessage;
+			const messageTotal = estimateTokens(entry.message as Parameters<typeof estimateTokens>[0]);
+			const weights = { messages: 0, tools: 0, skills: 0 };
+			const blocks = Array.isArray(message.content) ? message.content : [];
+
+			if (message.role === "user" || message.role === "custom") {
+				if (typeof message.content === "string") {
+					weights.messages += estimateChars(message.content);
+				} else {
+					for (const block of blocks) {
+						if (block.type === "text") weights.messages += estimateChars(block.text ?? "");
+						else if (block.type === "image") weights.messages += ESTIMATED_IMAGE_CHARS;
+					}
+				}
+			} else if (message.role === "assistant") {
+				for (const block of blocks) {
+					if (block.type === "text") weights.messages += estimateChars(block.text ?? "");
+					else if (block.type === "thinking") weights.messages += estimateChars(block.thinking ?? "");
+					else if (block.type === "toolCall") {
+						if (isSkillReadToolCall(block)) {
+							weights.skills += estimateChars(JSON.stringify(block));
+							if (block.id) skillToolCallIds.add(block.id);
+						} else {
+							weights.tools += estimateChars(JSON.stringify(block));
+						}
+					}
+				}
+			} else if (message.role === "toolResult") {
+				const isSkillResult = skillToolCallIds.has(message.toolCallId ?? "");
+				for (const block of blocks) {
+					if (block.type === "text") {
+						if (isSkillResult) weights.skills += estimateChars(block.text ?? "");
+						else weights.tools += estimateChars(block.text ?? "");
+					}
+				}
+			} else if (message.role === "bashExecution") {
+				weights.tools += estimateChars(message.command ?? "") + estimateChars(message.output ?? "");
+			}
+
+			const weightSum = weights.messages + weights.tools + weights.skills;
+			if (weightSum > 0) {
+				const scale = messageTotal / weightSum;
+				msgTokensRaw += weights.messages * scale;
+				toolsRaw += weights.tools * scale;
+				skillsRaw += weights.skills * scale;
+			}
+		} else {
+			msgTokensRaw += estimateChars(entry.summary);
+		}
+	}
+
+	const totalRaw = systemRaw + skillsRaw + toolDefsRaw + msgTokensRaw + toolsRaw;
+	const ratio = totalRaw > 0 ? tokens / totalRaw : 1;
+
+	const exact = {
+		systemPrompt: systemRaw * ratio,
+		systemTools: toolDefsRaw * ratio,
+		tools: toolsRaw * ratio,
+		skills: skillsRaw * ratio,
+		messages: msgTokensRaw * ratio,
+	};
+	const allocated = { systemPrompt: 0, systemTools: 0, tools: 0, skills: 0, messages: 0 };
+	let remainder = tokens;
+	const keys = Object.keys(exact) as (keyof typeof exact)[];
+	for (const key of keys) {
+		const value = Math.floor(exact[key]);
+		allocated[key] = value;
+		remainder -= value;
+	}
+	if (totalRaw > 0) {
+		const byFraction = [...keys].sort((a, b) => (exact[b] % 1) - (exact[a] % 1));
+		for (const key of byFraction) {
+			if (remainder <= 0) break;
+			allocated[key] += 1;
+			remainder -= 1;
+		}
+	}
+
+	return {
+		total: tokens,
+		contextWindow,
+		...allocated,
+		other: Math.max(
+			0,
+			tokens -
+				(allocated.systemPrompt + allocated.systemTools + allocated.tools + allocated.skills + allocated.messages),
+		),
+	};
+}
+
+/**
+ * Wrap the AgentMessage[] from the `context` event as the entries
+ * buildTokenBreakdown() expects. These are exactly the messages sent to the
+ * model, with compaction and branch summaries inlined; the session branch
+ * would still hold messages a compaction replaced.
+ */
+function toBreakdownEntries(messages: unknown[]): BreakdownEntry[] {
 	return messages.map((message) => {
 		const m = message as { role?: string; summary?: string };
 		if (m?.role === "compactionSummary") return { type: "compaction", summary: m.summary ?? "" };
@@ -162,12 +315,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 	// snapshot matches what the provider actually receives.
 	let pendingContextMessages: LlmMessage[] = [];
 	// Same `context` snapshot before convertToLlm(), shaped for buildTokenBreakdown().
-	let pendingContextEntries: InspectorEntry[] = [];
-
-	// Resolved once at session_start so message_end can stay synchronous and
-	// keep its POST ordered before the tool events that follow it.
-	let buildTokenBreakdown: BuildTokenBreakdown | null = null;
-	let breakdownLoad: Promise<void> | null = null;
+	let pendingContextEntries: BreakdownEntry[] = [];
 
 	/** Window size of the active model, from Pi's model registry (0 if unknown). */
 	function contextWindowFor(ctx: ContextWindowSource): number {
@@ -183,7 +331,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 		usage: { input?: number; cacheRead?: number; cacheWrite?: number } | undefined,
 		ctx: ContextWindowSource,
 	): Record<string, number> | undefined {
-		if (!buildTokenBreakdown || !usage) return undefined;
+		if (!usage) return undefined;
 		// Total prompt size for this call: Anthropic reports cached tokens outside `input`.
 		const tokens = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
 		const contextWindow = contextWindowFor(ctx);
@@ -195,13 +343,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 				.getAllTools()
 				.filter((tool) => activeNames.has(tool.name))
 				.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
-			return (
-				buildTokenBreakdown(currentSystemPrompt, toolDefs, pendingContextEntries, {
-					tokens,
-					contextWindow,
-					percent: null,
-				}) ?? undefined
-			);
+			return buildTokenBreakdown(currentSystemPrompt, toolDefs, pendingContextEntries, tokens, contextWindow);
 		} catch {
 			return undefined;
 		}
@@ -211,7 +353,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 	// Session lifecycle
 	// ------------------------------------------------------------------
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", (_event, ctx) => {
 		sessionId = ctx.sessionManager.getSessionId();
 		process.env.PI_SESSION_ID = sessionId;
 		const model = ctx.model;
@@ -224,10 +366,6 @@ export default function lapdog(pi: ExtensionAPI): void {
 			model_provider: currentProvider,
 			model_id: currentModel,
 		}, ctx);
-		breakdownLoad ??= loadBuildTokenBreakdown().then((fn) => {
-			buildTokenBreakdown = fn;
-		});
-		await breakdownLoad;
 	});
 
 	pi.on("session_shutdown", (_event?: unknown, ctx?: CwdContext) => {
@@ -339,7 +477,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 		} catch {
 			pendingContextMessages = [];
 		}
-		pendingContextEntries = toInspectorEntries(event.messages);
+		pendingContextEntries = toBreakdownEntries(event.messages);
 	});
 
 	// ------------------------------------------------------------------
@@ -390,7 +528,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 			error_message: msg.errorMessage ?? "",
 			content: msg.content,
 			context_breakdown: computeContextBreakdown(msg.usage, ctx),
-			// Sent even without pi-context-inspector so lapdog never falls back to a guessed window.
+			// Sent even when the breakdown can't be computed so lapdog never falls back to a guessed window.
 			context_window: contextWindowFor(ctx) || undefined,
 		}, ctx);
 	});
