@@ -51,6 +51,8 @@ from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .model_pricing import compute_cost_metrics
+from .span_store import RawEventLog
+from .span_store import raw_event_budget
 from .utils import set_hidden_metadata
 
 log = logging.getLogger(__name__)
@@ -314,7 +316,7 @@ class PiHooksAPI:
 
     def __init__(self, hooks_api: ClaudeHooksAPI) -> None:
         self._hooks_api = hooks_api
-        self._raw_events: List[Dict[str, Any]] = []
+        self._raw_events = RawEventLog(raw_event_budget(hooks_api.max_memory_bytes))
         # Pending LLM span per session (pi sends one LLM call at a time)
         self._pending_llm: Dict[str, PendingLLMSpan] = {}
         # Active step span per session (one inference cycle)
@@ -1129,6 +1131,7 @@ class PiHooksAPI:
             await self._hooks_api._forward_trace_to_backend(session_id)
             await self._hooks_api._forward_eval_metrics_to_backend(session_id)
 
+        self._hooks_api._assembled_spans.refresh()
         return web.json_response({"status": "ok"})
 
     async def handle_raw_events(self, request: Request) -> web.Response:
