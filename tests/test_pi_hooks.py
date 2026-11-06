@@ -1,7 +1,9 @@
 """Tests for pi coding agent hooks — step span kind emission."""
 
+import asyncio
 import json
 import subprocess
+import time
 
 import pytest
 
@@ -244,6 +246,27 @@ async def test_pi_session_tags_apply_to_existing_and_future_spans(agent):
     response = await agent.get("/pi/hooks/raw")
     raw_events = (await response.json())["events"]
     assert all("lapdog_session_token" not in event for event in raw_events)
+
+
+async def test_pi_first_turn_excludes_idle_time_before_first_prompt(agent):
+    sid = "pi-first-turn-start"
+    await _post(agent, _session_start(sid))
+    # pi sits idle between launch and the first prompt.
+    await asyncio.sleep(0.2)
+    prompt_sent_ns = time.time_ns()
+    await _post(agent, _agent_start(sid))
+    await _post(agent, _turn_start(sid))
+    await _post(agent, _message_start(sid))
+    await _post(agent, _message_end(sid))
+    await _post(agent, _turn_end(sid))
+    await _post(agent, _agent_end(sid))
+
+    response = await agent.get("/claude/hooks/spans")
+    spans = [span for span in _spans(await response.json()) if span.get("session_id") == sid]
+    (root,) = _by_kind(spans, "agent")
+    assert root["start_ns"] >= prompt_sent_ns
+    assert root["duration"] < 200_000_000
+    assert all(span["start_ns"] >= root["start_ns"] for span in spans)
 
 
 async def test_pi_session_tags_do_not_leak_between_sessions_from_one_launch(agent):
