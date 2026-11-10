@@ -460,6 +460,8 @@ class CodexHooksAPI:
         self._config = CodexConfig()
         self._sessions: Dict[str, CodexSession] = {}
         self._turns: OrderedDictType[Tuple[str, str], Tuple[CodexSession, Turn]] = OrderedDict()
+        # Replay detection must outlive the cache of spans retained for late updates.
+        self._turn_owners: Dict[str, str] = {}
         self._responses: OrderedDictType[Tuple[str, str], Tuple[CodexSession, Turn, Response]] = OrderedDict()
         self._pending_proxy: OrderedDictType[str, Tuple[float, Span]] = OrderedDict()
         self._seen: OrderedDictType[bytes, bool] = OrderedDict()
@@ -502,7 +504,10 @@ class CodexHooksAPI:
             if now - created > LATE_EVENT_SECONDS:
                 del self._pending_proxy[response_id]
         for review_key, (created, review) in list(self._pending_reviews.items()):
-            if now - created > LATE_EVENT_SECONDS:
+            if now - created > LATE_EVENT_SECONDS and not any(
+                not turn.closed and tid == review_key[1] and (not review_key[0] or sid == review_key[0])
+                for (sid, tid), (_, turn) in self._turns.items()
+            ):
                 del self._pending_reviews[review_key]
         for sid, session in list(self._sessions.items()):
             if (
@@ -566,10 +571,12 @@ class CodexHooksAPI:
         previous = session.active_turn
         if not provisional and previous is not None and previous.provisional and not previous.closed:
             self._turns.pop((session.raw_session_id, previous.turn_id), None)
+            self._turn_owners.pop(previous.turn_id, None)
             previous.turn_id = turn_id
             previous.provisional = False
             previous.root["meta"]["metadata"]["turn_id"] = turn_id
             self._turns[key] = (session, previous)
+            self._turn_owners[turn_id] = session.raw_session_id
             return previous, []
         completed = self._finish(session, session.active_turn, ns)
         root = self._span(session, "agent", "codex-request", ns, store=False)
@@ -588,6 +595,7 @@ class CodexHooksAPI:
         self._manifest(session, turn)
         session.active_turn = turn
         self._turns[key] = (session, turn)
+        self._turn_owners[turn_id] = session.raw_session_id
         shared = self._hooks_api._sessions[session.raw_session_id]
         shared.trace_id, shared.root_span_id, shared.start_ns = root["trace_id"], root["span_id"], ns
         # Register the turn before append can trigger memory-budget eviction.
@@ -607,6 +615,8 @@ class CodexHooksAPI:
                 span["duration"] = max(ns - span["start_ns"], 0)
                 span["status"] = "error"
                 span["meta"]["metadata"]["subagent"]["status"] = "unterminated"
+                response = next(r for r in turn.responses if r.step["span_id"] == span["parent_id"])
+                self._bounds(response.step, span["start_ns"], ns)
         turn.root["duration"] = max(ns - turn.root["start_ns"], 0)
         turn.root["status"] = status
         tools = sorted({span["name"] for span in turn.tools.values()})
@@ -1015,6 +1025,7 @@ class CodexHooksAPI:
                     parent_turn_id=turn.root["meta"]["metadata"].get("parent_turn_id", ""),
                 )
                 del self._turns[key]
+                self._turn_owners.pop(turn.turn_id, None)
                 self._hooks_api._assembled_spans.remove_where(lambda span: span["trace_id"] == turn.root["trace_id"])
                 self._sessions.pop(sid, None)
                 self._hooks_api._sessions.pop(sid, None)
@@ -1139,9 +1150,8 @@ class CodexHooksAPI:
         session.last_seen = time.monotonic()
         if proxy_session_key:
             self._hooks_api._register_session_token(proxy_session_key, session_id)
-        if kind in ("session_meta", "turn_context"):
-            self._context(session, {**record, **payload})
         if kind == "session_meta":
+            self._context(session, {**record, **payload})
             parent = payload.get("parent_thread_id")
             if parent in self._sessions:
                 self._group(session_id, self._sessions[parent])
@@ -1150,7 +1160,7 @@ class CodexHooksAPI:
                 self._hooks_api._set_session_name(self._hooks_api._sessions[session_id], str(payload.get("name") or ""))
             return []
         turn_id = str(payload.get("turn_id") or (payload.get("id") if event == "start" else "") or "")
-        if turn_id and any(tid == turn_id and sid != session_id for sid, tid in self._turns):
+        if turn_id and self._turn_owners.get(turn_id, session_id) != session_id:
             session.replayed_turn = True
             return []  # Forked transcripts can replay their parent's task IDs.
         if turn_id:
@@ -1159,8 +1169,14 @@ class CodexHooksAPI:
             return []
         turn = self._turns.get((session_id, turn_id), (None, None))[1] if turn_id else session.active_turn
         completed: List[CompletedTrace] = []
+        if kind == "turn_context":
+            previous = session.active_turn
+            if turn_id and previous is not None and previous.turn_id != turn_id and not previous.provisional:
+                completed.extend(self._finish(session, previous, ns))
+            self._context(session, {**record, **payload})
         if event == "start":
-            turn, completed = self._start(session, turn_id or str(payload.get("id") or _format_span_id()), ns)
+            turn, finished = self._start(session, turn_id or str(payload.get("id") or _format_span_id()), ns)
+            completed.extend(finished)
             parent_turn_id = (payload.get("turn_attribution") or {}).get("parent_turn_id") or payload.get(
                 "root_turn_id"
             )
@@ -1270,7 +1286,7 @@ class CodexHooksAPI:
         call_id = str(payload.get("call_id") or "")
         nickname = payload.get("new_agent_nickname") or payload.get("agent_nickname") or ""
         if payload.get("type") == "collab_agent_spawn_begin":
-            response = self._response(session, turn, ns)
+            response = turn.current or self._response(session, turn, ns)
             span = self._span(
                 session, "agent", nickname or "subagent", ns, response.step["span_id"], turn.root["trace_id"]
             )
@@ -1285,6 +1301,8 @@ class CodexHooksAPI:
         elif call_id in turn.subagents:
             span = turn.subagents[call_id]
             span["duration"] = max(ns - span["start_ns"], 0)
+            response = next(r for r in turn.responses if r.step["span_id"] == span["parent_id"])
+            self._bounds(response.step, span["start_ns"], ns)
             span["status"] = "error" if _tool_status_is_error(payload.get("status")) else "ok"
             span["meta"]["metadata"]["subagent"].update(
                 {

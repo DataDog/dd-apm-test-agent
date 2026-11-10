@@ -3,6 +3,7 @@
 import gzip
 import json
 import subprocess
+from types import SimpleNamespace
 
 import msgpack
 import pytest
@@ -1536,10 +1537,12 @@ async def test_codex_task_started_keeps_parent_turn_when_child_replays_same_turn
     assert [s for s in spans if s.get("session_id") == child_sid] == []
 
 
-@pytest.mark.parametrize("order", ["review_first", "tool_first", "next_turn_first"])
+@pytest.mark.parametrize("order", ["review_first", "tool_first", "next_turn_first", "long_turn"])
 @pytest.mark.parametrize("ambiguous", [False, True])
 @pytest.mark.parametrize("identity", ["metadata", "attribution", "context"])
-async def test_codex_guardian_reviews_use_source_identity_and_parent_session(agent, order, ambiguous, identity):
+async def test_codex_guardian_reviews_use_source_identity_and_parent_session(
+    agent, monkeypatch, order, ambiguous, identity
+):
     parent, reviewer = "review-parent", "review-child"
     meta = _session_meta(reviewer)
     meta["payload"].update(thread_source="guardian_review", parent_thread_id=parent)
@@ -1613,8 +1616,15 @@ async def test_codex_guardian_reviews_use_source_identity_and_parent_session(age
     await _post(agent, parent, _turn_context("parent-turn"))
     for record in tools:
         await _post(agent, parent, record)
-    if order == "tool_first":
+    if order in ("tool_first", "long_turn"):
         await send_reviews()
+    if order == "long_turn":
+        from lapdog import codex_hooks
+
+        now = codex_hooks.time.monotonic()
+        monkeypatch.setattr(
+            codex_hooks, "time", SimpleNamespace(monotonic=lambda: now + codex_hooks.LATE_EVENT_SECONDS + 1)
+        )
     await _post(agent, parent, _event("task_complete", turn_id="parent-turn", timestamp="2026-05-11T17:00:10.000Z"))
     if order == "next_turn_first":
         await _post(agent, parent, _turn_context("next-turn"))
@@ -1689,16 +1699,48 @@ async def test_codex_new_turn_forwards_completed_trace_before_repointing_session
 
     sid = "codex-forward-two-turns"
     await _post(agent, sid, _session_meta(sid))
-    await _post(agent, sid, _turn_context("turn-a"))
+    first_context = _turn_context("turn-a")
+    first_context["payload"].update(
+        model="gpt-5.4",
+        cwd="/first",
+        effort="low",
+        project_name="first-project",
+        git_repository_url="https://github.com/test/first",
+    )
+    await _post(agent, sid, first_context)
     await _post(agent, sid, _event("user_message", message="first"))
     await _post(agent, sid, _event("agent_message", message="done first"))
-    await _post(agent, sid, _turn_context("turn-b"))
+    second_context = _turn_context("turn-b")
+    second_context["payload"].update(
+        model="gpt-5.5",
+        cwd="/second",
+        effort="high",
+        project_name="second-project",
+        git_repository_url="https://github.com/test/second",
+    )
+    await _post(agent, sid, second_context)
 
     assert len(forwarded_payloads) == 1
     forwarded_spans = forwarded_payloads[0]["spans"]
     forwarded_turn_ids = {span["meta"]["metadata"].get("turn_id") for span in forwarded_spans}
     assert forwarded_turn_ids == {"turn-a"}
     assert "Codex spans" in descriptions[0]
+    forwarded_root = next(span for span in forwarded_spans if span["parent_id"] == "undefined")
+    assert forwarded_root["meta"]["model_name"] == "gpt-5.4"
+    assert forwarded_root["meta"]["metadata"]["cwd"] == "/first"
+    assert forwarded_root["meta"]["metadata"]["reasoning_effort"] == "low"
+    assert forwarded_root["meta"]["metadata"]["project_name"] == "first-project"
+    assert forwarded_root["meta"]["metadata"]["git_repository_url"] == "github.com/test/first"
+
+    spans = _spans(await (await agent.get("/claude/hooks/spans")).json())
+    second = next(
+        span for span in spans if span["parent_id"] == "undefined" and span["meta"]["metadata"]["turn_id"] == "turn-b"
+    )
+    assert second["meta"]["model_name"] == "gpt-5.5"
+    assert second["meta"]["metadata"]["cwd"] == "/second"
+    assert second["meta"]["metadata"]["reasoning_effort"] == "high"
+    assert second["meta"]["metadata"]["project_name"] == "second-project"
+    assert second["meta"]["metadata"]["git_repository_url"] == "github.com/test/second"
 
 
 async def test_codex_backfill_does_not_forward_completed_trace(agent, monkeypatch):
@@ -2026,6 +2068,35 @@ async def test_codex_duplicate_call_id_emits_distinct_tool_spans(agent):
     assert outputs == ["result-a", "result-b"]
     # Spans must have distinct span_ids — the second was not a no-op overwrite.
     assert tools[0]["span_id"] != tools[1]["span_id"]
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_codex_subagent_after_usage_stays_in_producing_step(codex_inference, completed):
+    hooks, parser, _ = codex_inference
+    parser._dispatch(
+        "session",
+        _response_item("function_call", name="spawn_agent", call_id="spawn", arguments='{"prompt":"inspect"}'),
+    )
+    parser._dispatch("session", _usage_record(1, 4))
+    producing_step = _by_kind(hooks._assembled_spans, "step")[0]
+    parser._dispatch(
+        "session",
+        _event("collab_agent_spawn_begin", timestamp="2026-05-11T17:00:05.000Z", call_id="spawn", prompt="inspect"),
+    )
+    if completed:
+        parser._dispatch(
+            "session",
+            _event("collab_agent_spawn_end", timestamp="2026-05-11T17:00:06.000Z", call_id="spawn", status="ok"),
+        )
+    parser._dispatch("session", _event("task_complete", timestamp="2026-05-11T17:00:07.000Z"))
+
+    steps = _by_kind(hooks._assembled_spans, "step")
+    assert steps == [producing_step]
+    subagent = next(span for span in _by_kind(hooks._assembled_spans, "agent") if span["parent_id"] != "undefined")
+    assert subagent["parent_id"] == producing_step["span_id"]
+    assert subagent["status"] == ("ok" if completed else "error")
+    assert subagent["duration"] == (1 if completed else 2) * 1_000_000_000
+    assert producing_step["start_ns"] + producing_step["duration"] >= subagent["start_ns"] + subagent["duration"]
 
 
 @pytest.mark.parametrize("status", ["ok", "error"])
@@ -3120,6 +3191,40 @@ def test_late_completion_updates_closed_turn_without_reopening_it(codex_inferenc
     assert tool["trace_id"] == roots[0]["trace_id"]
     assert roots[1]["duration"] == 0
     assert len(_by_kind(hooks._assembled_spans, "step")) == 1
+
+
+@pytest.mark.parametrize("eviction", ["expiry", "count"])
+def test_codex_fork_replay_after_completed_turn_eviction(codex_inference, monkeypatch, eviction):
+    from lapdog import codex_hooks
+
+    hooks, parser, _ = codex_inference
+    parser._dispatch("session", _event("task_complete", turn_id="turn-1"))
+    if eviction == "expiry":
+        now = codex_hooks.time.monotonic()
+        monkeypatch.setattr(
+            codex_hooks, "time", SimpleNamespace(monotonic=lambda: now + codex_hooks.LATE_EVENT_SECONDS + 1)
+        )
+    else:
+        monkeypatch.setattr(codex_hooks, "RECENT_TURNS", 1)
+        parser._dispatch("session", _turn_context("turn-2"))
+    parser._expire()
+    assert ("session", "turn-1") not in parser._turns
+    original_ids = [span["span_id"] for span in hooks._assembled_spans]
+
+    child_meta = _session_meta("child")
+    child_meta["payload"]["parent_thread_id"] = "session"
+    parser._dispatch("child", child_meta)
+    parser._dispatch("child", _event("task_started", turn_id="turn-1"))
+    parser._dispatch("child", _turn_context())
+    parser._dispatch("child", _event("user_message", message="inherited prompt"))
+    parser._dispatch("child", _event("task_complete", turn_id="turn-1"))
+    assert [span["span_id"] for span in hooks._assembled_spans] == original_ids
+
+    parser._dispatch("child", _event("task_started", turn_id="child-turn"))
+    parser._dispatch("child", _event("user_message", message="new child prompt"))
+    roots = [span for span in hooks._assembled_spans if span["parent_id"] == "undefined"]
+    child = next(span for span in roots if span["meta"]["metadata"]["turn_id"] == "child-turn")
+    assert child["meta"]["input"]["value"] == "new child prompt"
 
 
 def test_completed_state_expires_without_losing_canonical_spans(codex_inference, monkeypatch):
