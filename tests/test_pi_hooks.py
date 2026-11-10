@@ -1180,3 +1180,179 @@ async def test_interrupted_turn_preserves_model_provider(agent):
     llm_spans = _by_kind(session_spans, "llm")
     assert llm_spans
     assert {s["meta"]["model_provider"] for s in llm_spans} == {provider}
+
+
+def _extension_breakdown(total, context_window=400_000):
+    """Shape of the extension's buildTokenBreakdown() return value (posted as message_end.context_breakdown)."""
+    return {
+        "total": total,
+        "contextWindow": context_window,
+        "percent": total / context_window * 100,
+        "reserveTokens": 16384,
+        "safeAvailable": context_window - 16384 - total,
+        "systemPrompt": total // 4,
+        "systemTools": total // 4,
+        "tools": total // 4,
+        "skills": 0,
+        "messages": total - 3 * (total // 4),
+        "other": 0,
+    }
+
+
+async def _run_turn(agent, sid, message_ends):
+    await _post(agent, _session_start(sid))
+    await _post(agent, _agent_start(sid))
+    for i, message_end in enumerate(message_ends):
+        await _post(agent, _turn_start(sid, turn_index=i))
+        await _post(agent, _message_start(sid))
+        await _post(agent, message_end)
+        await _post(agent, _turn_end(sid, turn_index=i))
+    await _post(agent, _agent_end(sid))
+    resp = await agent.get("/claude/hooks/spans")
+    return [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+
+
+async def test_pi_context_breakdown_on_llm_span(agent):
+    sid = "pi-context-breakdown"
+    usage = {"input": 2000, "output": 50, "cacheRead": 6000, "cacheWrite": 0, "totalTokens": 8050}
+    end = {**_message_end(sid, usage=usage), "context_breakdown": _extension_breakdown(8000)}
+
+    session_spans = await _run_turn(agent, sid, [end])
+
+    [llm] = _by_kind(session_spans, "llm")
+    breakdown = llm["meta"]["metadata"]["_dd"]["context_breakdown"]
+    assert breakdown["context_window_size"] == 400_000
+    assert breakdown["total_input_tokens"] == 8000
+    assert breakdown["context_usage_pct"] == 2.0
+    # Names the lapdog dashboard's context bar renders; zero-token categories (skills) are omitted.
+    assert [(s["name"], s["tokens"]) for s in breakdown["sections"]] == [
+        ("System prompt", 2000),
+        ("System tools", 2000),
+        ("tools", 2000),
+        ("Messages", 2000),
+    ]
+    assert all(s["pct"] == 25.0 for s in breakdown["sections"])
+
+
+async def test_pi_context_breakdown_folds_remainder_into_messages(agent):
+    sid = "pi-context-breakdown-remainder"
+    raw = {**_extension_breakdown(8000), "messages": 1990, "other": 10, "skills": 300, "tools": 1700}
+    end = {**_message_end(sid), "context_breakdown": raw}
+
+    session_spans = await _run_turn(agent, sid, [end])
+
+    [llm] = _by_kind(session_spans, "llm")
+    sections = {s["name"]: s["tokens"] for s in llm["meta"]["metadata"]["_dd"]["context_breakdown"]["sections"]}
+    assert sections == {"System prompt": 2000, "System tools": 2000, "tools": 1700, "Skills": 300, "Messages": 2000}
+    assert sum(sections.values()) == 8000
+
+
+async def test_pi_context_delta_uses_reported_context_window(agent):
+    sid = "pi-context-delta"
+    first = {
+        **_message_end(sid, usage={"input": 10_000, "output": 10, "cacheRead": 0, "cacheWrite": 0}),
+        "context_breakdown": _extension_breakdown(10_000),
+    }
+    second = {
+        **_message_end(sid, usage={"input": 4_000, "output": 10, "cacheRead": 16_000, "cacheWrite": 0}),
+        "context_breakdown": _extension_breakdown(20_000),
+    }
+
+    session_spans = await _run_turn(agent, sid, [first, second])
+
+    [root] = [s for s in session_spans if s["parent_id"] == "undefined"]
+    delta = root["meta"]["metadata"]["_dd"]["context_delta"]
+    assert delta["first_input_tokens"] == 0
+    assert delta["last_input_tokens"] == 20_000
+    assert delta["delta_tokens"] == 20_000
+    # Pi's model registry window, not the 200k Claude fallback.
+    assert delta["context_window_size"] == 400_000
+    assert delta["last_usage_pct"] == 5.0
+    assert [s["name"] for s in delta["first_sections"]] == ["System prompt", "System tools", "tools", "Messages"]
+
+
+@pytest.mark.parametrize(
+    "context_breakdown",
+    [None, {}, {"total": 0, "contextWindow": 400_000}, {"total": 100, "contextWindow": 0}, "bogus"],
+)
+async def test_pi_llm_span_without_usable_breakdown(agent, context_breakdown):
+    sid = "pi-no-context-breakdown"
+    end = _message_end(sid)
+    if context_breakdown is not None:
+        end["context_breakdown"] = context_breakdown
+
+    session_spans = await _run_turn(agent, sid, [end])
+
+    [llm] = _by_kind(session_spans, "llm")
+    assert "context_breakdown" not in llm["meta"]["metadata"].get("_dd", {})
+
+
+def test_pi_context_breakdown_matches_claude_structure():
+    from lapdog.claude_proxy import _compute_context_breakdown
+    from lapdog.pi_hooks import _pi_context_breakdown
+    from lapdog.pi_hooks import _pi_usage_only_breakdown
+
+    claude = _compute_context_breakdown(
+        {"system": "sys", "tools": [{"name": "t"}], "messages": [{"role": "user", "content": "hi"}]},
+        1000,
+        "claude-sonnet-4-5",
+    )
+
+    def shape(breakdown):
+        sections = breakdown["sections"]
+        return (
+            {key: type(value) for key, value in breakdown.items()},
+            {key: type(value) for key, value in sections[0].items()} if sections else None,
+        )
+
+    pi_shape = shape(_pi_context_breakdown(_extension_breakdown(1000)))
+    assert pi_shape == shape(claude)
+    usage_only = _pi_usage_only_breakdown(1000, 128_000)
+    assert shape(usage_only)[0] == shape(claude)[0]
+    assert usage_only["sections"] == []
+
+
+async def test_pi_usage_only_breakdown_without_extension_breakdown(agent):
+    sid = "pi-usage-only-breakdown"
+    usage = {"input": 4000, "output": 10, "cacheRead": 60_000, "cacheWrite": 0}
+    end = {**_message_end(sid, usage=usage), "context_window": 128_000}
+
+    session_spans = await _run_turn(agent, sid, [end])
+
+    [llm] = _by_kind(session_spans, "llm")
+    assert llm["meta"]["metadata"]["_dd"]["context_breakdown"] == {
+        "context_window_size": 128_000,
+        "total_input_tokens": 64_000,
+        "context_usage_pct": 50.0,
+        "sections": [],
+    }
+    [root] = [s for s in session_spans if s["parent_id"] == "undefined"]
+    # Pi's registry window, not the 200k Claude fallback (which would report 32%).
+    assert root["meta"]["metadata"]["_dd"]["context_delta"]["context_window_size"] == 128_000
+    assert root["meta"]["metadata"]["_dd"]["context_delta"]["last_usage_pct"] == 50.0
+
+
+async def test_pi_continuation_keeps_turn_context_delta_baseline(agent):
+    sid = "pi-continuation-context-delta"
+
+    async def cycle(index, input_tokens, is_continuation):
+        await _post(agent, _agent_start(sid, is_continuation=is_continuation))
+        await _post(agent, _turn_start(sid, turn_index=index))
+        await _post(agent, _message_start(sid))
+        usage = {"input": input_tokens, "output": 10, "cacheRead": 0, "cacheWrite": 0}
+        await _post(agent, {**_message_end(sid, usage=usage), "context_window": 400_000})
+        await _post(agent, _turn_end(sid, turn_index=index))
+        await _post(agent, _agent_end(sid))
+
+    await _post(agent, _session_start(sid))
+    await cycle(0, 10_000, is_continuation=False)
+    # Auto-compaction / retry: agent.continue() resumes the same turn.
+    await cycle(1, 20_000, is_continuation=True)
+
+    resp = await agent.get("/claude/hooks/spans")
+    session_spans = [s for s in _spans(await resp.json()) if s.get("session_id") == sid]
+    [root] = [s for s in session_spans if s["parent_id"] == "undefined"]
+    delta = root["meta"]["metadata"]["_dd"]["context_delta"]
+    assert delta["first_input_tokens"] == 0
+    assert delta["last_input_tokens"] == 20_000
+    assert delta["delta_tokens"] == 20_000
