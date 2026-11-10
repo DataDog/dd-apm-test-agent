@@ -620,6 +620,9 @@ class ClaudeProxyAPI:
             # interrupted-turn finalizer reads the provider back off the session.
             session.model_provider = "anthropic"
             trace_id = session.trace_id
+            # A request that started before the turn (e.g. one in flight at the
+            # first prompt) must not start before its root.
+            self._hooks_api._extend_turn_start(session, start_ns)
             # Default parent: use the agent stack (works for sequential execution)
             parent_id = self._hooks_api._current_parent_id(session)
             # Adopt any previously orphaned spans now that we have a session
