@@ -1,7 +1,6 @@
 """Codex session JSONL -> LLM Observability spans."""
 
 from collections import OrderedDict
-from collections import deque
 import datetime
 from decimal import Decimal
 import hashlib
@@ -14,7 +13,6 @@ import shlex
 import socket
 import time
 from typing import Any
-from typing import Deque
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -37,6 +35,8 @@ from .coding_agent_metadata import extract_agent_project_name
 from .coding_agent_metadata import extract_git_repository_url
 from .coding_agent_metadata import resolve_project_metadata
 from .model_pricing import compute_cost_metrics
+from .span_store import RawEventLog
+from .span_store import raw_event_budget
 from .utils import set_hidden_metadata
 
 log = logging.getLogger(__name__)
@@ -286,7 +286,6 @@ RECENT_TURNS = 128
 RECENT_RESPONSES = 2048
 RECENT_RECORDS = 8192
 LATE_EVENT_SECONDS = 300
-RAW_EVENT_LIMIT = 256
 Span = Dict[str, Any]
 CompletedTrace = Tuple[str, str]
 _K = TypeVar("_K")
@@ -464,10 +463,14 @@ class CodexHooksAPI:
         self._responses: OrderedDictType[Tuple[str, str], Tuple[CodexSession, Turn, Response]] = OrderedDict()
         self._pending_proxy: OrderedDictType[str, Tuple[float, Span]] = OrderedDict()
         self._seen: OrderedDictType[bytes, bool] = OrderedDict()
-        self._raw_events: Deque[Dict[str, Any]] = deque(maxlen=RAW_EVENT_LIMIT)
+        self._raw_events = RawEventLog(raw_event_budget(hooks_api.max_memory_bytes))
         self._child_session_ids: OrderedDictType[str, str] = OrderedDict()
         self._reviews: OrderedDictType[str, Dict[str, Any]] = OrderedDict()
         self._pending_reviews: OrderedDictType[Tuple[str, str, str, str], Tuple[float, Dict[str, Any]]] = OrderedDict()
+        hooks_api._assembled_spans.add_active_trace_source(self._active_trace_ids)
+
+    def _active_trace_ids(self) -> List[str]:
+        return [turn.root["trace_id"] for _, turn in self._turns.values() if not turn.closed]
 
     def _session(self, sid: str) -> CodexSession:
         if sid not in self._sessions:
@@ -481,6 +484,8 @@ class CodexHooksAPI:
                     root_span_id=_format_span_id(),
                     start_ns=0,
                 )
+                # Codex tracks active traces itself; shared state is for tags and forwarding.
+                self._hooks_api._sessions[sid].root_span_emitted = True
         return self._sessions[sid]
 
     def _expire(self) -> None:
@@ -515,6 +520,7 @@ class CodexHooksAPI:
         start: int,
         parent: Optional[str] = None,
         trace: Optional[str] = None,
+        store: bool = True,
     ) -> Span:
         span = {
             "span_id": _format_span_id(),
@@ -541,7 +547,8 @@ class CodexHooksAPI:
                 (i for i, child in enumerate(self._hooks_api._assembled_spans) if child.get("parent_id") == parent),
                 None,
             )
-        self._hooks_api._append_span(span, index=index)
+        if store:
+            self._hooks_api._append_span(span, index=index)
         return span
 
     @staticmethod
@@ -565,7 +572,7 @@ class CodexHooksAPI:
             self._turns[key] = (session, previous)
             return previous, []
         completed = self._finish(session, session.active_turn, ns)
-        root = self._span(session, "agent", "codex-request", ns)
+        root = self._span(session, "agent", "codex-request", ns, store=False)
         root["meta"].update(model_name=session.model, model_provider=session.model_provider)
         root["meta"]["metadata"].update(
             turn_id=turn_id,
@@ -583,6 +590,8 @@ class CodexHooksAPI:
         self._turns[key] = (session, turn)
         shared = self._hooks_api._sessions[session.raw_session_id]
         shared.trace_id, shared.root_span_id, shared.start_ns = root["trace_id"], root["span_id"], ns
+        # Register the turn before append can trigger memory-budget eviction.
+        self._hooks_api._append_span(root)
         return turn, completed
 
     def _finish(self, session: CodexSession, turn: Optional[Turn], ns: int, status: str = "ok") -> List[CompletedTrace]:
@@ -1006,9 +1015,7 @@ class CodexHooksAPI:
                     parent_turn_id=turn.root["meta"]["metadata"].get("parent_turn_id", ""),
                 )
                 del self._turns[key]
-                self._hooks_api._assembled_spans[:] = [
-                    span for span in self._hooks_api._assembled_spans if span["trace_id"] != turn.root["trace_id"]
-                ]
+                self._hooks_api._assembled_spans.remove_where(lambda span: span["trace_id"] == turn.root["trace_id"])
                 self._sessions.pop(sid, None)
                 self._hooks_api._sessions.pop(sid, None)
         while len(self._reviews) > RECENT_TURNS:
@@ -1349,6 +1356,7 @@ class CodexHooksAPI:
             for completed_sid, trace_id in completed:
                 await self._hooks_api._forward_trace_to_backend(completed_sid, trace_id=trace_id, span_source="Codex")
                 await self._hooks_api._forward_eval_metrics_to_backend(completed_sid, trace_id=trace_id)
+        self._hooks_api._assembled_spans.refresh()
         return web.json_response({"status": "ok"})
 
     async def handle_raw_events(self, request: Request) -> web.Response:

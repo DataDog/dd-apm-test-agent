@@ -581,6 +581,57 @@ async def test_codex_raw_events_redact_launch_token(agent):
     assert "codex-secret-launch-token" not in json.dumps(raw_events)
 
 
+async def test_codex_memory_budget_keeps_active_traces_and_releases_completed_traces(aiohttp_client):
+    from aiohttp import web
+
+    from lapdog.codex_hooks import CodexHooksAPI
+
+    hooks = ClaudeHooksAPI(max_memory_bytes=100)
+    parser = CodexHooksAPI(hooks)
+    app = web.Application()
+    app.add_routes(parser.get_routes())
+    client = await aiohttp_client(app)
+    store = hooks._assembled_spans
+
+    for sid in ("first", "second"):
+        response = await _post(client, sid, _event("task_started", turn_id=sid), backfill=True)
+        assert response.status == 200
+    assert {span["session_id"] for span in store} == {"first", "second"}
+
+    response = await _post(client, "first", _event("task_complete", turn_id="first"), backfill=True)
+    assert response.status == 200
+    assert {span["session_id"] for span in store} == {"second"}
+    assert store.evicted_traces == 1
+
+    response = await _post(client, "second", _event("task_complete", turn_id="second"), backfill=True)
+    assert response.status == 200
+    assert not store
+    assert store.estimated_bytes == 0
+    assert store.evicted_traces == 2
+    # Even when one event exceeds the raw-event budget, keep only the latest one.
+    response = await client.get("/codex/hooks/raw")
+    events = (await response.json())["events"]
+    assert len(events) == 1
+    assert events[0]["record"]["payload"]["turn_id"] == "second"
+
+
+def test_codex_review_classification_removes_spans_from_memory_accounting():
+    from lapdog.codex_hooks import CodexHooksAPI
+
+    hooks = ClaudeHooksAPI(max_memory_bytes=1024**2)
+    parser = CodexHooksAPI(hooks)
+    parser._dispatch("review", _event("task_started", turn_id="review-turn"))
+    store = hooks._assembled_spans
+    assert store
+    assert store.estimated_bytes > 0
+
+    context = _turn_context("review-turn")
+    context["payload"]["model"] = "codex-auto-review"
+    parser._dispatch("review", context)
+    assert not store
+    assert store.estimated_bytes == 0
+
+
 async def test_codex_session_tags_target_only_requested_thread(agent):
     session_token = "shared-codex-app-token"
     targeted_sid = "codex-app-targeted"

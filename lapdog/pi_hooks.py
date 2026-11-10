@@ -51,6 +51,8 @@ from .claude_hooks import _format_trace_id
 from .claude_hooks import _to_json_str
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .model_pricing import compute_cost_metrics
+from .span_store import RawEventLog
+from .span_store import raw_event_budget
 from .utils import set_hidden_metadata
 
 log = logging.getLogger(__name__)
@@ -85,6 +87,60 @@ def _compute_pi_cost_metrics(
         )
         or {}
     )
+
+
+# buildTokenBreakdown() fields → context_breakdown section name, in display order.
+# Names must be ones the lapdog dashboard's context bar knows, or it drops the section.
+_PI_CONTEXT_SECTIONS = (
+    (("systemPrompt",), "System prompt"),
+    (("systemTools",), "System tools"),
+    (("tools",), "tools"),
+    (("skills",), "Skills"),
+    # `other` is the rounding remainder; keep it so the sections sum to the total.
+    (("messages", "other"), "Messages"),
+)
+
+
+def _context_breakdown(total: int, window: int, sections: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Build a ``context_breakdown`` with exactly the keys Claude spans carry (see claude_proxy)."""
+    return {
+        "context_window_size": window,
+        "total_input_tokens": total,
+        "context_usage_pct": round(total / window * 100, 1),
+        "sections": sections,
+    }
+
+
+def _pi_context_breakdown(raw: Any) -> Optional[Dict[str, Any]]:
+    """Convert the extension's buildTokenBreakdown() output to the Claude ``context_breakdown`` shape.
+
+    ``System tools`` is the tool definitions declared to the model; ``tools`` is
+    tool calls and their results in the conversation.
+    """
+    if not isinstance(raw, dict):
+        return None
+    try:
+        total = int(raw.get("total") or 0)
+        window = int(raw.get("contextWindow") or 0)
+    except (TypeError, ValueError):
+        return None
+    if total <= 0 or window <= 0:
+        return None
+
+    sections: List[Dict[str, Any]] = []
+    for fields, name in _PI_CONTEXT_SECTIONS:
+        tokens = sum(int(v) for v in (raw.get(f) for f in fields) if isinstance(v, (int, float)) and v > 0)
+        if tokens <= 0:
+            continue
+        sections.append({"name": name, "tokens": tokens, "pct": round(tokens / total * 100, 1)})
+    return _context_breakdown(total, window, sections)
+
+
+def _pi_usage_only_breakdown(total: int, window: Any) -> Optional[Dict[str, Any]]:
+    """Window and usage without sections, for when the extension sent no breakdown (e.g. it couldn't compute one)."""
+    if not isinstance(window, (int, float)) or window <= 0 or total <= 0:
+        return None
+    return _context_breakdown(total, int(window), [])
 
 
 class PendingLLMSpan:
@@ -260,7 +316,7 @@ class PiHooksAPI:
 
     def __init__(self, hooks_api: ClaudeHooksAPI) -> None:
         self._hooks_api = hooks_api
-        self._raw_events: List[Dict[str, Any]] = []
+        self._raw_events = RawEventLog(raw_event_budget(hooks_api.max_memory_bytes))
         # Pending LLM span per session (pi sends one LLM call at a time)
         self._pending_llm: Dict[str, PendingLLMSpan] = {}
         # Active step span per session (one inference cycle)
@@ -618,6 +674,17 @@ class PiHooksAPI:
             output_value = body.get("output", "")  # fallback for older extension format
 
         tool_usage = self._hooks_api._aggregate_tool_usage(session.trace_id)
+        # A continuation (after auto-compaction or retry) re-finalizes the same root span; keep the
+        # baseline from the turn's first agent_end rather than the intermediate one it advanced to.
+        previous_root = getattr(session, "_root_span_ref", None) or {}
+        previous_delta = previous_root.get("meta", {}).get("metadata", {}).get("_dd", {}).get("context_delta") or {}
+        context_delta = self._hooks_api._compute_context_delta(
+            session.trace_id,
+            session.root_span_id,
+            previous_delta.get("first_input_tokens", session.last_known_input_tokens),
+        )
+        if context_delta:
+            session.last_known_input_tokens = context_delta["last_input_tokens"]
 
         root_span: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
         if not root_span:
@@ -641,6 +708,8 @@ class PiHooksAPI:
             dd_fields: Dict[str, Any] = {}
             if tool_usage:
                 dd_fields["tool_usage"] = tool_usage
+            if context_delta:
+                dd_fields["context_delta"] = context_delta
             dd_fields["agent_manifest"] = {
                 "name": _ML_APP,
                 "model": session.model,
@@ -879,6 +948,11 @@ class PiHooksAPI:
         }
         if is_error:
             span["meta"]["error"] = {"message": error_message or "LLM call failed"}
+        context_breakdown = _pi_context_breakdown(body.get("context_breakdown")) or _pi_usage_only_breakdown(
+            input_tokens + cache_read + cache_write, body.get("context_window")
+        )
+        if context_breakdown:
+            set_hidden_metadata(span, context_breakdown=context_breakdown)
         self._append_span(span)
 
     def _handle_tool_execution_start(self, session_id: str, body: Dict[str, Any]) -> None:
@@ -1057,6 +1131,7 @@ class PiHooksAPI:
             await self._hooks_api._forward_trace_to_backend(session_id)
             await self._hooks_api._forward_eval_metrics_to_backend(session_id)
 
+        self._hooks_api._assembled_spans.refresh()
         return web.json_response({"status": "ok"})
 
     async def handle_raw_events(self, request: Request) -> web.Response:
