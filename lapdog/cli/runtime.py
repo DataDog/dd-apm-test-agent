@@ -18,7 +18,7 @@ from lapdog.paths import PID_FILE
 
 
 # Managed launchers can also be invoked through an explicit binary path.
-_PATH_ROUTABLE_LAUNCHERS = ("claude", "pi", "codex")
+_PATH_ROUTABLE_LAUNCHERS = ("claude", "pi", "codex", "copilot")
 _PROXY_SESSION_WARNING_LINES = ["Keep Lapdog running; stopping it can break proxied model calls."]
 
 

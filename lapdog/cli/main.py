@@ -15,6 +15,7 @@ from lapdog.cli.claude import LAPDOG_MARKETPLACE_SOURCE
 from lapdog.cli.claude import LAPDOG_PLUGIN_NAME
 from lapdog.cli.claude import cmd_claude
 from lapdog.cli.codex import cmd_codex
+from lapdog.cli.copilot import cmd_copilot
 from lapdog.cli.ollama import cmd_ollama
 from lapdog.cli.os_runner import run
 from lapdog.cli.pi import cmd_pi
@@ -31,7 +32,7 @@ from lapdog.span_store import MAX_MEMORY_ENV
 from lapdog.span_store import DEFAULT_MAX_MEMORY
 from lapdog.span_store import parse_memory_limit
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "ollama", "tags", "uninstall"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "copilot", "ollama", "tags", "uninstall"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -52,6 +53,7 @@ LAPDOG_USAGE = (
     "  claude     Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi         Start lapdog in background if needed, install extension, then launch pi\n"
     "  codex      Start lapdog in background if needed, then launch Codex with tracing\n"
+    "  copilot    Start lapdog in background if needed, then launch GitHub Copilot CLI with OTel tracing\n"
     "  tags       Add tags to the current instrumented coding-agent session\n"
     "  uninstall  Stop lapdog and remove all state it wrote (~/.lapdog, Claude hooks, pi extension, Codex watchers)\n"
     "\n"
@@ -293,6 +295,8 @@ def main() -> None:
             forward_data=lapdog_parsed_args.forward,
             backfill=backfill,
         )
+    elif sub_cmd == "copilot":
+        cmd_copilot(sub_cmd_args=sub_cmd_args, forward_data=lapdog_parsed_args.forward)
     elif sub_cmd == "ollama":
         cmd_ollama(
             sub_cmd_args=sub_cmd_args,
