@@ -15,7 +15,6 @@ from lapdog.cli import pi as cli_pi
 from lapdog.cli import runtime as cli_runtime
 from lapdog.cli import tags as cli_tags
 
-
 cli_main = importlib.import_module("lapdog.cli.main")
 
 
@@ -189,24 +188,88 @@ def test_cmd_codex_starts_watcher_with_forwarded_cd(monkeypatch, tmp_path):
         (["resume", "--last"], None, False),
         (["resume", "123e4567-e89b-12d3-a456-426614174000"], "123e4567-e89b-12d3-a456-426614174000", False),
         (["resume", "--all"], None, True),
+        (
+            ["exec", "resume", "123e4567-e89b-12d3-a456-426614174000", "continue"],
+            "123e4567-e89b-12d3-a456-426614174000",
+            False,
+        ),
+        (["exec", "--json", "--color", "never", "resume", "--last", "continue"], None, False),
+        (["-C", "/tmp", "exec", "resume", "--last", "--all", "continue"], None, True),
+        (["e", "resume", "named-session", "continue"], None, True),
     ],
 )
 def test_cmd_codex_resume_starts_resume_watcher(args, session_id, all_cwds):
     with mock.patch("lapdog.cli.codex.ensure_lapdog_running", return_value=8126):
         with mock.patch("lapdog.cli.codex._start_codex_watcher") as start_watcher:
-            with mock.patch("lapdog.cli.codex._run_codex"):
+            with mock.patch("lapdog.cli.codex._run_codex") as run_codex:
                 with mock.patch("lapdog.cli.codex.build_running_banner", return_value="banner"):
                     cli_codex.cmd_codex(args, forward_data=False)
 
     assert start_watcher.call_args.kwargs["resume_mode"] is True
     assert start_watcher.call_args.kwargs["resume_session_id"] == session_id
     assert start_watcher.call_args.kwargs["resume_all_cwds"] is all_cwds
+    assert run_codex.call_args.kwargs["args"] == args
 
 
 def test_resume_options_skip_flag_values_and_handle_session_names():
     session_id = "123e4567-e89b-12d3-a456-426614174000"
     assert codex_args.resume_options(["resume", "-c", "model=o3", session_id]) == (True, session_id, False)
     assert codex_args.resume_options(["resume", "named-session"]) == (True, None, True)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--color", "never"],
+        ["--output-schema", "schema.json"],
+        ["-o", "answer.txt"],
+        ["--output-last-message", "answer.txt"],
+        ["-i", "image.png", "--json"],
+        ["--thread-source", "cli"],
+        ["--cyber-access-program", "standard"],
+        ["--config", 'model="o3"'],
+        ["--color=never", "--output-schema=schema.json", "-oanswer.txt"],
+    ],
+)
+def test_exec_resume_options_skip_flag_values(options):
+    session_id = "123e4567-e89b-12d3-a456-426614174000"
+    assert codex_args.resume_options(["exec", *options, "resume", session_id, "continue"]) == (True, session_id, False)
+
+
+@pytest.mark.parametrize(
+    "args, session_id, all_cwds",
+    [
+        (["exec", "resume", "--last", "--image", "image.png", "continue"], None, False),
+        (["exec", "resume", "continue", "--last", "--all"], None, True),
+        (["exec", "resume", "--last", "123e4567-e89b-12d3-a456-426614174000"], None, False),
+        (["exec", "resume", "--last", "--", "--all"], None, False),
+        (["exec", "resume", "--last", "-o", "--all", "continue"], None, False),
+        (
+            ["exec", "resume", "--", "123e4567-e89b-12d3-a456-426614174000", "--all"],
+            "123e4567-e89b-12d3-a456-426614174000",
+            False,
+        ),
+    ],
+)
+def test_exec_resume_options_distinguish_selection_from_prompt(args, session_id, all_cwds):
+    assert codex_args.resume_options(args) == (True, session_id, all_cwds)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["exec"],
+        ["exec", "review"],
+        ["exec", "explain resume"],
+        ["exec", "--", "resume"],
+        ["--", "resume"],
+        ["exec", "-", "resume"],
+        ["exec", "--output-schema", "resume", "explain this"],
+        ["exec", "--image", "image.png", "resume"],
+    ],
+)
+def test_resume_options_do_not_treat_prompts_or_option_values_as_commands(args):
+    assert codex_args.resume_options(args) == (False, None, False)
 
 
 def test_cmd_codex_app_starts_watcher_with_app_path_and_lapdog_pid(monkeypatch, tmp_path):
