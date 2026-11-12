@@ -480,8 +480,23 @@ class CodexHooksAPI:
                 self._attach_pending_auto_reviews(parent)
             state["review"] = None
 
+    @staticmethod
+    def _matches_review_command(command: str, tool_input: Any) -> bool:
+        if not command:
+            return True
+        if isinstance(tool_input, str):
+            try:
+                tool_input = json.loads(tool_input)
+            except ValueError:
+                return False
+        return isinstance(tool_input, dict) and tool_input.get("cmd") == command
+
     def _attach_pending_auto_reviews(self, session: CodexSession) -> None:
         turn = session.active_turn
+        # Match against recorded arguments, which may exceed the display limit.
+        tool_inputs = {
+            entry["span"]["span_id"]: entry["arguments"] for entry in session.structured_tools + session.fallback_tools
+        }
         remaining = []
         for review in session.pending_auto_reviews:
             action = review.get("planned_action", {})
@@ -493,13 +508,17 @@ class CodexHooksAPI:
                     (tool_id, pending)
                     for tool_id, pending in session.pending_tools.items()
                     if pending.start_ns <= review["start_ns"]
+                    and pending.tool_name not in _EXEC_WRAPPER_NAMES
                     and tool_id not in session.auto_reviews_by_tool_id
-                    and (not command_text or command_text in str(pending.tool_input))
+                    and self._matches_review_command(command_text, pending.tool_input)
                 ]
             pending = None
             tool_span = None
+            if len(candidates) > 1:
+                remaining.append(review)
+                continue
             if candidates:
-                tool_id, pending = max(candidates, key=lambda item: item[1].start_ns)
+                tool_id, pending = candidates[0]
                 parent_id = pending.parent_id
             else:
                 completed = [
@@ -507,17 +526,22 @@ class CodexHooksAPI:
                     for span in self._hooks_api._assembled_spans
                     if span.get("session_id") == session.session_id
                     and span.get("meta", {}).get("span", {}).get("kind") == "tool"
-                    and span.get("start_ns", 0) <= review["start_ns"]
-                    and span.get("start_ns", 0) + span.get("duration", 0) >= review["end_ns"]
+                    and span.get("meta", {}).get("metadata", {}).get("exec_start_ns", span.get("start_ns", 0))
+                    <= review["start_ns"]
+                    and span.get("meta", {})
+                    .get("metadata", {})
+                    .get("exec_end_ns", span.get("start_ns", 0) + span.get("duration", 0))
+                    >= review["end_ns"]
                     and not span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("auto_reviews")
-                    and (
-                        not command_text or command_text in str(span.get("meta", {}).get("input", {}).get("value", ""))
+                    and self._matches_review_command(
+                        command_text,
+                        tool_inputs.get(span["span_id"], span.get("meta", {}).get("input", {}).get("value", "")),
                     )
                 ]
-                if not completed:
+                if len(completed) != 1:
                     remaining.append(review)
                     continue
-                tool_span = max(completed, key=lambda span: span["start_ns"])
+                tool_span = completed[0]
                 tool_id = str(tool_span["meta"]["metadata"]["tool_id"])
                 parent_id = str(tool_span["parent_id"])
             step = next((span for span in self._hooks_api._assembled_spans if span.get("span_id") == parent_id), None)
@@ -2155,11 +2179,15 @@ class CodexHooksAPI:
             return
         output = payload.get("output", "")
         output_value = output if isinstance(output, str) else _to_json_str(output)
-        if pending.tool_name == "wait" and isinstance(output, list) and all(
-            isinstance(block, dict)
-            and block.get("type") in ("input_text", "output_text")
-            and isinstance(block.get("text"), str)
-            for block in output
+        if (
+            pending.tool_name == "wait"
+            and isinstance(output, list)
+            and all(
+                isinstance(block, dict)
+                and block.get("type") in ("input_text", "output_text")
+                and isinstance(block.get("text"), str)
+                for block in output
+            )
         ):
             output_value = "\n".join(block["text"] for block in output)
         final_status = _canonical_tool_status(payload.get("status", "")) or "completed"
@@ -2212,7 +2240,6 @@ class CodexHooksAPI:
         """Replace a JavaScript exec wrapper with its directly invoked tools."""
         session.pending_tool_ids_by_span_id.pop(pending.span_id, None)
         session.pending_tool_statuses.pop(outer_id, None)
-        reviews = session.auto_reviews_by_tool_id.pop(outer_id, [])
         reasoning = session.pending_tool_reasoning.pop(outer_id, [])
         results = extract_exec_results(output, len(calls), calls=calls)
         invocation_start = session.exec_start_times.pop(outer_id, pending.start_ns)
@@ -2240,15 +2267,37 @@ class CodexHooksAPI:
                 if covered and sum(c["name"] == raw_name for c in calls) == 1:
                     for entry in covered:
                         entry["claimed"] = True
-                        entry["span"]["meta"]["metadata"]["exec_call_id"] = outer_id
+                        entry["span"]["meta"]["metadata"].update(
+                            exec_call_id=outer_id, exec_start_ns=invocation_start, exec_end_ns=end_ns
+                        )
                     continue
             if matching:
                 entry = matching[0]
                 entry["claimed"] = True
+                # Completions carry results but can omit request arguments,
+                # including the approval justification.
+                input_value, input_truncated = _truncate_text(_to_json_str(call["arguments"]), MAX_TOOL_VALUE_CHARS)
+                entry["span"]["meta"]["input"]["value"] = input_value
                 metadata = entry["span"]["meta"]["metadata"]
-                metadata.update(exec_call_id=outer_id, tool_id=f"{outer_id}:{index}")
-                if index == 0 and reviews:
-                    set_hidden_metadata(entry["span"], auto_reviews=reviews)
+                metadata["input_format"] = "text" if isinstance(call["arguments"], str) else "json"
+                hidden = metadata.get("_dd", {})
+                set_hidden_metadata(
+                    entry["span"],
+                    display={
+                        **hidden.get("display", {}),
+                        "input": "text" if isinstance(call["arguments"], str) else "code",
+                    },
+                )
+                if input_truncated or "truncated_input" in hidden:
+                    set_hidden_metadata(
+                        entry["span"], truncated_input=input_truncated, max_value_chars=MAX_TOOL_VALUE_CHARS
+                    )
+                metadata.update(
+                    exec_call_id=outer_id,
+                    tool_id=f"{outer_id}:{index}",
+                    exec_start_ns=invocation_start,
+                    exec_end_ns=end_ns,
+                )
                 if index == 0 and reasoning:
                     metadata["reasoning"] = _copy_reasoning_items(reasoning)
                 continue
@@ -2284,8 +2333,6 @@ class CodexHooksAPI:
             is_error = _tool_status_is_error(outer_status) or result_error
             session.pending_tool_statuses[child_id] = "failed" if is_error else "completed"
             if index == 0:
-                if reviews:
-                    session.auto_reviews_by_tool_id[child_id] = reviews
                 if reasoning:
                     session.pending_tool_reasoning[child_id] = reasoning
             span = self._emit_tool_span(
@@ -2297,6 +2344,8 @@ class CodexHooksAPI:
                 extra_metadata={
                     "raw_tool_name": raw_name,
                     "exec_call_id": outer_id,
+                    "exec_start_ns": invocation_start,
+                    "exec_end_ns": end_ns,
                     "result_matched": result is not None,
                     "timing": "exec_envelope",
                 },
@@ -2310,6 +2359,8 @@ class CodexHooksAPI:
                 if shell_session_id is not None:
                     session.shell_sessions[str(shell_session_id)] = {"span": span, "result": value}
                     span["meta"]["metadata"]["shell_session_id"] = shell_session_id
+        # Reviews belong to the emitted inner tools, not the exec wrapper.
+        self._attach_pending_auto_reviews(session)
         self._update_agent_manifest(session)
 
     def _handle_custom_tool_call(self, session: CodexSession, record: Dict[str, Any]) -> None:

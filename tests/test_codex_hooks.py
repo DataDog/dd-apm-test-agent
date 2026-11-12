@@ -1590,6 +1590,97 @@ async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_
         assert "auto_reviews" not in step["meta"]["metadata"].get("_dd", {})
 
 
+@pytest.mark.parametrize("review_first", [True, False])
+@pytest.mark.parametrize("structured", [True, False])
+@pytest.mark.parametrize("ambiguous", [True, False])
+@pytest.mark.parametrize("limit", [None, 80])
+async def test_codex_batch_review_matches_inner_command(agent, monkeypatch, review_first, structured, ambiguous, limit):
+    monkeypatch.setattr("lapdog.codex_hooks.MAX_TOOL_VALUE_CHARS", limit)
+    parent_sid, review_sid = "batch-parent", "batch-review"
+    command = 'echo "reviewed"'
+    commands = [command if ambiguous else "echo unrelated", command]
+    await _post(agent, parent_sid, _session_meta(parent_sid))
+    await _post(agent, parent_sid, _turn_context("batch-turn"))
+    await _post(
+        agent,
+        parent_sid,
+        _response_item(
+            "custom_tool_call",
+            timestamp="2026-05-11T17:00:03.000Z",
+            name="exec",
+            call_id="batch",
+            input="await Promise.all(["
+            + ",".join(
+                "tools.exec_command(" + json.dumps({"cmd": c, "justification": "May I run this command? " * 10}) + ")"
+                for c in commands
+            )
+            + "]);",
+        ),
+    )
+    meta = _session_meta(review_sid)
+    meta["payload"].update(thread_source="guardian_review", parent_thread_id=parent_sid)
+    review_records = [
+        meta,
+        _event("task_started", timestamp="2026-05-11T17:00:03.100Z"),
+        _response_item(
+            "message",
+            timestamp="2026-05-11T17:00:03.200Z",
+            role="user",
+            content=[
+                {
+                    "type": "input_text",
+                    "text": "Planned action JSON:\n" + json.dumps({"command": ["/bin/sh", "-lc", command]}),
+                }
+            ],
+        ),
+        _response_item(
+            "message",
+            timestamp="2026-05-11T17:00:04.000Z",
+            role="assistant",
+            content=[{"type": "output_text", "text": '{"outcome":"allow"}'}],
+        ),
+        _event("task_complete", timestamp="2026-05-11T17:00:04.000Z"),
+    ]
+    completions = []
+    if structured:
+        for index, cmd in enumerate(commands):
+            completions.append(
+                _event(
+                    "item_completed",
+                    timestamp="2026-05-11T17:00:05.000Z",
+                    item={
+                        "type": "CommandExecution",
+                        "id": f"item-{index}",
+                        "command": ["/bin/sh", "-lc", cmd],
+                        "status": "completed",
+                        "aggregated_output": "ok",
+                        # Execution starts after the approval decision.
+                        "duration": {"secs": 0, "nanos": 800_000_000},
+                    },
+                )
+            )
+    completions.append(
+        _response_item("custom_tool_call_output", timestamp="2026-05-11T17:00:05.000Z", call_id="batch", output="ok")
+    )
+    for records, sid in (
+        ((review_records, review_sid), (completions, parent_sid))
+        if review_first
+        else ((completions, parent_sid), (review_records, review_sid))
+    ):
+        for record in records:
+            await _post(agent, sid, record)
+    spans = _spans(await (await agent.get("/claude/hooks/spans")).json())
+    tools = _by_kind(spans, "tool")
+    assert len(tools) == 2
+    annotated = [tool for tool in tools if tool["meta"]["metadata"].get("_dd", {}).get("auto_reviews")]
+    if ambiguous:
+        assert annotated == []
+    else:
+        assert len(annotated) == 1
+        assert annotated[0]["meta"]["metadata"]["tool_id"] == "batch:1"
+        assert annotated[0]["meta"]["metadata"]["_dd"]["auto_reviews"][0]["outcome"] == "allow"
+
+
 async def test_codex_guardian_review_arriving_after_tool_output(agent):
     parent_sid = "codex-parent-late-review"
     review_sid = "codex-late-guardian"
@@ -2507,15 +2598,26 @@ async def test_codex_subagent_call_id_reused_within_turn_yields_distinct_spans(a
 
 
 @pytest.mark.parametrize("late", [False, True])
-async def test_structured_command_replaces_wrapper_output(agent, late):
+@pytest.mark.parametrize("limit", [None, 80])
+async def test_structured_command_replaces_wrapper_output(agent, monkeypatch, late, limit):
+    monkeypatch.setattr("lapdog.codex_hooks.MAX_TOOL_VALUE_CHARS", limit)
     sid = "structured-command"
+    arguments = {
+        "cmd": "pwd",
+        "sandbox_permissions": "require_escalated",
+        "justification": "May I check the working directory outside the sandbox?",
+        "max_output_tokens": 2000,
+    }
     await _post(agent, sid, _session_meta(sid))
     await _post(agent, sid, _turn_context())
     await _post(
         agent,
         sid,
         _response_item(
-            "custom_tool_call", name="exec", call_id="batch", input='text(await tools.exec_command({cmd:"pwd"}));'
+            "custom_tool_call",
+            name="exec",
+            call_id="batch",
+            input="text(await tools.exec_command(" + json.dumps(arguments) + "));",
         ),
     )
     completion = _event(
@@ -2549,6 +2651,13 @@ async def test_structured_command_replaces_wrapper_output(agent, late):
     assert tools[0]["meta"]["output"]["value"] == "/repo\n"
     assert tools[0]["meta"]["metadata"]["exit_code"] == 0
     assert tools[0]["meta"]["metadata"]["result_source"] == "item_completed"
+    assert tools[0]["meta"]["metadata"]["input_format"] == "json"
+    if limit is None:
+        assert json.loads(tools[0]["meta"]["input"]["value"]) == arguments
+    else:
+        assert tools[0]["meta"]["input"]["value"].startswith(json.dumps(arguments)[:limit])
+        assert tools[0]["meta"]["metadata"]["_dd"]["truncated_input"] is True
+        assert tools[0]["meta"]["metadata"]["_dd"]["max_value_chars"] == limit
 
 
 async def test_structured_mcp_and_patch_without_printed_results(agent):

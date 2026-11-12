@@ -4,3 +4,10 @@ fixes:
     Lapdog: Fix missing traces when you resume Codex sessions with
     ``lapdog codex exec resume`` or ``lapdog codex e resume``.
     Capture new turns without sending previous turns again.
+  - |
+    Lapdog: Capture automatic review sessions created before a resumed Codex
+    session writes new records. Attach reviews to the matching command in an
+    ``exec`` batch instead of its first tool.
+  - |
+    Lapdog: Preserve original tool arguments, including approval justifications,
+    when merging Codex command completions with ``exec`` calls.
