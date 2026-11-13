@@ -26,12 +26,13 @@ from lapdog.cli.server import cmd_start
 from lapdog.cli.server import cmd_status
 from lapdog.cli.server import cmd_stop
 from lapdog.cli.tags import cmd_tags
+from lapdog.cli.team_server import cmd_server
 from lapdog.cli.uninstall import cmd_uninstall
 from lapdog.span_store import MAX_MEMORY_ENV
 from lapdog.span_store import DEFAULT_MAX_MEMORY
 from lapdog.span_store import parse_memory_limit
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "ollama", "tags", "uninstall"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "server", "claude", "pi", "codex", "ollama", "tags", "uninstall"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -49,6 +50,7 @@ LAPDOG_USAGE = (
     "  start      Start lapdog (background)\n"
     "  stop       Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
     "  status     Show lapdog status (from /info)\n"
+    "  server     Run the self-managed team server with ClickHouse storage ('lapdog server --help')\n"
     "  claude     Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi         Start lapdog in background if needed, install extension, then launch pi\n"
     "  codex      Start lapdog in background if needed, then launch Codex with tracing\n"
@@ -274,6 +276,8 @@ def main() -> None:
         cmd_stop()
     elif sub_cmd == "status":
         cmd_status()
+    elif sub_cmd == "server":
+        cmd_server(sub_cmd_args)
     elif sub_cmd == "claude":
         cmd_claude(
             sub_cmd_args=sub_cmd_args,

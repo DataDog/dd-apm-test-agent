@@ -1,0 +1,11 @@
+---
+features:
+  - |
+    Add ``lapdog server``, a self-managed LLM Observability server for teams. It ingests ddtrace LLMObs spans,
+    stores them in a ClickHouse server that lapdog downloads and supervises, and serves the query API to the
+    lapdog UI with token auth. ``--retention`` and ``--max-disk`` (also ``lapdog server config set``) bound how
+    long spans are kept and how much disk they use.
+fixes:
+  - |
+    lapdog: a partial span update (``/llmobs/update``) no longer resets the span's ``ml_app``, tags, service,
+    env, session ID, hostname, and kind.

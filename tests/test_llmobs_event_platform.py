@@ -611,6 +611,25 @@ async def test_lapdog_estimates_generic_llm_spans_and_updates(agent, llmobs_payl
     assert llm["metrics"]["estimated_total_cost"] == 123
 
 
+async def test_partial_span_update_keeps_unset_fields(agent, llmobs_payload):
+    llmobs_payload["spans"][0]["session_id"] = "sess-1"
+    llmobs_payload["spans"][0]["tags"] = ["user:alice"]
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    api = agent.app["llmobs_event_platform_api"]
+    root = next(span for span in api.get_llmobs_spans() if span["span_id"] == "span-root")
+
+    update = {"spans": [{"span_id": "span-root", "metrics": {"output_tokens": 99}}]}
+    assert api.update_spans(json.dumps(update).encode(), "application/json") == 1
+
+    assert root["metrics"]["output_tokens"] == 99
+    assert root["ml_app"] == "test-app"
+    assert root["service"] == "test-service"
+    assert root["env"] == "test"
+    assert root["session_id"] == "sess-1"
+    assert "user:alice" in root["tags"]
+    assert root["meta"]["span"]["kind"] == "agent"
+
+
 async def test_lapdog_estimates_synthetic_v04_llm_span(agent, monkeypatch, tmp_path):
     prices = [
         {

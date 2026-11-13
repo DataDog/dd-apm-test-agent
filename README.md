@@ -114,6 +114,24 @@ The test agent can receive [Claude Code hook](https://docs.claude.com/en/docs/cl
 See [`.claude/setup-hooks.md`](.claude/setup-hooks.md) for full setup instructions (also usable as a Claude Code prompt to automate the setup).
 
 
+### Lapdog server (self-managed, ClickHouse storage)
+
+`lapdog server` runs a network-reachable LLM Observability server for a team. It ingests ddtrace LLMObs spans, stores them in a ClickHouse server that lapdog downloads (pinned, checksum-verified) and runs as a child process on `127.0.0.1`, and serves the query API to the lapdog UI. It has no terminal, file serving, or coding-agent hooks.
+
+```bash
+lapdog server start --host 0.0.0.0 --retention 30d --max-disk 20GB
+lapdog server status
+lapdog server config set retention 14d   # applied live
+lapdog server stop
+```
+
+- **Auth**: a token is generated on first start (`~/.lapdog/server/token`) or set with `--token`. Queries need `Authorization: Bearer <token>`; intake also accepts it as `DD-API-KEY`.
+- **Sending spans** (Python, no code changes): `DD_LLMOBS_ENABLED=1 DD_LLMOBS_AGENTLESS_ENABLED=1 DD_LLMOBS_OVERRIDE_ORIGIN=https://<host> DD_API_KEY=<token>`. dd-trace-js can't send a token yet, so it needs `--allow-unauthenticated-ingest`.
+- **Retention**: spans live in daily partitions. Days older than `--retention` are dropped; while stored data exceeds `--max-disk` (or the disk is nearly full) the oldest days are dropped, and if only today is left, intake answers 503 until there's room again.
+- **Docker**: `docker build -f Dockerfile.server -t lapdog-server .` then `docker run -p 8126:8126 -v lapdog-data:/data -e LAPDOG_SERVER_TOKEN=<token> lapdog-server`. Every flag has a `LAPDOG_SERVER_*` environment variable.
+- The hosted UI needs HTTPS to reach a remote server; put a TLS proxy in front of it. macOS and Linux only.
+
+
 ### Snapshot testing
 
 The test agent provides a form of [characterization testing](https://en.wikipedia.org/wiki/Characterization_test) which

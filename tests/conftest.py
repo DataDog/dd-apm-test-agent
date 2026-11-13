@@ -48,7 +48,6 @@ from ddapm_test_agent.traces_otlp import TRACES_ENDPOINT
 from lapdog import model_pricing
 from lapdog.server import make_app as make_lapdog_app
 
-
 # Fix the service name to make tests consistently pass local and in CI.
 config.service = ""
 
@@ -1096,3 +1095,46 @@ async def grpc_client_with_failure_type(agent_app, available_port, aiohttp_serve
 
     await channel.close()
     await grpc_server.stop(grace=0)
+
+
+@pytest.fixture(scope="session")
+def clickhouse_process(tmp_path_factory):
+    """One ClickHouse server for the test session; skipped when no clickhouse binary is available."""
+    from lapdog.team_server.clickhouse import ClickHouseProcess
+    from lapdog.team_server.clickhouse import resolve_binary
+
+    binary = os.environ.get("LAPDOG_TEST_CLICKHOUSE_BINARY") or resolve_binary()
+    if not binary:
+        pytest.skip("no clickhouse binary (set LAPDOG_TEST_CLICKHOUSE_BINARY or put clickhouse on PATH)")
+    proc = ClickHouseProcess(binary, str(tmp_path_factory.mktemp("clickhouse")), 2 * 1024**3)
+    proc.start()
+    yield proc
+    proc.stop()
+
+
+@pytest.fixture
+def team_server_config(tmp_path):
+    from lapdog.team_server.config import ServerConfig
+
+    return ServerConfig(
+        data_dir=str(tmp_path / "server"),
+        # The longest retention, so tests with fixed old timestamps keep their spans.
+        retention_days=3650,
+        max_disk_bytes=100 * 1024**3,
+        token=None,
+        database=f"test_{random.getrandbits(48):012x}",
+    )
+
+
+@pytest.fixture
+async def team_server(clickhouse_process, team_server_config, aiohttp_client, loop):
+    """Serve a ``lapdog server`` app on a fresh ClickHouse database, with auth off unless the config sets a token."""
+    from lapdog.team_server.app import make_server_app
+    from lapdog.team_server.clickhouse import ClickHouseClient
+
+    client = ClickHouseClient(clickhouse_process.url, password=clickhouse_process.password)
+    app = make_server_app(team_server_config, client, enforce_interval=0)
+    yield await aiohttp_client(app)
+    cleanup = ClickHouseClient(clickhouse_process.url, password=clickhouse_process.password)
+    await cleanup.command(f"DROP DATABASE IF EXISTS {team_server_config.database}")
+    await cleanup.close()
