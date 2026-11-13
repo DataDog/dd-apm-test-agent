@@ -161,10 +161,13 @@ def _normalize_traces(traces: List[Trace], attribute_regex_replaces: Dict[str, P
                 span["parent_id"] = span_id_map.get(parent_id, parent_id)
             else:
                 # Normalize the parent of root spans to be 0.
+                parent_id = 0
                 span["parent_id"] = 0
 
             if "meta" not in span:
                 span["meta"] = {}
+            elif span["meta"].get("_dd.parent_id"):
+                span["meta"]["_dd.parent_id"] = str(parent_id)
             if "metrics" not in span:
                 span["metrics"] = {}
             span_id += 1
