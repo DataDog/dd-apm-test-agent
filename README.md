@@ -125,10 +125,10 @@ lapdog server config set retention 14d   # applied live
 lapdog server stop
 ```
 
-- **Auth**: a token is generated on first start (`~/.lapdog/server/token`) or set with `--token`. Queries need `Authorization: Bearer <token>`; intake also accepts it as `DD-API-KEY`.
-- **Sending spans** (Python, no code changes): `DD_LLMOBS_ENABLED=1 DD_LLMOBS_AGENTLESS_ENABLED=1 DD_LLMOBS_OVERRIDE_ORIGIN=https://<host> DD_API_KEY=<token>`. dd-trace-js can't send a token yet, so it needs `--allow-unauthenticated-ingest`.
+- **No auth**: anyone who can reach the server can read and send spans. On a network, put it behind your own auth proxy or firewall.
+- **Sending spans** (Python, no code changes): `DD_LLMOBS_ENABLED=1 DD_LLMOBS_AGENTLESS_ENABLED=1 DD_LLMOBS_OVERRIDE_ORIGIN=https://<host> DD_API_KEY=lapdog`. ddtrace's agentless mode needs some API key set; the server ignores it.
 - **Retention**: spans live in daily partitions. Days older than `--retention` are dropped; while stored data exceeds `--max-disk` (or the disk is nearly full) the oldest days are dropped, and if only today is left, intake answers 503 until there's room again.
-- **Docker**: `docker build -f Dockerfile.server -t lapdog-server .` then `docker run -p 8126:8126 -v lapdog-data:/data -e LAPDOG_SERVER_TOKEN=<token> lapdog-server`. Every flag has a `LAPDOG_SERVER_*` environment variable.
+- **Docker**: `docker build -f Dockerfile.server -t lapdog-server .` then `docker run -p 8126:8126 -v lapdog-data:/data lapdog-server`. Every flag has a `LAPDOG_SERVER_*` environment variable.
 - The hosted UI needs HTTPS to reach a remote server; put a TLS proxy in front of it. macOS and Linux only.
 
 

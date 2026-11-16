@@ -2,11 +2,9 @@
 
 import argparse
 import dataclasses
-import ipaddress
 import json
 import os
 import re
-import secrets
 import shutil
 from typing import Any
 from typing import Dict
@@ -18,7 +16,6 @@ from ..paths import SERVER_DIR
 from ..span_store import parse_memory_size
 
 SETTINGS_FILE = "server.json"
-TOKEN_FILE = "token"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8126
@@ -69,15 +66,6 @@ def default_max_disk(data_dir: str) -> int:
     return max(MIN_MAX_DISK, min(DEFAULT_MAX_DISK_CAP, free // 2))
 
 
-def is_loopback(host: str) -> bool:
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
 class Settings(NamedTuple):
     """The live-adjustable controls, persisted to ``<data-dir>/server.json``."""
 
@@ -92,8 +80,6 @@ class ServerConfig:
     max_disk_bytes: int
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
-    token: Optional[str] = None
-    allow_unauthenticated_ingest: bool = False
     clickhouse_binary: Optional[str] = None
     clickhouse_max_memory_bytes: int = parse_memory_size(DEFAULT_CLICKHOUSE_MAX_MEMORY)
     forward_to_datadog: bool = False
@@ -125,28 +111,6 @@ def save_settings(data_dir: str, settings: Settings) -> None:
     os.replace(tmp, path)
 
 
-def read_token(data_dir: str) -> Optional[str]:
-    try:
-        with open(os.path.join(data_dir, TOKEN_FILE)) as f:
-            return f.read().strip() or None
-    except OSError:
-        return None
-
-
-def ensure_token(data_dir: str) -> str:
-    """Return the saved API token, generating and saving one (mode 0600) on first use."""
-    token = read_token(data_dir)
-    if token:
-        return token
-    os.makedirs(data_dir, exist_ok=True)
-    token = secrets.token_urlsafe(32)
-    path = os.path.join(data_dir, TOKEN_FILE)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(token + "\n")
-    return token
-
-
 def _env(name: str) -> Optional[str]:
     value = os.environ.get(f"LAPDOG_SERVER_{name}", "").strip()
     return value or None
@@ -170,13 +134,6 @@ def add_server_arguments(parser: argparse.ArgumentParser) -> None:
         "--max-disk",
         default=_env("MAX_DISK"),
         help="Disk cap for stored spans, e.g. 20GB (default min(20GB, 50%% free))",
-    )
-    parser.add_argument("--token", default=_env("TOKEN"), help="API token (default: generated and saved)")
-    parser.add_argument(
-        "--allow-unauthenticated-ingest",
-        action="store_true",
-        default=_env_flag("ALLOW_UNAUTHENTICATED_INGEST"),
-        help="Accept spans without a token (needed for dd-trace-js, which can't send one)",
     )
     parser.add_argument("--clickhouse-binary", default=_env("CLICKHOUSE_BINARY"), help="Path to a clickhouse binary")
     parser.add_argument(
@@ -210,15 +167,12 @@ def config_from_args(args: argparse.Namespace) -> ServerConfig:
     if settings != saved:
         save_settings(data_dir, settings)
 
-    token = args.token or ensure_token(data_dir)
     return ServerConfig(
         data_dir=data_dir,
         retention_days=retention_days,
         max_disk_bytes=max_disk_bytes,
         host=args.host,
         port=args.port,
-        token=token,
-        allow_unauthenticated_ingest=args.allow_unauthenticated_ingest,
         clickhouse_binary=args.clickhouse_binary,
         clickhouse_max_memory_bytes=parse_memory_size(args.clickhouse_max_memory),
         forward_to_datadog=args.forward_to_datadog,

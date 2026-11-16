@@ -1,7 +1,7 @@
 # lapdog server: a self-managed LLM Observability server with ClickHouse storage.
 #
 #   docker build -f Dockerfile.server -t lapdog-server .
-#   docker run -p 8126:8126 -v lapdog-data:/data -e LAPDOG_SERVER_TOKEN=<token> lapdog-server
+#   docker run -p 8126:8126 -v lapdog-data:/data lapdog-server
 #
 # Retention and disk cap: -e LAPDOG_SERVER_RETENTION=30d -e LAPDOG_SERVER_MAX_DISK=20GB
 FROM python:3.13-slim

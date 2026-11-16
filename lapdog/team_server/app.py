@@ -15,7 +15,6 @@ from aiohttp import web
 from ddapm_test_agent.cors import with_cors
 
 from ..llmobs_event_platform import LLMObsEventPlatformAPI
-from .auth import make_auth_middleware
 from .clickhouse import CLICKHOUSE_VERSION
 from .clickhouse import ClickHouseClient
 from .clickhouse import ClickHouseProcess
@@ -23,7 +22,6 @@ from .config import ServerConfig
 from .config import parse_settings_update
 from .config import save_settings
 from .config import settings_to_json
-from .intake import INGEST_PATHS
 from .intake import IntakeAPI
 from .retention import RetentionEnforcer
 from .retention import ServerState
@@ -87,7 +85,6 @@ class AdminAPI:
                 "version": _version(),
                 "mode": "server",
                 "endpoints": ["/evp_proxy/v2/", "/evp_proxy/v4/"],
-                "auth_required": self.config.token is not None,
                 "llmobs_data_forwarding": self.intake.forwarding,
                 "authenticated": self.intake.forwarding,
             }
@@ -141,7 +138,7 @@ def make_server_app(
     """
     app = web.Application(
         client_max_size=64 * 1024 * 1024,
-        middlewares=[private_network_middleware, make_auth_middleware(config, INGEST_PATHS)],
+        middlewares=[private_network_middleware],
     )
     store = ClickHouseSpanBackend(client, config.database)
     state = ServerState(settings=config.settings)

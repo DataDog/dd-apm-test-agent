@@ -17,7 +17,6 @@ from .clickhouse import ensure_binary
 from .config import add_server_arguments
 from .config import config_from_args
 from .config import format_bytes
-from .config import is_loopback
 
 log = logging.getLogger("lapdog.team_server")
 
@@ -33,9 +32,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         config = config_from_args(args)
     except ValueError as e:
         print(f"lapdog server: {e}", file=sys.stderr)
-        return 2
-    if not config.token and not is_loopback(config.host):
-        print("lapdog server: refusing to listen on a network address without a token", file=sys.stderr)
         return 2
 
     try:

@@ -26,7 +26,6 @@ from lapdog.team_server.config import config_from_args
 from lapdog.team_server.config import format_bytes
 from lapdog.team_server.config import load_settings
 from lapdog.team_server.config import parse_settings_update
-from lapdog.team_server.config import read_token
 from lapdog.team_server.config import save_settings
 from lapdog.team_server.config import settings_to_json
 
@@ -65,10 +64,8 @@ def _local_url(host: str, port: int) -> str:
     return f"http://{connect_host}:{port}"
 
 
-def _request(url: str, token: Optional[str], body: Optional[Dict[str, Any]] = None, timeout: float = 5) -> Any:
+def _request(url: str, body: Optional[Dict[str, Any]] = None, timeout: float = 5) -> Any:
     headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, headers=headers, method="POST" if body is not None else "GET")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -93,7 +90,7 @@ def _running(data_dir: str) -> Tuple[Optional[int], Optional[str]]:
         pass
     url = _local_url(host, port)
     try:
-        _request(f"{url}/ping", None, timeout=2)
+        _request(f"{url}/ping", timeout=2)
     except (OSError, ValueError):
         return pid, None
     return pid, url
@@ -116,7 +113,6 @@ def _remove_pid_file(data_dir: str, only_pid: Optional[int] = None) -> None:
 
 def _print_started(url: str, pid: int, args: argparse.Namespace, data_dir: str) -> None:
     settings = load_settings(data_dir)
-    token = args.token or read_token(data_dir)
     public = args.host not in ("127.0.0.1", "localhost", "::1")
     origin = "https://<your-host>" if public else url
     print(f"[lapdog] Lapdog server running at {url} (pid={pid}, logs: {_log_path(data_dir)})")
@@ -125,11 +121,12 @@ def _print_started(url: str, pid: int, args: argparse.Namespace, data_dir: str) 
             f"[lapdog] Data in {data_dir}, retention {settings.retention_days}d, "
             f"max disk {format_bytes(settings.max_disk_bytes)}"
         )
-    print(f"[lapdog] API token: {token}  (stored in {os.path.join(data_dir, 'token')})")
     print("[lapdog] Send spans from a Python app with:")
-    print(f"  DD_LLMOBS_ENABLED=1 DD_LLMOBS_AGENTLESS_ENABLED=1 DD_LLMOBS_OVERRIDE_ORIGIN={origin} DD_API_KEY=<token>")
+    # ddtrace's agentless mode refuses to start without an API key; the server ignores it.
+    print(f"  DD_LLMOBS_ENABLED=1 DD_LLMOBS_AGENTLESS_ENABLED=1 DD_LLMOBS_OVERRIDE_ORIGIN={origin} DD_API_KEY=lapdog")
     if public:
-        print("[lapdog] The hosted UI needs HTTPS to reach a remote server; put a TLS proxy in front of it.")
+        print("[lapdog] The server has no auth: anyone who can reach it can read and send spans.")
+        print("[lapdog] Put it behind your own auth proxy or firewall. The hosted UI also needs HTTPS to reach it.")
 
 
 def cmd_server_start(argv: List[str]) -> None:
@@ -158,7 +155,7 @@ def cmd_server_start(argv: List[str]) -> None:
             _remove_pid_file(data_dir, only_pid=os.getpid())
         sys.exit(code)
     try:
-        config_from_args(args)  # validate flags and save settings/token before detaching
+        config_from_args(args)  # validate flags and save settings before detaching
         binary = ensure_binary(args.clickhouse_binary)
     except (ValueError, ClickHouseError, OSError) as e:
         print(f"[lapdog] {e}", file=sys.stderr)
@@ -189,7 +186,7 @@ def cmd_server_start(argv: List[str]) -> None:
             _remove_pid_file(data_dir)
             sys.exit(1)
         try:
-            _request(f"{url}/ping", None, timeout=1)
+            _request(f"{url}/ping", timeout=1)
             _print_started(url, proc.pid, args, data_dir)
             return
         except (OSError, ValueError):
@@ -226,7 +223,7 @@ def cmd_server_status(data_dir: str) -> None:
         print("[lapdog] Lapdog server is not running." if pid is None else f"[lapdog] PID {pid} is not answering.")
         sys.exit(1)
     try:
-        status = _request(f"{url}/api/lapdog/server/status", read_token(data_dir))
+        status = _request(f"{url}/api/lapdog/server/status")
     except urllib.error.HTTPError as e:
         print(f"[lapdog] Status request failed: HTTP {e.code}", file=sys.stderr)
         sys.exit(1)
@@ -254,9 +251,8 @@ def cmd_server_config(argv: List[str], data_dir: str) -> None:
         print(SERVER_USAGE, file=sys.stderr)
         sys.exit(2)
     _, url = _running(data_dir)
-    token = read_token(data_dir)
     if argv[0] == "get":
-        settings_json = _request(f"{url}/api/lapdog/server/settings", token) if url else None
+        settings_json = _request(f"{url}/api/lapdog/server/settings") if url else None
         if settings_json is None:
             saved = load_settings(data_dir)
             if saved is None:
@@ -272,7 +268,7 @@ def cmd_server_config(argv: List[str], data_dir: str) -> None:
         sys.exit(2)
     if url:
         try:
-            result = _request(f"{url}/api/lapdog/server/settings", token, body={key: argv[2]})
+            result = _request(f"{url}/api/lapdog/server/settings", body={key: argv[2]})
         except urllib.error.HTTPError as e:
             print(f"[lapdog] {json.loads(e.read().decode()).get('error', e)}", file=sys.stderr)
             sys.exit(1)

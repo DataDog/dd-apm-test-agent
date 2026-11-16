@@ -1121,14 +1121,13 @@ def team_server_config(tmp_path):
         # The longest retention, so tests with fixed old timestamps keep their spans.
         retention_days=3650,
         max_disk_bytes=100 * 1024**3,
-        token=None,
         database=f"test_{random.getrandbits(48):012x}",
     )
 
 
 @pytest.fixture
 async def team_server(clickhouse_process, team_server_config, aiohttp_client, loop):
-    """Serve a ``lapdog server`` app on a fresh ClickHouse database, with auth off unless the config sets a token."""
+    """Serve a ``lapdog server`` app on a fresh ClickHouse database."""
     from lapdog.team_server.app import make_server_app
     from lapdog.team_server.clickhouse import ClickHouseClient
 

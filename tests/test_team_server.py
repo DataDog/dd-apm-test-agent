@@ -14,7 +14,6 @@ from lapdog.team_server.config import parse_max_disk
 from lapdog.team_server.config import parse_retention_days
 from lapdog.team_server.config import parse_settings_update
 
-TOKEN = "s3cret-token"
 DAY_NS = 86_400 * 1_000_000_000
 
 
@@ -180,91 +179,40 @@ async def test_spans_priced_at_ingest_and_repriced_on_update(team_server, monkey
     assert await update({"estimated_total_cost": 123}) == 123
 
 
-# -- auth --------------------------------------------------------------------
+# -- routes ------------------------------------------------------------------
 
 
-class TestAuth:
-    @pytest.fixture
-    def team_server_config(self, tmp_path):
-        from lapdog.team_server.config import ServerConfig
-
-        return ServerConfig(
-            data_dir=str(tmp_path / "server"),
-            retention_days=3650,
-            max_disk_bytes=100 * 1024**3,
-            token=TOKEN,
-            database=f"test_auth_{time.time_ns()}",
-        )
-
-    async def test_public_routes(self, team_server):
-        assert (await team_server.get("/ping")).status == 200
-        info = await team_server.get("/info")
-        assert info.status == 200
-        body = await info.json()
-        assert body["mode"] == "server"
-        assert body["auth_required"] is True
-        assert "/evp_proxy/v2/" in body["endpoints"]
-
-    async def test_queries_need_bearer_token(self, team_server):
-        url = "/api/unstable/llm-obs-query-rewriter/list?type=llmobs"
-        origin = {"Origin": "https://lapdog.datadoghq.com"}
-        resp = await team_server.post(url, json={"list": {}}, headers=origin)
-        assert resp.status == 401
-        assert resp.headers["Access-Control-Allow-Origin"] == "https://lapdog.datadoghq.com"
-        bad = await team_server.post(url, json={"list": {}}, headers={"Authorization": "Bearer wrong"})
-        assert bad.status == 401
-        # DD-API-KEY is only accepted on intake.
-        assert (await team_server.post(url, json={"list": {}}, headers={"DD-API-KEY": TOKEN})).status == 401
-        ok = await team_server.post(url, json={"list": {}}, headers={"Authorization": f"Bearer {TOKEN}"})
-        assert ok.status == 200
-
-    async def test_admin_needs_bearer_token(self, team_server):
-        assert (await team_server.get("/api/lapdog/server/status")).status == 401
-        resp = await team_server.get("/api/lapdog/server/status", headers={"Authorization": f"Bearer {TOKEN}"})
-        assert resp.status == 200
-
-    async def test_intake_accepts_bearer_or_dd_api_key(self, team_server):
-        assert (await _post_spans(team_server, _span("a"))).status == 401
-        assert (await _post_spans(team_server, _span("a"), headers={"DD-API-KEY": "wrong"})).status == 401
-        assert (await _post_spans(team_server, _span("a"), headers={"DD-API-KEY": TOKEN})).status == 200
-        resp = await _post_spans(
-            team_server, _span("b"), path="/evp_proxy/v2/api/v2/llmobs", headers={"Authorization": f"Bearer {TOKEN}"}
-        )
-        assert resp.status == 200
-
-    async def test_preflight_is_public_and_allows_private_network(self, team_server):
-        resp = await team_server.options(
-            "/api/unstable/llm-obs-query-rewriter/list",
-            headers={
-                "Origin": "https://lapdog.datadoghq.com",
-                "Access-Control-Request-Method": "POST",
-                "Access-Control-Request-Headers": "authorization",
-                "Access-Control-Request-Private-Network": "true",
-            },
-        )
-        assert resp.status == 200
-        assert "Authorization" in resp.headers["Access-Control-Allow-Headers"]
-        assert resp.headers["Access-Control-Allow-Private-Network"] == "true"
+async def test_info(team_server):
+    assert (await team_server.get("/ping")).status == 200
+    info = await team_server.get("/info")
+    assert info.status == 200
+    body = await info.json()
+    assert body["mode"] == "server"
+    assert "/evp_proxy/v2/" in body["endpoints"]
 
 
-class TestUnauthenticatedIngest:
-    @pytest.fixture
-    def team_server_config(self, tmp_path):
-        from lapdog.team_server.config import ServerConfig
+async def test_routes_need_no_credentials(team_server):
+    # ddtrace's agentless mode always sends an API key; the server ignores it.
+    assert (await _post_spans(team_server, _span("a"), headers={"DD-API-KEY": "anything"})).status == 200
+    assert (await _post_spans(team_server, _span("b"), path="/evp_proxy/v2/api/v2/llmobs")).status == 200
+    url = "/api/unstable/llm-obs-query-rewriter/list?type=llmobs"
+    resp = await team_server.post(url, json={"list": {}}, headers={"Origin": "https://lapdog.datadoghq.com"})
+    assert resp.status == 200
+    assert resp.headers["Access-Control-Allow-Origin"] == "https://lapdog.datadoghq.com"
+    assert (await team_server.get("/api/lapdog/server/status")).status == 200
 
-        return ServerConfig(
-            data_dir=str(tmp_path / "server"),
-            retention_days=3650,
-            max_disk_bytes=100 * 1024**3,
-            token=TOKEN,
-            allow_unauthenticated_ingest=True,
-            database=f"test_noauth_{time.time_ns()}",
-        )
 
-    async def test_ingest_open_queries_closed(self, team_server):
-        assert (await _post_spans(team_server, _span("a"))).status == 200
-        url = "/api/unstable/llm-obs-query-rewriter/list?type=llmobs"
-        assert (await team_server.post(url, json={"list": {}})).status == 401
+async def test_preflight_allows_private_network(team_server):
+    resp = await team_server.options(
+        "/api/unstable/llm-obs-query-rewriter/list",
+        headers={
+            "Origin": "https://lapdog.datadoghq.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Private-Network": "true",
+        },
+    )
+    assert resp.status == 200
+    assert resp.headers["Access-Control-Allow-Private-Network"] == "true"
 
 
 # -- retention and disk cap --------------------------------------------------
