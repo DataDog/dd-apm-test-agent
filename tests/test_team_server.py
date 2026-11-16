@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import sys
 import time
 
 import pytest
@@ -9,6 +10,8 @@ from lapdog import model_pricing
 from lapdog.cli import team_server as server_cli
 from lapdog.team_server.app import ENFORCER_KEY
 from lapdog.team_server.app import STATE_KEY
+from lapdog.team_server.clickhouse import ClickHouseError
+from lapdog.team_server.clickhouse import ClickHouseProcess
 from lapdog.team_server.clickhouse import render_config
 from lapdog.team_server.config import Settings
 from lapdog.team_server.config import parse_max_disk
@@ -185,6 +188,14 @@ def test_clickhouse_config_measures_its_own_memory():
     config = render_config("/data", 9000, "0" * 64, 1024**3)
     assert "<memory_worker_use_cgroup>0</memory_worker_use_cgroup>" in config
     assert f"<max_server_memory_usage>{1024**3}</max_server_memory_usage>" in config
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="uses /bin/sh as a ClickHouse that exits at once")
+def test_clickhouse_start_failure_includes_its_log(tmp_path):
+    # `/bin/sh server ...` exits right away, complaining about the missing `server` script.
+    proc = ClickHouseProcess("/bin/sh", str(tmp_path), 1024**3)
+    with pytest.raises(ClickHouseError, match="(?s)exited with code .*stdout.log.*server"):
+        proc.start(timeout=10)
 
 
 # -- routes ------------------------------------------------------------------

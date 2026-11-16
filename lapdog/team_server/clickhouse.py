@@ -349,12 +349,27 @@ class ClickHouseProcess:
             f.write(str(self.proc.pid))
         self._wait_ready(timeout)
 
+    def _log_tail(self, lines: int = 20) -> str:
+        """Return the last lines ClickHouse wrote to its error log and stdout, to explain a failed start."""
+        tail = []
+        for name in ("clickhouse-server.err.log", "stdout.log"):
+            try:
+                with open(os.path.join(self.base_dir, "log", name), errors="replace") as f:
+                    text = f.read()[-16384:].strip().splitlines()[-lines:]
+            except OSError:
+                continue
+            if text:
+                tail.append(f"--- {name} ---\n" + "\n".join(text))
+        return "\n".join(tail)
+
     def _wait_ready(self, timeout: float) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self.proc is not None and self.proc.poll() is not None:
+                tail = self._log_tail()
                 raise ClickHouseError(
                     f"ClickHouse exited with code {self.proc.returncode}; see {self.base_dir}/log/ for details"
+                    + (f"\n{tail}" if tail else "")
                 )
             try:
                 with urllib.request.urlopen(f"{self.url}/ping", timeout=1) as resp:

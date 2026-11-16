@@ -17,6 +17,7 @@ from typing import Set
 from typing import Tuple
 from typing import cast
 from urllib.parse import urlparse
+import warnings
 
 import aiohttp
 from aiohttp import web
@@ -1100,6 +1101,7 @@ async def grpc_client_with_failure_type(agent_app, available_port, aiohttp_serve
 @pytest.fixture(scope="session")
 def clickhouse_process(tmp_path_factory):
     """One ClickHouse server for the test session; skipped when no clickhouse binary is available."""
+    from lapdog.team_server.clickhouse import ClickHouseError
     from lapdog.team_server.clickhouse import ClickHouseProcess
     from lapdog.team_server.clickhouse import resolve_binary
 
@@ -1107,7 +1109,12 @@ def clickhouse_process(tmp_path_factory):
     if not binary:
         pytest.skip("no clickhouse binary (set LAPDOG_TEST_CLICKHOUSE_BINARY or put clickhouse on PATH)")
     proc = ClickHouseProcess(binary, str(tmp_path_factory.mktemp("clickhouse")), 2 * 1024**3)
-    proc.start()
+    try:
+        proc.start()
+    except ClickHouseError as exc:
+        # macOS CI runners have SIGKILLed ClickHouse mid-start; retry once, as the server's supervisor would.
+        warnings.warn(f"ClickHouse failed to start, retrying once: {exc}")
+        proc.start()
     yield proc
     proc.stop()
 
