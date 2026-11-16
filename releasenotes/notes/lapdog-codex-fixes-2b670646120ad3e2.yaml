@@ -11,3 +11,10 @@ fixes:
   - |
     Lapdog: Preserve original tool arguments, including approval justifications,
     when merging Codex command completions with ``exec`` calls.
+  - |
+    Lapdog: Use Codex response IDs to keep LLM spans and tools in the correct
+    inference step. Keep delayed command results and subagent spans with their
+    producing response, including repeated commands across responses.
+  - |
+    Lapdog: Capture recorded execution timing for Codex patch and MCP tools.
+    Use structured completion timing when it arrives after a tool's wrapper result.
