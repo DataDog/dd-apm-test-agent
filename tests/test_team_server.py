@@ -9,6 +9,7 @@ from lapdog import model_pricing
 from lapdog.cli import team_server as server_cli
 from lapdog.team_server.app import ENFORCER_KEY
 from lapdog.team_server.app import STATE_KEY
+from lapdog.team_server.clickhouse import render_config
 from lapdog.team_server.config import Settings
 from lapdog.team_server.config import parse_max_disk
 from lapdog.team_server.config import parse_retention_days
@@ -177,6 +178,13 @@ async def test_spans_priced_at_ingest_and_repriced_on_update(team_server, monkey
 
     assert await update({"output_tokens": 20}) == 5 * 2000 + 20 * 8000
     assert await update({"estimated_total_cost": 123}) == 123
+
+
+def test_clickhouse_config_measures_its_own_memory():
+    # Reading memory from the cgroup counts the whole container (or CI runner) against ClickHouse's cap.
+    config = render_config("/data", 9000, "0" * 64, 1024**3)
+    assert "<memory_worker_use_cgroup>0</memory_worker_use_cgroup>" in config
+    assert f"<max_server_memory_usage>{1024**3}</max_server_memory_usage>" in config
 
 
 # -- routes ------------------------------------------------------------------

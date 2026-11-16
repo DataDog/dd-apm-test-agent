@@ -196,6 +196,10 @@ def render_config(base_dir: str, port: int, password_sha256: str, max_memory_byt
     <timezone>UTC</timezone>
     <mlock_executable>false</mlock_executable>
     <max_server_memory_usage>{max_memory_bytes}</max_server_memory_usage>
+    <!-- On Linux, ClickHouse otherwise measures its memory from its cgroup, which in a
+         container (or CI runner) also counts lapdog, other processes, and the page cache,
+         and trips max_server_memory_usage long before ClickHouse itself is near it. -->
+    <memory_worker_use_cgroup>0</memory_worker_use_cgroup>
     <mark_cache_size>67108864</mark_cache_size>
     <index_mark_cache_size>16777216</index_mark_cache_size>
     <uncompressed_cache_size>0</uncompressed_cache_size>
