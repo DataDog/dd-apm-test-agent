@@ -1,10 +1,12 @@
 import datetime
 import json
+import os
 import time
 
 import pytest
 
 from lapdog import model_pricing
+from lapdog.cli import team_server as server_cli
 from lapdog.team_server.app import ENFORCER_KEY
 from lapdog.team_server.app import STATE_KEY
 from lapdog.team_server.config import Settings
@@ -357,3 +359,18 @@ async def test_status_reports_disk_and_days(team_server):
     assert status["span_rows"] == 2
     assert status["ingest_paused"] is False
     assert status["clickhouse"]["healthy"] is True
+
+
+def test_foreground_start_writes_and_removes_pid_file(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_main(argv):
+        seen["pid"] = server_cli.read_pid_file(str(tmp_path / "server.pid"))
+        return 0
+
+    monkeypatch.setattr("lapdog.team_server.__main__.main", fake_main)
+    with pytest.raises(SystemExit) as exc:
+        server_cli.cmd_server_start(["--foreground", "--data-dir", str(tmp_path), "--port", "9999"])
+    assert exc.value.code == 0
+    assert seen["pid"] == (os.getpid(), 9999)
+    assert not (tmp_path / "server.pid").exists()

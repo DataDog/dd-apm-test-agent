@@ -104,6 +104,16 @@ def _write_pid_file(data_dir: str, pid: int, port: int, host: str) -> None:
         f.write(f"{pid}\n{port}\n{host}\n")
 
 
+def _remove_pid_file(data_dir: str, only_pid: Optional[int] = None) -> None:
+    """Remove the PID file, if present; with ``only_pid``, only when it still names that process."""
+    if only_pid is not None and read_pid_file(_pid_path(data_dir))[0] != only_pid:
+        return
+    try:
+        os.remove(_pid_path(data_dir))
+    except FileNotFoundError:
+        pass
+
+
 def _print_started(url: str, pid: int, args: argparse.Namespace, data_dir: str) -> None:
     settings = load_settings(data_dir)
     token = args.token or read_token(data_dir)
@@ -128,16 +138,25 @@ def cmd_server_start(argv: List[str]) -> None:
     parser.add_argument("--foreground", action="store_true", help="Run in the foreground (for Docker and services)")
     args = parser.parse_args(argv)
 
-    if args.foreground:
-        from lapdog.team_server.__main__ import main as server_main
-
-        sys.exit(server_main([a for a in argv if a != "--foreground"]))
-
     data_dir = _data_dir(args.data_dir)
     pid, url = _running(data_dir)
     if url:
         print(f"[lapdog] Lapdog server already running at {url} (PID {pid})", file=sys.stderr)
+        if args.foreground:
+            sys.exit(1)
         return
+
+    if args.foreground:
+        from lapdog.team_server.__main__ import main as server_main
+
+        # Record this process so 'lapdog server status|stop|config' find a foreground server too.
+        os.makedirs(data_dir, exist_ok=True)
+        _write_pid_file(data_dir, os.getpid(), args.port, args.host)
+        try:
+            code = server_main([a for a in argv if a != "--foreground"])
+        finally:
+            _remove_pid_file(data_dir, only_pid=os.getpid())
+        sys.exit(code)
     try:
         config_from_args(args)  # validate flags and save settings/token before detaching
         binary = ensure_binary(args.clickhouse_binary)
@@ -167,7 +186,7 @@ def cmd_server_start(argv: List[str]) -> None:
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             print(f"[lapdog] Lapdog server exited (code {proc.returncode}); see {_log_path(data_dir)}", file=sys.stderr)
-            os.remove(_pid_path(data_dir))
+            _remove_pid_file(data_dir)
             sys.exit(1)
         try:
             _request(f"{url}/ping", None, timeout=1)
@@ -187,8 +206,7 @@ def cmd_server_stop(data_dir: str) -> None:
     pid, _ = read_pid_file(_pid_path(data_dir))
     if pid is None or not process_exists(pid):
         print("[lapdog] Lapdog server is not running.", file=sys.stderr)
-        if os.path.exists(_pid_path(data_dir)):
-            os.remove(_pid_path(data_dir))
+        _remove_pid_file(data_dir)
         sys.exit(1)
     os.kill(pid, signal.SIGTERM)
     # The server stops ClickHouse on the way out; wait so a restart doesn't race it for the data directory.
@@ -197,7 +215,8 @@ def cmd_server_stop(data_dir: str) -> None:
         time.sleep(0.2)
     if process_exists(pid):
         os.kill(pid, signal.SIGKILL)
-    os.remove(_pid_path(data_dir))
+    # A foreground server removes its own PID file on the way out.
+    _remove_pid_file(data_dir)
     print("[lapdog] Lapdog server stopped.")
 
 
