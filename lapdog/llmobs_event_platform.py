@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import statistics
+import time
 from typing import Any
 from typing import Dict
 from typing import List
@@ -1302,6 +1303,44 @@ def build_trace_response(trace_spans: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+# ``(start_ns, end_ns)``, both inclusive: the query window a request asked for.
+TimeWindow = Tuple[int, int]
+
+_RELATIVE_TIME_RE = re.compile(r"^now(?:-(\d+)([smhdw]))?(?:/[smhdw])?$")
+_TIME_UNIT_MS = {"s": 1000, "m": 60_000, "h": 3_600_000, "d": 86_400_000, "w": 604_800_000}
+
+
+def _parse_time_point(value: Any, now_ms: int) -> Optional[int]:
+    """Parse an Event Platform time bound (epoch ms, or ``now``/``now-900s``) to epoch ms."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lstrip("-").isdigit():
+            return int(text)
+        match = _RELATIVE_TIME_RE.match(text)
+        if match:
+            amount, unit = match.groups()
+            return now_ms - (int(amount) * _TIME_UNIT_MS[unit] if amount else 0)
+    return None
+
+
+def parse_time_window(time_cfg: Any, now_ms: Optional[int] = None) -> Optional[TimeWindow]:
+    """Turn a request's ``time: {from, to}`` into a span ``start_ns`` window; None means no window."""
+    if not isinstance(time_cfg, dict):
+        return None
+    now = int(time.time() * 1000) if now_ms is None else now_ms
+    start = _parse_time_point(time_cfg.get("from"), now)
+    if start is None:
+        return None
+    end = _parse_time_point(time_cfg.get("to"), now)
+    if end is None:
+        end = now
+    return start * 1_000_000, end * 1_000_000 + 999_999
+
+
 class ListResult(NamedTuple):
     """One page of spans plus the per-trace context the list response needs."""
 
@@ -1321,6 +1360,7 @@ class AggregateRequest(NamedTuple):
     sort_order: str
     compute: List[Dict[str, Any]]
     seen_groups: List[str]
+    time_window: Optional[TimeWindow] = None
 
 
 class AggregateResult(NamedTuple):
@@ -1336,7 +1376,14 @@ class SpanBackend(Protocol):
     ``lapdog.team_server`` provides a ClickHouse-backed implementation.
     """
 
-    async def list_spans(self, query: str, limit: int, paging: Optional[Any], sort_order: str) -> ListResult:
+    async def list_spans(
+        self,
+        query: str,
+        limit: int,
+        paging: Optional[Any],
+        sort_order: str,
+        time_window: Optional[TimeWindow] = None,
+    ) -> ListResult:
         """Return one page of matching spans; raise ``ValueError`` for an invalid paging cursor."""
 
     async def aggregate(self, request: AggregateRequest) -> AggregateResult:
@@ -1348,10 +1395,14 @@ class SpanBackend(Protocol):
     async def trace_spans(self, trace_id: str, span_id_filter: str) -> List[Dict[str, Any]]:
         """Return a trace's spans, newest first, with the same fallbacks as the trace endpoint."""
 
-    async def facet_values(self, field: str, query: str, limit: int, term_search: str) -> List[Tuple[str, int]]:
+    async def facet_values(
+        self, field: str, query: str, limit: int, term_search: str, time_window: Optional[TimeWindow] = None
+    ) -> List[Tuple[str, int]]:
         """Return ``(value, count)`` pairs for a facet, most common first."""
 
-    async def facet_range(self, field: str, query: str) -> Tuple[float, float]:
+    async def facet_range(
+        self, field: str, query: str, time_window: Optional[TimeWindow] = None
+    ) -> Tuple[float, float]:
         """Return the min and max numeric value of a facet."""
 
     async def scalar_columns(
@@ -1360,7 +1411,12 @@ class SpanBackend(Protocol):
         """Return the ``columns`` of a scalar query response."""
 
 
-def _filtered(spans: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+def _filtered(
+    spans: List[Dict[str, Any]], query: str, time_window: Optional[TimeWindow] = None
+) -> List[Dict[str, Any]]:
+    if time_window is not None:
+        start_ns, end_ns = time_window
+        spans = [s for s in spans if start_ns <= int(s.get("start_ns", 0) or 0) <= end_ns]
     return apply_filters(spans, parse_filter_query(query)) if query else spans
 
 
@@ -1493,9 +1549,16 @@ class InMemorySpanBackend:
                 updated += 1
         return updated
 
-    async def list_spans(self, query: str, limit: int, paging: Optional[Any], sort_order: str) -> ListResult:
+    async def list_spans(
+        self,
+        query: str,
+        limit: int,
+        paging: Optional[Any],
+        sort_order: str,
+        time_window: Optional[TimeWindow] = None,
+    ) -> ListResult:
         all_spans = self.get_llmobs_spans()
-        spans = _filtered(all_spans, query)
+        spans = _filtered(all_spans, query, time_window)
         page_spans, next_paging = _list_page(spans, limit, paging, sort_order)
         return ListResult(
             spans=page_spans,
@@ -1506,7 +1569,7 @@ class InMemorySpanBackend:
         )
 
     async def aggregate(self, request: AggregateRequest) -> AggregateResult:
-        spans = _filtered(self.get_llmobs_spans(), request.query)
+        spans = _filtered(self.get_llmobs_spans(), request.query, request.time_window)
 
         # Group spans (spans are already sorted desc by start_ns)
         groups: Dict[str, List[Dict[str, Any]]] = {}
@@ -1551,9 +1614,11 @@ class InMemorySpanBackend:
             trace_spans = [all_spans[0]]
         return trace_spans
 
-    async def facet_values(self, field: str, query: str, limit: int, term_search: str) -> List[Tuple[str, int]]:
+    async def facet_values(
+        self, field: str, query: str, limit: int, term_search: str, time_window: Optional[TimeWindow] = None
+    ) -> List[Tuple[str, int]]:
         value_counts: Dict[str, int] = {}
-        for span in _filtered(self.get_llmobs_spans(), query):
+        for span in _filtered(self.get_llmobs_spans(), query, time_window):
             value = get_span_field_value(span, field)
             if value is not None:
                 value_str = str(value)
@@ -1566,9 +1631,11 @@ class InMemorySpanBackend:
             sorted_values = [(v, c) for v, c in sorted_values if term_lower in v.lower()][:limit]
         return sorted_values
 
-    async def facet_range(self, field: str, query: str) -> Tuple[float, float]:
+    async def facet_range(
+        self, field: str, query: str, time_window: Optional[TimeWindow] = None
+    ) -> Tuple[float, float]:
         values = []
-        for span in _filtered(self.get_llmobs_spans(), query):
+        for span in _filtered(self.get_llmobs_spans(), query, time_window):
             value = get_span_field_value(span, field)
             if value is not None:
                 try:
@@ -1656,7 +1723,13 @@ class LLMObsEventPlatformAPI:
             time_sort: Dict[str, Any] = sort_value if isinstance(sort_value, dict) else {}
             sort_order = time_sort.get("order", "desc")
             try:
-                page = await self.backend.list_spans(query_str, limit, list_params.get("paging"), sort_order)
+                page = await self.backend.list_spans(
+                    query_str,
+                    limit,
+                    list_params.get("paging"),
+                    sort_order,
+                    time_window=parse_time_window(list_params.get("time")),
+                )
             except ValueError as exc:
                 return web.json_response({"error": str(exc)}, status=400)
 
@@ -1730,6 +1803,7 @@ class LLMObsEventPlatformAPI:
                     sort_order=group_by_sort_order,
                     compute=compute_list,
                     seen_groups=seen_groups,
+                    time_window=parse_time_window(agg_params.get("time")),
                 )
             )
 
@@ -1804,7 +1878,13 @@ class LLMObsEventPlatformAPI:
             term_search = facet_info.get("termSearch", {}).get("query", "")
             search_query = facet_info.get("search", {}).get("query", "")
 
-            sorted_values = await self.backend.facet_values(facet_path.lstrip("@"), search_query, limit, term_search)
+            sorted_values = await self.backend.facet_values(
+                facet_path.lstrip("@"),
+                search_query,
+                limit,
+                term_search,
+                time_window=parse_time_window(facet_info.get("time")),
+            )
             fields = [{"field": value, "value": count} for value, count in sorted_values]
 
             response = {
@@ -1835,7 +1915,9 @@ class LLMObsEventPlatformAPI:
             facet_path = facet_range_info.get("path", "")
             search_query = facet_range_info.get("search", {}).get("query", "")
 
-            lo, hi = await self.backend.facet_range(facet_path.lstrip("@"), search_query)
+            lo, hi = await self.backend.facet_range(
+                facet_path.lstrip("@"), search_query, time_window=parse_time_window(facet_range_info.get("time"))
+            )
 
             response = {
                 "elapsed": 10,
@@ -1887,13 +1969,11 @@ class LLMObsEventPlatformAPI:
                 continue
             attrs = req.get("attributes") or {}
             queries = attrs.get("queries") or []
-            # Intentionally ignore the request's ``from``/``to`` window. The
-            # sibling list/aggregate endpoints (handle_logs_analytics_list,
-            # handle_aggregate) return spans regardless of time, so callers
-            # like the LLMObs Sessions table see rows for older sessions even
-            # when the UI sends a short (e.g. 15m) window. Filtering here
-            # would make scalar aggregates (cost, tokens) come back empty
-            # for exactly those rows — the bug this file used to have.
+            # Intentionally ignore the request's ``from``/``to`` window. Scalar
+            # queries compute per-session and per-trace cost and tokens for rows
+            # the list/aggregate endpoints already found inside the user's
+            # window; a narrower metric window would make those values come
+            # back empty for sessions that started before it.
             columns = await self.backend.scalar_columns(queries, attrs.get("formulas") or [])
             out.append(
                 {

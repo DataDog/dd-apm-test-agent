@@ -25,6 +25,7 @@ from typing import Tuple
 from ..llmobs_event_platform import AggregateRequest
 from ..llmobs_event_platform import AggregateResult
 from ..llmobs_event_platform import ListResult
+from ..llmobs_event_platform import TimeWindow
 from ..llmobs_event_platform import _LLMOBS_SCALAR_DATA_SOURCES
 from ..llmobs_event_platform import _decode_list_cursor
 from ..llmobs_event_platform import _list_compute_sort_order
@@ -134,13 +135,28 @@ class ClickHouseSpanBackend:
             source += f" LEFT JOIN ({self._trace_aggregates_sql()}) AS {TRACE_ALIAS} ON {TRACE_ALIAS}.ta_trace_id = s.trace_id"
         return source
 
+    @staticmethod
+    def _where(query: str, time_window: Optional[TimeWindow]) -> str:
+        where = compile_query(query)
+        if time_window is None:
+            return where
+        start_ns, end_ns = time_window
+        return f"({where}) AND start_ns BETWEEN {int(start_ns)} AND {int(end_ns)}"
+
     async def _spans(self, sql: str) -> List[Dict[str, Any]]:
         return [json.loads(row["span_json"]) for row in await self.client.query(sql)]
 
     # -- SpanBackend -------------------------------------------------------
 
-    async def list_spans(self, query: str, limit: int, paging: Optional[Any], sort_order: str) -> ListResult:
-        where = compile_query(query)
+    async def list_spans(
+        self,
+        query: str,
+        limit: int,
+        paging: Optional[Any],
+        sort_order: str,
+        time_window: Optional[TimeWindow] = None,
+    ) -> ListResult:
+        where = self._where(query, time_window)
         direction = "ASC" if sort_order == "asc" else "DESC"
         cursor_sql = ""
         if paging is not None and not isinstance(paging, dict):
@@ -211,7 +227,7 @@ class ClickHouseSpanBackend:
         return None
 
     async def aggregate(self, request: AggregateRequest) -> AggregateResult:
-        where = compile_query(request.query)
+        where = self._where(request.query, request.time_window)
         key = group_key(request.group_by_field)
         selects = [f"{key} AS k", "max(start_ns) AS latest_ns", "min(start_ns) AS earliest_ns"]
         outputs: List[Tuple[str, str]] = []
@@ -254,11 +270,13 @@ class ClickHouseSpanBackend:
             spans = await self._spans(f"SELECT span_json FROM {self.table} FINAL ORDER BY start_ns DESC LIMIT 1")
         return spans
 
-    async def facet_values(self, field: str, query: str, limit: int, term_search: str) -> List[Tuple[str, int]]:
+    async def facet_values(
+        self, field: str, query: str, limit: int, term_search: str, time_window: Optional[TimeWindow] = None
+    ) -> List[Tuple[str, int]]:
         resolved = resolve_field(field)
         rows = await self.client.query(
             f"SELECT {resolved.text} AS v, count() AS c, max(start_ns) AS latest FROM {self.table} FINAL "
-            f"WHERE ({compile_query(query)}) AND v IS NOT NULL GROUP BY v ORDER BY c DESC, latest DESC "
+            f"WHERE ({self._where(query, time_window)}) AND v IS NOT NULL GROUP BY v ORDER BY c DESC, latest DESC "
             f"LIMIT {int(limit)}"
         )
         values = [(str(row["v"]), int(row["c"])) for row in rows]
@@ -267,11 +285,13 @@ class ClickHouseSpanBackend:
             values = [(v, c) for v, c in values if term_lower in v.lower()][:limit]
         return values
 
-    async def facet_range(self, field: str, query: str) -> Tuple[float, float]:
+    async def facet_range(
+        self, field: str, query: str, time_window: Optional[TimeWindow] = None
+    ) -> Tuple[float, float]:
         number = resolve_field(field).number
         rows = await self.client.query(
             f"SELECT min({number}) AS lo, max({number}) AS hi, count({number}) AS n FROM {self.table} FINAL "
-            f"WHERE {compile_query(query)}"
+            f"WHERE {self._where(query, time_window)}"
         )
         if not rows or not rows[0]["n"]:
             return (0, 0)

@@ -189,6 +189,7 @@ async def test_info(team_server):
     body = await info.json()
     assert body["mode"] == "server"
     assert "/evp_proxy/v2/" in body["endpoints"]
+    assert body["retention_days"] == 3650
 
 
 async def test_routes_need_no_credentials(team_server):
@@ -200,6 +201,13 @@ async def test_routes_need_no_credentials(team_server):
     assert resp.status == 200
     assert resp.headers["Access-Control-Allow-Origin"] == "https://lapdog.datadoghq.com"
     assert (await team_server.get("/api/lapdog/server/status")).status == 200
+
+
+async def test_retentions_reports_server_retention(team_server):
+    team_server.app[STATE_KEY].settings = Settings(retention_days=7, max_disk_bytes=100 * 1024**3)
+    resp = await team_server.get("/api/unstable/llm-obs/v1/retentions")
+    assert resp.status == 200
+    assert (await resp.json())["data"]["attributes"] == {"llmobs": 7, "experiments": 7}
 
 
 async def test_preflight_allows_private_network(team_server):

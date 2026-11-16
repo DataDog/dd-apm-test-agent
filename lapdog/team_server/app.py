@@ -85,6 +85,7 @@ class AdminAPI:
                 "version": _version(),
                 "mode": "server",
                 "endpoints": ["/evp_proxy/v2/", "/evp_proxy/v4/"],
+                "retention_days": self.state.settings.retention_days,
                 "llmobs_data_forwarding": self.intake.forwarding,
                 "authenticated": self.intake.forwarding,
             }
@@ -116,12 +117,21 @@ class AdminAPI:
         save_settings(self.config.data_dir, settings)
         return web.json_response({"settings": settings_to_json(settings), "enforcement": action})
 
+    async def handle_retentions(self, request: web.Request) -> web.Response:
+        # Shared LLM Observability UI code sizes its session metric queries and
+        # the time picker's limit from this; experiments aren't stored here.
+        days = self.state.settings.retention_days
+        return web.json_response(
+            {"data": {"type": "retentions", "id": "lapdog", "attributes": {"llmobs": days, "experiments": days}}}
+        )
+
     def get_routes(self) -> Any:
         return [
             web.get("/ping", self.handle_ping),
             web.route("*", "/info", with_cors(self.handle_info)),
             web.route("*", "/api/lapdog/server/status", with_cors(self.handle_status)),
             web.route("*", "/api/lapdog/server/settings", with_cors(self.handle_settings)),
+            web.route("*", "/api/unstable/llm-obs/v1/retentions", with_cors(self.handle_retentions)),
         ]
 
 
