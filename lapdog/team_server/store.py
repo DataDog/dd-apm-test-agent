@@ -243,8 +243,11 @@ class ClickHouseSpanBackend:
             f"SELECT {', '.join(selects)} FROM {self.table} FINAL WHERE {where} "
             f"GROUP BY k {having} ORDER BY {order}, k LIMIT {int(request.limit) + 1}"
         )
-        groups = [(str(row["k"]), {output: row[column] for column, output in outputs}) for row in rows[: request.limit]]
-        return AggregateResult(groups, len(rows) > request.limit)
+        page = rows[: request.limit]
+        groups = [(str(row["k"]), {output: row[column] for column, output in outputs}) for row in page]
+        order_column = "latest_ns" if request.sort_order == "desc" else "earliest_ns"
+        order_ns = {str(row["k"]): int(row[order_column]) for row in page}
+        return AggregateResult(groups, len(rows) > request.limit, order_ns)
 
     async def fetch_one(self, event_id: str) -> Optional[Dict[str, Any]]:
         spans = await self._spans(

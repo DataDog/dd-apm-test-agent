@@ -22,7 +22,7 @@ log = logging.getLogger("lapdog.team_server")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(prog="lapdog server", description="Run the lapdog team server in the foreground")
+    parser = argparse.ArgumentParser(prog="lapdog server", description="Run the Self-hosted lapdog server in the foreground")
     add_server_arguments(parser)
     parser.add_argument("--log-level", default=os.environ.get("LOG_LEVEL", "INFO"))
     args = parser.parse_args(argv)

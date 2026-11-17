@@ -211,6 +211,14 @@ def dd_api_key_validation_response() -> Tuple[int, Dict[str, Any]]:
 
 
 @pytest.fixture(autouse=True)
+def isolated_forwarding_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Keep tests from reading or writing the real ~/.lapdog/forwarding.json (and forwarding to its server)."""
+    path = tmp_path / "forwarding.json"
+    monkeypatch.setenv("LAPDOG_FORWARDING_CONFIG", str(path))
+    return path
+
+
+@pytest.fixture(autouse=True)
 def dd_api_key_validation_requests(
     monkeypatch: pytest.MonkeyPatch, dd_api_key_validation_response: Tuple[int, Dict[str, Any]]
 ) -> List[Dict[str, Any]]:

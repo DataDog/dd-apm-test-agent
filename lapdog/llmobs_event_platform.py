@@ -1366,6 +1366,38 @@ class AggregateRequest(NamedTuple):
 class AggregateResult(NamedTuple):
     groups: List[Tuple[str, Dict[str, Any]]]
     has_more: bool
+    # Each group's sort time (latest span for desc, earliest for asc), so merged results keep their order.
+    order_ns: Dict[str, int] = {}
+
+
+class ListParams(NamedTuple):
+    """A parsed ``list`` request body."""
+
+    query: str
+    limit: int
+    paging: Optional[Any]
+    sort_order: str
+    time_window: Optional[TimeWindow]
+
+
+def parse_list_params(body: Any) -> ListParams:
+    """Parse a ``{"list": {...}}`` request body; raise ``ValueError`` if it's invalid."""
+    list_params = body.get("list", {}) if isinstance(body, dict) else {}
+    limit = list_params.get("limit", 100)
+    if type(limit) is not int or limit < 0:
+        raise ValueError("Invalid list limit")
+    query_str = list_params.get("search", {}).get("query", "")
+    # Sort order defaults to descending by start_ns.
+    sorts = list_params.get("sorts") or [list_params.get("sort", {})]
+    sort_value = next((sort.get("time") for sort in sorts if isinstance(sort, dict) and "time" in sort), None)
+    time_sort: Dict[str, Any] = sort_value if isinstance(sort_value, dict) else {}
+    return ListParams(
+        query_str,
+        limit,
+        list_params.get("paging"),
+        time_sort.get("order", "desc"),
+        parse_time_window(list_params.get("time")),
+    )
 
 
 class SpanBackend(Protocol):
@@ -1592,9 +1624,11 @@ class InMemorySpanBackend:
         group_order = [key for key in group_order if key not in seen_group_keys]
         has_more = len(group_order) > request.limit
         group_order = group_order[: request.limit]
+        edge = 0 if request.sort_order == "desc" else -1
         return AggregateResult(
             groups=[(key, _aggregate_group_metrics(groups[key], request.compute)) for key in group_order],
             has_more=has_more,
+            order_ns={key: int(groups[key][edge].get("start_ns", 0) or 0) for key in group_order},
         )
 
     async def fetch_one(self, event_id: str) -> Optional[Dict[str, Any]]:
@@ -1710,25 +1744,10 @@ class LLMObsEventPlatformAPI:
                 if query_type != "llmobs":
                     return web.json_response({"error": "Only llmobs queries are supported"}, status=400)
 
-            body = await request.json()
-            list_params = body.get("list", {})
-            limit = list_params.get("limit", 100)
-            if type(limit) is not int or limit < 0:
-                return web.json_response({"error": "Invalid list limit"}, status=400)
-            query_str = list_params.get("search", {}).get("query", "")
-
-            # Handle sort order (default is descending by start_ns)
-            sorts = list_params.get("sorts") or [list_params.get("sort", {})]
-            sort_value = next((sort.get("time") for sort in sorts if isinstance(sort, dict) and "time" in sort), None)
-            time_sort: Dict[str, Any] = sort_value if isinstance(sort_value, dict) else {}
-            sort_order = time_sort.get("order", "desc")
             try:
+                params = parse_list_params(await request.json())
                 page = await self.backend.list_spans(
-                    query_str,
-                    limit,
-                    list_params.get("paging"),
-                    sort_order,
-                    time_window=parse_time_window(list_params.get("time")),
+                    params.query, params.limit, params.paging, params.sort_order, time_window=params.time_window
                 )
             except ValueError as exc:
                 return web.json_response({"error": str(exc)}, status=400)
@@ -1737,7 +1756,7 @@ class LLMObsEventPlatformAPI:
             response = build_event_platform_list_response(
                 page.spans,
                 request_id,
-                limit,
+                params.limit,
                 paging=page.next_paging,
                 hit_count=page.hit_count,
                 children_by_trace=page.children_by_trace,
@@ -1814,7 +1833,10 @@ class LLMObsEventPlatformAPI:
                     by_val = int(key)
                 except (ValueError, TypeError):
                     pass
-                values.append({"by": {group_by_output or group_by_field or "": by_val}, "metrics": metrics})
+                value: Dict[str, Any] = {"by": {group_by_output or group_by_field or "": by_val}, "metrics": metrics}
+                if key in agg.order_ns:
+                    value["_order_ns"] = agg.order_ns[key]
+                values.append(value)
 
             result: Dict[str, Any] = {"values": values}
             if agg.has_more and group_by_output:

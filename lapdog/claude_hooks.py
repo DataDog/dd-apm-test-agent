@@ -18,6 +18,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Protocol
+from typing import TYPE_CHECKING
 from typing import Set
 from typing import Tuple
 from urllib.parse import urlparse
@@ -77,6 +78,26 @@ _RESERVED_SESSION_TAG_KEYS = frozenset(
     }
 )
 _MAX_SPANS_PER_BACKEND_REQUEST = 20
+
+if TYPE_CHECKING:
+    from .forwarding import Forwarding
+
+
+def forwardable_spans(spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Copy spans for sending elsewhere: drop lapdog's local cost estimates and tag them as forwarded."""
+    forwarded = []
+    for s in spans:
+        span = (
+            {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}}
+            if s.get("metrics")
+            else dict(s)
+        )
+        tags: List[Any] = span.get("tags") or []
+        if "lapdog_forwarded:true" not in tags:
+            span["tags"] = tags + ["lapdog_forwarded:true"]
+        forwarded.append(span)
+    return forwarded
+
 
 # Models with 1M token context windows (native, no beta header needed).
 # All other models default to 200k.
@@ -346,6 +367,8 @@ class ClaudeHooksAPI:
         self.max_memory_bytes = max_memory_bytes
         self._assembled_spans = SpanStore(span_budget(max_memory_bytes))
         self._assembled_spans.add_active_trace_source(self._active_trace_ids)
+        # Sends finished traces to the self-hosted server and counts what reaches Datadog (set by lapdog.server).
+        self.forwarding: Optional["Forwarding"] = None
         self._pending_claude_auto_reviews: Dict[str, Dict[str, Any]] = {}
         self._raw_events = RawEventLog(raw_event_budget(max_memory_bytes))
         self._link_tracker = link_tracker
@@ -1836,17 +1859,20 @@ class ClaudeHooksAPI:
         log.info("Resolved backend target: %s (mode=%s)", url, "agent" if agent_url else "agentless")
         return url, headers
 
-    async def _post_to_backend(self, url: str, headers: Dict[str, str], data: bytes, description: str) -> None:
-        """POST the given data to the url and log the outcome."""
+    async def _post_to_backend(self, url: str, headers: Dict[str, str], data: bytes, description: str) -> Optional[str]:
+        """POST the given data to the url and log the outcome. Returns the error, or None on success."""
         try:
             async with ClientSession() as http_session:
                 async with http_session.post(url, headers=headers, data=data) as resp:
                     if not resp.ok:
-                        log.warning("Failed to %s: %s %s", description, resp.status, await resp.text())
-                    else:
-                        log.info("Successfully %s", description)
+                        text = await resp.text()
+                        log.warning("Failed to %s: %s %s", description, resp.status, text)
+                        return f"HTTP {resp.status}: {text}"
+                    log.info("Successfully %s", description)
+                    return None
         except Exception as e:
             log.warning("Error trying to %s: %s", description, e)
+            return str(e) or e.__class__.__name__
 
     async def _post_spans_to_backend(
         self,
@@ -1876,7 +1902,9 @@ class ClaudeHooksAPI:
             chunk_description = description
             if chunk_count > 1:
                 chunk_description = f"{description} (chunk {chunk_index}/{chunk_count}, {len(chunk)} spans)"
-            await self._post_to_backend(url, headers, data, chunk_description)
+            error = await self._post_to_backend(url, headers, data, chunk_description)
+            if self.forwarding is not None:
+                self.forwarding.datadog.record(len(chunk), error is None, error or "")
 
     async def _forward_span_update(self, spans: List[Dict[str, Any]]) -> None:
         """Forward span updates to the DD backend via the update endpoint."""
@@ -1903,23 +1931,15 @@ class ClaudeHooksAPI:
         if not spans:
             return
 
+        # Strip locally-computed cost estimates before forwarding — let real cost tracking happen on ingestion
+        forwarded_spans = forwardable_spans(spans)
+        if self.forwarding is not None:
+            self.forwarding.forward_coding_agent_spans(forwarded_spans)
+
         target = self._resolve_backend_target("/api/v2/llmobs")
         if target is None:
             return
         url, headers = target
-
-        # Strip locally-computed cost estimates before forwarding — let real cost tracking happen on ingestion
-        forwarded_spans = []
-        for s in spans:
-            span = (
-                {**s, "metrics": {k: v for k, v in s["metrics"].items() if k not in COST_METRIC_KEYS}}
-                if s.get("metrics")
-                else dict(s)
-            )
-            tags: List[Any] = span.get("tags") or []
-            if "lapdog_forwarded:true" not in tags:
-                span["tags"] = tags + ["lapdog_forwarded:true"]
-            forwarded_spans.append(span)
 
         await self._post_spans_to_backend(
             url,

@@ -15,6 +15,7 @@ from lapdog.cli.claude import LAPDOG_MARKETPLACE_SOURCE
 from lapdog.cli.claude import LAPDOG_PLUGIN_NAME
 from lapdog.cli.claude import cmd_claude
 from lapdog.cli.codex import cmd_codex
+from lapdog.cli.forward import cmd_forward
 from lapdog.cli.ollama import cmd_ollama
 from lapdog.cli.os_runner import run
 from lapdog.cli.pi import cmd_pi
@@ -32,7 +33,7 @@ from lapdog.span_store import MAX_MEMORY_ENV
 from lapdog.span_store import DEFAULT_MAX_MEMORY
 from lapdog.span_store import parse_memory_limit
 
-LAPDOG_COMMANDS = ["start", "stop", "status", "server", "claude", "pi", "codex", "ollama", "tags", "uninstall"]
+LAPDOG_COMMANDS = ["start", "stop", "status", "server", "forward", "claude", "pi", "codex", "ollama", "tags", "uninstall"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
@@ -50,7 +51,8 @@ LAPDOG_USAGE = (
     "  start      Start lapdog (background)\n"
     "  stop       Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
     "  status     Show lapdog status (from /info)\n"
-    "  server     Run the self-managed team server with ClickHouse storage ('lapdog server --help')\n"
+    "  server     Run a Self-hosted lapdog server with ClickHouse storage ('lapdog server --help')\n"
+    "  forward    Also send traces to a Self-hosted lapdog server or Datadog ('lapdog forward --help')\n"
     "  claude     Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi         Start lapdog in background if needed, install extension, then launch pi\n"
     "  codex      Start lapdog in background if needed, then launch Codex with tracing\n"
@@ -278,6 +280,8 @@ def main() -> None:
         cmd_status()
     elif sub_cmd == "server":
         cmd_server(sub_cmd_args)
+    elif sub_cmd == "forward":
+        cmd_forward(sub_cmd_args)
     elif sub_cmd == "claude":
         cmd_claude(
             sub_cmd_args=sub_cmd_args,

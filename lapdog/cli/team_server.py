@@ -1,4 +1,4 @@
-"""``lapdog server``: start, stop, status, and config for the ClickHouse-backed team server."""
+"""``lapdog server``: start, stop, status, and config for the ClickHouse-backed Self-hosted lapdog server."""
 
 import argparse
 import json
@@ -33,8 +33,8 @@ SERVER_USAGE = (
     "Usage: lapdog server <start|stop|status|config> [options]\n"
     "\n"
     "  start [--foreground] [--host H] [--port P] [--retention 30d] [--max-disk 20GB] ...\n"
-    "                       Start the team server (ClickHouse-backed). 'lapdog server start --help' for all flags\n"
-    "  stop                 Stop the team server\n"
+    "                       Start the Self-hosted server (ClickHouse-backed). 'lapdog server start --help' for all flags\n"
+    "  stop                 Stop the Self-hosted server\n"
     "  status               Show disk usage, retention, and health\n"
     "  config get           Show retention and max disk\n"
     "  config set KEY VAL   Change 'retention' (e.g. 14d) or 'max-disk' (e.g. 50GB); applied live if running\n"
@@ -130,7 +130,7 @@ def _print_started(url: str, pid: int, args: argparse.Namespace, data_dir: str) 
 
 
 def cmd_server_start(argv: List[str]) -> None:
-    parser = argparse.ArgumentParser(prog="lapdog server start", description="Start the lapdog team server")
+    parser = argparse.ArgumentParser(prog="lapdog server start", description="Start the Self-hosted lapdog server")
     add_server_arguments(parser)
     parser.add_argument("--foreground", action="store_true", help="Run in the foreground (for Docker and services)")
     args = parser.parse_args(argv)

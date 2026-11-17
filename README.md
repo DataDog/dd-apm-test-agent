@@ -114,9 +114,9 @@ The test agent can receive [Claude Code hook](https://docs.claude.com/en/docs/cl
 See [`.claude/setup-hooks.md`](.claude/setup-hooks.md) for full setup instructions (also usable as a Claude Code prompt to automate the setup).
 
 
-### Lapdog server (self-managed, ClickHouse storage)
+### Self-hosted lapdog server (ClickHouse storage)
 
-`lapdog server` runs a network-reachable LLM Observability server for a team. It ingests ddtrace LLMObs spans, stores them in a ClickHouse server that lapdog downloads (pinned, checksum-verified) and runs as a child process on `127.0.0.1`, and serves the query API to the lapdog UI. It has no terminal, file serving, or coding-agent hooks.
+`lapdog server` runs a Self-hosted, network-reachable LLM Observability server. It ingests ddtrace LLMObs spans, stores them in a ClickHouse server that lapdog downloads (pinned, checksum-verified) and runs as a child process on `127.0.0.1`, and serves the query API to the lapdog UI. It has no terminal, file serving, or coding-agent hooks.
 
 ```bash
 lapdog server start --host 0.0.0.0 --retention 30d --max-disk 20GB
@@ -126,6 +126,7 @@ lapdog server stop
 ```
 
 - **No auth**: anyone who can reach the server can read and send spans. On a network, put it behind your own auth proxy or firewall.
+- **Forwarding from a laptop**: `lapdog forward <server-url> [--include-coding-agents]` makes the local lapdog also send what it receives to the server (apps keep sending to `localhost:8126` with no extra config). Coding-agent sessions stay local unless opted in. `lapdog forward` shows the state, `lapdog forward off` stops it, and the lapdog UI shows the same flow and switches. While forwarding there, the local lapdog's searches cover both its memory and the Self-hosted server: spans it forwarded are read from the server, everything else from memory, so nothing is counted twice.
 - **Sending spans** (Python, no code changes): `DD_LLMOBS_ENABLED=1 DD_LLMOBS_AGENTLESS_ENABLED=1 DD_LLMOBS_OVERRIDE_ORIGIN=https://<host> DD_API_KEY=lapdog`. ddtrace's agentless mode needs some API key set; the server ignores it.
 - **Retention**: spans live in daily partitions. Days older than `--retention` are dropped; while stored data exceeds `--max-disk` (or the disk is nearly full) the oldest days are dropped, and if only today is left, intake answers 503 until there's room again.
 - **Docker**: `docker build -f Dockerfile.server -t lapdog-server .` then `docker run -p 8126:8126 -v lapdog-data:/data lapdog-server`. Every flag has a `LAPDOG_SERVER_*` environment variable.
