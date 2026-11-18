@@ -50,6 +50,7 @@ from .llmobs_event_platform import LLMObsEventPlatformAPI
 from .llmobs_event_platform import build_event_platform_list_response
 from .llmobs_event_platform import _query_column_name
 from .llmobs_event_platform import _query_compute_spec
+from .llmobs_event_platform import _query_group_by_fields
 from .llmobs_event_platform import parse_list_params
 
 log = logging.getLogger(__name__)
@@ -175,52 +176,135 @@ def _merge_metric(aggregation: Optional[str], a: Any, b: Any) -> Any:
     return a + b
 
 
-def _scalar_aggregations(attributes: Any) -> Dict[str, str]:
-    """Map each column a scalar request returns to the aggregation that computes it."""
+_HIDDEN = "__lapdog_"
+# Statistics that can't be combined from the two sides' values alone.
+_NEEDS_COUNT = {"min", "max", "avg", "median", "pc75", "pc90", "pc95", "pc99", "earliest", "latest"}
+
+
+class _ScalarColumn(NamedTuple):
+    aggregation: str
+    count_column: Optional[str]  # hidden column with this column's span count on each row
+    time_column: Optional[str]  # hidden column with its earliest (or latest) span time, for earliest/latest
+
+
+def _scalar_plan(attributes: Any) -> Tuple[Dict[str, Any], Dict[str, _ScalarColumn]]:
+    """Return the scalar request with hidden helper queries added, and how to merge each column.
+
+    Combining a minimum, average, or latest value from both sides needs to know how many spans each
+    side's value covers (a side with none returns a placeholder 0) and, for earliest/latest, when.
+    """
     if not isinstance(attributes, dict):
-        return {}
-    queries = [q for q in attributes.get("queries") or [] if isinstance(q, dict)]
-    by_query = {
-        str(q.get("name") or f"query{i + 1}"): str(_query_compute_spec(q)["aggregation"]) for i, q in enumerate(queries)
-    }
-    columns = {_query_column_name(q): str(_query_compute_spec(q)["aggregation"]) for q in queries}
-    for formula in attributes.get("formulas") or []:
-        if isinstance(formula, dict):
+        return {}, {}
+    augmented = copy.deepcopy(attributes)
+    queries = [q for q in augmented.get("queries") or [] if isinstance(q, dict)]
+    formulas = [f for f in augmented.get("formulas") or [] if isinstance(f, dict)]
+    by_query: Dict[str, _ScalarColumn] = {}
+    hidden_queries: List[Dict[str, Any]] = []
+    for i, query in enumerate(queries):
+        name = str(query.get("name") or f"query{i + 1}")
+        aggregation = str(_query_compute_spec(query)["aggregation"])
+        count = time = None
+        if aggregation in _NEEDS_COUNT:
+            count = f"{_HIDDEN}n_{name}"
+            hidden_queries.append({**copy.deepcopy(query), "name": count, "compute": {"aggregation": "count"}})
+        if aggregation in ("earliest", "latest"):
+            time = f"{_HIDDEN}t_{name}"
+            stat = "min" if aggregation == "earliest" else "max"
+            hidden_queries.append(
+                {**copy.deepcopy(query), "name": time, "compute": {"aggregation": stat, "metric": "@timestamp"}}
+            )
+        by_query[name] = _ScalarColumn(aggregation, count, time)
+    columns: Dict[str, _ScalarColumn] = {}
+    if formulas:
+        for formula in formulas:
             ref = str(formula.get("formula") or "")
             if ref in by_query:
                 columns[str(formula.get("alias") or ref)] = by_query[ref]
-    return columns
+        formulas += [{"formula": q["name"], "alias": q["name"]} for q in hidden_queries]
+        augmented["formulas"] = formulas
+    else:
+        for i, query in enumerate(queries):
+            columns[_query_column_name(query)] = by_query[str(query.get("name") or f"query{i + 1}")]
+    augmented["queries"] = queries + hidden_queries
+    return augmented, columns
+
+
+def _scalar_rows(columns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Index a scalar response's rows by their group values."""
+    groups = [c for c in columns if c.get("type") == "group"]
+    numbers = [c for c in columns if c.get("type") != "group"]
+    count = len(numbers[0]["values"]) if numbers else (len(groups[0]["values"]) if groups else 0)
+    rows: Dict[str, Dict[str, Any]] = {}
+    for i in range(count):
+        key = json.dumps([g["values"][i] for g in groups])
+        rows[key] = {c["name"]: c["values"][i] if i < len(c["values"]) else 0 for c in numbers}
+    return rows
+
+
+def _merge_scalar_row(into: Dict[str, Any], row: Dict[str, Any], plan: Dict[str, _ScalarColumn]) -> None:
+    for name, value in row.items():
+        if name.startswith(_HIDDEN):
+            continue
+        if name not in into:
+            into[name] = value
+            continue
+        column = plan.get(name)
+        if column is None or column.count_column is None:
+            into[name] = _merge_metric(column.aggregation if column else None, into[name], value)
+            continue
+        mine, theirs = into.get(column.count_column) or 0, row.get(column.count_column) or 0
+        if not theirs:
+            continue
+        if not mine:
+            into[name] = value
+        elif column.aggregation == "avg":
+            into[name] = (into[name] * mine + value * theirs) / (mine + theirs)
+        elif column.time_column is not None:
+            earlier = (row.get(column.time_column) or 0) < (into.get(column.time_column) or 0)
+            if earlier == (column.aggregation == "earliest"):
+                into[name] = value
+        else:
+            into[name] = _merge_metric(column.aggregation, into[name], value)
+    for column in set(plan.values()):
+        count_name, time_name = column.count_column, column.time_column
+        if count_name is None:
+            continue
+        mine, theirs = into.get(count_name) or 0, row.get(count_name) or 0
+        if time_name is not None and theirs:
+            pick = min if column.aggregation == "earliest" else max
+            into[time_name] = pick(into[time_name], row[time_name]) if mine else row[time_name]
+        into[count_name] = mine + theirs
 
 
 def _merge_scalar_columns(
-    a: List[Dict[str, Any]], b: List[Dict[str, Any]], aggregations: Dict[str, str]
+    a: List[Dict[str, Any]], b: List[Dict[str, Any]], plan: Dict[str, _ScalarColumn], keep_hidden: bool = False
 ) -> List[Dict[str, Any]]:
-    """Combine two scalar responses' columns; rows with the same group values merge per column aggregation."""
-    if not a:
-        return b
-    if not b:
-        return a
-    group_names = [c["name"] for c in a if c.get("type") == "group"]
-    number_names = [c["name"] for c in a if c.get("type") != "group"]
-    rows: Dict[Tuple[str, ...], Dict[str, Any]] = {}
+    """Combine two scalar responses' columns; rows with the same group values merge per column statistic."""
+    template = a or b
+    rows: Dict[str, Dict[str, Any]] = {}
     for columns in (a, b):
-        by_name = {c["name"]: c for c in columns}
-        if any(name not in by_name for name in group_names + number_names):
-            continue
-        row_count = len(by_name[number_names[0]]["values"]) if number_names else 0
-        for i in range(row_count):
-            key = tuple(json.dumps(by_name[g]["values"][i]) for g in group_names)
-            row = rows.setdefault(key, {})
-            for name in number_names:
-                value = by_name[name]["values"][i]
-                value = value if isinstance(value, (int, float)) else 0
-                row[name] = _merge_metric(aggregations.get(name), row[name], value) if name in row else value
+        for key, row in _scalar_rows(columns).items():
+            if key in rows:
+                _merge_scalar_row(rows[key], row, plan)
+            else:
+                rows[key] = dict(row)
     merged = []
-    for g_index, name in enumerate(group_names):
-        merged.append({**next(c for c in a if c["name"] == name), "values": [json.loads(k[g_index]) for k in rows]})
-    for name in number_names:
-        merged.append({**next(c for c in a if c["name"] == name), "values": [row.get(name, 0) for row in rows.values()]})
+    for g_index, column in enumerate(c for c in template if c.get("type") == "group"):
+        merged.append({**column, "values": [json.loads(k)[g_index] for k in rows]})
+    for column in template:
+        if column.get("type") != "group" and (keep_hidden or not str(column["name"]).startswith(_HIDDEN)):
+            merged.append({**column, "values": [row.get(column["name"], 0) for row in rows.values()]})
     return merged
+
+
+def _top_scalar_rows(columns: List[Dict[str, Any]], descending: bool, limit: int) -> List[Dict[str, Any]]:
+    """Keep the ``limit`` rows with the largest (or smallest) first value, as each backend does."""
+    numbers = [c for c in columns if c.get("type") != "group" and not str(c["name"]).startswith(_HIDDEN)]
+    if not numbers:
+        return columns
+    primary = numbers[0]["values"]
+    order = sorted(range(len(primary)), key=lambda i: primary[i] or 0, reverse=descending)[:limit]
+    return [{**c, "values": [c["values"][i] for i in order]} for c in columns]
 
 
 def _merge_aggregate_values(
@@ -373,7 +457,18 @@ class FederatedSearch:
     async def _list(self, request: web.Request) -> web.StreamResponse:
         body = await request.json()
         params = parse_list_params(body)
+        paging = params.paging if isinstance(params.paging, dict) else {}
+        raw_cursor = paging.get("after") or paging.get("from")
+        if isinstance(raw_cursor, str) and not raw_cursor.startswith(_CURSOR_PREFIX) and self._memory_list:
+            # Memory's own cursor, from a page answered by memory alone after Self-hosted went away:
+            # keep paging memory so this listing stays consistent.
+            return await self._memory_list(request)
         cursor, mode = _decode_cursor(params.paging)
+        # Inclusive paging starts at the last event listed overall, not at each side's last one.
+        local_start, remote_start = cursor.local, cursor.remote
+        if mode == "from" and cursor.position:
+            local_start = cursor.position if cursor.local != _END else _END
+            remote_start = cursor.position if cursor.remote != _END else _END
 
         def side_paging(side_cursor: Optional[str]) -> Optional[Dict[str, str]]:
             return {mode: side_cursor} if side_cursor else None
@@ -383,7 +478,7 @@ class FederatedSearch:
         local_hits = 0
         if cursor.local != _END:
             page = await self.local_api.backend.list_spans(
-                params.query, params.limit, side_paging(cursor.local), params.sort_order, time_window=params.time_window
+                params.query, params.limit, side_paging(local_start), params.sort_order, time_window=params.time_window
             )
             built = build_event_platform_list_response(
                 page.spans,
@@ -404,8 +499,8 @@ class FederatedSearch:
         if cursor.remote != _END:
             remote_body = copy.deepcopy(body)
             list_params = remote_body.setdefault("list", {})
-            if cursor.remote:
-                list_params["paging"] = {mode: cursor.remote}
+            if remote_start:
+                list_params["paging"] = {mode: remote_start}
             else:
                 list_params.pop("paging", None)
             try:
@@ -439,7 +534,7 @@ class FederatedSearch:
                     part = await self.local_api.backend.list_spans(
                         params.query,
                         len(taken_local),
-                        side_paging(cursor.local),
+                        side_paging(local_start),
                         params.sort_order,
                         time_window=params.time_window,
                     )
@@ -504,7 +599,7 @@ class FederatedSearch:
 
         field = ((agg.get("groupBy") or [{}])[0] or {}).get("field", {}) or {}
         field_id = str(field.get("id", ""))
-        output = field.get("output", field_id.lstrip("@"))
+        output = field.get("output", field_id)
         limit = int(field.get("limit", 50)) if agg.get("groupBy") else 1
         descending = ((field.get("sort") or {}).get("metric") or {}).get("order", "desc") != "asc"
         aggregations = {
@@ -564,12 +659,40 @@ class FederatedSearch:
 
     async def _facet_info(self, request: web.Request) -> web.Response:
         body = await request.json()
-        limit = int((body.get("facet_info") or {}).get("limit", 10)) if isinstance(body, dict) else 10
-        local = await self._local(self.local_api.handle_facet_info, request) or {}
-        remote = await self._remote(request) or {}
+        facet = (body.get("facet_info") or {}) if isinstance(body, dict) else {}
+        limit = int(facet.get("limit", 10))
+        sides = [
+            (await self._remote(request) or {}, False),
+            (await self._local(self.local_api.handle_facet_info, request) or {}, True),
+        ]
+
+        def counts_of(response: Dict[str, Any]) -> Dict[str, int]:
+            return {str(i.get("field")): int(i.get("value", 0)) for i in response.get("result", {}).get("fields", [])}
+
+        side_counts = [counts_of(side) for side, _ in sides]
         counts: Dict[str, int] = {}
-        for item in remote.get("result", {}).get("fields", []) + local.get("result", {}).get("fields", []):
-            counts[str(item.get("field"))] = counts.get(str(item.get("field")), 0) + int(item.get("value", 0))
+        for side in side_counts:
+            for value, count in side.items():
+                counts[value] = counts.get(value, 0) + count
+        top = [v for v, _ in sorted(counts.items(), key=lambda kv: -kv[1])[:limit]]
+        # Each side returned only its own top values; count the rest of a top value's spans on a side that
+        # stopped before reaching it.
+        for (side, is_local), have in zip(sides, side_counts):
+            missing = [v for v in top if v not in have]
+            search = str((facet.get("search") or {}).get("query", ""))
+            query = _groups_query(search, str(facet.get("path", "")), missing)
+            if len(have) < limit or not missing or query is None:
+                continue
+            extra_body = copy.deepcopy(body)
+            extra_body["facet_info"].setdefault("search", {})["query"] = query
+            extra_body["facet_info"]["limit"] = len(missing)
+            if is_local:
+                extra = await self._local(self.local_api.handle_facet_info, _with_body(request, extra_body)) or {}
+            else:
+                extra = await self._remote(request, json.dumps(extra_body).encode()) or {}
+            for value, count in counts_of(extra).items():
+                if value in missing:
+                    counts[value] = counts.get(value, 0) + count
         fields = [{"field": f, "value": c} for f, c in sorted(counts.items(), key=lambda kv: -kv[1])[:limit]]
         result = {"fields": fields, "status": "done"}
         return web.json_response({"elapsed": 10, "requestId": "federated", "result": result, "status": "done"})
@@ -587,19 +710,77 @@ class FederatedSearch:
         return web.json_response({"elapsed": 10, "requestId": "federated", "result": result, "status": "done"})
 
     async def _scalar(self, request: web.Request) -> web.Response:
-        local = await self._local(self.local_api.handle_query_scalar, request) or {}
-        remote = await self._remote(request) or {}
         body = await request.json()
         requests = (body.get("data") if isinstance(body, dict) else None) or []
+        augmented_body = copy.deepcopy(body) if isinstance(body, dict) else {}
+        plans: List[Dict[str, _ScalarColumn]] = []
+        for i, item in enumerate(requests):
+            attributes, plan = _scalar_plan(item.get("attributes") if isinstance(item, dict) else None)
+            if attributes:
+                augmented_body["data"][i]["attributes"] = attributes
+            plans.append(plan)
+        local = await self._local(self.local_api.handle_query_scalar, _with_body(request, augmented_body)) or {}
+        remote = await self._remote(request, json.dumps(augmented_body).encode()) or {}
         local_data, remote_data = local.get("data", []), remote.get("data", [])
         data = []
         for i in range(max(len(local_data), len(remote_data))):
             a = remote_data[i]["attributes"]["columns"] if i < len(remote_data) else []
             b = local_data[i]["attributes"]["columns"] if i < len(local_data) else []
-            attributes = requests[i].get("attributes") if i < len(requests) and isinstance(requests[i], dict) else None
-            columns = _merge_scalar_columns(a, b, _scalar_aggregations(attributes))
+            item = augmented_body["data"][i] if i < len(requests) else None
+            columns = await self._merge_scalar_sides(request, item, a, b, plans[i] if i < len(plans) else {})
             data.append({"type": "scalar_response", "attributes": {"columns": columns}})
         return web.json_response({"data": data})
+
+    async def _merge_scalar_sides(
+        self,
+        request: web.Request,
+        item: Optional[Dict[str, Any]],
+        remote: List[Dict[str, Any]],
+        local: List[Dict[str, Any]],
+        plan: Dict[str, _ScalarColumn],
+    ) -> List[Dict[str, Any]]:
+        """Merge one scalar request's columns, completing top groups that a side's row limit cut off."""
+        attributes = (item or {}).get("attributes") or {}
+        queries = [q for q in attributes.get("queries") or [] if isinstance(q, dict)]
+        group_defs = _query_group_by_fields(queries[0]) if queries else []
+        if len(group_defs) != 1:
+            return _merge_scalar_columns(remote, local, plan)
+        group = group_defs[0]
+        limit = group["limit"] if isinstance(group.get("limit"), int) else 50
+        descending = group["sort_order"] == "desc"
+        top = _top_scalar_rows(_merge_scalar_columns(remote, local, plan, keep_hidden=True), descending, limit)
+        top_keys = list(_scalar_rows(top))
+        sides = [remote, local]
+        for index, is_local in ((0, False), (1, True)):
+            have = _scalar_rows(sides[index])
+            missing_keys = [k for k in top_keys if k not in have]
+            values = [str((json.loads(k) or [[""]])[0][0]) for k in missing_keys]
+            if len(have) < limit or not missing_keys:
+                continue
+            extra_attributes = copy.deepcopy(attributes)
+            narrowed = True
+            for query in extra_attributes.get("queries") or []:
+                search = str((query.get("search") or {}).get("query", ""))
+                query_text = _groups_query(search, "@" + str(group["field"]), values)
+                if query_text is None:
+                    narrowed = False
+                    break
+                query.setdefault("search", {})["query"] = query_text
+                for group_by in query.get("group_by") or []:
+                    if isinstance(group_by, dict):
+                        group_by["limit"] = len(values)
+            if not narrowed:
+                continue
+            extra_body = {"data": [{**(item or {}), "attributes": extra_attributes}]}
+            if is_local:
+                extra = await self._local(self.local_api.handle_query_scalar, _with_body(request, extra_body)) or {}
+            else:
+                extra = await self._remote(request, json.dumps(extra_body).encode()) or {}
+            extra_columns = (extra.get("data") or [{}])[0].get("attributes", {}).get("columns", [])
+            sides[index] = _merge_scalar_columns(sides[index], extra_columns, plan, keep_hidden=True)
+        merged = _merge_scalar_columns(sides[0], sides[1], plan, keep_hidden=True)
+        top = _top_scalar_rows(merged, descending, limit)
+        return [c for c in top if c.get("type") == "group" or not str(c["name"]).startswith(_HIDDEN)]
 
     def _local_has(self, predicate: Callable[[Dict[str, Any]], bool]) -> bool:
         return any(predicate(span) for span in self.local_api.backend.get_llmobs_spans())  # type: ignore[attr-defined]

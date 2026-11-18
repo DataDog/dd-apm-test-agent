@@ -189,7 +189,8 @@ async def _server_has(self_hosted_server, count):
     await _wait_for(check)
 
 
-async def test_aggregate_completes_groups_cut_off_on_one_side(federated, self_hosted_server):
+@pytest.mark.parametrize("output", ["ml_app", None])
+async def test_aggregate_completes_groups_cut_off_on_one_side(federated, self_hosted_server, output):
     # Self-hosted's newest group is "mine", but memory's newest is "app", so with one group per side
     # memory's "mine" span (local-1) only counts if it's asked for separately.
     await _post_to_server(self_hosted_server, _span("mate-2", time.time_ns() - 500, ml_app="mine"))
@@ -199,7 +200,7 @@ async def test_aggregate_completes_groups_cut_off_on_one_side(federated, self_ho
         json={
             "aggregate": {
                 "search": {"query": ""},
-                "groupBy": [{"field": {"id": "@ml_app", "output": "ml_app", "limit": 1}}],
+                "groupBy": [{"field": {"id": "@ml_app", "limit": 1, **({"output": output} if output else {})}}],
                 "compute": [
                     {"total": {"aggregation": "count", "output": "c"}},
                     {"total": {"aggregation": "earliest", "metric": "@name", "output": "first"}},
@@ -209,21 +210,50 @@ async def test_aggregate_completes_groups_cut_off_on_one_side(federated, self_ho
         },
     )
     values = (await resp.json())["result"]["values"]
-    assert [(v["by"]["ml_app"], v["metrics"]) for v in values] == [
+    assert [(v["by"][output or "@ml_app"], v["metrics"]) for v in values] == [
         ("mine", {"c": 3, "first": "local-1", "last": "mate-2"})
     ]
 
 
-async def test_scalar_max_takes_the_larger_side():
-    from lapdog.federated_search import _merge_scalar_columns
-    from lapdog.federated_search import _scalar_aggregations
+def _scalar_columns(value, count, time_ms, name="q"):
+    columns = [{"name": name, "type": "number", "meta": None, "values": [value]}]
+    columns.append({"name": f"__lapdog_n_{name}", "type": "number", "meta": None, "values": [count]})
+    if time_ms is not None:
+        columns.append({"name": f"__lapdog_t_{name}", "type": "number", "meta": None, "values": [time_ms]})
+    return columns
 
-    attributes = {"queries": [{"name": "q", "compute": {"aggregation": "max", "metric": "@duration"}}]}
-    column = {"name": "q", "type": "number", "meta": None}
-    merged = _merge_scalar_columns(
-        [{**column, "values": [5]}], [{**column, "values": [7]}], _scalar_aggregations(attributes)
-    )
-    assert merged[0]["values"] == [7]
+
+@pytest.mark.parametrize(
+    "aggregation,remote,local,expected",
+    [
+        ("max", (5, 1, None), (7, 1, None), 7),
+        ("min", (0, 0, None), (10, 1, None), 10),  # no remote matches: its placeholder 0 isn't a value
+        ("avg", (2, 1, None), (8, 3, None), 6.5),
+        ("latest", (5, 1, 100), (7, 1, 300), 7),
+        ("earliest", (5, 1, 100), (7, 1, 300), 5),
+    ],
+)
+def test_scalar_merges_each_statistic(aggregation, remote, local, expected):
+    from lapdog.federated_search import _merge_scalar_columns
+    from lapdog.federated_search import _scalar_plan
+
+    attributes = {"queries": [{"name": "q", "compute": {"aggregation": aggregation, "metric": "@duration"}}]}
+    _, plan = _scalar_plan(attributes)
+    merged = _merge_scalar_columns(_scalar_columns(*remote), _scalar_columns(*local), plan)
+    assert [c["name"] for c in merged] == ["q"]
+    assert merged[0]["values"] == [expected]
+
+
+async def test_scalar_ignores_a_side_with_no_matches(federated):
+    query = {
+        "name": "query1",
+        "data_source": "llm_observability",
+        "search": {"query": "@name:local-1"},
+        "compute": {"aggregation": "avg", "metric": "@duration"},
+    }
+    resp = await federated.post("/api/ui/query/scalar", json={"data": [{"attributes": {"queries": [query]}}]})
+    columns = (await resp.json())["data"][0]["attributes"]["columns"]
+    assert [(c["name"], c["values"]) for c in columns] == [("query1", [1000])]
 
 
 async def test_trace_split_across_both_sides_is_combined(federated, self_hosted_server):
@@ -244,12 +274,17 @@ async def test_paging_continues_from_memory_when_self_hosted_goes_away(federated
     assert resp.status == 200
     second = await _list(federated, limit=2, paging=first["result"]["paging"])
     assert _ids(second) == ["local-2", "fwd-1"]
+    # Memory's own cursor keeps working while forwarding is still configured.
+    third = await _list(federated, limit=2, paging=second["result"]["paging"])
+    assert _ids(third) == ["local-1"]
 
 
 async def test_list_accepts_an_inclusive_from_cursor(federated):
-    first = await _list(federated, limit=2)
-    again = await _list(federated, limit=2, paging={"from": first["result"]["paging"]["after"]})
-    assert _ids(again) == ["mate-1", "local-2"]
+    first = await _list(federated, limit=3)
+    assert _ids(first) == ["fwd-2", "mate-1", "local-2"]
+    again = await _list(federated, limit=3, paging={"from": first["result"]["paging"]["after"]})
+    # Starts at the last event listed overall, not at each side's last one.
+    assert _ids(again) == ["local-2", "fwd-1", "local-1"]
 
 
 async def test_paging_keeps_repeated_copies_of_a_span(lapdog_agent, self_hosted_server):
@@ -270,3 +305,25 @@ async def test_paging_keeps_repeated_copies_of_a_span(lapdog_agent, self_hosted_
         if not paging:
             break
     assert seen == ["new", "dup", "dup", "dup"]
+
+
+async def test_facets_and_grouped_scalars_complete_values_cut_off_on_one_side(federated, self_hosted_server):
+    await _post_to_server(self_hosted_server, _span("mate-2", time.time_ns() - 500, ml_app="mine"))
+    await _server_has(self_hosted_server, 4)
+    resp = await federated.post(
+        "/api/unstable/llm-obs-query-rewriter/facet_info",
+        json={"facet_info": {"path": "@ml_app", "limit": 1, "search": {"query": ""}}},
+    )
+    fields = (await resp.json())["result"]["fields"]
+    assert fields == [{"field": "mine", "value": 3}]
+
+    query = {
+        "name": "query1",
+        "data_source": "llm_observability",
+        "search": {"query": ""},
+        "compute": {"aggregation": "count"},
+        "group_by": [{"facet": "@ml_app", "limit": 1}],
+    }
+    resp = await federated.post("/api/ui/query/scalar", json={"data": [{"attributes": {"queries": [query]}}]})
+    columns = (await resp.json())["data"][0]["attributes"]["columns"]
+    assert [(c["name"], c["values"]) for c in columns] == [("@ml_app", [["mine"]]), ("query1", [3])]
