@@ -13,11 +13,11 @@ from .test_llmobs_event_platform import llmobs_payload  # noqa: F401
 
 
 @pytest.fixture
-def agent(team_server):
-    return team_server
+def agent(self_hosted_server):
+    return self_hosted_server
 
 
-_IN_MEMORY_INTERNALS = "reads the in-memory backend directly; covered over HTTP in test_team_server.py"
+_IN_MEMORY_INTERNALS = "reads the in-memory backend directly; covered over HTTP in test_self_host.py"
 _V04_TRACES = "v0.4 trace intake is a test-agent feature, not part of lapdog server"
 _EPOCH_TIMESTAMPS = "uses 1970 timestamps, which retention drops at ingest"
 _EXCLUDED = {

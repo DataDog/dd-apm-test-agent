@@ -196,8 +196,8 @@ async def test_self_hosted_health_and_retention_in_info(lapdog_agent, self_hoste
     assert self_hosted["retention_days"] == 7
 
 
-async def test_spans_reach_a_real_self_hosted_server(lapdog_agent, team_server):
-    url = str(team_server.make_url("")).rstrip("/")
+async def test_spans_reach_a_real_self_hosted_server(lapdog_agent, self_hosted_server):
+    url = str(self_hosted_server.make_url("")).rstrip("/")
     await _forwarding(lapdog_agent, self_hosted=url)
     await lapdog_agent.post(
         "/evp_proxy/v2/api/v2/llmobs",
@@ -206,7 +206,7 @@ async def test_spans_reach_a_real_self_hosted_server(lapdog_agent, team_server):
     )
 
     async def stored():
-        resp = await team_server.post(
+        resp = await self_hosted_server.post(
             "/api/unstable/llm-obs-query-rewriter/list?type=llmobs", json={"list": {"limit": 10}}
         )
         return [e["event"]["custom"]["span_id"] for e in (await resp.json())["result"]["events"]]

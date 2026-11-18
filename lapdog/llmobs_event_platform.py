@@ -1405,7 +1405,7 @@ class SpanBackend(Protocol):
 
     Handlers parse requests and shape responses; a backend answers the data
     questions. ``InMemorySpanBackend`` scans spans held by the test agent;
-    ``lapdog.team_server`` provides a ClickHouse-backed implementation.
+    ``lapdog.self_host`` provides a ClickHouse-backed implementation.
     """
 
     async def list_spans(

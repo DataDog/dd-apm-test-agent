@@ -50,10 +50,10 @@ jobs:
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ~/.lapdog/bin
-          key: clickhouse-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lapdog/team_server/clickhouse.py') }}
+          key: clickhouse-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lapdog/self_host/clickhouse.py') }}
       - name: Download ClickHouse
         if: runner.os != 'Windows'
-        run: python -c "from lapdog.team_server.clickhouse import ensure_binary; ensure_binary()"
+        run: python -c "from lapdog.self_host.clickhouse import ensure_binary; ensure_binary()"
       # pytest is run directly rather than through riot: the dependencies are already
       # installed above, and riot doesn't support Windows (https://github.com/DataDog/riot/issues/74)
       - name: Run tests (Windows)

@@ -7,16 +7,16 @@ import time
 import pytest
 
 from lapdog import model_pricing
-from lapdog.cli import team_server as server_cli
-from lapdog.team_server.app import ENFORCER_KEY
-from lapdog.team_server.app import STATE_KEY
-from lapdog.team_server.clickhouse import ClickHouseError
-from lapdog.team_server.clickhouse import ClickHouseProcess
-from lapdog.team_server.clickhouse import render_config
-from lapdog.team_server.config import Settings
-from lapdog.team_server.config import parse_max_disk
-from lapdog.team_server.config import parse_retention_days
-from lapdog.team_server.config import parse_settings_update
+from lapdog.cli import self_host as server_cli
+from lapdog.self_host.app import ENFORCER_KEY
+from lapdog.self_host.app import STATE_KEY
+from lapdog.self_host.clickhouse import ClickHouseError
+from lapdog.self_host.clickhouse import ClickHouseProcess
+from lapdog.self_host.clickhouse import render_config
+from lapdog.self_host.config import Settings
+from lapdog.self_host.config import parse_max_disk
+from lapdog.self_host.config import parse_retention_days
+from lapdog.self_host.config import parse_settings_update
 
 DAY_NS = 86_400 * 1_000_000_000
 
@@ -95,46 +95,46 @@ def test_parse_settings_update():
 
 
 @pytest.mark.parametrize("path", ["/api/v2/llmobs", "/evp_proxy/v2/api/v2/llmobs", "/evp_proxy/v4/api/v2/llmobs"])
-async def test_intake_paths(team_server, path):
-    resp = await _post_spans(team_server, _span("a"), path=path)
+async def test_intake_paths(self_hosted_server, path):
+    resp = await _post_spans(self_hosted_server, _span("a"), path=path)
     assert resp.status == 200, await resp.text()
-    assert [s["span_id"] for s in await _list(team_server)] == ["a"]
+    assert [s["span_id"] for s in await _list(self_hosted_server)] == ["a"]
 
 
-async def test_resent_span_replaces_previous_copy(team_server):
+async def test_resent_span_replaces_previous_copy(self_hosted_server):
     start = time.time_ns()
-    await _post_spans(team_server, _span("a", start, name="first"))
-    await _post_spans(team_server, _span("a", start, name="second"))
-    spans = await _list(team_server)
+    await _post_spans(self_hosted_server, _span("a", start, name="first"))
+    await _post_spans(self_hosted_server, _span("a", start, name="second"))
+    spans = await _list(self_hosted_server)
     assert [s["name"] for s in spans] == ["second"]
 
 
-async def test_span_without_start_ns_gets_ingest_time(team_server):
+async def test_span_without_start_ns_gets_ingest_time(self_hosted_server):
     span = _span("a")
     del span["start_ns"]
     before = time.time_ns()
-    await _post_spans(team_server, span)
-    (stored,) = await _list(team_server)
+    await _post_spans(self_hosted_server, span)
+    (stored,) = await _list(self_hosted_server)
     assert stored["start_ns"] >= before
 
 
-async def test_eval_metrics_are_accepted(team_server):
-    resp = await team_server.post("/api/intake/llm-obs/v2/eval-metric", json={"data": {}})
+async def test_eval_metrics_are_accepted(self_hosted_server):
+    resp = await self_hosted_server.post("/api/intake/llm-obs/v2/eval-metric", json={"data": {}})
     assert resp.status == 200
 
 
-async def test_update_merges_partial_fields(team_server):
+async def test_update_merges_partial_fields(self_hosted_server):
     await _post_spans(
-        team_server,
+        self_hosted_server,
         _span("a", session_id="sess-1", tags=["user:alice"], kind="agent", metrics={"output_tokens": 1}),
     )
-    resp = await team_server.post(
+    resp = await self_hosted_server.post(
         "/api/v2/llmobs/update",
         data=json.dumps({"spans": [{"span_id": "a", "metrics": {"output_tokens": 99}}]}),
         headers={"Content-Type": "application/json"},
     )
     assert (await resp.json()) == {"updated": 1}
-    (stored,) = await _list(team_server)
+    (stored,) = await _list(self_hosted_server)
     assert stored["metrics"]["output_tokens"] == 99
     assert stored["ml_app"] == "test-app"
     assert stored["session_id"] == "sess-1"
@@ -142,8 +142,8 @@ async def test_update_merges_partial_fields(team_server):
     assert stored["kind"] == "agent"
 
 
-async def test_update_unknown_span_is_dropped(team_server):
-    resp = await team_server.post(
+async def test_update_unknown_span_is_dropped(self_hosted_server):
+    resp = await self_hosted_server.post(
         "/evp_proxy/v2/api/v2/llmobs/update",
         data=json.dumps({"spans": [{"span_id": "nope", "metrics": {"output_tokens": 1}}]}),
         headers={"Content-Type": "application/json"},
@@ -151,7 +151,7 @@ async def test_update_unknown_span_is_dropped(team_server):
     assert (await resp.json()) == {"updated": 0}
 
 
-async def test_spans_priced_at_ingest_and_repriced_on_update(team_server, monkeypatch, tmp_path):
+async def test_spans_priced_at_ingest_and_repriced_on_update(self_hosted_server, monkeypatch, tmp_path):
     prices = [
         {
             "id": "openai",
@@ -166,17 +166,17 @@ async def test_spans_priced_at_ingest_and_repriced_on_update(team_server, monkey
 
     span = _span("llm", metrics={"input_tokens": 5, "output_tokens": 10})
     span["meta"].update({"model_name": "gpt-4", "model_provider": "openai"})
-    await _post_spans(team_server, span)
-    (stored,) = await _list(team_server)
+    await _post_spans(self_hosted_server, span)
+    (stored,) = await _list(self_hosted_server)
     assert stored["metrics"]["estimated_total_cost"] == 5 * 2000 + 10 * 8000
 
     async def update(metrics):
-        await team_server.post(
+        await self_hosted_server.post(
             "/api/v2/llmobs/update",
             data=json.dumps({"spans": [{"span_id": "llm", "metrics": metrics}]}),
             headers={"Content-Type": "application/json"},
         )
-        (stored,) = await _list(team_server)
+        (stored,) = await _list(self_hosted_server)
         return stored["metrics"]["estimated_total_cost"]
 
     assert await update({"output_tokens": 20}) == 5 * 2000 + 20 * 8000
@@ -201,9 +201,9 @@ def test_clickhouse_start_failure_includes_its_log(tmp_path):
 # -- routes ------------------------------------------------------------------
 
 
-async def test_info(team_server):
-    assert (await team_server.get("/ping")).status == 200
-    info = await team_server.get("/info")
+async def test_info(self_hosted_server):
+    assert (await self_hosted_server.get("/ping")).status == 200
+    info = await self_hosted_server.get("/info")
     assert info.status == 200
     body = await info.json()
     assert body["mode"] == "server"
@@ -211,26 +211,26 @@ async def test_info(team_server):
     assert body["retention_days"] == 3650
 
 
-async def test_routes_need_no_credentials(team_server):
+async def test_routes_need_no_credentials(self_hosted_server):
     # ddtrace's agentless mode always sends an API key; the server ignores it.
-    assert (await _post_spans(team_server, _span("a"), headers={"DD-API-KEY": "anything"})).status == 200
-    assert (await _post_spans(team_server, _span("b"), path="/evp_proxy/v2/api/v2/llmobs")).status == 200
+    assert (await _post_spans(self_hosted_server, _span("a"), headers={"DD-API-KEY": "anything"})).status == 200
+    assert (await _post_spans(self_hosted_server, _span("b"), path="/evp_proxy/v2/api/v2/llmobs")).status == 200
     url = "/api/unstable/llm-obs-query-rewriter/list?type=llmobs"
-    resp = await team_server.post(url, json={"list": {}}, headers={"Origin": "https://lapdog.datadoghq.com"})
+    resp = await self_hosted_server.post(url, json={"list": {}}, headers={"Origin": "https://lapdog.datadoghq.com"})
     assert resp.status == 200
     assert resp.headers["Access-Control-Allow-Origin"] == "https://lapdog.datadoghq.com"
-    assert (await team_server.get("/api/lapdog/server/status")).status == 200
+    assert (await self_hosted_server.get("/api/lapdog/server/status")).status == 200
 
 
-async def test_retentions_reports_server_retention(team_server):
-    team_server.app[STATE_KEY].settings = Settings(retention_days=7, max_disk_bytes=100 * 1024**3)
-    resp = await team_server.get("/api/unstable/llm-obs/v1/retentions")
+async def test_retentions_reports_server_retention(self_hosted_server):
+    self_hosted_server.app[STATE_KEY].settings = Settings(retention_days=7, max_disk_bytes=100 * 1024**3)
+    resp = await self_hosted_server.get("/api/unstable/llm-obs/v1/retentions")
     assert resp.status == 200
     assert (await resp.json())["data"]["attributes"] == {"llmobs": 7, "experiments": 7}
 
 
-async def test_preflight_allows_private_network(team_server):
-    resp = await team_server.options(
+async def test_preflight_allows_private_network(self_hosted_server):
+    resp = await self_hosted_server.options(
         "/api/unstable/llm-obs-query-rewriter/list",
         headers={
             "Origin": "https://lapdog.datadoghq.com",
@@ -249,63 +249,63 @@ def _days_ago(days):
     return time.time_ns() - days * DAY_NS
 
 
-async def _partition_days(team_server):
-    enforcer = team_server.app[ENFORCER_KEY]
+async def _partition_days(self_hosted_server):
+    enforcer = self_hosted_server.app[ENFORCER_KEY]
     return [pid for pid, _ in await enforcer.partitions()]
 
 
-async def test_retention_drops_old_days(team_server):
-    state = team_server.app[STATE_KEY]
+async def test_retention_drops_old_days(self_hosted_server):
+    state = self_hosted_server.app[STATE_KEY]
     state.settings = Settings(retention_days=7, max_disk_bytes=100 * 1024**3)
-    await _post_spans(team_server, _span("old", _days_ago(10)), _span("recent", _days_ago(3)), _span("now"))
-    assert len(await _partition_days(team_server)) == 3
+    await _post_spans(self_hosted_server, _span("old", _days_ago(10)), _span("recent", _days_ago(3)), _span("now"))
+    assert len(await _partition_days(self_hosted_server)) == 3
 
-    action = await team_server.app[ENFORCER_KEY].enforce()
+    action = await self_hosted_server.app[ENFORCER_KEY].enforce()
     assert [d["reason"] for d in action["dropped_partitions"]] == ["retention"]
-    assert sorted(s["span_id"] for s in await _list(team_server)) == ["now", "recent"]
+    assert sorted(s["span_id"] for s in await _list(self_hosted_server)) == ["now", "recent"]
     assert action["effective_retention_days"] == 4
     assert state.ingest_paused is False
 
 
-async def test_disk_cap_drops_oldest_days_then_pauses_ingest(team_server):
-    state = team_server.app[STATE_KEY]
-    enforcer = team_server.app[ENFORCER_KEY]
-    await _post_spans(team_server, _span("d2", _days_ago(2)), _span("d1", _days_ago(1)), _span("today"))
+async def test_disk_cap_drops_oldest_days_then_pauses_ingest(self_hosted_server):
+    state = self_hosted_server.app[STATE_KEY]
+    enforcer = self_hosted_server.app[ENFORCER_KEY]
+    await _post_spans(self_hosted_server, _span("d2", _days_ago(2)), _span("d1", _days_ago(1)), _span("today"))
 
     state.settings = Settings(retention_days=30, max_disk_bytes=1)
     action = await enforcer.enforce()
     assert [d["reason"] for d in action["dropped_partitions"]] == ["max_disk", "max_disk"]
-    assert [s["span_id"] for s in await _list(team_server)] == ["today"]
+    assert [s["span_id"] for s in await _list(self_hosted_server)] == ["today"]
     assert state.ingest_paused is True
     assert state.last_action == action
 
-    paused = await _post_spans(team_server, _span("more"))
+    paused = await _post_spans(self_hosted_server, _span("more"))
     assert paused.status == 503
-    assert [s["span_id"] for s in await _list(team_server)] == ["today"]
+    assert [s["span_id"] for s in await _list(self_hosted_server)] == ["today"]
 
     state.settings = Settings(retention_days=30, max_disk_bytes=100 * 1024**3)
     await enforcer.enforce()
     assert state.ingest_paused is False
-    assert (await _post_spans(team_server, _span("more"))).status == 200
+    assert (await _post_spans(self_hosted_server, _span("more"))).status == 200
 
 
-async def test_settings_api_updates_ttl_and_saves(team_server, team_server_config):
-    resp = await team_server.get("/api/lapdog/server/settings")
+async def test_settings_api_updates_ttl_and_saves(self_hosted_server, self_hosted_server_config):
+    resp = await self_hosted_server.get("/api/lapdog/server/settings")
     assert (await resp.json())["retention_days"] == 3650
 
-    resp = await team_server.post("/api/lapdog/server/settings", json={"retention": "2w", "max_disk": "5GB"})
+    resp = await self_hosted_server.post("/api/lapdog/server/settings", json={"retention": "2w", "max_disk": "5GB"})
     assert resp.status == 200, await resp.text()
     body = await resp.json()
     assert body["settings"]["retention_days"] == 14
     assert body["settings"]["max_disk_bytes"] == 5 * 1024**3
 
-    enforcer = team_server.app[ENFORCER_KEY]
-    rows = await enforcer.client.query(f"SHOW CREATE TABLE {team_server_config.database}.spans")
+    enforcer = self_hosted_server.app[ENFORCER_KEY]
+    rows = await enforcer.client.query(f"SHOW CREATE TABLE {self_hosted_server_config.database}.spans")
     assert "toIntervalDay(14)" in rows[0]["statement"]
-    with open(f"{team_server_config.data_dir}/server.json") as f:
+    with open(f"{self_hosted_server_config.data_dir}/server.json") as f:
         assert json.load(f) == {"retention_days": 14, "max_disk_bytes": 5 * 1024**3}
 
-    bad = await team_server.post("/api/lapdog/server/settings", json={"retention": "0d"})
+    bad = await self_hosted_server.post("/api/lapdog/server/settings", json={"retention": "0d"})
     assert bad.status == 400
 
 
@@ -314,17 +314,17 @@ async def test_settings_api_updates_ttl_and_saves(team_server, team_server_confi
     [(16 * 1024**3, 461 * 1024**3, False), (300 * 1024**2, 10 * 1024**3, True), (1024**3, 10 * 1024**3, False)],
 )
 def test_low_free_disk_threshold(free, total, low):
-    from lapdog.team_server.retention import DiskUsage
-    from lapdog.team_server.retention import LOW_FREE_CAP_BYTES
-    from lapdog.team_server.retention import LOW_FREE_RATIO
+    from lapdog.self_host.retention import DiskUsage
+    from lapdog.self_host.retention import LOW_FREE_CAP_BYTES
+    from lapdog.self_host.retention import LOW_FREE_RATIO
 
     usage = DiskUsage(used_bytes=0, pending_free_bytes=0, free_bytes=free, total_bytes=total)
     assert usage.free_below(LOW_FREE_RATIO, LOW_FREE_CAP_BYTES) is low
 
 
-async def test_status_reports_disk_and_days(team_server):
-    await _post_spans(team_server, _span("a", _days_ago(1)), _span("b"))
-    resp = await team_server.get("/api/lapdog/server/status")
+async def test_status_reports_disk_and_days(self_hosted_server):
+    await _post_spans(self_hosted_server, _span("a", _days_ago(1)), _span("b"))
+    resp = await self_hosted_server.get("/api/lapdog/server/status")
     status = await resp.json()
     today = datetime.datetime.now(datetime.timezone.utc).date()
     assert status["settings"]["retention_days"] == 3650
@@ -343,7 +343,7 @@ def test_foreground_start_writes_and_removes_pid_file(tmp_path, monkeypatch):
         seen["pid"] = server_cli.read_pid_file(str(tmp_path / "server.pid"))
         return 0
 
-    monkeypatch.setattr("lapdog.team_server.__main__.main", fake_main)
+    monkeypatch.setattr("lapdog.self_host.__main__.main", fake_main)
     with pytest.raises(SystemExit) as exc:
         server_cli.cmd_server_start(["--foreground", "--data-dir", str(tmp_path), "--port", "9999"])
     assert exc.value.code == 0

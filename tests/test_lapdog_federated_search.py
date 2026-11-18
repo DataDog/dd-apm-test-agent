@@ -40,7 +40,7 @@ async def _wait_for(predicate, timeout=10.0):
 
 
 @pytest.fixture
-async def federated(lapdog_agent, team_server):
+async def federated(lapdog_agent, self_hosted_server):
     """Return a local lapdog with spans in three places.
 
     - ``local-*``: received before Self-hosted forwarding was on, so only in memory;
@@ -49,16 +49,16 @@ async def federated(lapdog_agent, team_server):
     """
     now = time.time_ns()
     await _post_to_laptop(lapdog_agent, _span("local-1", now - 5_000, ml_app="mine"), _span("local-2", now - 3_000))
-    url = str(team_server.make_url("")).rstrip("/")
+    url = str(self_hosted_server.make_url("")).rstrip("/")
     resp = await lapdog_agent.post("/lapdog/forwarding", json={"self_hosted": url})
     assert resp.status == 200
     await _post_to_laptop(lapdog_agent, _span("fwd-1", now - 4_000, ml_app="mine"), _span("fwd-2", now - 1_000))
     mate = {"ml_app": "team", "spans": [_span("mate-1", now - 2_000, ml_app="team")]}
-    resp = await team_server.post("/api/v2/llmobs", data=json.dumps(mate), headers={"Content-Type": "application/json"})
+    resp = await self_hosted_server.post("/api/v2/llmobs", data=json.dumps(mate), headers={"Content-Type": "application/json"})
     assert resp.status == 200
 
     async def stored_on_server():
-        resp = await team_server.post(LIST, json={"list": {"limit": 10}})
+        resp = await self_hosted_server.post(LIST, json={"list": {"limit": 10}})
         return len((await resp.json())["result"]["events"]) == 3
 
     await _wait_for(stored_on_server)

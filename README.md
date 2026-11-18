@@ -114,9 +114,9 @@ The test agent can receive [Claude Code hook](https://docs.claude.com/en/docs/cl
 See [`.claude/setup-hooks.md`](.claude/setup-hooks.md) for full setup instructions (also usable as a Claude Code prompt to automate the setup).
 
 
-### Self-hosted lapdog server (ClickHouse storage)
+### Self-hosted lapdog server
 
-`lapdog server` runs a Self-hosted, network-reachable LLM Observability server. It ingests ddtrace LLMObs spans, stores them in a ClickHouse server that lapdog downloads (pinned, checksum-verified) and runs as a child process on `127.0.0.1`, and serves the query API to the lapdog UI. It has no terminal, file serving, or coding-agent hooks.
+`lapdog server` runs a Self-hosted, network-reachable LLM Observability server.
 
 ```bash
 lapdog server start --host 0.0.0.0 --retention 30d --max-disk 20GB

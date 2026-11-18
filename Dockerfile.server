@@ -26,6 +26,6 @@ RUN pip install /src && \
     rm -rf /root/.cache/pip
 
 # Fetch the pinned ClickHouse release for this architecture (checksum-verified) into ~/.lapdog/bin.
-RUN python -c "from lapdog.team_server.clickhouse import download_binary; download_binary(progress=False)"
+RUN python -c "from lapdog.self_host.clickhouse import download_binary; download_binary(progress=False)"
 
 CMD ["lapdog", "server", "start", "--foreground"]

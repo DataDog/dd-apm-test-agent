@@ -121,7 +121,7 @@ def _env_flag(name: str) -> bool:
 
 
 def add_server_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add the flags shared by ``lapdog server start`` and ``python -m lapdog.team_server``.
+    """Add the flags shared by ``lapdog server start`` and ``python -m lapdog.self_host``.
 
     Every flag falls back to a ``LAPDOG_SERVER_*`` environment variable, for
     Docker and hosting platforms.

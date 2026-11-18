@@ -1,4 +1,4 @@
-"""Run ``lapdog server`` in the foreground: ``python -m lapdog.team_server [flags]``."""
+"""Run ``lapdog server`` in the foreground: ``python -m lapdog.self_host [flags]``."""
 
 import argparse
 import logging
@@ -18,7 +18,7 @@ from .config import add_server_arguments
 from .config import config_from_args
 from .config import format_bytes
 
-log = logging.getLogger("lapdog.team_server")
+log = logging.getLogger("lapdog.self_host")
 
 
 def main(argv: Optional[List[str]] = None) -> int:

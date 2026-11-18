@@ -27,7 +27,7 @@ from lapdog.cli.server import cmd_start
 from lapdog.cli.server import cmd_status
 from lapdog.cli.server import cmd_stop
 from lapdog.cli.tags import cmd_tags
-from lapdog.cli.team_server import cmd_server
+from lapdog.cli.self_host import cmd_server
 from lapdog.cli.uninstall import cmd_uninstall
 from lapdog.span_store import MAX_MEMORY_ENV
 from lapdog.span_store import DEFAULT_MAX_MEMORY

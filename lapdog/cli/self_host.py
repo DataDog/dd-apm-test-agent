@@ -18,16 +18,16 @@ import urllib.request
 from lapdog.cli.runtime import process_exists
 from lapdog.cli.runtime import read_pid_file
 from lapdog.paths import SERVER_DIR
-from lapdog.team_server.clickhouse import ClickHouseError
-from lapdog.team_server.clickhouse import ensure_binary
-from lapdog.team_server.config import Settings
-from lapdog.team_server.config import add_server_arguments
-from lapdog.team_server.config import config_from_args
-from lapdog.team_server.config import format_bytes
-from lapdog.team_server.config import load_settings
-from lapdog.team_server.config import parse_settings_update
-from lapdog.team_server.config import save_settings
-from lapdog.team_server.config import settings_to_json
+from lapdog.self_host.clickhouse import ClickHouseError
+from lapdog.self_host.clickhouse import ensure_binary
+from lapdog.self_host.config import Settings
+from lapdog.self_host.config import add_server_arguments
+from lapdog.self_host.config import config_from_args
+from lapdog.self_host.config import format_bytes
+from lapdog.self_host.config import load_settings
+from lapdog.self_host.config import parse_settings_update
+from lapdog.self_host.config import save_settings
+from lapdog.self_host.config import settings_to_json
 
 SERVER_USAGE = (
     "Usage: lapdog server <start|stop|status|config> [options]\n"
@@ -144,7 +144,7 @@ def cmd_server_start(argv: List[str]) -> None:
         return
 
     if args.foreground:
-        from lapdog.team_server.__main__ import main as server_main
+        from lapdog.self_host.__main__ import main as server_main
 
         # Record this process so 'lapdog server status|stop|config' find a foreground server too.
         os.makedirs(data_dir, exist_ok=True)
@@ -169,7 +169,7 @@ def cmd_server_start(argv: List[str]) -> None:
     log = open(_log_path(data_dir), "a")
     kwargs: Dict[str, Any] = {"start_new_session": True} if sys.platform != "win32" else {}
     proc = subprocess.Popen(
-        [sys.executable, "-m", "lapdog.team_server", *child_args],
+        [sys.executable, "-m", "lapdog.self_host", *child_args],
         stdin=subprocess.DEVNULL,
         stdout=log,
         stderr=subprocess.STDOUT,

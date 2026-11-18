@@ -1109,9 +1109,9 @@ async def grpc_client_with_failure_type(agent_app, available_port, aiohttp_serve
 @pytest.fixture(scope="session")
 def clickhouse_process(tmp_path_factory):
     """One ClickHouse server for the test session; skipped when no clickhouse binary is available."""
-    from lapdog.team_server.clickhouse import ClickHouseError
-    from lapdog.team_server.clickhouse import ClickHouseProcess
-    from lapdog.team_server.clickhouse import resolve_binary
+    from lapdog.self_host.clickhouse import ClickHouseError
+    from lapdog.self_host.clickhouse import ClickHouseProcess
+    from lapdog.self_host.clickhouse import resolve_binary
 
     binary = os.environ.get("LAPDOG_TEST_CLICKHOUSE_BINARY") or resolve_binary()
     if not binary:
@@ -1128,8 +1128,8 @@ def clickhouse_process(tmp_path_factory):
 
 
 @pytest.fixture
-def team_server_config(tmp_path):
-    from lapdog.team_server.config import ServerConfig
+def self_hosted_server_config(tmp_path):
+    from lapdog.self_host.config import ServerConfig
 
     return ServerConfig(
         data_dir=str(tmp_path / "server"),
@@ -1141,14 +1141,14 @@ def team_server_config(tmp_path):
 
 
 @pytest.fixture
-async def team_server(clickhouse_process, team_server_config, aiohttp_client, loop):
+async def self_hosted_server(clickhouse_process, self_hosted_server_config, aiohttp_client, loop):
     """Serve a ``lapdog server`` app on a fresh ClickHouse database."""
-    from lapdog.team_server.app import make_server_app
-    from lapdog.team_server.clickhouse import ClickHouseClient
+    from lapdog.self_host.app import make_server_app
+    from lapdog.self_host.clickhouse import ClickHouseClient
 
     client = ClickHouseClient(clickhouse_process.url, password=clickhouse_process.password)
-    app = make_server_app(team_server_config, client, enforce_interval=0)
+    app = make_server_app(self_hosted_server_config, client, enforce_interval=0)
     yield await aiohttp_client(app)
     cleanup = ClickHouseClient(clickhouse_process.url, password=clickhouse_process.password)
-    await cleanup.command(f"DROP DATABASE IF EXISTS {team_server_config.database}")
+    await cleanup.command(f"DROP DATABASE IF EXISTS {self_hosted_server_config.database}")
     await cleanup.close()

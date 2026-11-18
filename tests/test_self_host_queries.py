@@ -14,7 +14,7 @@ from lapdog.llmobs_event_platform import apply_filters
 from lapdog.llmobs_event_platform import extract_spans_from_events
 from lapdog.llmobs_event_platform import get_span_field_value
 from lapdog.llmobs_event_platform import parse_filter_query
-from lapdog.team_server.sql import like_pattern
+from lapdog.self_host.sql import like_pattern
 
 NOW_NS = time.time_ns()
 
@@ -177,13 +177,13 @@ def remapped_spans():
 
 
 @pytest.fixture
-async def server(team_server, remapped_spans):
+async def server(self_hosted_server, remapped_spans):
     payload = {"ml_app": "test-app", "spans": copy.deepcopy(remapped_spans)}
-    resp = await team_server.post(
+    resp = await self_hosted_server.post(
         "/api/v2/llmobs", data=json.dumps(payload), headers={"Content-Type": "application/json"}
     )
     assert resp.status == 200, await resp.text()
-    return team_server
+    return self_hosted_server
 
 
 async def _list_ids(server, query):
