@@ -14,6 +14,7 @@ from typing import Optional
 from typing import Union
 from typing import cast
 from urllib.parse import urljoin
+from urllib.parse import urlsplit
 
 from aiohttp.web import Request
 from aiohttp.web import Response
@@ -152,8 +153,20 @@ NORMALIZERS = [
 
 
 def _url_path_join(base_url: str, path: str) -> str:
-    """Join a base URL with a path, handling slashes automatically."""
-    return urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+    """Join a relative path without changing the configured provider origin."""
+    # Check before and after stripping slashes: /http://host is also absolute
+    # when passed to urljoin after lstrip.
+    for candidate in (path, path.lstrip("/")):
+        parsed_path = urlsplit(candidate)
+        if parsed_path.scheme or parsed_path.netloc:
+            raise ValueError("VCR proxy path must be relative to the provider URL")
+
+    target_url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+    base = urlsplit(base_url)
+    target = urlsplit(target_url)
+    if (target.scheme, target.netloc) != (base.scheme, base.netloc):
+        raise ValueError("VCR proxy URL must use the configured provider origin")
+    return target_url
 
 
 def _file_safe_string(s: str) -> str:
@@ -469,9 +482,7 @@ async def _request(
     return response
 
 
-async def proxy_request(
-    request: Request
-) -> Response:
+async def proxy_request(request: Request) -> Response:
     vcr_cassettes_directory: str = request.app["vcr_cassettes_directory"]
     vcr_ci_mode: bool = request.app["vcr_ci_mode"]
     vcr_provider_map: str = request.app["vcr_provider_map"]
@@ -494,6 +505,12 @@ async def proxy_request(
     if provider not in provider_base_urls:
         return Response(body=f"Unsupported provider: {provider}", status=400)
 
+    try:
+        target_url = _url_path_join(provider_base_urls[provider], remaining_path)
+    except ValueError as exc:
+        message = f"Invalid VCR proxy path: {exc}"
+        return Response(text=message, status=400)
+
     body_bytes = await request.read()
 
     vcr_cassette_prefix = request.pop("vcr_cassette_prefix", None)
@@ -514,7 +531,6 @@ async def proxy_request(
             status=500,
         )
 
-    target_url = _url_path_join(provider_base_urls[provider], remaining_path)
     skip_headers = {"host", "transfer-encoding"}
     headers = {key: value for key, value in request.headers.items() if not (key.lower() in skip_headers)}
 
