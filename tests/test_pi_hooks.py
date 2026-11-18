@@ -3,9 +3,10 @@
 import asyncio
 import json
 import subprocess
-import time
 
 import pytest
+
+from lapdog._clock import monotonic_wall_ns
 
 
 @pytest.fixture
@@ -253,14 +254,14 @@ async def test_pi_first_turn_excludes_idle_time_before_first_prompt(agent):
     await _post(agent, _session_start(sid))
     # pi sits idle between launch and the first prompt.
     await asyncio.sleep(0.2)
-    prompt_sent_ns = time.time_ns()
+    prompt_sent_ns = monotonic_wall_ns()
     await _post(agent, _agent_start(sid))
     await _post(agent, _turn_start(sid))
     await _post(agent, _message_start(sid))
     await _post(agent, _message_end(sid))
     await _post(agent, _turn_end(sid))
     await _post(agent, _agent_end(sid))
-    agent_ended_ns = time.time_ns()
+    agent_ended_ns = monotonic_wall_ns()
 
     response = await agent.get("/claude/hooks/spans")
     spans = [span for span in _spans(await response.json()) if span.get("session_id") == sid]
@@ -268,6 +269,8 @@ async def test_pi_first_turn_excludes_idle_time_before_first_prompt(agent):
     assert root["start_ns"] >= prompt_sent_ns
     # Bound by the measured prompt-to-end window, not a fixed constant: slow CI
     # runners (Windows) can take longer than the idle sleep to send the events.
+    # Read the same clock the hooks use; on Windows it bumps by 1ns when
+    # time.time_ns() hasn't ticked, so plain time.time_ns() can trail span ends.
     assert root["duration"] <= agent_ended_ns - prompt_sent_ns
     assert all(span["start_ns"] >= root["start_ns"] for span in spans)
 

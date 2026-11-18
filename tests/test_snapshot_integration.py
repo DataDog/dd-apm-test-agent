@@ -7,6 +7,7 @@ import asyncio
 import os
 import platform
 import subprocess
+import time
 from typing import Callable
 from typing import Dict
 from typing import Generator
@@ -194,6 +195,19 @@ async def test_trace_missing_received(testagent_url, testagent, tracer):
     assert resp.status == 400
 
 
+async def _wait_for_fresh_stats_bucket(tracer: Tracer, margin_ns: int = 2_000_000_000) -> None:
+    # Stats buckets are aligned on span end time, so traces generated just before
+    # a bucket boundary get split across two buckets and won't match the snapshot.
+    for processor in tracer._span_processors:
+        if processor.__class__.__name__ == "SpanStatsProcessorV06":
+            bucket_size_ns = processor._bucket_size_ns
+            remaining_ns = bucket_size_ns - time.time_ns() % bucket_size_ns
+            if remaining_ns < margin_ns:
+                # Pad past the boundary; asyncio may wake early by up to the
+                # clock resolution (~16ms on Windows).
+                await asyncio.sleep(remaining_ns / 1e9 + 0.1)
+
+
 def _tracestats_traces(tracer: Tracer) -> None:
     for i in range(5):
         with tracer.trace("http.request", resource="/users/view") as span:
@@ -243,6 +257,7 @@ async def test_tracestats(
     fail: bool,
 ) -> None:
     await testagent.get(f"{testagent_url}/test/session/start?test_session_token=test_trace_stats")
+    await _wait_for_fresh_stats_bucket(stats_tracer)
     do_traces(stats_tracer)
     stats_tracer.shutdown()  # force out the stats
     resp = await testagent.get(f"{testagent_url}/test/session/snapshot?test_session_token=test_trace_stats")
