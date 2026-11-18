@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    Add support for Python 3.14. The Docker images now use Python 3.14.

@@ -29,7 +29,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
     # ubuntu-latest (26.04) no longer ships Python 3.8/3.9, so those run on 24.04. Mapping the
     # runner here, not in the matrix, keeps the job names (and required checks) unchanged.
     runs-on: ${{ (matrix.os == 'ubuntu-latest' && (matrix.python-version == '3.8' || matrix.python-version == '3.9')) && 'ubuntu-24.04' || matrix.os }}

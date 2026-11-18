@@ -1,5 +1,5 @@
 # escape=`
-FROM python:3.13-windowsservercore
+FROM python:3.14-windowsservercore
 
 WORKDIR /src
 EXPOSE 8126

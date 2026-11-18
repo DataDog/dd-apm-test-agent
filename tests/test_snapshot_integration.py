@@ -7,6 +7,7 @@ import asyncio
 import os
 import platform
 import subprocess
+import sys
 import time
 from typing import Callable
 from typing import Dict
@@ -15,7 +16,6 @@ from typing import Generator
 import aiohttp
 from ddtrace._trace.sampler import DatadogSampler
 from ddtrace._trace.sampling_rule import SamplingRule
-from ddtrace.profiling import Profiler
 from ddtrace.propagation.http import HTTPPropagator
 from ddtrace.trace import Tracer
 import pytest
@@ -299,7 +299,11 @@ async def test_cmd(testagent_url: str, testagent: aiohttp.ClientSession, tracer:
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="Profiling broken on windows")
+# ddtrace 3.x profiling patches asyncio.events.BaseDefaultEventLoopPolicy, which Python 3.14 removed
+@pytest.mark.skipif(sys.version_info >= (3, 14), reason="ddtrace 3.x profiling is broken on Python 3.14")
 async def test_profiling_endpoint(testagent_url: str, testagent: aiohttp.ClientSession, tracer: Tracer) -> None:
+    from ddtrace.profiling import Profiler
+
     p = Profiler(tracer=tracer)
     p.start()
     p.stop(flush=True)
