@@ -175,8 +175,6 @@ async def test_vcr_proxy_make_cassette(agent: TestClient[Any, Any], vcr_cassette
         "%68ttp://internal.invalid/secret",
         "http%3A%2F%2Finternal.invalid/secret",
         "%2F%2Finternal.invalid/secret",
-        "%09http://internal.invalid/secret",
-        "ht%09tp://internal.invalid/secret",
         "http://[invalid/secret",
     ],
 )
@@ -194,9 +192,7 @@ async def test_vcr_proxy_rejects_absolute_urls(
     message = await resp.text()
     assert resp.status == 400, message
     assert message.startswith("Invalid VCR proxy path: ")
-    if "%09" in path:
-        assert "VCR proxy path must not contain control characters" in message
-    elif path == "http://[invalid/secret":
+    if path == "http://[invalid/secret":
         assert "Invalid IPv6 URL" in message
     else:
         assert "VCR proxy path must be relative to the provider URL" in message

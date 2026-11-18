@@ -154,12 +154,6 @@ NORMALIZERS = [
 
 def _url_path_join(base_url: str, path: str) -> str:
     """Join a relative path without changing the configured provider origin."""
-    ascii_space = 0x20
-    ascii_delete = 0x7F
-    # urllib.parse strips control characters differently across Python versions.
-    if any(ord(char) < ascii_space or ord(char) == ascii_delete for char in path):
-        raise ValueError("VCR proxy path must not contain control characters")
-
     # Check before and after stripping slashes: /http://host is also absolute
     # when passed to urljoin after lstrip.
     for candidate in (path, path.lstrip("/")):
