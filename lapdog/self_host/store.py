@@ -12,6 +12,7 @@ shared. Known differences from in-memory mode:
   where Python would print ``5.0``.
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -75,6 +76,8 @@ class ClickHouseSpanBackend:
         self.client = client
         self.database = database
         self.table = f"{quote_identifier(database)}.spans"
+        # Updates read a span and write it back whole, so two at once could each drop the other's change.
+        self._update_lock = asyncio.Lock()
 
     # -- writes ------------------------------------------------------------
 
@@ -89,6 +92,10 @@ class ClickHouseSpanBackend:
         span_ids = sorted({str(u["span_id"]) for u in updates if u.get("span_id")})
         if not span_ids:
             return 0
+        async with self._update_lock:
+            return await self._update_spans(span_ids, updates)
+
+    async def _update_spans(self, span_ids: List[str], updates: List[Dict[str, Any]]) -> int:
         rows = await self.client.query(
             f"SELECT span_id, span_json FROM {self.table} FINAL WHERE span_id IN {_in_list(span_ids)} "
             "ORDER BY start_ns DESC LIMIT 1 BY span_id"
@@ -247,7 +254,8 @@ class ClickHouseSpanBackend:
         groups = [(str(row["k"]), {output: row[column] for column, output in outputs}) for row in page]
         order_column = "latest_ns" if request.sort_order == "desc" else "earliest_ns"
         order_ns = {str(row["k"]): int(row[order_column]) for row in page}
-        return AggregateResult(groups, len(rows) > request.limit, order_ns)
+        span_range_ns = {str(row["k"]): (int(row["earliest_ns"]), int(row["latest_ns"])) for row in page}
+        return AggregateResult(groups, len(rows) > request.limit, order_ns, span_range_ns)
 
     async def fetch_one(self, event_id: str) -> Optional[Dict[str, Any]]:
         spans = await self._spans(

@@ -1368,6 +1368,8 @@ class AggregateResult(NamedTuple):
     has_more: bool
     # Each group's sort time (latest span for desc, earliest for asc), so merged results keep their order.
     order_ns: Dict[str, int] = {}
+    # Each group's earliest and latest span times, so earliest/latest values merge correctly across backends.
+    span_range_ns: Dict[str, Tuple[int, int]] = {}
 
 
 class ListParams(NamedTuple):
@@ -1629,6 +1631,10 @@ class InMemorySpanBackend:
             groups=[(key, _aggregate_group_metrics(groups[key], request.compute)) for key in group_order],
             has_more=has_more,
             order_ns={key: int(groups[key][edge].get("start_ns", 0) or 0) for key in group_order},
+            span_range_ns={
+                key: (int(groups[key][-1].get("start_ns", 0) or 0), int(groups[key][0].get("start_ns", 0) or 0))
+                for key in group_order
+            },
         )
 
     async def fetch_one(self, event_id: str) -> Optional[Dict[str, Any]]:
@@ -1836,6 +1842,8 @@ class LLMObsEventPlatformAPI:
                 value: Dict[str, Any] = {"by": {group_by_output or group_by_field or "": by_val}, "metrics": metrics}
                 if key in agg.order_ns:
                     value["_order_ns"] = agg.order_ns[key]
+                if key in agg.span_range_ns:
+                    value["_earliest_ns"], value["_latest_ns"] = agg.span_range_ns[key]
                 values.append(value)
 
             result: Dict[str, Any] = {"values": values}

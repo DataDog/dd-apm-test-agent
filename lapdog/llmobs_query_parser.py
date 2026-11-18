@@ -510,7 +510,7 @@ def _parse_filter_token(
         parts = token.split(":", 1)
         if len(parts) == 2:
             field = parts[0][1:]  # Remove @
-            value = parts[1]
+            value = _unquote(parts[1])
             return {"field": field, "value": value, "type": "facet"}
 
     # Tag filter: field:value (without @)
@@ -518,9 +518,16 @@ def _parse_filter_token(
         parts = token.split(":", 1)
         if len(parts) == 2:
             field, value = parts
-            return {"field": field, "value": value, "type": "tag"}
+            return {"field": field, "value": _unquote(value), "type": "tag"}
 
     return None
+
+
+def _unquote(value: str) -> str:
+    """Drop the quotes around ``"some value"``: a quoted filter value matches exactly that text."""
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        return value[1:-1].replace('\\"', '"')
+    return value
 
 
 # ============================================================================

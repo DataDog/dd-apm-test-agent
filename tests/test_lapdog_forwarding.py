@@ -231,3 +231,20 @@ def test_cli_rejects_bad_arguments(monkeypatch):
         with pytest.raises(SystemExit) as exc:
             forward_cli.cmd_forward(argv)
         assert exc.value.code == 2
+
+
+async def test_spans_from_v04_meta_struct_are_forwarded(monkeypatch):
+    from unittest import mock
+
+    from ddapm_test_agent import agent as agent_module
+
+    envelope = {"spans": [{"span_id": "1", "trace_id": "2", "start_ns": 1}]}
+    monkeypatch.setattr(agent_module, "extract_llmobs_envelopes_from_v04_traces", lambda traces: [envelope])
+    agent = agent_module.Agent()
+    received = []
+    agent.llmobs_payload_listener = lambda path, body, content_type: received.append((path, body, content_type))
+    source = mock.Mock()
+    source.get.return_value = None
+    source.url.origin.return_value = "http://localhost:8126"
+    agent._store_synthetic_llmobs_requests(source, [])
+    assert received == [("/evp_proxy/v4/api/v2/llmobs", json.dumps([envelope]).encode(), "application/json")]

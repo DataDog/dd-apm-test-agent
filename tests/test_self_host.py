@@ -349,3 +349,19 @@ def test_foreground_start_writes_and_removes_pid_file(tmp_path, monkeypatch):
     assert exc.value.code == 0
     assert seen["pid"] == (os.getpid(), 9999)
     assert not (tmp_path / "server.pid").exists()
+
+
+async def test_schema_applies_a_changed_retention_to_an_existing_table(clickhouse_process, self_hosted_server_config):
+    from lapdog.self_host.clickhouse import ClickHouseClient
+    from lapdog.self_host.schema import ensure_schema
+
+    client = ClickHouseClient(clickhouse_process.url, password=clickhouse_process.password)
+    database = self_hosted_server_config.database
+    try:
+        await ensure_schema(client, database, 7)
+        await ensure_schema(client, database, 30)
+        rows = await client.query(f"SHOW CREATE TABLE {database}.spans")
+        assert "toIntervalDay(30)" in rows[0]["statement"]
+    finally:
+        await client.command(f"DROP DATABASE IF EXISTS {database}")
+        await client.close()

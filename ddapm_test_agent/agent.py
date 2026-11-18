@@ -897,6 +897,8 @@ class Agent:
             session_token=token,
         )
         self._append_request(cast(Request, synthetic))
+        # These spans never pass through the EVP handlers, so tell the listener here.
+        self._call_llmobs_payload_listener(str(url.path), body, "application/json")
 
     def _store_dogstatsd_datagram(self, data: bytes) -> None:
         """Store a DogStatsD datagram like a request without a session token.
@@ -1088,10 +1090,14 @@ class Agent:
             raise web.HTTPBadRequest(text=msg)
 
     async def _notify_llmobs_payload(self, request: Request) -> None:
+        if self.llmobs_payload_listener is not None:
+            self._call_llmobs_payload_listener(request.path, await request.read(), request.content_type or "")
+
+    def _call_llmobs_payload_listener(self, path: str, body: bytes, content_type: str) -> None:
         if self.llmobs_payload_listener is None:
             return
         try:
-            self.llmobs_payload_listener(request.path, await request.read(), request.content_type or "")
+            self.llmobs_payload_listener(path, body, content_type)
         except Exception:
             log.exception("LLMObs payload listener failed")
 

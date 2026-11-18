@@ -63,6 +63,11 @@ async def ensure_schema(client: ClickHouseClient, database: str, retention_days:
     db = quote_identifier(database)
     await client.command(f"CREATE DATABASE IF NOT EXISTS {db}")
     await client.command(spans_ddl(database, retention_days))
+    # CREATE TABLE IF NOT EXISTS keeps an existing table's TTL, so apply a changed retention here.
+    await client.command(
+        f"ALTER TABLE {db}.spans MODIFY TTL {spans_ttl(retention_days)}",
+        {"materialize_ttl_after_modify": 0},
+    )
     await client.command(
         f"CREATE TABLE IF NOT EXISTS {db}.schema_version (version UInt32, applied_at DateTime DEFAULT now()) "
         "ENGINE = MergeTree ORDER BY version"

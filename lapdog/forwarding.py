@@ -161,6 +161,8 @@ class Forwarding:
         self._forwarded: "OrderedDict[Tuple[str, str], None]" = OrderedDict()
         self._session: Optional[ClientSession] = None
         self._tasks: Set["asyncio.Future[None]"] = set()
+        # Span posts still in flight; an update waits for them so it never reaches the server before its span.
+        self._span_posts: Set["asyncio.Future[None]"] = set()
         self._health_task: Optional["asyncio.Task[None]"] = None
         self.configure_self_hosted(config.self_hosted, config.self_hosted_coding_agents)
 
@@ -207,17 +209,33 @@ class Forwarding:
         if self._session is not None:
             await self._session.close()
 
-    def _spawn(self, coro: Any) -> None:
-        task = asyncio.ensure_future(coro)
+    def _spawn(self, coro: Any) -> "asyncio.Future[None]":
+        task: "asyncio.Future[None]" = asyncio.ensure_future(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        return task
+
+    def _spawn_post(self, path: str, body: bytes, content_type: str) -> None:
+        if path.rstrip("/").endswith("/update"):
+            self._spawn(self._post_after(list(self._span_posts), path, body, content_type))
+            return
+        task = self._spawn(self._post_self_hosted(path, body, content_type))
+        self._span_posts.add(task)
+        task.add_done_callback(self._span_posts.discard)
+
+    async def _post_after(
+        self, earlier: List["asyncio.Future[None]"], path: str, body: bytes, content_type: str
+    ) -> None:
+        if earlier:
+            await asyncio.wait(earlier)
+        await self._post_self_hosted(path, body, content_type)
 
     # -- traffic -----------------------------------------------------------
 
     def on_llmobs_payload(self, path: str, body: bytes, content_type: str) -> None:
         """``Agent.llmobs_payload_listener``: send what instrumented apps send to the Self-hosted server too."""
         if self.self_hosted and self._session is not None:
-            self._spawn(self._post_self_hosted(path, body, content_type or "application/msgpack"))
+            self._spawn_post(path, body, content_type or "application/msgpack")
 
     def forward_coding_agent_spans(self, spans: List[Dict[str, Any]]) -> None:
         """Send a finished coding-agent trace to the Self-hosted server, if the user opted in."""
@@ -226,7 +244,7 @@ class Forwarding:
         for start in range(0, len(spans), _MAX_SPANS_PER_REQUEST):
             chunk = spans[start : start + _MAX_SPANS_PER_REQUEST]
             body = msgpack.packb({"_dd.stage": "raw", "event_type": "span", "spans": chunk}, use_bin_type=True)
-            self._spawn(self._post_self_hosted(_SPANS_PATH, body, "application/msgpack"))
+            self._spawn_post(_SPANS_PATH, body, "application/msgpack")
 
     async def _post_self_hosted(self, path: str, body: bytes, content_type: str) -> None:
         server, session = self.self_hosted, self._session

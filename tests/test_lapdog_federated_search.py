@@ -173,3 +173,100 @@ async def test_list_is_labelled_without_self_hosted(lapdog_agent):
     second = await _list(lapdog_agent, limit=1, paging=first["result"]["paging"])
     assert _sources(second) == {"a": {"source": "laptop"}}
     assert "paging" not in second["result"]
+
+
+async def _post_to_server(self_hosted_server, *spans):
+    body = {"ml_app": "team", "spans": list(spans)}
+    resp = await self_hosted_server.post("/api/v2/llmobs", data=json.dumps(body), headers={"Content-Type": "application/json"})
+    assert resp.status == 200
+
+
+async def _server_has(self_hosted_server, count):
+    async def check():
+        resp = await self_hosted_server.post(LIST, json={"list": {"limit": 50}})
+        return len((await resp.json())["result"]["events"]) == count
+
+    await _wait_for(check)
+
+
+async def test_aggregate_completes_groups_cut_off_on_one_side(federated, self_hosted_server):
+    # Self-hosted's newest group is "mine", but memory's newest is "app", so with one group per side
+    # memory's "mine" span (local-1) only counts if it's asked for separately.
+    await _post_to_server(self_hosted_server, _span("mate-2", time.time_ns() - 500, ml_app="mine"))
+    await _server_has(self_hosted_server, 4)
+    resp = await federated.post(
+        "/api/v1/logs-analytics/aggregate?type=llmobs",
+        json={
+            "aggregate": {
+                "search": {"query": ""},
+                "groupBy": [{"field": {"id": "@ml_app", "output": "ml_app", "limit": 1}}],
+                "compute": [
+                    {"total": {"aggregation": "count", "output": "c"}},
+                    {"total": {"aggregation": "earliest", "metric": "@name", "output": "first"}},
+                    {"total": {"aggregation": "latest", "metric": "@name", "output": "last"}},
+                ],
+            }
+        },
+    )
+    values = (await resp.json())["result"]["values"]
+    assert [(v["by"]["ml_app"], v["metrics"]) for v in values] == [
+        ("mine", {"c": 3, "first": "local-1", "last": "mate-2"})
+    ]
+
+
+async def test_scalar_max_takes_the_larger_side():
+    from lapdog.federated_search import _merge_scalar_columns
+    from lapdog.federated_search import _scalar_aggregations
+
+    attributes = {"queries": [{"name": "q", "compute": {"aggregation": "max", "metric": "@duration"}}]}
+    column = {"name": "q", "type": "number", "meta": None}
+    merged = _merge_scalar_columns(
+        [{**column, "values": [5]}], [{**column, "values": [7]}], _scalar_aggregations(attributes)
+    )
+    assert merged[0]["values"] == [7]
+
+
+async def test_trace_split_across_both_sides_is_combined(federated, self_hosted_server):
+    child = {**_span("remote-child", time.time_ns(), trace_id="trace-local-1"), "parent_id": "local-1"}
+    await _post_to_server(self_hosted_server, child)
+    await _server_has(self_hosted_server, 4)
+    resp = await federated.get("/api/ui/llm-obs/v1/trace/trace-local-1")
+    attributes = (await resp.json())["data"]["attributes"]
+    assert sorted(attributes["spans"]) == ["local-1", "remote-child"]
+    assert attributes["spans"]["local-1"]["children_ids"] == ["remote-child"]
+    assert attributes["root_id"] == "local-1"
+
+
+async def test_paging_continues_from_memory_when_self_hosted_goes_away(federated):
+    first = await _list(federated, limit=2)
+    assert _ids(first) == ["fwd-2", "mate-1"]
+    resp = await federated.post("/lapdog/forwarding", json={"self_hosted": "http://127.0.0.1:9"})
+    assert resp.status == 200
+    second = await _list(federated, limit=2, paging=first["result"]["paging"])
+    assert _ids(second) == ["local-2", "fwd-1"]
+
+
+async def test_list_accepts_an_inclusive_from_cursor(federated):
+    first = await _list(federated, limit=2)
+    again = await _list(federated, limit=2, paging={"from": first["result"]["paging"]["after"]})
+    assert _ids(again) == ["mate-1", "local-2"]
+
+
+async def test_paging_keeps_repeated_copies_of_a_span(lapdog_agent, self_hosted_server):
+    now = time.time_ns()
+    for _ in range(3):
+        await _post_to_laptop(lapdog_agent, _span("dup", now - 3_000))
+    url = str(self_hosted_server.make_url("")).rstrip("/")
+    assert (await lapdog_agent.post("/lapdog/forwarding", json={"self_hosted": url})).status == 200
+    await _post_to_laptop(lapdog_agent, _span("new", now - 1_000))
+    await _server_has(self_hosted_server, 1)
+
+    seen = []
+    paging = None
+    for _ in range(10):
+        response = await _list(lapdog_agent, limit=2, **({"paging": paging} if paging else {}))
+        seen += _ids(response)
+        paging = response["result"].get("paging")
+        if not paging:
+            break
+    assert seen == ["new", "dup", "dup", "dup"]

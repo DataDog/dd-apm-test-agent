@@ -9,6 +9,7 @@ from typing import Optional
 
 from aiohttp import web
 
+from ..model_pricing import refresh_price_file
 from .app import make_server_app
 from .clickhouse import ClickHouseClient
 from .clickhouse import ClickHouseError
@@ -39,6 +40,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     except (ClickHouseError, OSError) as e:
         print(f"lapdog server: could not get ClickHouse: {e}", file=sys.stderr)
         return 1
+
+    # Spans are priced once, as they arrive, so get the price list before taking traffic.
+    refresh_price_file()
 
     clickhouse = ClickHouseProcess(
         binary, os.path.join(config.data_dir, "clickhouse"), config.clickhouse_max_memory_bytes
