@@ -3,18 +3,17 @@ fixes:
   - |
     Lapdog: Fix missing traces when you resume Codex sessions with
     ``lapdog codex exec resume`` or ``lapdog codex e resume``.
-    Capture new turns without sending previous turns again.
+    Record new turns without sending previous turns again.
   - |
-    Lapdog: Capture automatic review sessions created before a resumed Codex
-    session writes new records. Attach reviews to the matching command in an
-    ``exec`` batch instead of its first tool.
+    Lapdog: Fix missing automatic approvals when resuming Codex sessions.
+    Attach each review to the command it approves in an ``exec`` batch.
   - |
     Lapdog: Preserve original tool arguments, including approval justifications,
-    when merging Codex command completions with ``exec`` calls.
+    when processing Codex tool results.
   - |
-    Lapdog: Use Codex response IDs to keep LLM spans and tools in the correct
-    inference step. Keep delayed command results and subagent spans with their
-    producing response, including repeated commands across responses.
+    Lapdog: Fix Codex responses being combined into one inference step.
+    Keep delayed tool results and subagent spans in the step that started them,
+    including when commands repeat across steps.
   - |
-    Lapdog: Capture recorded execution timing for Codex patch and MCP tools.
-    Use structured completion timing when it arrives after a tool's wrapper result.
+    Lapdog: Fix missing durations for Codex patch and MCP tools, and incorrect
+    durations when tool results arrive late.
