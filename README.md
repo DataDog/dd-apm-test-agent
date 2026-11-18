@@ -130,7 +130,7 @@ lapdog server stop
 - **Sending spans**: apps send to the local lapdog as usual, and it forwards them to the server (see above). With Python, `DD_LLMOBS_ENABLED=1` is all an app needs.
 - **Retention**: spans live in daily partitions. Days older than `--retention` are dropped; while stored data exceeds `--max-disk` (or the disk is nearly full) the oldest days are dropped, and if only today is left, intake answers 503 until there's room again.
 - **Docker**: run the published test agent image with `docker run -d -p 8126:8126 -v lapdog-data:/data ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent lapdog server start --foreground --host 0.0.0.0 --data-dir /data --retention 30d`. Every flag also has a `LAPDOG_SERVER_*` environment variable.
-- The hosted UI needs HTTPS to reach a remote server; put a TLS proxy in front of it. macOS and Linux only.
+- Opening the hosted UI straight against a remote server (`?backendUrl=`) needs HTTPS, so put a TLS proxy in front of it. Through a forwarding laptop lapdog it isn't needed. macOS and Linux only.
 
 
 ### Snapshot testing

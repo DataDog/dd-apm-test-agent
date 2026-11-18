@@ -1,4 +1,4 @@
-"""Where lapdog sends traces besides its own memory: a self-hosted ``lapdog server``, Datadog, or both.
+"""Where lapdog sends traces besides its own memory: a Self-hosted ``lapdog server``, Datadog, or both.
 
 Every trace lands in lapdog's in-memory store first. From there:
 
@@ -9,7 +9,7 @@ Every trace lands in lapdog's in-memory store first. From there:
   best effort: there's no queue, so spans sent while the server is down are
   lost, and the error is shown.
 
-The self-hosted server setting lives in ``~/.lapdog/forwarding.json``.
+The Self-hosted server setting lives in ``~/.lapdog/forwarding.json``.
 """
 
 import asyncio
@@ -47,13 +47,13 @@ _WINDOW_SECONDS = 3600
 _HEALTH_INTERVAL = 30.0
 _SPANS_PATH = "/evp_proxy/v2/api/v2/llmobs"
 _MAX_SPANS_PER_REQUEST = 20
-# Spans remembered as stored on the self-hosted server, so searches don't count them twice.
+# Spans remembered as stored on the Self-hosted server, so searches don't count them twice.
 _MAX_FORWARDED_KEYS = 200_000
 
 
 class ForwardingConfig(NamedTuple):
     self_hosted: Optional[str] = None
-    # Coding-agent sessions (Claude Code, Codex, pi) go to the self-hosted server only when opted in.
+    # Coding-agent sessions (Claude Code, Codex, pi) go to the Self-hosted server only when opted in.
     self_hosted_coding_agents: bool = False
 
 
@@ -112,10 +112,6 @@ def payload_span_keys(body: bytes, content_type: str) -> List[Tuple[str, str]]:
             if isinstance(span, dict):
                 keys.append((str(span.get("trace_id", "")), str(span.get("span_id", ""))))
     return keys
-
-
-def count_spans(body: bytes, content_type: str) -> int:
-    return len(payload_span_keys(body, content_type))
 
 
 def _remember(seen: "OrderedDict[Tuple[str, str], None]", keys: List[Tuple[str, str]]) -> None:
@@ -189,7 +185,7 @@ class Forwarding:
             self._spawn(self._check_self_hosted())
 
     def is_forwarded(self, span: Dict[str, Any]) -> bool:
-        """Whether this span is stored on the self-hosted server (so searches read it from there)."""
+        """Whether this span is stored on the Self-hosted server (so searches read it from there)."""
         return (str(span.get("trace_id", "")), str(span.get("span_id", ""))) in self._forwarded
 
     def is_in_datadog(self, trace_id: str, span_id: str) -> bool:
@@ -240,7 +236,7 @@ class Forwarding:
     # -- traffic -----------------------------------------------------------
 
     def on_llmobs_payload(self, path: str, body: bytes, content_type: str) -> None:
-        """``Agent.llmobs_payload_listener``: send what instrumented apps send to the self-hosted server too."""
+        """``Agent.llmobs_payload_listener``: send what instrumented apps send to the Self-hosted server too."""
         if self.self_hosted and self._session is not None:
             self._spawn(self._post_self_hosted(path, body, content_type or "application/msgpack"))
 
@@ -252,7 +248,7 @@ class Forwarding:
             _remember(self._sent_to_datadog, keys)
 
     def forward_coding_agent_spans(self, spans: List[Dict[str, Any]]) -> None:
-        """Send a finished coding-agent trace to the self-hosted server, if the user opted in."""
+        """Send a finished coding-agent trace to the Self-hosted server, if the user opted in."""
         if not (self.self_hosted and self.self_hosted_coding_agents and self._session is not None and spans):
             return
         for start in range(0, len(spans), _MAX_SPANS_PER_REQUEST):
@@ -282,7 +278,7 @@ class Forwarding:
             if ok:
                 _remember(self._forwarded, keys)
         if not ok:
-            log.warning("Failed to forward %d spans to the self-hosted server: %s", spans, error)
+            log.warning("Failed to forward %d spans to the Self-hosted server: %s", spans, error)
 
     async def _check_self_hosted(self) -> None:
         server, session = self.self_hosted, self._session

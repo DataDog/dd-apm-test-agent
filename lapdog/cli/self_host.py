@@ -125,7 +125,7 @@ def _print_started(url: str, pid: int, args: argparse.Namespace, data_dir: str) 
     print(f"  lapdog forward {server_url}")
     if public:
         print("[lapdog] The server has no auth: anyone who can reach it can read and send spans.")
-        print("[lapdog] Put it behind your own auth proxy or firewall. The hosted UI also needs HTTPS to reach it.")
+        print("[lapdog] Put it behind your own auth proxy or firewall.")
 
 
 def cmd_server_start(argv: List[str]) -> None:

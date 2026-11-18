@@ -19,12 +19,12 @@ from lapdog.forwarding import save_forwarding_config
 FORWARD_USAGE = (
     "Usage: lapdog forward                                  Show where traces are forwarded\n"
     "       lapdog forward <self-hosted-url> [--include-coding-agents]\n"
-    "                                                       Also send traces to a self-hosted lapdog server\n"
-    "       lapdog forward off                              Stop sending to the self-hosted server\n"
+    "                                                       Also send traces to a Self-hosted lapdog server\n"
+    "       lapdog forward off                              Stop sending to the Self-hosted server\n"
     "       lapdog forward datadog on|off                   Send to Datadog (needs --forward credentials)\n"
     "\n"
     "Traces always stay in lapdog's memory too. Coding-agent sessions (Claude Code, Codex, pi)\n"
-    "go to the self-hosted server only with --include-coding-agents.\n"
+    "go to the Self-hosted server only with --include-coding-agents.\n"
 )
 
 
@@ -116,7 +116,7 @@ def cmd_forward(argv: List[str]) -> None:
         if state is None:
             config = load_forwarding_config()
             save_forwarding_config(ForwardingConfig(None, config.self_hosted_coding_agents))
-        print("[lapdog] Stopped sending to the self-hosted server. Traces stay in lapdog's memory.")
+        print("[lapdog] Stopped sending to the Self-hosted server. Traces stay in lapdog's memory.")
         return
 
     include_coding_agents = "--include-coding-agents" in argv[1:]

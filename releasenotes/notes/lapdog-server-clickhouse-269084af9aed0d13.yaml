@@ -14,6 +14,7 @@ features:
     (coding-agent sessions only with ``--include-coding-agents``), alongside optional Datadog forwarding.
     ``/info`` reports a ``forwarding`` block with each destination's state and spans sent in the last hour.
     While forwarding to Self-hosted, lapdog's searches merge its memory with the Self-hosted server's results.
+    Listed spans carry ``@lapdog.source`` (``laptop`` or ``self-hosted``) and ``@lapdog.in_datadog``.
 fixes:
   - |
     lapdog: a partial span update (``/llmobs/update``) no longer resets the span's ``ml_app``, tags, service,

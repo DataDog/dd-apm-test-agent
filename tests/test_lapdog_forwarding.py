@@ -9,9 +9,9 @@ import pytest
 
 from lapdog.cli import forward as forward_cli
 from lapdog.forwarding import ForwardingConfig
-from lapdog.forwarding import count_spans
 from lapdog.forwarding import load_forwarding_config
 from lapdog.forwarding import normalize_server_url
+from lapdog.forwarding import payload_span_keys
 from lapdog.forwarding import save_forwarding_config
 
 
@@ -95,9 +95,10 @@ def test_config_round_trip(isolated_forwarding_config):
     assert json.loads(isolated_forwarding_config.read_text())["self_hosted"] == "http://host:8126"
 
 
-def test_count_spans():
-    assert count_spans(_payload(_span("a"), _span("b")), "application/msgpack") == 2
-    assert count_spans(b"not a payload", "application/msgpack") == 0
+def test_payload_span_keys():
+    keys = payload_span_keys(_payload(_span("a"), _span("b")), "application/msgpack")
+    assert [span_id for _, span_id in keys] == ["a", "b"]
+    assert payload_span_keys(b"not a payload", "application/msgpack") == []
 
 
 async def test_app_spans_are_sent_to_self_hosted(lapdog_agent, self_hosted_stub, isolated_forwarding_config):
