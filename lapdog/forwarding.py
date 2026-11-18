@@ -118,6 +118,13 @@ def count_spans(body: bytes, content_type: str) -> int:
     return len(payload_span_keys(body, content_type))
 
 
+def _remember(seen: "OrderedDict[Tuple[str, str], None]", keys: List[Tuple[str, str]]) -> None:
+    for key in keys:
+        seen[key] = None
+    while len(seen) > _MAX_FORWARDED_KEYS:
+        seen.popitem(last=False)
+
+
 class DestinationStats:
     """Spans sent to one destination over the last hour, plus its latest error."""
 
@@ -162,6 +169,7 @@ class Forwarding:
         self.self_hosted_reachable: Optional[bool] = None
         self.self_hosted_retention_days: Optional[int] = None
         self._forwarded: "OrderedDict[Tuple[str, str], None]" = OrderedDict()
+        self._sent_to_datadog: "OrderedDict[Tuple[str, str], None]" = OrderedDict()
         self._session: Optional[ClientSession] = None
         self._tasks: Set["asyncio.Future[None]"] = set()
         self._health_task: Optional["asyncio.Task[None]"] = None
@@ -183,6 +191,10 @@ class Forwarding:
     def is_forwarded(self, span: Dict[str, Any]) -> bool:
         """Whether this span is stored on the self-hosted server (so searches read it from there)."""
         return (str(span.get("trace_id", "")), str(span.get("span_id", ""))) in self._forwarded
+
+    def is_in_datadog(self, trace_id: str, span_id: str) -> bool:
+        """Whether Datadog accepted this span from this lapdog (spans other lapdogs sent aren't known here)."""
+        return (trace_id, span_id) in self._sent_to_datadog
 
     @property
     def datadog_enabled(self) -> bool:
@@ -234,7 +246,10 @@ class Forwarding:
 
     def on_datadog_result(self, body: bytes, content_type: str, ok: bool, error: str) -> None:
         """``Agent.llmobs_forward_result_listener``: count what reached Datadog."""
-        self.datadog.record(count_spans(body, content_type), ok, error)
+        keys = payload_span_keys(body, content_type)
+        self.datadog.record(len(keys), ok, error)
+        if ok:
+            _remember(self._sent_to_datadog, keys)
 
     def forward_coding_agent_spans(self, spans: List[Dict[str, Any]]) -> None:
         """Send a finished coding-agent trace to the self-hosted server, if the user opted in."""
@@ -265,10 +280,7 @@ class Forwarding:
             self.self_hosted_stats.record(spans, ok, error)
             self.self_hosted_reachable = reachable
             if ok:
-                for key in keys:
-                    self._forwarded[key] = None
-                while len(self._forwarded) > _MAX_FORWARDED_KEYS:
-                    self._forwarded.popitem(last=False)
+                _remember(self._forwarded, keys)
         if not ok:
             log.warning("Failed to forward %d spans to the self-hosted server: %s", spans, error)
 

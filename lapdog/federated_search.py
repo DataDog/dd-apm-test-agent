@@ -12,6 +12,11 @@ The two sets don't overlap, so results are merged without double counting:
   sides are approximate);
 - a trace or span is read from whichever side has it.
 
+Each listed span is labelled with where it was read from (``@lapdog.source``:
+``laptop`` or ``self-hosted``) and whether Datadog accepted it from this
+lapdog (``@lapdog.in_datadog``), so the UI can show where each trace lives.
+Lists answered from memory alone are labelled too.
+
 If the Self-hosted server can't be reached, answers come from memory alone
 (including forwarded spans), as if forwarding were off.
 """
@@ -175,15 +180,38 @@ class FederatedSearch:
         for route in self.full_api.get_routes():
             path = route.path
             last = path.rstrip("/").split("/")[-1]
+            # Lists answered from memory alone still get their rows labelled.
+            if last in ("list", "{request_id}"):
+                local_handler = self._labelled_local(route.handler)
+            else:
+                local_handler = route.handler
             if path.startswith("/api/ui/llm-obs/v1/trace/"):
                 federated: Optional[_Handler] = self._trace
             elif path.endswith("/{request_id}"):
                 federated = self._stored_list
             else:
                 federated = kinds.get(last)
-            handler = route.handler if federated is None else self._wrap(route.handler, federated)
+            handler = local_handler if federated is None else self._wrap(local_handler, federated)
             routes.append(web.route(route.method, path, handler, **route.kwargs))
         return routes
+
+    def _labelled_local(self, local_handler: _Handler) -> _Handler:
+        """Answer a list from memory, labelling each row as this laptop's."""
+
+        async def handler(request: web.Request) -> web.StreamResponse:
+            response = await local_handler(request)
+            if not isinstance(response, web.Response) or response.status != 200 or response.text is None:
+                return response
+            try:
+                data = json.loads(response.text)
+            except ValueError:
+                return response
+            for event in (data.get("result") or {}).get("events", []) if isinstance(data, dict) else []:
+                self._label(event, "laptop")
+            response.text = json.dumps(data)
+            return response
+
+        return handler
 
     def _wrap(self, local_handler: _Handler, federated: _Handler) -> _Handler:
         federated_with_cors = with_cors(federated)
@@ -282,6 +310,10 @@ class FederatedSearch:
             remote_next = (remote.get("result", {}).get("paging") or {}).get("after")
             remote_hits = int(remote.get("hitCount", len(remote_events)))
 
+        for events, source in ((remote_events, "self-hosted"), (local_events, "laptop")):
+            for event in events:
+                self._label(event, source)
+
         descending = params.sort_order != "asc"
         tagged = [(e, "remote") for e in remote_events] + [(e, "local") for e in local_events]
         tagged.sort(key=lambda item: _event_key(item[0]), reverse=descending)
@@ -313,6 +345,13 @@ class FederatedSearch:
         while len(self._results) > _MAX_STORED_RESULTS:
             self._results.pop(next(iter(self._results)))
         return web.json_response(response)
+
+    def _label(self, event: Dict[str, Any], source: str) -> None:
+        custom = event.get("event", {}).get("custom")
+        if not isinstance(custom, dict):
+            return
+        trace_id, span_id = str(custom.get("trace_id", "")), str(custom.get("span_id", ""))
+        custom["lapdog"] = {"source": source, "in_datadog": self.forwarding.is_in_datadog(trace_id, span_id)}
 
     async def _stored_list(self, request: web.Request) -> web.Response:
         request_id = request.match_info.get("request_id", "")
