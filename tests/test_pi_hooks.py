@@ -260,12 +260,15 @@ async def test_pi_first_turn_excludes_idle_time_before_first_prompt(agent):
     await _post(agent, _message_end(sid))
     await _post(agent, _turn_end(sid))
     await _post(agent, _agent_end(sid))
+    agent_ended_ns = time.time_ns()
 
     response = await agent.get("/claude/hooks/spans")
     spans = [span for span in _spans(await response.json()) if span.get("session_id") == sid]
     (root,) = _by_kind(spans, "agent")
     assert root["start_ns"] >= prompt_sent_ns
-    assert root["duration"] < 200_000_000
+    # Bound by the measured prompt-to-end window, not a fixed constant: slow CI
+    # runners (Windows) can take longer than the idle sleep to send the events.
+    assert root["duration"] <= agent_ended_ns - prompt_sent_ns
     assert all(span["start_ns"] >= root["start_ns"] for span in spans)
 
 
