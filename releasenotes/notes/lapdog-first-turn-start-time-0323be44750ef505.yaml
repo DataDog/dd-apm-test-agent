@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    lapdog: The first trace of a pi or Claude Code session no longer counts the time between launching the agent and
+    sending the first prompt in its duration.

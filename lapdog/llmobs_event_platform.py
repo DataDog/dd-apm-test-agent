@@ -27,6 +27,7 @@ from . import llmobs_query_parser
 from ._clock import monotonic_wall_ns
 from .model_pricing import COST_METRIC_KEYS
 from .model_pricing import estimate_span_cost
+from .span_store import estimate_size
 
 if TYPE_CHECKING:
     from ddapm_test_agent.agent import Agent
@@ -34,6 +35,8 @@ if TYPE_CHECKING:
     from .claude_hooks import ClaudeHooksAPI
 
 log = logging.getLogger(__name__)
+
+_DECODED_SPANS_KEY = "_lapdog_llmobs_spans"
 
 
 def _deep_merge(source: Dict[str, Any], target: Dict[str, Any]) -> None:
@@ -1084,7 +1087,6 @@ class LLMObsEventPlatformAPI:
     def __init__(self, agent: "Agent"):
         self.agent = agent
         self._query_results: Dict[str, Dict[str, Any]] = {}
-        self.decoded_llmobs_span_events: Dict[int, List[Dict[str, Any]]] = {}
         self._locally_priced_spans: Set[int] = set()
         self._claude_hooks_api: Optional["ClaudeHooksAPI"] = None
 
@@ -1095,24 +1097,25 @@ class LLMObsEventPlatformAPI:
     def get_llmobs_spans(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all LLMObs spans from stored requests."""
         requests = self.agent._requests_by_session(token) if token else self.agent._requests
-        all_spans = []
+        all_spans: List[Dict[str, Any]] = []
 
         for req in requests:
             if req.path in ("/evp_proxy/v2/api/v2/llmobs", "/evp_proxy/v4/api/v2/llmobs"):
                 try:
                     data = self.agent._request_data(req)
                     content_type = req.content_type or ""
-                    req_id = id(req)  # only brittle if agent requests are cleared
-                    if req_id not in self.decoded_llmobs_span_events:
+                    spans = req.get(_DECODED_SPANS_KEY)
+                    decoded = spans is None
+                    if spans is None:
                         events = decode_llmobs_payload(data, content_type)
                         spans = extract_spans_from_events(events)
-                        self.decoded_llmobs_span_events[req_id] = spans
-                    else:
-                        spans = self.decoded_llmobs_span_events[req_id]
+                        req[_DECODED_SPANS_KEY] = spans
                     for span in spans:
                         if estimate_span_cost(span):
                             self._locally_priced_spans.add(id(span))
                     all_spans.extend(spans)
+                    if decoded:
+                        self.agent.add_request_bytes(req, sum(estimate_size(span) for span in spans))
                 except Exception as e:
                     log.warning(f"Failed to extract spans from request: {e}")
 
@@ -1121,6 +1124,12 @@ class LLMObsEventPlatformAPI:
 
         all_spans.sort(key=lambda s: s.get("start_ns", 0), reverse=True)
         return all_spans
+
+    def forget_requests(self, requests: List[Any]) -> None:
+        """Release bookkeeping for decoded spans of requests the agent evicted."""
+        for req in requests:
+            for span in req.get(_DECODED_SPANS_KEY) or []:
+                self._locally_priced_spans.discard(id(span))
 
     def update_spans(self, update_data: bytes, content_type: str) -> int:
         """Update existing spans by span_id. Accepts same payload format as creation."""

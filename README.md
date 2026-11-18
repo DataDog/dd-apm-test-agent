@@ -315,6 +315,8 @@ Please refer to `ddapm-test-agent-fmt --help` for more information.
 
 - `PORT` [`8126`]: Port to listen on.
 
+- `DOGSTATSD_PORT` [`8125`]: UDP port to receive DogStatsD metrics on. Set to `0` to disable. If the port is already in use, the agent logs a warning and runs without it.
+
 - `ENABLED_CHECKS` [`""`]: Comma-separated values of checks to enable. Valid values can be found in [trace invariant checks](#trace-invariant-checks)
 
 - `LOG_LEVEL` [`"INFO"`]: Log level to use. DEBUG, INFO, WARNING, ERROR, CRITICAL.
@@ -484,6 +486,16 @@ Return stats that have been received by the agent for the given session token.
 #### [optional] `X-Datadog-Test-Session-Token`
 
 Stats are returned as a JSON list of the stats payloads received.
+
+### /test/session/dogstatsd
+
+Return the DogStatsD lines that have been received over UDP for the given session token.
+
+#### [optional] `?test_session_token=`
+#### [optional] `X-Datadog-Test-Session-Token`
+
+Lines are returned as a JSON list of strings, one per metric, event or service check, in the order they were received.
+DogStatsD datagrams carry no session token, so, like other requests without one, they belong to the latest session.
 
 ### /test/session/logs
 

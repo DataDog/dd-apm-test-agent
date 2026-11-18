@@ -20,18 +20,32 @@ from lapdog.cli.os_runner import run
 from lapdog.cli.pi import cmd_pi
 from lapdog.cli.runtime import _PATH_ROUTABLE_LAUNCHERS
 from lapdog.cli.runtime import ensure_lapdog_running
+from lapdog.cli.runtime import lapdog_alive
 from lapdog.cli.runtime import read_pid_file
 from lapdog.cli.server import cmd_start
 from lapdog.cli.server import cmd_status
 from lapdog.cli.server import cmd_stop
 from lapdog.cli.tags import cmd_tags
 from lapdog.cli.uninstall import cmd_uninstall
-
+from lapdog.span_store import MAX_MEMORY_ENV
+from lapdog.span_store import DEFAULT_MAX_MEMORY
+from lapdog.span_store import parse_memory_limit
 
 LAPDOG_COMMANDS = ["start", "stop", "status", "claude", "pi", "codex", "ollama", "tags", "uninstall"]
 LAPDOG_USAGE = (
     "Usage: lapdog [OPTIONS] <command> [command-args...]\n"
     "Options must appear before <command>. Arguments after <command> are forwarded.\n"
+    "\n"
+    "Options:\n"
+    "  --forward            Also forward LLM Observability data to Datadog (needs DD_API_KEY and DD_SITE)\n"
+    "  --max-memory SIZE    Approximate memory budget for retained data, e.g. 512MB or 8GB\n"
+    f"                       (default {DEFAULT_MAX_MEMORY}, 'unlimited' to disable). Applies when lapdog starts\n"
+    "  --no-plugin-install  Do not auto-install the lapdog Claude Code plugin\n"
+    "  --backfill           Import past sessions from disk for claude, codex, or pi, then exit\n"
+    "  --version            Print version info and exit\n"
+    "  --help               Print this message and exit\n"
+    "\n"
+    "Commands:\n"
     "  start      Start lapdog (background)\n"
     "  stop       Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
     "  status     Show lapdog status (from /info)\n"
@@ -65,16 +79,33 @@ def cmd_exec(app_cmd: List[str], forward_data: bool) -> None:
     run(bin_path=resolved, argv=app_cmd, env=env, search_path=True)
 
 
+_VALUE_OPTIONS = {"--max-memory"}
+
+
 def _parse_command(cmd_args: List[str]) -> Tuple[List[str], Optional[List[str]]]:
     lapdog_args: List[str] = []
 
-    for arg_idx, arg in enumerate(cmd_args):
+    arg_idx = 0
+    while arg_idx < len(cmd_args):
+        arg = cmd_args[arg_idx]
         if not arg.startswith("--"):
             return lapdog_args, cmd_args[arg_idx:]
 
         lapdog_args.append(arg)
+        if arg in _VALUE_OPTIONS and arg_idx + 1 < len(cmd_args):
+            lapdog_args.append(cmd_args[arg_idx + 1])
+            arg_idx += 1
+        arg_idx += 1
 
     return lapdog_args, None
+
+
+def _memory_size(value: str) -> str:
+    try:
+        parse_memory_limit(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e))
+    return value
 
 
 def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
@@ -110,6 +141,17 @@ def _parse_lapdog_args(lapdog_args: List[str]) -> argparse.Namespace:
             "agent's /<source>/hooks endpoint, then exit without launching the underlying "
             "CLI. Sources: ~/.codex/sessions (codex), ~/.claude/projects (claude), "
             "~/.pi/agent/sessions + ~/.omp/agent/sessions (pi)."
+        ),
+    )
+
+    parser.add_argument(
+        "--max-memory",
+        type=_memory_size,
+        default=None,
+        help=(
+            f"Approximate budget for data retained in memory (e.g. 512MB, 8GB, or 'unlimited'; default "
+            f"{DEFAULT_MAX_MEMORY}). Once exceeded, the oldest finished traces are dropped. Only applies when "
+            "this command starts lapdog."
         ),
     )
 
@@ -201,6 +243,15 @@ def main() -> None:
     if not remaining:
         print(LAPDOG_USAGE)
         sys.exit(1)
+
+    if lapdog_parsed_args.max_memory is not None:
+        if lapdog_alive():
+            print(
+                "[lapdog] Lapdog is already running; --max-memory only applies when lapdog starts. "
+                "Run 'lapdog stop' first to change it.",
+                file=sys.stderr,
+            )
+        os.environ[MAX_MEMORY_ENV] = lapdog_parsed_args.max_memory
 
     sub_cmd = _canonical_launcher(remaining[0]) or remaining[0].lower()
     sub_cmd_args = remaining[1:]

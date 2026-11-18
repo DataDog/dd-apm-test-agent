@@ -1,0 +1,6 @@
+---
+features:
+  - |
+    lapdog: bound memory retained by the local agent to an approximate budget (default 4GB), configurable with
+    ``--max-memory`` or ``LAPDOG_MAX_MEMORY`` (``unlimited`` disables it). Once exceeded, the oldest finished traces,
+    instrumented app requests, and raw hook events are dropped.

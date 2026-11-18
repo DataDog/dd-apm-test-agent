@@ -42,6 +42,10 @@ from .coding_agent_metadata import git_commit_sha_tags
 from .coding_agent_metadata import project_metadata_tags
 from .coding_agent_metadata import resolve_project_metadata
 from .model_pricing import COST_METRIC_KEYS
+from .span_store import RawEventLog
+from .span_store import SpanStore
+from .span_store import raw_event_budget
+from .span_store import span_budget
 from .utils import set_hidden_metadata
 
 log = logging.getLogger(__name__)
@@ -331,17 +335,24 @@ def _extract_intent(tool_name: str, tool_input: Any) -> str:
 class ClaudeHooksAPI:
     """Handler for Claude Code hook events."""
 
-    def __init__(self, link_tracker: Optional[ClaudeLinkTracker] = None) -> None:
+    def __init__(
+        self, link_tracker: Optional[ClaudeLinkTracker] = None, max_memory_bytes: Optional[int] = None
+    ) -> None:
         self._sessions: Dict[str, SessionState] = {}
         self._session_ids_by_token: Dict[str, Set[str]] = {}
         self._session_tokens_by_id: Dict[str, Set[str]] = {}
         self._pending_tags_by_token: Dict[str, Dict[str, str]] = {}
         self._tag_update_sequence = 0
-        self._assembled_spans: List[Dict[str, Any]] = []
+        self.max_memory_bytes = max_memory_bytes
+        self._assembled_spans = SpanStore(span_budget(max_memory_bytes))
+        self._assembled_spans.add_active_trace_source(self._active_trace_ids)
         self._pending_claude_auto_reviews: Dict[str, Dict[str, Any]] = {}
-        self._raw_events: List[Dict[str, Any]] = []
+        self._raw_events = RawEventLog(raw_event_budget(max_memory_bytes))
         self._link_tracker = link_tracker
         self._app: Optional[web.Application] = None
+
+    def _active_trace_ids(self) -> List[str]:
+        return [session.trace_id for session in self._sessions.values() if not session.root_span_emitted]
 
     def set_app(self, app: web.Application) -> None:
         """Set the aiohttp app reference for backend forwarding."""
@@ -869,6 +880,38 @@ class ClaudeHooksAPI:
         session.root_span_emitted = True
         log.info("Finalized interrupted turn for session %s (trace %s)", session.session_id, session.trace_id)
 
+    def _turn_start_ns(self, session: SessionState) -> int:
+        """Return the start time for a turn beginning now in ``session.trace_id``.
+
+        The proxy can record LLM spans into a session's first trace before its
+        first prompt (calls Claude Code makes at startup). Start no later than
+        the earliest of them so the root span still contains its children.
+        """
+        start_ns = monotonic_wall_ns()
+        for span in self._assembled_spans:
+            if span.get("trace_id") == session.trace_id and isinstance(span.get("start_ns"), int):
+                start_ns = min(start_ns, span["start_ns"])
+        return start_ns
+
+    def _extend_turn_start(self, session: SessionState, start_ns: int) -> None:
+        """Move the current turn's start back to ``start_ns`` if a span in its trace began earlier.
+
+        A proxy request still in flight when the prompt arrived (one Claude
+        Code starts at launch) joins the trace when it completes, after
+        ``_turn_start_ns`` ran. Without this the root would start after it.
+        """
+        if start_ns >= session.start_ns:
+            return
+        shift = session.start_ns - start_ns
+        session.start_ns = start_ns
+        root_span: Optional[Dict[str, Any]] = getattr(session, "_root_span_ref", None)
+        if root_span is None or root_span.get("trace_id") != session.trace_id:
+            return
+        root_span["start_ns"] = start_ns
+        if session.root_span_emitted:
+            # Stop already set the duration from the old start.
+            root_span["duration"] += shift
+
     def _handle_user_prompt_submit(self, session_id: str, body: Dict[str, Any]) -> None:
         """Handle UserPromptSubmit hook event — starts a new trace for each user turn.
 
@@ -884,10 +927,8 @@ class ClaudeHooksAPI:
 
         # If the previous turn's root span was emitted, start a fresh trace
         if session.root_span_emitted:
-            now_ns = monotonic_wall_ns()
             session.trace_id = _format_trace_id()
             session.root_span_id = _format_span_id()
-            session.start_ns = now_ns
             session.user_prompts = []
             session.tools_used = set()
             session.agent_span_stack = []
@@ -902,6 +943,11 @@ class ClaudeHooksAPI:
             # subsequent interactions on the same topic reuse the title.
             # The haiku summarization call will update it when the topic changes.
             session.root_span_emitted = False
+
+        # The turn starts at the prompt. SessionStart created the session (and
+        # its start time) when Claude Code launched, so reusing that time would
+        # fold idle time before the first prompt into the first trace.
+        session.start_ns = self._turn_start_ns(session)
 
         prompt = body.get("user_prompt", body.get("prompt", ""))
         if prompt:
@@ -1385,8 +1431,6 @@ class ClaudeHooksAPI:
         if last_span is None:
             return None
         last_input_tokens = last_span.get("metrics", {}).get("input_tokens", 0)
-        primary_model = last_span.get("meta", {}).get("model_name", "")
-        window = _get_context_limit(primary_model)
         delta_tokens = max(last_input_tokens - first_input_tokens, 0)
         # Extract sections from first and last LLM spans' context_breakdown
         first_span = next(
@@ -1399,6 +1443,11 @@ class ClaudeHooksAPI:
             else None
         )
         last_breakdown = last_span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("context_breakdown")
+        # Prefer the window the agent reported for this call (e.g. Pi's model registry)
+        # over the Claude model-name lookup.
+        window = (last_breakdown or {}).get("context_window_size") or _get_context_limit(
+            last_span.get("meta", {}).get("model_name", "")
+        )
         context_delta: Dict[str, Any] = {
             "first_input_tokens": first_input_tokens,
             "last_input_tokens": last_input_tokens,
@@ -1975,6 +2024,7 @@ class ClaudeHooksAPI:
             await self._forward_trace_to_backend(session_id)
             await self._forward_eval_metrics_to_backend(session_id)
 
+        self._assembled_spans.refresh()
         return web.json_response({"status": "ok"})
 
     async def handle_sessions(self, request: Request) -> web.Response:
@@ -2077,6 +2127,27 @@ class ClaudeHooksAPI:
         """Handle GET /claude/hooks/raw — return all raw received events for debugging."""
         return web.json_response({"events": self._raw_events})
 
+    async def handle_memory(self, request: Request) -> web.Response:
+        """Handle GET /lapdog/memory: report the retained-data budget and eviction counts."""
+        store = self._assembled_spans
+        agent = request.app["agent"]
+        return web.json_response(
+            {
+                "max_memory_bytes": self.max_memory_bytes,
+                "span_budget_bytes": store.max_bytes,
+                "estimated_span_bytes": store.estimated_bytes if store.max_bytes is not None else None,
+                "retained_spans": len(store),
+                "evicted_spans": store.evicted_spans,
+                "evicted_traces": store.evicted_traces,
+                "request_budget_bytes": agent.max_request_bytes,
+                "estimated_request_bytes": (
+                    agent.stored_request_bytes if agent.max_request_bytes is not None else None
+                ),
+                "retained_requests": len(agent._requests),
+                "evicted_requests": agent.evicted_requests,
+            }
+        )
+
     async def handle_backfill_session(self, request: Request) -> web.Response:
         """Ingest a historical Claude transcript as a batch of spans.
 
@@ -2127,6 +2198,7 @@ class ClaudeHooksAPI:
         """Return the routes for this API."""
         return [
             web.post("/claude/hooks", with_cors(self.handle_hook)),
+            web.route("*", "/lapdog/memory", with_cors(self.handle_memory)),
             web.post("/lapdog/session/tags", with_cors(self.handle_session_tags)),
             web.post("/claude/hooks/session/tags", with_cors(self.handle_session_tags)),
             web.post("/claude/hooks/backfill_session", with_cors(self.handle_backfill_session)),

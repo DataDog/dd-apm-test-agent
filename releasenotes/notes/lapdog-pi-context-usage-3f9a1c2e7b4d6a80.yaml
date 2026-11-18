@@ -1,0 +1,5 @@
+---
+features:
+  - |
+    lapdog: Pi LLM spans now report context-window usage and a per-section breakdown (system prompt,
+    tool definitions, tool calls, skills, messages), and turn root spans report the context delta.

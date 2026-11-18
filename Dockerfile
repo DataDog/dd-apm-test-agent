@@ -2,6 +2,7 @@ FROM python:3.13-slim
 
 WORKDIR /src
 EXPOSE 8126
+EXPOSE 8125/udp
 
 # The agent binds to loopback by default. In a container the published port
 # (EXPOSE 8126 / -p 8126:8126) is only reachable if the agent binds all

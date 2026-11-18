@@ -802,8 +802,8 @@ _PORTS_PER_WORKER = 500
 _port_counter = itertools.count()
 
 
-def _free_port() -> str:
-    """Return a TCP port that is currently free.
+def _free_port(socket_type: int = socket.SOCK_STREAM) -> str:
+    """Return a TCP port, or a port of the given socket type, that is currently free.
 
     Ports come from a block reserved for the current pytest-xdist worker, below the ephemeral
     range the OS uses for ``bind(("", 0))`` (32768+ on Linux, 49152+ on macOS/Windows). This
@@ -814,7 +814,7 @@ def _free_port() -> str:
     base = 20000 + (worker % 24) * _PORTS_PER_WORKER
     for _ in range(_PORTS_PER_WORKER):
         port = base + next(_port_counter) % _PORTS_PER_WORKER
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        with socket.socket(socket.AF_INET, socket_type) as s:
             try:
                 s.bind(("", port))
             except OSError:
@@ -837,6 +837,11 @@ def otlp_http_port() -> str:
 @pytest.fixture
 def otlp_grpc_port() -> str:
     return _free_port()
+
+
+@pytest.fixture
+def dogstatsd_port() -> str:
+    return _free_port(socket.SOCK_DGRAM)
 
 
 @pytest.fixture
@@ -881,6 +886,7 @@ async def testagent(
     testagent_port,
     otlp_http_port,
     otlp_grpc_port,
+    dogstatsd_port,
     testagent_snapshot_ci_mode,
     test_agent_env,
     testagent_connection_type,
@@ -891,6 +897,7 @@ async def testagent(
             "PORT": testagent_port,
             "OTLP_HTTP_PORT": otlp_http_port,
             "OTLP_GRPC_PORT": otlp_grpc_port,
+            "DOGSTATSD_PORT": dogstatsd_port,
             "SNAPSHOT_CI": "1" if testagent_snapshot_ci_mode else "0",
             "SNAPSHOT_DIR": os.path.join(os.path.dirname(__file__), "integration_snapshots"),
         }

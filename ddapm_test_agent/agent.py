@@ -104,6 +104,11 @@ def _identity_llmobs_payload(data: bytes, content_encoding: str) -> bytes:
 DEFAULT_APM_PORT = 8126
 DEFAULT_OTLP_HTTP_PORT = 4318
 DEFAULT_OTLP_GRPC_PORT = 4317
+DEFAULT_DOGSTATSD_PORT = 8125
+
+# Path of the stored requests that hold DogStatsD datagrams. No HTTP request is stored with it.
+DOGSTATSD_PATH = "/dogstatsd"
+_REQUEST_OVERHEAD_BYTES = 4096
 
 
 class NoSuchSessionException(Exception):
@@ -354,7 +359,10 @@ def _evp_span_key(span: Dict[str, Any]) -> Tuple[Any, Any]:
 
 
 class _SyntheticRequest:
-    """Stored-request stand-in for EVP llmobs posts synthesized from v0.4 ``meta_struct``.
+    """Stored-request stand-in for data that did not arrive as an HTTP request.
+
+    Used for EVP llmobs posts synthesized from v0.4 ``meta_struct``, and for DogStatsD
+    datagrams received over UDP.
 
     Implements just enough of the aiohttp ``Request`` surface used by the request log
     consumers (``handle_session_requests``, ``get_llmobs_spans``, ``_requests_by_session``).
@@ -383,6 +391,16 @@ class _SyntheticRequest:
         return self._data.get(key, default)
 
 
+class _DogStatsDProtocol(asyncio.DatagramProtocol):
+    """Stores the DogStatsD datagrams received over UDP."""
+
+    def __init__(self, agent: "Agent") -> None:
+        self._agent = agent
+
+    def datagram_received(self, data: bytes, addr: Tuple[str, int]) -> None:
+        self._agent._store_dogstatsd_datagram(data)
+
+
 @dataclass
 class _AgentSession:
     """Maintain Agent state across requests."""
@@ -399,6 +417,10 @@ class Agent:
         """
         # Token to be used if running test cases synchronously
         self._requests: List[Request] = []
+        self.max_request_bytes: Optional[int] = None
+        self.request_eviction_listener: Optional[Callable[[List[Request]], None]] = None
+        self.evicted_requests = 0
+        self._request_bytes = 0
         self._rc_server = RemoteConfigServer()
         self._trace_failures: Dict[str, List[Tuple[CheckTrace, str]]] = defaultdict(default_value_trace_failures)
         self._trace_check_results_by_check: Dict[str, Dict[str, Dict[str, int]]] = defaultdict(
@@ -540,7 +562,61 @@ class Agent:
         # result in: RuntimeError: readany() called while another coroutine is already waiting for incoming data
         # See: https://github.com/DataDog/dd-apm-test-agent/pull/101 for more info
         request["_testagent_data"] = await request.read()
+        self._append_request(request)
+
+    @property
+    def stored_request_bytes(self) -> int:
+        return self._request_bytes
+
+    def _append_request(self, request: Request) -> None:
         self._requests.append(request)
+        if self.max_request_bytes is None:
+            return
+        size = len(request.get("_testagent_data") or b"") + _REQUEST_OVERHEAD_BYTES
+        request["_testagent_size"] = size
+        self._request_bytes += size
+        if self._request_bytes > self.max_request_bytes:
+            self._evict_requests()
+
+    def add_request_bytes(self, request: Request, size: int) -> None:
+        """Count memory derived from a stored request (e.g. decoded payloads) against the request budget."""
+        if self.max_request_bytes is None:
+            return
+        request["_testagent_size"] = (request.get("_testagent_size") or 0) + size
+        self._request_bytes += size
+        if self._request_bytes > self.max_request_bytes:
+            self._evict_requests()
+
+    def _evict_requests(self) -> None:
+        """Drop the oldest stored requests until under 90% of the budget. Session starts are kept."""
+        assert self.max_request_bytes is not None
+        if not self._requests:
+            return
+        target = self.max_request_bytes * 0.9
+        newest = self._requests[-1]
+        kept: List[Request] = []
+        evicted: List[Request] = []
+        for req in self._requests:
+            if (
+                self._request_bytes > target
+                and req is not newest
+                and req.match_info.handler != self.handle_session_start
+            ):
+                self._request_bytes -= req.get("_testagent_size") or 0
+                evicted.append(req)
+            else:
+                kept.append(req)
+        if not evicted:
+            return
+        self._requests = kept
+        self.evicted_requests += len(evicted)
+        log.info("Evicted %d stored requests; ~%d bytes retained", len(evicted), self._request_bytes)
+        if self.request_eviction_listener is not None:
+            self.request_eviction_listener(evicted)
+
+    def _recount_request_bytes(self) -> None:
+        if self.max_request_bytes is not None:
+            self._request_bytes = sum(req.get("_testagent_size") or 0 for req in self._requests)
 
     def _request_data(self, request: Request) -> bytes:
         """Return the data from the request.
@@ -817,7 +893,22 @@ class Agent:
             handler=self.handle_evp_proxy_v4_api_v2_llmobs,
             session_token=token,
         )
-        self._requests.append(cast(Request, synthetic))
+        self._append_request(cast(Request, synthetic))
+
+    def _store_dogstatsd_datagram(self, data: bytes) -> None:
+        """Store a DogStatsD datagram like a request without a session token.
+
+        Datagrams have no headers, so they belong to the latest session, as other requests
+        without a token do.
+        """
+        synthetic = _SyntheticRequest(
+            url=URL(f"udp://localhost{DOGSTATSD_PATH}"),
+            headers={},
+            body=data,
+            handler=None,
+            session_token=None,
+        )
+        self._append_request(cast(Request, synthetic))
 
     def _decode_v05_traces(self, request: Request) -> v04TracePayload:
         raw_data = self._request_data(request)
@@ -1371,7 +1462,7 @@ class Agent:
 
     async def handle_session_start(self, request: Request) -> web.Response:
         rates = json.loads(request.url.query.get("agent_sample_rate_by_service", "{}"))
-        self._requests.append(request)
+        self._append_request(request)
         session = self._sessions[_session_token(request)]
         session.sample_rate_by_service_env = rates
         log.info("Starting new session with token %r: %r", _session_token(request), session)
@@ -1559,6 +1650,15 @@ class Agent:
         stats = await self._tracestats_by_session(token)
         return web.json_response(stats)
 
+    async def handle_session_dogstatsd(self, request: Request) -> web.Response:
+        token = request["session_token"]
+        lines: List[str] = []
+        for req in self._requests_by_session(token):
+            if req.path == DOGSTATSD_PATH:
+                data = await req.read()
+                lines.extend(line for line in data.decode("utf-8", errors="replace").splitlines() if line)
+        return web.json_response(lines)
+
     async def handle_session_logs(self, request: Request) -> web.Response:
         token = request["session_token"]
         logs = await self._logs_by_session(token)
@@ -1659,7 +1759,7 @@ class Agent:
 
     async def handle_v1_profiling(self, request: Request) -> web.Response:
         await request.read()
-        self._requests.append(request)
+        self._append_request(request)
         # TODO: valid response?
         return web.HTTPOk()
 
@@ -1668,6 +1768,7 @@ class Agent:
         session_token = request["session_token"]
         if session_token is None:
             self._requests = []
+            self._recount_request_bytes()
             return web.HTTPOk()
 
         remaining: List[Request] = []
@@ -1683,6 +1784,7 @@ class Agent:
             remaining.append(req)
 
         self._requests = remaining
+        self._recount_request_bytes()
         return web.HTTPOk()
 
     async def handle_trace_analyze(self, request: Request) -> web.Response:
@@ -1907,6 +2009,7 @@ class Agent:
                 "/test/session/apmtelemetry": self.handle_session_apmtelemetry,
                 "/test/session/tracerflares": self.handle_session_tracerflares,
                 "/test/session/stats": self.handle_session_tracestats,
+                "/test/session/dogstatsd": self.handle_session_dogstatsd,
                 "/test/session/requests": self.handle_session_requests,
                 "/test/session/responses/config": self.handle_v07_remoteconfig_create,
                 "/test/session/responses/config/path": self.handle_v07_remoteconfig_path_create,
@@ -2141,6 +2244,7 @@ def make_app(
             web.get("/test/session/apmtelemetry", agent.handle_session_apmtelemetry),
             web.get("/test/session/tracerflares", agent.handle_session_tracerflares),
             web.get("/test/session/stats", agent.handle_session_tracestats),
+            web.get("/test/session/dogstatsd", agent.handle_session_dogstatsd),
             web.get("/test/session/requests", agent.handle_session_requests),
             web.options("/test/session/requests", agent.handle_session_requests),
             web.post("/test/session/responses/config", agent.handle_v07_remoteconfig_create),
@@ -2391,6 +2495,12 @@ def main(
             "(loopback only). Set to 0.0.0.0 to accept connections from other "
             "hosts, e.g. when running in a container with a published port."
         ),
+    )
+    parser.add_argument(
+        "--dogstatsd-port",
+        type=int,
+        default=int(os.environ.get("DOGSTATSD_PORT", DEFAULT_DOGSTATSD_PORT)),
+        help="UDP port to receive DogStatsD metrics on. Set to 0 to disable.",
     )
     parser.add_argument(
         "--otlp-http-port",
@@ -2739,6 +2849,15 @@ def main(
 
         await asyncio.gather(*sites_to_start)
 
+        dogstatsd_transport: Optional[asyncio.BaseTransport] = None
+        if parsed_args.dogstatsd_port > 0:
+            try:
+                dogstatsd_transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+                    lambda: _DogStatsDProtocol(agent), local_addr=(parsed_args.host, parsed_args.dogstatsd_port)
+                )
+            except OSError as e:
+                log.warning("Not receiving DogStatsD metrics on UDP port %d: %s", parsed_args.dogstatsd_port, e)
+
         print(f"======== Running APM server on port {parsed_args.port} ========")
         if apm_sock:
             print(f"======== Running APM server on UDS socket {parsed_args.trace_uds_socket} ========")
@@ -2746,6 +2865,8 @@ def main(
         print(f"======== Running OTLP GRPC server on port {parsed_args.otlp_grpc_port} ========")
         if web_ui_site is not None:
             print(f"======== Running Web UI on port {parsed_args.web_ui_port} ========")
+        if dogstatsd_transport is not None:
+            print(f"======== Receiving DogStatsD metrics on UDP port {parsed_args.dogstatsd_port} ========")
         print("(Press CTRL+C to quit)")
 
         try:
@@ -2759,6 +2880,8 @@ def main(
             if web_ui_runner is not None:
                 await web_ui_runner.cleanup()
             await otlp_grpc_server.stop(grace=5.0)
+            if dogstatsd_transport is not None:
+                dogstatsd_transport.close()
 
     # Run the servers
     asyncio.run(run_servers())

@@ -38,6 +38,7 @@ from .claude_link_tracker import ClaudeLinkTracker
 from .claude_link_tracker import SpanLink
 from .coding_agent_metadata import apply_project_metadata_to_span
 from .model_pricing import compute_cost_metrics
+from .span_store import trace_key
 from .utils import set_hidden_metadata
 
 log = logging.getLogger(__name__)
@@ -450,6 +451,7 @@ class ClaudeProxyAPI:
         # Spans created before any session existed; re-parented when a session appears.
         self._orphan_spans: List[Dict[str, Any]] = []
         self._orphan_naming_spans: Set[str] = set()
+        hooks_api._assembled_spans.add_active_trace_source(lambda: [trace_key(span) for span in self._orphan_spans])
 
     async def _get_http_session(self) -> aiohttp.ClientSession:
         if self._http_session is None or self._http_session.closed:
@@ -618,6 +620,9 @@ class ClaudeProxyAPI:
             # interrupted-turn finalizer reads the provider back off the session.
             session.model_provider = "anthropic"
             trace_id = session.trace_id
+            # A request that started before the turn (e.g. one in flight at the
+            # first prompt) must not start before its root.
+            self._hooks_api._extend_turn_start(session, start_ns)
             # Default parent: use the agent stack (works for sequential execution)
             parent_id = self._hooks_api._current_parent_id(session)
             # Adopt any previously orphaned spans now that we have a session

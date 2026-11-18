@@ -1,3 +1,4 @@
+import re
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -58,6 +59,7 @@ SHADOW = "\033[38;5;54m"  # deep purple
 DIM = "\033[2m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
+_ANSI_ESCAPE = re.compile(r"\033\[[0-9;]*m")
 
 
 def _render_lapdog_art(face: str, shadow: str, reset: str) -> List[str]:
@@ -145,6 +147,9 @@ def _build(text_lines: List[str]) -> str:
     padded_right = [""] * pad_top + text_lines
     while len(padded_right) < len(art_lines):
         padded_right.append("")
+    art_width = len(_ANSI_ESCAPE.sub("", art_lines[0])) if art_lines else 0
+    while len(art_lines) < len(padded_right):
+        art_lines.append(" " * art_width)
 
     ascii_lines = [""]
     for art, text in zip(art_lines, padded_right):
@@ -157,7 +162,8 @@ def build_status_banner(
     port: Optional[int] = None,
     pid: Optional[int] = None,
     logs_path: Optional[str] = None,
-    is_running: bool = True
+    is_running: bool = True,
+    memory: Optional[str] = None,
 ) -> str:
     lines = [
         f"{BOLD}lapdog{RESET} {DIM}v{_get_version()}{RESET}",
@@ -169,6 +175,8 @@ def build_status_banner(
         lines.append(f"{DIM}Lapdog is running on port {RESET}{BOLD}{port}{RESET}{DIM}.{RESET}" if port else "")
         lines.append(f"{DIM}Process ID (pid): {RESET}{BOLD}{pid}{RESET}{DIM}.{RESET}" if pid else "")
         lines.append(f"{DIM}Logs: {RESET}{BOLD}{logs_path}{RESET}{DIM}.{RESET}" if logs_path else "")
+        if memory:
+            lines.append(f"{DIM}Memory: {RESET}{BOLD}{memory}{RESET}{DIM}.{RESET}")
     else:
         lines.append(f"{DIM}Lapdog is not running.{RESET}")
         lines.append(f"{DIM}Start lapdog with {RESET}{BOLD}lapdog start{RESET}{DIM} or {RESET}{BOLD}lapdog claude{RESET}")
