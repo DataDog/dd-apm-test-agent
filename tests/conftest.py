@@ -1115,7 +1115,11 @@ def clickhouse_process(tmp_path_factory):
 
     binary = os.environ.get("LAPDOG_TEST_CLICKHOUSE_BINARY") or resolve_binary()
     if not binary:
-        pytest.skip("no clickhouse binary (set LAPDOG_TEST_CLICKHOUSE_BINARY or put clickhouse on PATH)")
+        message = "no clickhouse binary (set LAPDOG_TEST_CLICKHOUSE_BINARY or put clickhouse on PATH)"
+        # The lapdog server workflow sets this so a missing binary fails there instead of skipping everything.
+        if os.environ.get("LAPDOG_TEST_REQUIRE_CLICKHOUSE"):
+            pytest.fail(message)
+        pytest.skip(message)
     proc = ClickHouseProcess(binary, str(tmp_path_factory.mktemp("clickhouse")), 2 * 1024**3)
     try:
         proc.start()
