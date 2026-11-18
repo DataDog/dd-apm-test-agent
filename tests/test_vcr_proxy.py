@@ -10,6 +10,7 @@ from typing import Dict
 from typing import Generator
 from typing import List
 from typing import Optional
+from unittest.mock import AsyncMock
 
 from aiohttp import FormData
 from aiohttp import web
@@ -19,6 +20,7 @@ from aiohttp.test_utils import TestServer
 import pytest
 
 from ddapm_test_agent.vcr_proxy import _generate_cassette_name
+from ddapm_test_agent.vcr_proxy import _url_path_join
 
 
 LEGACY_CASSETTE_CONTENT = """
@@ -159,6 +161,64 @@ async def test_vcr_proxy_make_cassette(agent: TestClient[Any, Any], vcr_cassette
 
     cassette_file = cassette_files[0]
     assert cassette_file.startswith("custom_serve_post")
+
+
+@pytest.mark.parametrize("vcr_ci_mode", [False, True])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "http://internal.invalid/secret",
+        "https://internal.invalid/secret",
+        "HTTP://internal.invalid/secret",
+        "//internal.invalid/secret",
+        "/http://internal.invalid/secret",
+        "%68ttp://internal.invalid/secret",
+        "http%3A%2F%2Finternal.invalid/secret",
+        "%2F%2Finternal.invalid/secret",
+        "http://[invalid/secret",
+    ],
+)
+async def test_vcr_proxy_rejects_absolute_urls(
+    agent: TestClient[Any, Any],
+    vcr_cassettes_directory: str,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    upstream_request = AsyncMock(return_value=web.Response(text="internal secret"))
+    monkeypatch.setattr("ddapm_test_agent.vcr_proxy._request", upstream_request)
+
+    resp = await agent.get(f"/vcr/openai/{path}")
+
+    message = await resp.text()
+    assert resp.status == 400, message
+    assert message.startswith("Invalid VCR proxy path: ")
+    if path == "http://[invalid/secret":
+        assert "Invalid IPv6 URL" in message
+    else:
+        assert "VCR proxy path must be relative to the provider URL" in message
+    upstream_request.assert_not_called()
+    assert os.listdir(vcr_cassettes_directory) == []
+
+
+@pytest.mark.parametrize(
+    "base_url,path,expected",
+    [
+        ("https://api.openai.com/v1", "chat/completions", "https://api.openai.com/v1/chat/completions"),
+        ("https://api.openai.com/v1/", "/models", "https://api.openai.com/v1/models"),
+        (
+            "http://localhost:8080/api",
+            "serve?next=https://example.com/",
+            "http://localhost:8080/api/serve?next=https://example.com/",
+        ),
+        (
+            "https://generativelanguage.googleapis.com",
+            "v1beta/models/test:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/test:generateContent",
+        ),
+    ],
+)
+def test_url_path_join(base_url: str, path: str, expected: str) -> None:
+    assert _url_path_join(base_url, path) == expected
 
 
 async def test_vcr_proxy_uses_existing_cassette(agent: TestClient[Any, Any], vcr_cassettes_directory: str) -> None:

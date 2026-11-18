@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    VCR: Reject absolute URLs in VCR proxy paths and verify that the destination
+    uses the configured provider origin.

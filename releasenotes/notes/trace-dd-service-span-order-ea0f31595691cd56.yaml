@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    trace_dd_service: fixes a false failure when a span without ``servlet.context`` comes before the span that has it, such as a Java ``servlet.forward`` span serialized ahead of its root.
