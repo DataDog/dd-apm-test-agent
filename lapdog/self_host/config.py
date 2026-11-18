@@ -82,9 +82,6 @@ class ServerConfig:
     port: int = DEFAULT_PORT
     clickhouse_binary: Optional[str] = None
     clickhouse_max_memory_bytes: int = parse_memory_size(DEFAULT_CLICKHOUSE_MAX_MEMORY)
-    forward_to_datadog: bool = False
-    dd_site: str = "datadoghq.com"
-    dd_api_key: str = ""
     database: str = DATABASE
 
     @property
@@ -116,10 +113,6 @@ def _env(name: str) -> Optional[str]:
     return value or None
 
 
-def _env_flag(name: str) -> bool:
-    return (_env(name) or "").lower() in ("1", "true", "yes", "on")
-
-
 def add_server_arguments(parser: argparse.ArgumentParser) -> None:
     """Add the flags shared by ``lapdog server start`` and ``python -m lapdog.self_host``.
 
@@ -140,12 +133,6 @@ def add_server_arguments(parser: argparse.ArgumentParser) -> None:
         "--clickhouse-max-memory",
         default=_env("CLICKHOUSE_MAX_MEMORY") or DEFAULT_CLICKHOUSE_MAX_MEMORY,
         help="Memory cap for the ClickHouse process (default 1GB)",
-    )
-    parser.add_argument(
-        "--forward-to-datadog",
-        action="store_true",
-        default=_env_flag("FORWARD_TO_DATADOG"),
-        help="Also send spans to Datadog (uses DD_API_KEY and DD_SITE)",
     )
 
 
@@ -175,9 +162,6 @@ def config_from_args(args: argparse.Namespace) -> ServerConfig:
         port=args.port,
         clickhouse_binary=args.clickhouse_binary,
         clickhouse_max_memory_bytes=parse_memory_size(args.clickhouse_max_memory),
-        forward_to_datadog=args.forward_to_datadog,
-        dd_site=os.environ.get("DD_SITE", "datadoghq.com"),
-        dd_api_key=os.environ.get("DD_API_KEY", ""),
     )
 
 

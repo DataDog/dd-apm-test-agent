@@ -367,7 +367,7 @@ class ClaudeHooksAPI:
         self.max_memory_bytes = max_memory_bytes
         self._assembled_spans = SpanStore(span_budget(max_memory_bytes))
         self._assembled_spans.add_active_trace_source(self._active_trace_ids)
-        # Sends finished traces to the self-hosted server and counts what reaches Datadog (set by lapdog.server).
+        # Sends finished traces to the Self-hosted server, if configured (set by lapdog.server).
         self.forwarding: Optional["Forwarding"] = None
         self._pending_claude_auto_reviews: Dict[str, Dict[str, Any]] = {}
         self._raw_events = RawEventLog(raw_event_budget(max_memory_bytes))
@@ -1859,20 +1859,17 @@ class ClaudeHooksAPI:
         log.info("Resolved backend target: %s (mode=%s)", url, "agent" if agent_url else "agentless")
         return url, headers
 
-    async def _post_to_backend(self, url: str, headers: Dict[str, str], data: bytes, description: str) -> Optional[str]:
-        """POST the given data to the url and log the outcome. Returns the error, or None on success."""
+    async def _post_to_backend(self, url: str, headers: Dict[str, str], data: bytes, description: str) -> None:
+        """POST the given data to the url and log the outcome."""
         try:
             async with ClientSession() as http_session:
                 async with http_session.post(url, headers=headers, data=data) as resp:
                     if not resp.ok:
-                        text = await resp.text()
-                        log.warning("Failed to %s: %s %s", description, resp.status, text)
-                        return f"HTTP {resp.status}: {text}"
-                    log.info("Successfully %s", description)
-                    return None
+                        log.warning("Failed to %s: %s %s", description, resp.status, await resp.text())
+                    else:
+                        log.info("Successfully %s", description)
         except Exception as e:
             log.warning("Error trying to %s: %s", description, e)
-            return str(e) or e.__class__.__name__
 
     async def _post_spans_to_backend(
         self,
@@ -1902,9 +1899,7 @@ class ClaudeHooksAPI:
             chunk_description = description
             if chunk_count > 1:
                 chunk_description = f"{description} (chunk {chunk_index}/{chunk_count}, {len(chunk)} spans)"
-            error = await self._post_to_backend(url, headers, data, chunk_description)
-            if self.forwarding is not None:
-                self.forwarding.datadog.record(len(chunk), error is None, error or "")
+            await self._post_to_backend(url, headers, data, chunk_description)
 
     async def _forward_span_update(self, spans: List[Dict[str, Any]]) -> None:
         """Forward span updates to the DD backend via the update endpoint."""

@@ -457,8 +457,6 @@ class Agent:
         # Called with (path, body, content type) for every LLMObs span or update payload received,
         # whether or not it's forwarded to Datadog. ``body`` is already decompressed.
         self.llmobs_payload_listener: Optional[Callable[[str, bytes, str], None]] = None
-        # Called with (body, content type, ok, error) after each attempt to forward a payload to Datadog.
-        self.llmobs_forward_result_listener: Optional[Callable[[bytes, str, bool, str], None]] = None
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -1097,14 +1095,6 @@ class Agent:
         except Exception:
             log.exception("LLMObs payload listener failed")
 
-    async def _report_llmobs_forward(self, request: Request, ok: bool, error: str) -> None:
-        if self.llmobs_forward_result_listener is None:
-            return
-        try:
-            self.llmobs_forward_result_listener(await request.read(), request.content_type or "", ok, error)
-        except Exception:
-            log.exception("LLMObs forward result listener failed")
-
     async def handle_evp_proxy_v2_api_v2_llmobs(self, request: Request) -> web.Response:
         await self._notify_llmobs_payload(request)
         if request.app["disable_llmobs_data_forwarding"]:
@@ -1133,12 +1123,12 @@ class Agent:
             headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
         async with ClientSession() as session:
             async with session.post(url, headers=headers, data=raw) as resp:
-                text = await resp.text()
                 if not resp.ok:
-                    log.warning(f"Failed to forward LLM Observability events to Datadog: {resp.status} {text}")
+                    log.warning(
+                        f"Failed to forward LLM Observability events to Datadog: {resp.status} {await resp.text()}"
+                    )
                 else:
-                    log.info(f"Forwarded LLM Observability events to Datadog: {resp.status} {text}")
-                await self._report_llmobs_forward(request, resp.ok, "" if resp.ok else f"HTTP {resp.status}: {text}")
+                    log.info(f"Forwarded LLM Observability events to Datadog: {resp.status} {await resp.text()}")
 
         return web.HTTPOk()
 
@@ -1172,16 +1162,12 @@ class Agent:
                         fwd_headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
                     async with ClientSession() as session:
                         async with session.post(url, headers=fwd_headers, data=fwd_data) as resp:
-                            text = await resp.text()
                             if not resp.ok:
-                                log.warning("Failed to forward LLMObs update: %s %s", resp.status, text)
+                                log.warning("Failed to forward LLMObs update: %s %s", resp.status, await resp.text())
                             else:
                                 log.info("Forwarded LLMObs span update: %s", resp.status)
-                            error = "" if resp.ok else f"HTTP {resp.status}: {text}"
-                            await self._report_llmobs_forward(request, resp.ok, error)
                 except Exception as e:
                     log.warning("Error forwarding LLMObs span update: %s", e)
-                    await self._report_llmobs_forward(request, False, str(e))
 
         # Update local stored spans
         if self.llmobs_span_update_listener is not None:
@@ -1226,12 +1212,12 @@ class Agent:
             headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
         async with ClientSession() as session:
             async with session.post(url, headers=headers, data=raw) as resp:
-                text = await resp.text()
                 if not resp.ok:
-                    log.warning(f"Failed to forward LLM Observability events to Datadog: {resp.status} {text}")
+                    log.warning(
+                        f"Failed to forward LLM Observability events to Datadog: {resp.status} {await resp.text()}"
+                    )
                 else:
-                    log.info(f"Forwarded LLM Observability events to Datadog: {resp.status} {text}")
-                await self._report_llmobs_forward(request, resp.ok, "" if resp.ok else f"HTTP {resp.status}: {text}")
+                    log.info(f"Forwarded LLM Observability events to Datadog: {resp.status} {await resp.text()}")
 
         return web.HTTPOk()
 
@@ -1264,16 +1250,12 @@ class Agent:
                         fwd_headers = {k: v for k, v in headers.items() if k.lower() != "content-length"}
                     async with ClientSession() as session:
                         async with session.post(url, headers=fwd_headers, data=fwd_data) as resp:
-                            text = await resp.text()
                             if not resp.ok:
-                                log.warning("Failed to forward LLMObs update: %s %s", resp.status, text)
+                                log.warning("Failed to forward LLMObs update: %s %s", resp.status, await resp.text())
                             else:
                                 log.info("Forwarded LLMObs span update: %s", resp.status)
-                            error = "" if resp.ok else f"HTTP {resp.status}: {text}"
-                            await self._report_llmobs_forward(request, resp.ok, error)
                 except Exception as e:
                     log.warning("Error forwarding LLMObs span update: %s", e)
-                    await self._report_llmobs_forward(request, False, str(e))
 
         if self.llmobs_span_update_listener is not None:
             self.llmobs_span_update_listener(data, content_type)

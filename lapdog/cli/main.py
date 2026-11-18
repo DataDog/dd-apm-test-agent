@@ -52,7 +52,7 @@ LAPDOG_USAGE = (
     "  stop       Stop lapdog (started by 'lapdog start' or 'lapdog claude')\n"
     "  status     Show lapdog status (from /info)\n"
     "  server     Run a Self-hosted lapdog server with ClickHouse storage ('lapdog server --help')\n"
-    "  forward    Also send traces to a Self-hosted lapdog server or Datadog ('lapdog forward --help')\n"
+    "  forward    Also send traces to a Self-hosted lapdog server ('lapdog forward --help')\n"
     "  claude     Start lapdog in background if needed, then launch Claude with intercept\n"
     "  pi         Start lapdog in background if needed, install extension, then launch pi\n"
     "  codex      Start lapdog in background if needed, then launch Codex with tracing\n"

@@ -21,7 +21,6 @@ FORWARD_USAGE = (
     "       lapdog forward <self-hosted-url> [--include-coding-agents]\n"
     "                                                       Also send traces to a Self-hosted lapdog server\n"
     "       lapdog forward off                              Stop sending to the Self-hosted server\n"
-    "       lapdog forward datadog on|off                   Send to Datadog (needs --forward credentials)\n"
     "\n"
     "Traces always stay in lapdog's memory too. Coding-agent sessions (Claude Code, Codex, pi)\n"
     "go to the Self-hosted server only with --include-coding-agents.\n"
@@ -62,9 +61,9 @@ def _print_status(state: Optional[Dict[str, Any]]) -> None:
     if state is None:
         config = load_forwarding_config()
         target = config.self_hosted or "off"
-        print(f"[lapdog] Lapdog isn't running. Self-hosted: {target}. Datadog: set with 'lapdog --forward start'.")
+        print(f"[lapdog] Lapdog isn't running. Self-hosted: {target}.")
         return
-    self_hosted, datadog = state["self_hosted"], state["datadog"]
+    self_hosted = state["self_hosted"]
     if self_hosted["enabled"]:
         agents = "with" if self_hosted["coding_agents"] else "without"
         reach = {True: "reachable", False: "unreachable", None: "checking"}[self_hosted["reachable"]]
@@ -74,12 +73,6 @@ def _print_status(state: Optional[Dict[str, Any]]) -> None:
             print(f"             last error: {self_hosted['last_error']}")
     else:
         print("Self-hosted  off ('lapdog forward <url>' to send there)")
-    if datadog["enabled"]:
-        print(f"Datadog      on ({datadog['site']}), {datadog['spans_last_hour']} spans in the last hour")
-        if datadog["last_error"]:
-            print(f"             last error: {datadog['last_error']}")
-    else:
-        print("Datadog      off" + ("" if datadog["available"] else " (start lapdog with --forward to enable)"))
 
 
 def _check_self_hosted(url: str) -> None:
@@ -100,16 +93,6 @@ def cmd_forward(argv: List[str]) -> None:
         return
     if argv[0] in ("-h", "--help"):
         print(FORWARD_USAGE)
-        return
-    if argv[0] == "datadog":
-        if len(argv) != 2 or argv[1] not in ("on", "off"):
-            print(FORWARD_USAGE, file=sys.stderr)
-            sys.exit(2)
-        state = _update_running({"datadog": argv[1] == "on"})
-        if state is None:
-            print("[lapdog] Lapdog isn't running. Start it with 'lapdog --forward start' to send to Datadog.")
-            return
-        _print_status(state)
         return
     if argv[0] == "off":
         state = _update_running({"self_hosted": None})

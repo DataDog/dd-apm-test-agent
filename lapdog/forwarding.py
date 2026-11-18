@@ -1,13 +1,9 @@
-"""Where lapdog sends traces besides its own memory: a Self-hosted ``lapdog server``, Datadog, or both.
+"""Sending traces from lapdog's memory to a Self-hosted ``lapdog server`` as well.
 
-Every trace lands in lapdog's in-memory store first. From there:
-
-- **Datadog**: the test agent's existing forwarding (``--forward`` with
-  ``DD_API_KEY``/``DD_SITE`` or a Datadog Agent), toggled at runtime.
-- **Self-hosted**: every LLMObs payload an instrumented app sends is re-posted
-  to the server; coding-agent sessions only if the user opts in. Sending is
-  best effort: there's no queue, so spans sent while the server is down are
-  lost, and the error is shown.
+Every trace lands in lapdog's in-memory store first. Every LLMObs payload an
+instrumented app sends is then re-posted to the server; coding-agent sessions
+only if the user opts in. Sending is best effort: there's no queue, so spans
+sent while the server is down are lost, and the error is shown.
 
 The Self-hosted server setting lives in ``~/.lapdog/forwarding.json``.
 """
@@ -156,16 +152,13 @@ class DestinationStats:
 
 
 class Forwarding:
-    def __init__(self, app: web.Application, config: ForwardingConfig) -> None:
-        self._app = app
+    def __init__(self, config: ForwardingConfig) -> None:
         self.self_hosted: Optional[str] = None
         self.self_hosted_coding_agents = False
         self.self_hosted_stats = DestinationStats()
-        self.datadog = DestinationStats()
         self.self_hosted_reachable: Optional[bool] = None
         self.self_hosted_retention_days: Optional[int] = None
         self._forwarded: "OrderedDict[Tuple[str, str], None]" = OrderedDict()
-        self._sent_to_datadog: "OrderedDict[Tuple[str, str], None]" = OrderedDict()
         self._session: Optional[ClientSession] = None
         self._tasks: Set["asyncio.Future[None]"] = set()
         self._health_task: Optional["asyncio.Task[None]"] = None
@@ -188,14 +181,6 @@ class Forwarding:
         """Whether this span is stored on the Self-hosted server (so searches read it from there)."""
         return (str(span.get("trace_id", "")), str(span.get("span_id", ""))) in self._forwarded
 
-    def is_in_datadog(self, trace_id: str, span_id: str) -> bool:
-        """Whether Datadog accepted this span from this lapdog (spans other lapdogs sent aren't known here)."""
-        return (trace_id, span_id) in self._sent_to_datadog
-
-    @property
-    def datadog_enabled(self) -> bool:
-        return not self._app["disable_llmobs_data_forwarding"]
-
     def info(self) -> Dict[str, Any]:
         """``/info``'s ``forwarding`` block, which the lapdog UI draws as the forwarding flow."""
         self_hosted: Dict[str, Any] = {
@@ -206,13 +191,7 @@ class Forwarding:
             "retention_days": self.self_hosted_retention_days,
             **self.self_hosted_stats.to_json(),
         }
-        datadog: Dict[str, Any] = {
-            "enabled": self.datadog_enabled,
-            "available": bool(self._app.get("authenticated")),
-            "site": self._app.get("dd_site"),
-            **self.datadog.to_json(),
-        }
-        return {"forwarding": {"self_hosted": self_hosted, "datadog": datadog}}
+        return {"forwarding": {"self_hosted": self_hosted}}
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -239,13 +218,6 @@ class Forwarding:
         """``Agent.llmobs_payload_listener``: send what instrumented apps send to the Self-hosted server too."""
         if self.self_hosted and self._session is not None:
             self._spawn(self._post_self_hosted(path, body, content_type or "application/msgpack"))
-
-    def on_datadog_result(self, body: bytes, content_type: str, ok: bool, error: str) -> None:
-        """``Agent.llmobs_forward_result_listener``: count what reached Datadog."""
-        keys = payload_span_keys(body, content_type)
-        self.datadog.record(len(keys), ok, error)
-        if ok:
-            _remember(self._sent_to_datadog, keys)
 
     def forward_coding_agent_spans(self, spans: List[Dict[str, Any]]) -> None:
         """Send a finished coding-agent trace to the Self-hosted server, if the user opted in."""
@@ -303,7 +275,7 @@ class Forwarding:
     # -- API -----------------------------------------------------------------
 
     async def handle_forwarding(self, request: web.Request) -> web.Response:
-        """GET the forwarding state, or POST ``{self_hosted, self_hosted_coding_agents, datadog}`` to change it.
+        """GET the forwarding state, or POST ``{self_hosted, self_hosted_coding_agents}`` to change it.
 
         The lapdog UI and ``lapdog forward`` both use this. Changes need a JSON body and, from a
         browser, an allowed origin, so other web pages can't redirect your traces.
@@ -320,14 +292,6 @@ class Forwarding:
                     raise ValueError
             except ValueError:
                 return web.json_response({"error": "expected a JSON object"}, status=400)
-            if "datadog" in body:
-                enable = bool(body["datadog"])
-                if enable and not self._app.get("authenticated"):
-                    return web.json_response(
-                        {"error": "Datadog forwarding needs credentials: start lapdog with --forward and DD_API_KEY"},
-                        status=409,
-                    )
-                self._app["disable_llmobs_data_forwarding"] = not enable
             if "self_hosted" in body or "self_hosted_coding_agents" in body:
                 raw = body.get("self_hosted", self.self_hosted)
                 server = normalize_server_url(raw) if raw else None

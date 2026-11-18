@@ -155,16 +155,13 @@ def _sources(response):
 
 
 async def test_list_labels_where_each_span_was_read_from(federated):
-    forwarding = federated.server.app["lapdog_forwarding"]
-    body = msgpack.packb({"_dd.stage": "raw", "event_type": "span", "spans": [_span("fwd-1", 0), _span("local-1", 0)]})
-    forwarding.on_datadog_result(body, "application/msgpack", True, "")
     sources = _sources(await _list(federated))
     assert sources == {
-        "fwd-2": {"source": "self-hosted", "in_datadog": False},
-        "mate-1": {"source": "self-hosted", "in_datadog": False},
-        "local-2": {"source": "laptop", "in_datadog": False},
-        "fwd-1": {"source": "self-hosted", "in_datadog": True},
-        "local-1": {"source": "laptop", "in_datadog": True},
+        "fwd-2": {"source": "self-hosted"},
+        "mate-1": {"source": "self-hosted"},
+        "local-2": {"source": "laptop"},
+        "fwd-1": {"source": "self-hosted"},
+        "local-1": {"source": "laptop"},
     }
 
 
@@ -172,7 +169,7 @@ async def test_list_is_labelled_without_self_hosted(lapdog_agent):
     now = time.time_ns()
     await _post_to_laptop(lapdog_agent, _span("a", now - 2_000), _span("b", now - 1_000))
     first = await _list(lapdog_agent, limit=1)
-    assert _sources(first) == {"b": {"source": "laptop", "in_datadog": False}}
+    assert _sources(first) == {"b": {"source": "laptop"}}
     second = await _list(lapdog_agent, limit=1, paging=first["result"]["paging"])
-    assert _sources(second) == {"a": {"source": "laptop", "in_datadog": False}}
+    assert _sources(second) == {"a": {"source": "laptop"}}
     assert "paging" not in second["result"]

@@ -13,8 +13,7 @@ The two sets don't overlap, so results are merged without double counting:
 - a trace or span is read from whichever side has it.
 
 Each listed span is labelled with where it was read from (``@lapdog.source``:
-``laptop`` or ``self-hosted``) and whether Datadog accepted it from this
-lapdog (``@lapdog.in_datadog``), so the UI can show where each trace lives.
+``laptop`` or ``self-hosted``), so the UI can show where each trace lives.
 Lists answered from memory alone are labelled too.
 
 If the Self-hosted server can't be reached, answers come from memory alone
@@ -350,8 +349,7 @@ class FederatedSearch:
         custom = event.get("event", {}).get("custom")
         if not isinstance(custom, dict):
             return
-        trace_id, span_id = str(custom.get("trace_id", "")), str(custom.get("span_id", ""))
-        custom["lapdog"] = {"source": source, "in_datadog": self.forwarding.is_in_datadog(trace_id, span_id)}
+        custom["lapdog"] = {"source": source}
 
     async def _stored_list(self, request: web.Request) -> web.Response:
         request_id = request.match_info.get("request_id", "")

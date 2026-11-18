@@ -66,13 +66,11 @@ class AdminAPI:
         config: ServerConfig,
         state: ServerState,
         enforcer: RetentionEnforcer,
-        intake: IntakeAPI,
         clickhouse: Optional[ClickHouseProcess],
     ) -> None:
         self.config = config
         self.state = state
         self.enforcer = enforcer
-        self.intake = intake
         self.clickhouse = clickhouse
 
     async def handle_ping(self, request: web.Request) -> web.Response:
@@ -86,8 +84,6 @@ class AdminAPI:
                 "mode": "server",
                 "endpoints": ["/evp_proxy/v2/", "/evp_proxy/v4/"],
                 "retention_days": self.state.settings.retention_days,
-                "llmobs_data_forwarding": self.intake.forwarding,
-                "authenticated": self.intake.forwarding,
             }
         )
 
@@ -101,7 +97,6 @@ class AdminAPI:
             "healthy": await self.enforcer.client.ping(),
             "restarts": ch.restarts if ch else 0,
         }
-        status["forwarding_to_datadog"] = self.intake.forwarding
         return web.json_response(status)
 
     async def handle_settings(self, request: web.Request) -> web.Response:
@@ -153,8 +148,8 @@ def make_server_app(
     store = ClickHouseSpanBackend(client, config.database)
     state = ServerState(settings=config.settings)
     enforcer = RetentionEnforcer(client, config.database, state)
-    intake = IntakeAPI(store, state, config)
-    admin = AdminAPI(config, state, enforcer, intake, clickhouse)
+    intake = IntakeAPI(store, state)
+    admin = AdminAPI(config, state, enforcer, clickhouse)
     query_api = LLMObsEventPlatformAPI(backend=store)
 
     app[CONFIG_KEY] = config
@@ -178,7 +173,6 @@ def make_server_app(
         for task in tasks:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
-        await intake.close()
         await client.close()
 
     app.cleanup_ctx.append(lifecycle)

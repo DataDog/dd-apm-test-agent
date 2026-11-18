@@ -178,9 +178,6 @@ async def test_forwarding_api_guards(lapdog_agent):
     )
     assert not_json.status == 415
     assert (await lapdog_agent.post("/lapdog/forwarding", json={"self_hosted": "not a url"})).status == 400
-    # The default test agent isn't authenticated with Datadog.
-    datadog = await lapdog_agent.post("/lapdog/forwarding", json={"datadog": True})
-    assert datadog.status == 409
     allowed = await lapdog_agent.post(
         "/lapdog/forwarding", json={"self_hosted": None}, headers={"Origin": "https://lapdog.datadoghq.com"}
     )
@@ -230,33 +227,7 @@ def test_cli_saves_self_hosted_when_lapdog_is_stopped(monkeypatch, capsys):
 
 def test_cli_rejects_bad_arguments(monkeypatch):
     monkeypatch.setattr(forward_cli, "lapdog_alive", lambda: False)
-    for argv in (["not a url"], ["http://self-hosted:8126", "--bogus"], ["datadog", "maybe"]):
+    for argv in (["not a url"], ["http://self-hosted:8126", "--bogus"]):
         with pytest.raises(SystemExit) as exc:
             forward_cli.cmd_forward(argv)
         assert exc.value.code == 2
-
-
-@pytest.mark.parametrize("dd_api_key_validation_response", [(200, {"valid": True})])
-async def test_datadog_key_from_the_ui_turns_forwarding_on(lapdog_agent, dd_api_key_validation_response):
-    before = (await (await lapdog_agent.get("/info")).json())["forwarding"]["datadog"]
-    assert before["enabled"] is False
-    resp = await lapdog_agent.post(
-        "/test/settings",
-        json={"disable_llmobs_data_forwarding": False, "dd_api_key": "abc123", "dd_site": "datadoghq.eu"},
-    )
-    assert resp.status == 202, await resp.text()
-    datadog = (await (await lapdog_agent.get("/info")).json())["forwarding"]["datadog"]
-    assert (datadog["enabled"], datadog["available"], datadog["site"]) == (True, True, "datadoghq.eu")
-    # Switching off and on again through the forwarding API keeps the key.
-    assert (await lapdog_agent.post("/lapdog/forwarding", json={"datadog": False})).status == 200
-    assert (await lapdog_agent.post("/lapdog/forwarding", json={"datadog": True})).status == 200
-
-
-async def test_rejected_datadog_key_changes_nothing(lapdog_agent):
-    resp = await lapdog_agent.post(
-        "/test/settings",
-        json={"disable_llmobs_data_forwarding": False, "dd_api_key": "bad", "dd_site": "datadoghq.com"},
-    )
-    assert resp.status == 422
-    datadog = (await (await lapdog_agent.get("/info")).json())["forwarding"]["datadog"]
-    assert (datadog["enabled"], datadog["available"]) == (False, False)

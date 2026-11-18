@@ -11,10 +11,10 @@ features:
     retention in ``/info`` and at ``/api/unstable/llm-obs/v1/retentions``.
   - |
     lapdog: ``lapdog forward <server-url>`` also sends the traces lapdog receives to a Self-hosted ``lapdog server``
-    (coding-agent sessions only with ``--include-coding-agents``), alongside optional Datadog forwarding.
-    ``/info`` reports a ``forwarding`` block with each destination's state and spans sent in the last hour.
+    (coding-agent sessions only with ``--include-coding-agents``). ``/info`` reports a ``forwarding`` block with
+    the server's state and spans sent in the last hour.
     While forwarding to Self-hosted, lapdog's searches merge its memory with the Self-hosted server's results.
-    Listed spans carry ``@lapdog.source`` (``laptop`` or ``self-hosted``) and ``@lapdog.in_datadog``.
+    Listed spans carry ``@lapdog.source`` (``laptop`` or ``self-hosted``).
 fixes:
   - |
     lapdog: a partial span update (``/llmobs/update``) no longer resets the span's ``ml_app``, tags, service,

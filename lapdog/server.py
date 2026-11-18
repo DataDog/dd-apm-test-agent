@@ -79,10 +79,9 @@ def extend_app(app: web.Application) -> web.Application:
     agent.llmobs_payload_transform = _inject_lapdog_forwarded
     agent.llmobs_span_update_listener = llmobs_event_platform_api.update_spans
 
-    # Traces stay in memory here, and can also go to a self-hosted lapdog server and/or Datadog.
-    forwarding = Forwarding(app, load_forwarding_config())
+    # Traces stay in memory here, and can also go to a Self-hosted lapdog server.
+    forwarding = Forwarding(load_forwarding_config())
     agent.llmobs_payload_listener = forwarding.on_llmobs_payload
-    agent.llmobs_forward_result_listener = forwarding.on_datadog_result
     claude_hooks_api.forwarding = forwarding
     app["lapdog_forwarding"] = forwarding
     app["info_extra"] = forwarding.info
