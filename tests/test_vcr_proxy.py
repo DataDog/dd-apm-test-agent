@@ -194,10 +194,12 @@ async def test_vcr_proxy_rejects_absolute_urls(
     message = await resp.text()
     assert resp.status == 400, message
     assert message.startswith("Invalid VCR proxy path: ")
-    if path != "http://[invalid/secret":
-        assert "VCR proxy path must be relative to the provider URL" in message
-    else:
+    if "%09" in path:
+        assert "VCR proxy path must not contain control characters" in message
+    elif path == "http://[invalid/secret":
         assert "Invalid IPv6 URL" in message
+    else:
+        assert "VCR proxy path must be relative to the provider URL" in message
     upstream_request.assert_not_called()
     assert os.listdir(vcr_cassettes_directory) == []
 
