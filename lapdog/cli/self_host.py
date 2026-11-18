@@ -114,16 +114,15 @@ def _remove_pid_file(data_dir: str, only_pid: Optional[int] = None) -> None:
 def _print_started(url: str, pid: int, args: argparse.Namespace, data_dir: str) -> None:
     settings = load_settings(data_dir)
     public = args.host not in ("127.0.0.1", "localhost", "::1")
-    origin = "https://<your-host>" if public else url
+    server_url = f"http://<this-host>:{args.port}" if public else url
     print(f"[lapdog] Lapdog server running at {url} (pid={pid}, logs: {_log_path(data_dir)})")
     if settings:
         print(
             f"[lapdog] Data in {data_dir}, retention {settings.retention_days}d, "
             f"max disk {format_bytes(settings.max_disk_bytes)}"
         )
-    print("[lapdog] Send spans from a Python app with:")
-    # ddtrace's agentless mode refuses to start without an API key; the server ignores it.
-    print(f"  DD_LLMOBS_ENABLED=1 DD_LLMOBS_AGENTLESS_ENABLED=1 DD_LLMOBS_OVERRIDE_ORIGIN={origin} DD_API_KEY=lapdog")
+    print("[lapdog] Forward a laptop's lapdog here with:")
+    print(f"  lapdog forward {server_url}")
     if public:
         print("[lapdog] The server has no auth: anyone who can reach it can read and send spans.")
         print("[lapdog] Put it behind your own auth proxy or firewall. The hosted UI also needs HTTPS to reach it.")
