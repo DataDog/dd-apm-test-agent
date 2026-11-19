@@ -134,9 +134,30 @@ def _event_key(event: Dict[str, Any]) -> Tuple[int, str, str]:
     return int(custom.get("start_ns", 0) or 0), str(custom.get("trace_id", "")), str(custom.get("span_id", ""))
 
 
-def _span_cursor(key: Tuple[int, str, str]) -> str:
+def _span_cursor(key: Tuple[int, str, str], occurrence: int = 0) -> str:
     """Return a cursor that continues after ``key``, in the format both backends' list paging accepts."""
-    return base64.urlsafe_b64encode(json.dumps([*key, 0], separators=(",", ":")).encode()).decode()
+    return base64.urlsafe_b64encode(json.dumps([*key, occurrence], separators=(",", ":")).encode()).decode()
+
+
+def _last_copy_occurrence(taken: List[Dict[str, Any]], start: Optional[str], mode: str, descending: bool) -> int:
+    """Return the occurrence memory paging gives the last of ``taken``, when that was memory's last span.
+
+    Memory numbers identical copies of a span 0, 1, 2… in the order it stored them, and pages over
+    (time, trace, span, occurrence). Descending, its last span is copy 0; ascending, it's the last copy,
+    counted from where this page started.
+    """
+    if descending or not taken:
+        return 0
+    key = _event_key(taken[-1])
+    copies = sum(1 for event in taken if _event_key(event) == key)
+    offset = 0
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode((start or "").encode()).decode()) if start else None
+    except (ValueError, UnicodeError, binascii.Error):
+        decoded = None
+    if isinstance(decoded, list) and len(decoded) == 4 and (int(decoded[0]), str(decoded[1]), str(decoded[2])) == key:
+        offset = int(decoded[3]) + (1 if mode == "after" else 0)
+    return offset + copies - 1
 
 
 def _merge_traces(trace_id: str, local: Dict[str, Any], remote: Dict[str, Any]) -> Dict[str, Any]:
@@ -210,7 +231,8 @@ def _scalar_plan(attributes: Any) -> Tuple[Dict[str, Any], Dict[str, _ScalarColu
             # Count only spans that have the metric: those are the values the statistic is computed from.
             counted = {**copy.deepcopy(query), "name": count, "compute": {"aggregation": "count"}}
             metric = _query_compute_spec(query)["metric"]
-            if metric:
+            # Earliest/latest pick the boundary span even if it lacks the metric, so they count every span.
+            if metric and aggregation not in ("earliest", "latest"):
                 search = str((query.get("search") or {}).get("query", ""))
                 exists = f"_exists_:@{str(metric).lstrip('@')}"
                 counted["search"] = {**(query.get("search") or {}), "query": f"({search}) AND {exists}" if search.strip() else exists}
@@ -316,7 +338,7 @@ def _candidates(limit: int) -> int:
     Ranking by counts across two sides is exact only if every value is fetched; this keeps it exact unless
     a value is outside both sides' candidates.
     """
-    return min(max(limit * 4, limit + 20), 1000)
+    return max(limit, min(max(limit * 4, limit + 20), 1000))
 
 
 def _top_scalar_rows(columns: List[Dict[str, Any]], descending: bool, limit: int) -> List[Dict[str, Any]]:
@@ -578,7 +600,13 @@ class FederatedSearch:
         if taken:
             # Memory's cursor counts repeated copies of a span, so use it when the last event is memory's.
             last_is_local = taken[-1][1] == "local"
-            position = next_local if last_is_local and next_local != _END else _span_cursor(_event_key(taken[-1][0]))
+            if last_is_local and next_local != _END:
+                position = next_local
+            elif last_is_local:
+                occurrence = _last_copy_occurrence(taken_local, local_start, mode, descending)
+                position = _span_cursor(_event_key(taken[-1][0]), occurrence)
+            else:
+                position = _span_cursor(_event_key(taken[-1][0]))
         next_cursor = _Cursor(next_local, next_remote, position)
         request_id = str(uuid.uuid4())
         result: Dict[str, Any] = {"events": [e for e, _ in taken], "count": len(taken)}
@@ -714,7 +742,8 @@ class FederatedSearch:
             missing = [v for v in top if v not in have]
             search = str((facet.get("search") or {}).get("query", ""))
             query = _groups_query(search, str(facet.get("path", "")), missing)
-            if len(have) < _candidates(limit) or not missing or query is None:
+            # A side's short answer doesn't mean it has no more: facet term search filters after the limit.
+            if not missing or query is None:
                 continue
             extra_body = copy.deepcopy(body)
             extra_body["facet_info"].setdefault("search", {})["query"] = query

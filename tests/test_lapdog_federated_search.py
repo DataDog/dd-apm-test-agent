@@ -367,6 +367,9 @@ def test_scalar_helpers_count_metric_values_rank_by_first_query_and_filter_attri
     hidden = {q["name"]: q for q in augmented["queries"]}
     # The average is computed from spans that have the metric, so only those are counted.
     assert hidden["__lapdog_n_q2"]["search"]["query"] == "_exists_:@metrics.input_tokens"
+    latest, _ = _scalar_plan({"queries": [{"name": "q", "compute": {"aggregation": "latest", "metric": "@x"}}]})
+    # Latest picks the newest span even without the metric, so every span counts.
+    assert "search" not in {q["name"]: q for q in latest["queries"]}["__lapdog_n_q"]
     assert hidden["__lapdog_rank"]["compute"] == {"aggregation": "count"}
 
     columns = [
@@ -377,3 +380,25 @@ def test_scalar_helpers_count_metric_values_rank_by_first_query_and_filter_attri
     assert _top_scalar_rows(columns, True, 1)[0]["values"] == [["a"]]
 
     assert _groups_query("", "env", ["prod"]) == '(@env:"prod")'
+
+
+async def test_inclusive_paging_keeps_repeated_copies_when_memory_runs_out(lapdog_agent, self_hosted_server):
+    now = time.time_ns()
+    for _ in range(3):
+        await _post_to_laptop(lapdog_agent, _span("dup", now - 3_000))
+    url = str(self_hosted_server.make_url("")).rstrip("/")
+    assert (await lapdog_agent.post("/lapdog/forwarding", json={"self_hosted": url})).status == 200
+    await _post_to_laptop(lapdog_agent, _span("r1", now - 2_000), _span("r2", now - 1_000))
+    await _server_has(self_hosted_server, 2)
+    asc = {"time": {"order": "asc"}}
+    first = await _list(lapdog_agent, limit=3, sort=asc)
+    assert _ids(first) == ["dup", "dup", "dup"]
+    again = await _list(lapdog_agent, limit=3, sort=asc, paging={"from": first["result"]["paging"]["after"]})
+    assert _ids(again) == ["dup", "r1", "r2"]
+
+
+def test_candidates_cover_the_requested_limit():
+    from lapdog.federated_search import _candidates
+
+    assert _candidates(1) == 21
+    assert _candidates(2000) == 2000
