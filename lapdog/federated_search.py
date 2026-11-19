@@ -232,7 +232,10 @@ def _scalar_plan(attributes: Any) -> Tuple[Dict[str, Any], Dict[str, _ScalarColu
             counted = {**copy.deepcopy(query), "name": count, "compute": {"aggregation": "count"}}
             metric = _query_compute_spec(query)["metric"]
             # Earliest/latest pick the boundary span even if it lacks the metric, so they count every span.
-            if metric and aggregation not in ("earliest", "latest"):
+            if metric and str(metric).lstrip("@").startswith("trace."):
+                # Trace rollups are one value per trace, computed while aggregating: count the traces.
+                counted["compute"] = {"aggregation": "cardinality", "metric": "@trace_id"}
+            elif metric and aggregation not in ("earliest", "latest"):
                 search = str((query.get("search") or {}).get("query", ""))
                 exists = f"_exists_:@{str(metric).lstrip('@')}"
                 counted["search"] = {**(query.get("search") or {}), "query": f"({search}) AND {exists}" if search.strip() else exists}

@@ -368,6 +368,10 @@ def test_scalar_helpers_count_metric_values_rank_by_first_query_and_filter_attri
     # The average is computed from spans that have the metric, so only those are counted.
     assert hidden["__lapdog_n_q2"]["search"]["query"] == "_exists_:@metrics.input_tokens"
     latest, _ = _scalar_plan({"queries": [{"name": "q", "compute": {"aggregation": "latest", "metric": "@x"}}]})
+    rollup, _ = _scalar_plan({"queries": [{"name": "q", "compute": {"aggregation": "avg", "metric": "@trace.tokens"}}]})
+    counted = {q["name"]: q for q in rollup["queries"]}["__lapdog_n_q"]
+    assert counted["compute"] == {"aggregation": "cardinality", "metric": "@trace_id"}
+    assert "search" not in counted
     # Latest picks the newest span even without the metric, so every span counts.
     assert "search" not in {q["name"]: q for q in latest["queries"]}["__lapdog_n_q"]
     assert hidden["__lapdog_rank"]["compute"] == {"aggregation": "count"}
