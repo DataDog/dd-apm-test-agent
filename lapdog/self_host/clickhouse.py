@@ -32,6 +32,7 @@ import urllib.request
 import aiohttp
 
 from ..paths import BIN_DIR
+from ..utils import process_exists
 
 log = logging.getLogger(__name__)
 
@@ -235,16 +236,6 @@ def render_config(base_dir: str, port: int, password_sha256: str, max_memory_byt
 """
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def _set_parent_death_signal() -> None:
     """On Linux, have the kernel stop ClickHouse if lapdog dies without cleaning up."""
     if sys.platform.startswith("linux"):
@@ -269,6 +260,10 @@ class ClickHouseProcess:
         self.restarts = 0
         self._stopping = False
         self._pid_file = os.path.join(self.base_dir, "clickhouse.pid")
+
+    @property
+    def _config_path(self) -> str:
+        return os.path.join(self.base_dir, "config.xml")
 
     @property
     def url(self) -> str:
@@ -304,7 +299,7 @@ class ClickHouseProcess:
                 pid = int(f.read().strip())
         except (OSError, ValueError):
             return
-        if not _pid_alive(pid):
+        if not process_exists(pid):
             return
         log.warning("Stopping leftover ClickHouse process %d", pid)
         try:
@@ -312,9 +307,9 @@ class ClickHouseProcess:
         except OSError:
             return
         deadline = time.monotonic() + 20
-        while _pid_alive(pid) and time.monotonic() < deadline:
+        while process_exists(pid) and time.monotonic() < deadline:
             time.sleep(0.2)
-        if _pid_alive(pid):
+        if process_exists(pid):
             os.kill(pid, signal.SIGKILL)
 
     def start(self, timeout: float = 60.0) -> None:
@@ -324,8 +319,7 @@ class ClickHouseProcess:
         self._stop_stale()
         self.password = self._password()
         self.port = _free_port()
-        config_path = os.path.join(self.base_dir, "config.xml")
-        with open(config_path, "w") as f:
+        with open(self._config_path, "w") as f:
             f.write(
                 render_config(
                     self.base_dir,
@@ -334,10 +328,13 @@ class ClickHouseProcess:
                     self.max_memory_bytes,
                 )
             )
+        self._launch(timeout)
 
+    def _launch(self, timeout: float) -> None:
+        """Spawn ClickHouse from the written config, record its PID, and block until it answers ``/ping``."""
         stdout = open(os.path.join(self.base_dir, "log", "stdout.log"), "ab")
         self.proc = subprocess.Popen(
-            [self.binary, "server", f"--config-file={config_path}"],
+            [self.binary, "server", f"--config-file={self._config_path}"],
             cwd=self.base_dir,
             stdin=subprocess.DEVNULL,
             stdout=stdout,
@@ -422,21 +419,9 @@ class ClickHouseProcess:
                 log.error("Failed to restart ClickHouse: %s", e)
 
     def _restart_same_port(self, port: int) -> None:
-        config_path = os.path.join(self.base_dir, "config.xml")
-        stdout = open(os.path.join(self.base_dir, "log", "stdout.log"), "ab")
-        self.proc = subprocess.Popen(
-            [self.binary, "server", f"--config-file={config_path}"],
-            cwd=self.base_dir,
-            stdin=subprocess.DEVNULL,
-            stdout=stdout,
-            stderr=subprocess.STDOUT,
-            preexec_fn=_set_parent_death_signal if sys.platform.startswith("linux") else None,
-        )
-        stdout.close()
+        # The config written by ``start()`` still names this port.
         self.port = port
-        with open(self._pid_file, "w") as f:
-            f.write(str(self.proc.pid))
-        self._wait_ready(60)
+        self._launch(60)
 
 
 def quote(value: Any) -> str:

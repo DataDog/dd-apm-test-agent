@@ -8,6 +8,8 @@ from typing import Dict
 from typing import List
 
 from ..llmobs_event_platform import _resolve_span_kind
+from ..llmobs_event_platform import count_failed_evaluations
+from ..llmobs_event_platform import span_search_texts
 from .clickhouse import ClickHouseClient
 from .clickhouse import quote_identifier
 
@@ -102,26 +104,8 @@ def _optional_str(value: Any) -> Any:
 
 
 def search_blobs(span: Dict[str, Any]) -> List[str]:
-    """Lower-cased strings that free-text search matches, mirroring ``text_search_span``."""
-    blobs = [str(span.get("name", "")).lower()]
-    meta = span.get("meta") or {}
-    for key in ("input", "output"):
-        data = meta.get(key) or {}
-        if not isinstance(data, dict):
-            continue
-        blobs.append(str(data.get("value", "")).lower())
-        for msg in data.get("messages") or []:
-            if isinstance(msg, dict):
-                blobs.append(str(msg.get("content", "")).lower())
-    blobs.extend(tag.lower() for tag in span.get("tags", []) if isinstance(tag, str))
-    return [blob for blob in blobs if blob]
-
-
-def count_failed_evaluations(span: Dict[str, Any]) -> int:
-    evaluation = span.get("evaluation") or {}
-    if not isinstance(evaluation, dict):
-        return 0
-    return sum(1 for metric in evaluation.values() if isinstance(metric, dict) and metric.get("assessment") == "fail")
+    """Lower-cased strings that free-text search matches, as ``text_search_span`` reads them."""
+    return [blob for blob in span_search_texts(span) if blob]
 
 
 def span_to_row(span: Dict[str, Any], version: int) -> Dict[str, Any]:

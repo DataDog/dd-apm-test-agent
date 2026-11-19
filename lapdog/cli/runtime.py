@@ -1,12 +1,15 @@
 """Shared server startup and status helpers."""
 
+import json
 import os
 import subprocess
 import sys
 import time
 from typing import Any
+from typing import Callable
 from typing import Dict
 from typing import List
+from typing import NoReturn
 from typing import Optional
 from typing import Tuple
 import urllib.request
@@ -15,7 +18,7 @@ from ddapm_test_agent import _get_version
 from lapdog.model_pricing import refresh_price_file
 from lapdog.paths import LOG_FILE
 from lapdog.paths import PID_FILE
-
+from lapdog.utils import process_exists
 
 # Managed launchers can also be invoked through an explicit binary path.
 _PATH_ROUTABLE_LAUNCHERS = ("claude", "pi", "codex")
@@ -63,6 +66,17 @@ def http_get_status(url: str, timeout: float) -> int:
         return int(resp.status)
 
 
+def http_request(url: str, body: Optional[Dict[str, Any]] = None, timeout: float = 5) -> str:
+    """POST ``body`` as JSON (GET when there is none) and return the response text, bypassing system proxies."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        url, data=data, headers={"Content-Type": "application/json"}, method="POST" if body is not None else "GET"
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(req, timeout=timeout) as resp:
+        return str(resp.read().decode())
+
+
 def lapdog_alive(timeout: float = 2.0) -> bool:
     """Check if the lapdog we started is running (pid file + process exists + /info responds)."""
     pid, port = read_pid_file()
@@ -90,14 +104,6 @@ def read_pid_file(path: Optional[str] = None) -> Tuple[Optional[int], Optional[i
         return None, None
 
 
-def process_exists(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
-
-
 def ensure_lapdog_running(forward_data: bool = False, detached: bool = False) -> Optional[int]:
     """Start lapdog in background if it is not already running. Exits if the port is taken."""
     refresh_price_file()
@@ -120,15 +126,19 @@ def ensure_lapdog_running(forward_data: bool = False, detached: bool = False) ->
     return port
 
 
-def _write_pid_file(pid: int, port: int) -> None:
-    path = _pid_file_path()
+def write_pid_file(path: str, pid: int, *fields: object) -> None:
+    """Write the PID, then each field, one per line."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
-        f.write(f"{pid}\n{port}\n")
+        f.write("".join(f"{value}\n" for value in (pid, *fields)))
 
 
-def remove_pid_file() -> None:
-    path = _pid_file_path()
+def _write_pid_file(pid: int, port: int) -> None:
+    write_pid_file(_pid_file_path(), pid, port)
+
+
+def remove_pid_file(path: Optional[str] = None) -> None:
+    path = path or _pid_file_path()
     if os.path.exists(path):
         try:
             os.remove(path)
@@ -136,12 +146,9 @@ def remove_pid_file() -> None:
             pass
 
 
-def start_lapdog(
-    port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False
-) -> Tuple[int, int, str]:
+def start_lapdog(port: int, extra_args: Optional[List[str]] = None, forward_data: bool = False) -> Tuple[int, int, str]:
     """Start lapdog in background with logs to the log file; wait until ready or exit on timeout. Return (process, log_path)."""
     log_path = log_file_path()
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
     args = [sys.executable, "-m", "lapdog.server"]
 
     env = os.environ.copy()
@@ -152,6 +159,18 @@ def start_lapdog(
 
     if extra_args:
         args += extra_args
+    proc = start_background(args, log_path, env=env)
+    _write_pid_file(proc.pid, port)
+    _wait_for_lapdog(proc, log_path)
+
+    return proc.pid, port, log_path
+
+
+def start_background(
+    command: List[str], log_path: str, env: Optional[Dict[str, str]] = None, append_log: bool = False
+) -> "subprocess.Popen[bytes]":
+    """Start ``command`` in its own session, detached from this terminal, with its output going to ``log_path``."""
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
     popen_kwargs: Dict[str, Any] = {
         "stdin": subprocess.DEVNULL,
         "stderr": subprocess.STDOUT,
@@ -162,12 +181,39 @@ def start_lapdog(
         popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
-    with open(log_path, "w") as log_file:
-        proc = subprocess.Popen(args, stdout=log_file, env=env, **popen_kwargs)
-    _write_pid_file(proc.pid, port)
-    _wait_for_lapdog(proc, log_path)
+    with open(log_path, "a" if append_log else "w") as log_file:
+        return subprocess.Popen(command, stdout=log_file, env=env, **popen_kwargs)
 
-    return proc.pid, port, log_path
+
+def wait_until_ready(
+    proc: "subprocess.Popen[bytes]", ready: Callable[[], bool], timeout: float, interval: float
+) -> bool:
+    """Poll ``ready`` every ``interval`` seconds; return False once ``proc`` exits or ``timeout`` passes."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return False
+        if ready():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def abandon_start(
+    proc: "subprocess.Popen[bytes]", message: str, pid_path: Optional[str] = None, force: bool = True
+) -> NoReturn:
+    """Report a process that didn't become ready, stop it (SIGKILL, or SIGTERM without ``force``), and exit 1."""
+    print(message, file=sys.stderr)
+    if pid_path is not None:
+        remove_pid_file(pid_path)
+    try:
+        if force:
+            proc.kill()
+        else:
+            proc.terminate()
+    except OSError:
+        pass
+    sys.exit(1)
 
 
 def port_in_use(port: Optional[int] = None) -> bool:
@@ -182,20 +228,12 @@ def port_in_use(port: Optional[int] = None) -> bool:
 
 def _wait_for_lapdog(proc: "subprocess.Popen[bytes]", log_path: Optional[str] = None) -> None:
     """Wait up to ~10s for lapdog to start, then exit(1) on timeout."""
-    for _ in range(50):
-        if lapdog_alive():
-            return
-        time.sleep(0.2)
+    if wait_until_ready(proc, lapdog_alive, timeout=10.0, interval=0.2):
+        return
     msg = "[lapdog] Lapdog failed to start in time."
     if log_path:
         msg += f" Check logs: {log_path}"
-    print(msg, file=sys.stderr)
-    remove_pid_file()
-    try:
-        proc.kill()
-    except OSError:
-        pass
-    sys.exit(1)
+    abandon_start(proc, msg, _pid_file_path())
 
 
 def _start_lapdog_detached(port: int, forward_data: bool) -> None:

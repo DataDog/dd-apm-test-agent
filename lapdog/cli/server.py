@@ -19,6 +19,7 @@ from lapdog.cli.runtime import resolved_port
 from lapdog.cli.runtime import start_lapdog
 from lapdog.cli.runtime import url_for_port
 from lapdog.model_pricing import refresh_price_file
+from lapdog.utils import format_bytes
 
 
 def cmd_start(sub_cmd_args: List[str], forward_data: bool) -> None:
@@ -61,14 +62,6 @@ def cmd_stop(pid: Optional[int] = None) -> None:
     print("[lapdog] Lapdog stopped.")
 
 
-def _format_bytes(size: float) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
-        size /= 1024
-    return f"{size:.1f}GB"
-
-
 def _memory_summary(port: int) -> Optional[str]:
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -79,7 +72,7 @@ def _memory_summary(port: int) -> Optional[str]:
     if not data.get("max_memory_bytes"):
         return "unbounded"
     used = (data.get("estimated_span_bytes") or 0) + (data.get("estimated_request_bytes") or 0)
-    summary = f"~{_format_bytes(used)} retained, limit {_format_bytes(data['max_memory_bytes'])}"
+    summary = f"~{format_bytes(used)} retained, limit {format_bytes(data['max_memory_bytes'])}"
     evicted = [
         f"{data[key]} {label}"
         for key, label in (("evicted_spans", "spans"), ("evicted_requests", "tracer requests"))

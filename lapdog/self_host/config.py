@@ -14,6 +14,8 @@ from typing import Optional
 
 from ..paths import SERVER_DIR
 from ..span_store import parse_memory_size
+from ..utils import format_bytes
+from ..utils import write_json_atomic
 
 SETTINGS_FILE = "server.json"
 
@@ -49,14 +51,6 @@ def parse_max_disk(value: str) -> int:
     if size < MIN_MAX_DISK:
         raise ValueError(f"max disk must be at least 1GB, got {value!r}")
     return size
-
-
-def format_bytes(size: float) -> str:
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if abs(size) < 1024 or unit == "TB":
-            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
-        size /= 1024
-    return f"{size:.1f}TB"
 
 
 def default_max_disk(data_dir: str) -> int:
@@ -100,12 +94,7 @@ def load_settings(data_dir: str) -> Optional[Settings]:
 
 
 def save_settings(data_dir: str, settings: Settings) -> None:
-    os.makedirs(data_dir, exist_ok=True)
-    path = os.path.join(data_dir, SETTINGS_FILE)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(settings._asdict(), f, indent=2)
-    os.replace(tmp, path)
+    write_json_atomic(os.path.join(data_dir, SETTINGS_FILE), settings._asdict())
 
 
 def _env(name: str) -> Optional[str]:

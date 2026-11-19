@@ -17,8 +17,10 @@ import logging
 import os
 import time
 from typing import Any
+from typing import Callable
 from typing import Deque
 from typing import Dict
+from typing import Iterable
 from typing import List
 from typing import NamedTuple
 from typing import Optional
@@ -36,6 +38,7 @@ from ddapm_test_agent.cors import ALLOWED_ORIGIN_PATTERN
 from ddapm_test_agent.llmobs_trace import decode_llmobs_payload
 
 from .paths import FORWARDING_CONFIG_FILE
+from .utils import write_json_atomic
 
 log = logging.getLogger(__name__)
 
@@ -104,12 +107,7 @@ def load_forwarding_config(path: Optional[str] = None) -> ForwardingConfig:
 
 
 def save_forwarding_config(config: ForwardingConfig, path: Optional[str] = None) -> None:
-    path = path or forwarding_config_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(config._asdict(), f, indent=2)
-    os.replace(tmp, path)
+    write_json_atomic(path or forwarding_config_path(), config._asdict())
 
 
 def payload_span_keys(body: bytes, content_type: str) -> List[Tuple[str, str]]:
@@ -127,13 +125,6 @@ def payload_span_keys(body: bytes, content_type: str) -> List[Tuple[str, str]]:
             if isinstance(span, dict):
                 keys.append((str(span.get("trace_id", "")), str(span.get("span_id", ""))))
     return keys
-
-
-def _remember(seen: "OrderedDict[Tuple[str, str], None]", keys: List[Tuple[str, str]]) -> None:
-    for key in keys:
-        seen[key] = None
-    while len(seen) > _MAX_FORWARDED_KEYS:
-        seen.popitem(last=False)
 
 
 class DestinationStats:
@@ -186,6 +177,10 @@ class Forwarding:
         self.self_hosted_reachable: Optional[bool] = None
         self.self_hosted_retention_days: Optional[int] = None
         self._forwarded: "OrderedDict[Tuple[str, str], None]" = OrderedDict()
+        # The (trace, span) keys still in this lapdog's memory. Forwarded keys are only dropped once their
+        # span is gone, so searches never count a span from memory and its copy on the server.
+        self.local_keys: Optional[Callable[[], Iterable[Tuple[str, str]]]] = None
+        self._prune_at = _MAX_FORWARDED_KEYS
         self._session: Optional[ClientSession] = None
         self._tasks: Set["asyncio.Future[None]"] = set()
         # Span posts still in flight; an update waits for them so it never reaches the server before its span.
@@ -210,6 +205,18 @@ class Forwarding:
         self.self_hosted_coding_agents = coding_agents
         if server and self._session is not None:
             self._spawn(self._check_self_hosted())
+
+    def _remember(self, keys: List[Tuple[str, str]]) -> None:
+        for key in keys:
+            self._forwarded[key] = None
+        if len(self._forwarded) <= self._prune_at or self.local_keys is None:
+            return
+        # Keep what was just sent too: its span may not be readable from memory yet.
+        keep = set(self.local_keys()) | set(keys)
+        for key in [k for k in self._forwarded if k not in keep]:
+            del self._forwarded[key]
+        # Prune again only after this many more, so a memory full of forwarded spans isn't rescanned each send.
+        self._prune_at = max(_MAX_FORWARDED_KEYS, 2 * len(self._forwarded))
 
     def is_forwarded(self, span: Dict[str, Any]) -> bool:
         """Whether this span is stored on the Self-hosted server (so searches read it from there)."""
@@ -302,7 +309,7 @@ class Forwarding:
             self.self_hosted_stats.record(spans, ok, error, unreachable=reachable is False)
             self.self_hosted_reachable = reachable
             if ok:
-                _remember(self._forwarded, keys)
+                self._remember(keys)
         if not ok:
             log.warning("Failed to forward %d spans to the Self-hosted server: %s", spans, error)
 

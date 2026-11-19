@@ -11,6 +11,7 @@ import statistics
 import time
 from typing import Any
 from typing import Dict
+from typing import Iterator
 from typing import List
 from typing import NamedTuple
 from typing import Optional
@@ -361,27 +362,27 @@ def _span_matches_filters(span: Dict[str, Any], filters: List[Dict[str, Any]]) -
     return True
 
 
+def span_search_texts(span: Dict[str, Any]) -> Iterator[str]:
+    """Yield the lower-cased text free-text search matches: name, input/output values and messages, tags."""
+    yield str(span.get("name", "")).lower()
+    meta = span.get("meta") or {}
+    for key in ("input", "output"):
+        data = meta.get(key) or {}
+        if not isinstance(data, dict):
+            continue
+        yield str(data.get("value", "")).lower()
+        for msg in data.get("messages") or []:
+            if isinstance(msg, dict):
+                yield str(msg.get("content", "")).lower()
+    for tag in span.get("tags", []):
+        if isinstance(tag, str):
+            yield tag.lower()
+
+
 def text_search_span(span: Dict[str, Any], search_text: str) -> bool:
     """Check if span matches free text search (name, input, output, tags)."""
     s = search_text.lower()
-
-    if s in span.get("name", "").lower():
-        return True
-
-    meta = span.get("meta", {})
-    for key in ("input", "output"):
-        data = meta.get(key, {})
-        if s in str(data.get("value", "")).lower():
-            return True
-        for msg in data.get("messages", []):
-            if isinstance(msg, dict) and s in str(msg.get("content", "")).lower():
-                return True
-
-    for tag in span.get("tags", []):
-        if isinstance(tag, str) and s in tag.lower():
-            return True
-
-    return False
+    return any(s in text for text in span_search_texts(span))
 
 
 def compute_children_ids(spans: List[Dict[str, Any]]) -> Dict[str, List[str]]:
@@ -478,6 +479,14 @@ def _tags_to_dict(tags: List[str]) -> Dict[str, Any]:
     return tag_obj
 
 
+def count_failed_evaluations(span: Dict[str, Any]) -> int:
+    """Count the span's evaluations assessed as ``fail``."""
+    evaluation = span.get("evaluation") or {}
+    if not isinstance(evaluation, dict):
+        return 0
+    return sum(1 for metric in evaluation.values() if isinstance(metric, dict) and metric.get("assessment") == "fail")
+
+
 def _build_trace_aggregates(
     all_spans: List[Dict[str, Any]],
 ) -> Dict[str, Dict[str, Any]]:
@@ -493,14 +502,7 @@ def _build_trace_aggregates(
     result: Dict[str, Dict[str, Any]] = {}
     for tid, trace_spans in by_trace.items():
         llm_spans = [span for span in trace_spans if span.get("meta", {}).get("span", {}).get("kind") == "llm"]
-        num_evaluations_failed = sum(
-            sum(
-                1
-                for metric in span.get("evaluation", {}).values()
-                if isinstance(metric, dict) and metric.get("assessment") == "fail"
-            )
-            for span in trace_spans
-        )
+        num_evaluations_failed = sum(count_failed_evaluations(span) for span in trace_spans)
         number_of_errors = sum(1 for span in trace_spans if span.get("status") == "error")
         result[tid] = {
             "num_evaluations_failed": num_evaluations_failed,
@@ -717,6 +719,47 @@ def _query_column_name(query: Dict[str, Any]) -> str:
     return f"{agg}({metric})" if metric else agg
 
 
+def _scalar_response_columns(
+    queries: List[Dict[str, Any]],
+    formulas: List[Dict[str, Any]],
+    group_defs: List[Dict[str, Any]],
+    group_keys: List[Tuple[str, ...]],
+    per_query_values: List[List[float]],
+) -> List[Dict[str, Any]]:
+    """Lay out a scalar_response's ``columns`` from computed values.
+
+    ``group_keys`` are the rows in order (one empty key when ungrouped) and
+    ``per_query_values[i]`` holds query ``i``'s value for each row. Emits a
+    group column per dimension, then a number column per formula (a formula
+    references a query ``name``; unknown references read 0) or, without
+    formulas, per query.
+    """
+    columns: List[Dict[str, Any]] = [
+        {"name": gd["name"], "type": "group", "meta": None, "values": [[k[i]] for k in group_keys]}
+        for i, gd in enumerate(group_defs)
+    ]
+    if formulas:
+        name_to_idx = {str(q.get("name") or f"query{i + 1}"): i for i, q in enumerate(queries)}
+        for f in formulas:
+            ref = str(f.get("formula") or "")
+            idx = name_to_idx.get(ref)
+            vals = per_query_values[idx] if idx is not None else [0.0 for _ in group_keys]
+            columns.append(
+                {"name": str(f.get("alias") or ref), "type": "number", "meta": {"unit": None}, "values": vals}
+            )
+    else:
+        for qi, q in enumerate(queries):
+            columns.append(
+                {
+                    "name": _query_column_name(q),
+                    "type": "number",
+                    "meta": {"unit": None},
+                    "values": per_query_values[qi],
+                }
+            )
+    return columns
+
+
 def _build_scalar_columns(
     spans: List[Dict[str, Any]],
     queries: List[Dict[str, Any]],
@@ -749,37 +792,11 @@ def _build_scalar_columns(
 
     # Group-by based on the first query's dimensions.
     group_defs = _query_group_by_fields(queries[0])
-    columns: List[Dict[str, Any]] = []
 
     if not group_defs:
-        # No grouping: one row, one number column per query/formula.
-        number_values_by_query: Dict[str, float] = {}
-        for i, q in enumerate(queries):
-            spec = _query_compute_spec(q)
-            val = _compute(supported_spans_by_query[i], spec)
-            number_values_by_query[str(q.get("name") or f"query{i + 1}")] = val
-            if not formulas:
-                columns.append(
-                    {
-                        "name": _query_column_name(q),
-                        "type": "number",
-                        "meta": {"unit": None},
-                        "values": [val],
-                    }
-                )
-        if formulas:
-            for f in formulas:
-                ref = str(f.get("formula") or "")
-                val = number_values_by_query.get(ref, 0.0)
-                columns.append(
-                    {
-                        "name": str(f.get("alias") or ref),
-                        "type": "number",
-                        "meta": {"unit": None},
-                        "values": [val],
-                    }
-                )
-        return columns
+        # No grouping: one row, one value per query.
+        values = [_compute(supported_spans_by_query[i], _query_compute_spec(q)) for i, q in enumerate(queries)]
+        return _scalar_response_columns(queries, formulas, group_defs, [()], [[val] for val in values])
 
     # Grouped: bucket the first query's spans, then compute per-group values.
     first_spans = supported_spans_by_query[0]
@@ -807,17 +824,6 @@ def _build_scalar_columns(
     row_limit = min((gd["limit"] for gd in group_defs if isinstance(gd.get("limit"), int)), default=50)
     order = order[:row_limit]
 
-    # Emit group columns (one per dimension).
-    for i, gd in enumerate(group_defs):
-        columns.append(
-            {
-                "name": gd["name"],
-                "type": "group",
-                "meta": None,
-                "values": [[k[i]] for k in order],
-            }
-        )
-
     # For non-first queries, re-bucket their (independently-filtered) spans by
     # the same group key so the rows line up.
     per_query_values: List[List[float]] = []
@@ -833,32 +839,7 @@ def _build_scalar_columns(
                 qbuckets[k].append(s)
         per_query_values.append([_compute(qbuckets[k], spec) for k in order])
 
-    if formulas:
-        name_to_idx = {str(q.get("name") or f"query{i + 1}"): i for i, q in enumerate(queries)}
-        for f in formulas:
-            ref = str(f.get("formula") or "")
-            idx = name_to_idx.get(ref)
-            vals = per_query_values[idx] if idx is not None else [0.0 for _ in order]
-            columns.append(
-                {
-                    "name": str(f.get("alias") or ref),
-                    "type": "number",
-                    "meta": {"unit": None},
-                    "values": vals,
-                }
-            )
-    else:
-        for qi, q in enumerate(queries):
-            columns.append(
-                {
-                    "name": _query_column_name(q),
-                    "type": "number",
-                    "meta": {"unit": None},
-                    "values": per_query_values[qi],
-                }
-            )
-
-    return columns
+    return _scalar_response_columns(queries, formulas, group_defs, order, per_query_values)
 
 
 def build_event_platform_list_response(
@@ -1117,6 +1098,21 @@ def merge_span_update(update: Dict[str, Any], existing: Dict[str, Any]) -> None:
     _deep_merge(update, existing)
     if "_ui_kind" in existing:
         remap_sdk_span_to_ui_format(existing, existing.get("ml_app", ""))
+
+
+def merge_priced_span_update(update: Dict[str, Any], existing: Dict[str, Any], locally_priced: bool) -> bool:
+    """Merge an update and re-price the span; return whether its cost is now lapdog's estimate.
+
+    A previous local estimate is dropped first so new token counts re-price the span,
+    and costs the update supplies replace any estimate.
+    """
+    if locally_priced:
+        for key in COST_METRIC_KEYS:
+            existing.get("metrics", {}).pop(key, None)
+    merge_span_update(update, existing)
+    if any(key in (update.get("metrics") or {}) for key in COST_METRIC_KEYS):
+        return False
+    return estimate_span_cost(existing) or locally_priced
 
 
 def build_fetch_one_response(found_span: Dict[str, Any], event_id: str) -> Dict[str, Any]:
@@ -1454,6 +1450,11 @@ def _filtered(
     return apply_filters(spans, parse_filter_query(query)) if query else spans
 
 
+# How many numeric values a metric has in a group: what an average divides by. Lapdog's merged search asks for
+# it alongside an average, to weight averages from memory and from the Self-hosted server.
+VALUE_COUNT_AGGREGATION = "__lapdog_value_count"
+
+
 def _aggregate_group_metrics(group_spans: List[Dict[str, Any]], compute_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Compute one aggregate group's metrics. ``group_spans`` is sorted desc by start_ns."""
     latest_span = group_spans[0]
@@ -1473,7 +1474,7 @@ def _aggregate_group_metrics(group_spans: List[Dict[str, Any]], compute_list: Li
             elif aggregation == "latest":
                 _val = get_span_field_value(latest_span, metric_field)
                 metrics[output] = "" if _val is None else str(_val)
-            elif aggregation in ("min", "max", "sum", "avg"):
+            elif aggregation in ("min", "max", "sum", "avg", VALUE_COUNT_AGGREGATION):
                 numeric_values = []
                 for s in group_spans:
                     v = get_span_field_value(s, metric_field)
@@ -1493,6 +1494,8 @@ def _aggregate_group_metrics(group_spans: List[Dict[str, Any]], compute_list: Li
                     metrics[output] = sum(numeric_values)
                 elif aggregation == "avg":
                     metrics[output] = sum(numeric_values) / len(numeric_values)
+                else:
+                    metrics[output] = len(numeric_values)
         elif "list" in compute_item:
             cfg = compute_item["list"]
             output = cfg.get("output", "")
@@ -1571,15 +1574,10 @@ class InMemorySpanBackend:
             sid = update.get("span_id")
             existing = span_index.get(sid)
             if existing:
-                local_estimate = id(existing) in self._locally_priced_spans
-                if local_estimate:
-                    for key in COST_METRIC_KEYS:
-                        existing.get("metrics", {}).pop(key, None)
-                merge_span_update(update, existing)
-                if any(key in (update.get("metrics") or {}) for key in COST_METRIC_KEYS):
-                    self._locally_priced_spans.discard(id(existing))
-                elif estimate_span_cost(existing):
+                if merge_priced_span_update(update, existing, id(existing) in self._locally_priced_spans):
                     self._locally_priced_spans.add(id(existing))
+                else:
+                    self._locally_priced_spans.discard(id(existing))
                 updated += 1
         return updated
 

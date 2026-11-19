@@ -7,8 +7,8 @@ from typing import Dict
 from typing import List
 from typing import Optional
 import urllib.error
-import urllib.request
 
+from lapdog.cli.runtime import http_request
 from lapdog.cli.runtime import lapdog_alive
 from lapdog.cli.runtime import read_pid_file
 from lapdog.forwarding import ForwardingConfig
@@ -28,13 +28,8 @@ FORWARD_USAGE = (
 
 
 def _request(url: str, body: Optional[Dict[str, Any]] = None, timeout: float = 5) -> Any:
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}, method="POST" if body is not None else "GET"
-    )
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode() or "null")
+    """Return the parsed JSON response; every endpoint this command calls answers JSON."""
+    return json.loads(http_request(url, body, timeout) or "null")
 
 
 def _lapdog_url() -> Optional[str]:

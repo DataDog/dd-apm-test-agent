@@ -10,6 +10,7 @@ from typing import Optional
 from aiohttp import web
 
 from ..model_pricing import refresh_price_file
+from ..utils import format_bytes
 from .app import make_server_app
 from .clickhouse import ClickHouseClient
 from .clickhouse import ClickHouseError
@@ -17,13 +18,14 @@ from .clickhouse import ClickHouseProcess
 from .clickhouse import ensure_binary
 from .config import add_server_arguments
 from .config import config_from_args
-from .config import format_bytes
 
 log = logging.getLogger("lapdog.self_host")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(prog="lapdog server", description="Run the Self-hosted lapdog server in the foreground")
+    parser = argparse.ArgumentParser(
+        prog="lapdog server", description="Run the Self-hosted lapdog server in the foreground"
+    )
     add_server_arguments(parser)
     parser.add_argument("--log-level", default=os.environ.get("LOG_LEVEL", "INFO"))
     args = parser.parse_args(argv)

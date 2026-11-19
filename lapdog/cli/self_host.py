@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import signal
-import subprocess
 import sys
 import time
 from typing import Any
@@ -13,21 +12,26 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 import urllib.error
-import urllib.request
 
+from lapdog.cli.runtime import abandon_start
+from lapdog.cli.runtime import http_request
 from lapdog.cli.runtime import process_exists
 from lapdog.cli.runtime import read_pid_file
+from lapdog.cli.runtime import remove_pid_file
+from lapdog.cli.runtime import start_background
+from lapdog.cli.runtime import wait_until_ready
+from lapdog.cli.runtime import write_pid_file
 from lapdog.paths import SERVER_DIR
 from lapdog.self_host.clickhouse import ClickHouseError
 from lapdog.self_host.clickhouse import ensure_binary
 from lapdog.self_host.config import Settings
 from lapdog.self_host.config import add_server_arguments
 from lapdog.self_host.config import config_from_args
-from lapdog.self_host.config import format_bytes
 from lapdog.self_host.config import load_settings
 from lapdog.self_host.config import parse_settings_update
 from lapdog.self_host.config import save_settings
 from lapdog.self_host.config import settings_to_json
+from lapdog.utils import format_bytes
 
 SERVER_USAGE = (
     "Usage: lapdog server <start|stop|status|config> [options]\n"
@@ -65,13 +69,17 @@ def _local_url(host: str, port: int) -> str:
 
 
 def _request(url: str, body: Optional[Dict[str, Any]] = None, timeout: float = 5) -> Any:
-    headers = {"Content-Type": "application/json"}
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST" if body is not None else "GET")
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(req, timeout=timeout) as resp:
-        text = resp.read().decode()
+    """Return the parsed JSON response, or the plain text one (``/ping`` answers text)."""
+    text = http_request(url, body, timeout)
     return json.loads(text) if text.startswith(("{", "[")) else text
+
+
+def _answers_ping(url: str, timeout: float) -> bool:
+    try:
+        _request(f"{url}/ping", timeout=timeout)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def _running(data_dir: str) -> Tuple[Optional[int], Optional[str]]:
@@ -89,26 +97,20 @@ def _running(data_dir: str) -> Tuple[Optional[int], Optional[str]]:
     except OSError:
         pass
     url = _local_url(host, port)
-    try:
-        _request(f"{url}/ping", timeout=2)
-    except (OSError, ValueError):
+    if not _answers_ping(url, timeout=2):
         return pid, None
     return pid, url
 
 
 def _write_pid_file(data_dir: str, pid: int, port: int, host: str) -> None:
-    with open(_pid_path(data_dir), "w") as f:
-        f.write(f"{pid}\n{port}\n{host}\n")
+    write_pid_file(_pid_path(data_dir), pid, port, host)
 
 
 def _remove_pid_file(data_dir: str, only_pid: Optional[int] = None) -> None:
     """Remove the PID file, if present; with ``only_pid``, only when it still names that process."""
     if only_pid is not None and read_pid_file(_pid_path(data_dir))[0] != only_pid:
         return
-    try:
-        os.remove(_pid_path(data_dir))
-    except FileNotFoundError:
-        pass
+    remove_pid_file(_pid_path(data_dir))
 
 
 def _print_started(url: str, pid: int, args: argparse.Namespace, data_dir: str) -> None:
@@ -165,37 +167,21 @@ def cmd_server_start(argv: List[str]) -> None:
         child_args += ["--clickhouse-binary", binary]
     if "--data-dir" not in child_args:
         child_args += ["--data-dir", data_dir]
-    log = open(_log_path(data_dir), "a")
-    kwargs: Dict[str, Any] = {"start_new_session": True} if sys.platform != "win32" else {}
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "lapdog.self_host", *child_args],
-        stdin=subprocess.DEVNULL,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        **kwargs,
+    proc = start_background(
+        [sys.executable, "-m", "lapdog.self_host", *child_args], _log_path(data_dir), append_log=True
     )
-    log.close()
     _write_pid_file(data_dir, proc.pid, args.port, args.host)
 
     url = _local_url(args.host, args.port)
-    deadline = time.monotonic() + _STARTUP_TIMEOUT
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            print(f"[lapdog] Lapdog server exited (code {proc.returncode}); see {_log_path(data_dir)}", file=sys.stderr)
-            _remove_pid_file(data_dir)
-            sys.exit(1)
-        try:
-            _request(f"{url}/ping", timeout=1)
-            _print_started(url, proc.pid, args, data_dir)
-            return
-        except (OSError, ValueError):
-            time.sleep(0.3)
-    proc.terminate()
-    print(
-        f"[lapdog] Lapdog server did not start within {_STARTUP_TIMEOUT:.0f}s; see {_log_path(data_dir)}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+    if wait_until_ready(proc, lambda: _answers_ping(url, timeout=1), _STARTUP_TIMEOUT, interval=0.3):
+        _print_started(url, proc.pid, args, data_dir)
+        return
+    if proc.poll() is not None:
+        message = f"[lapdog] Lapdog server exited (code {proc.returncode}); see {_log_path(data_dir)}"
+        abandon_start(proc, message, pid_path=_pid_path(data_dir))
+    # SIGTERM, so the server stops its ClickHouse on the way out.
+    message = f"[lapdog] Lapdog server did not start within {_STARTUP_TIMEOUT:.0f}s; see {_log_path(data_dir)}"
+    abandon_start(proc, message, force=False)
 
 
 def cmd_server_stop(data_dir: str) -> None:

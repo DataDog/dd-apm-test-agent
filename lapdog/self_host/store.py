@@ -27,15 +27,15 @@ from ..llmobs_event_platform import AggregateRequest
 from ..llmobs_event_platform import AggregateResult
 from ..llmobs_event_platform import ListResult
 from ..llmobs_event_platform import TimeWindow
+from ..llmobs_event_platform import VALUE_COUNT_AGGREGATION
 from ..llmobs_event_platform import _LLMOBS_SCALAR_DATA_SOURCES
 from ..llmobs_event_platform import _decode_list_cursor
 from ..llmobs_event_platform import _list_compute_sort_order
-from ..llmobs_event_platform import _query_column_name
 from ..llmobs_event_platform import _query_compute_spec
 from ..llmobs_event_platform import _query_group_by_fields
+from ..llmobs_event_platform import _scalar_response_columns
 from ..llmobs_event_platform import children_ids_by_trace
-from ..llmobs_event_platform import merge_span_update
-from ..model_pricing import COST_METRIC_KEYS
+from ..llmobs_event_platform import merge_priced_span_update
 from ..model_pricing import estimate_span_cost
 from .clickhouse import ClickHouseClient
 from .clickhouse import quote
@@ -107,14 +107,10 @@ class ClickHouseSpanBackend:
             span = changed.get(str(update.get("span_id"))) or existing.get(str(update.get("span_id")))
             if span is None:
                 continue
-            if span.get(LOCALLY_PRICED_KEY):
-                for key in COST_METRIC_KEYS:
-                    span.get("metrics", {}).pop(key, None)
-            merge_span_update(update, span)
-            if any(key in (update.get("metrics") or {}) for key in COST_METRIC_KEYS):
-                span.pop(LOCALLY_PRICED_KEY, None)
-            elif estimate_span_cost(span):
+            if merge_priced_span_update(update, span, bool(span.get(LOCALLY_PRICED_KEY))):
                 span[LOCALLY_PRICED_KEY] = True
+            else:
+                span.pop(LOCALLY_PRICED_KEY, None)
             changed[str(span.get("span_id"))] = span
             updated += 1
         if changed:
@@ -224,6 +220,8 @@ class ClickHouseSpanBackend:
                 return f"ifNull(argMax(tuple({field.text}), start_ns).1, '')"
             if aggregation in ("min", "max", "sum", "avg"):
                 return f"ifNull({aggregation}({field.number}), 0)"
+            if aggregation == VALUE_COUNT_AGGREGATION:
+                return f"count({field.number})"
             return None
         if "list" in compute_item:
             cfg = compute_item["list"]
@@ -401,23 +399,13 @@ class ClickHouseSpanBackend:
             return []
         group_defs = _query_group_by_fields(queries[0])
         group_fields = [gd["field"] for gd in group_defs]
-        columns: List[Dict[str, Any]] = []
-
-        def number_column(name: str, values: List[float]) -> Dict[str, Any]:
-            return {"name": name, "type": "number", "meta": {"unit": None}, "values": values}
 
         if not group_defs:
-            values_by_query: Dict[str, float] = {}
-            for i, q in enumerate(queries):
+            values: List[List[float]] = []
+            for q in queries:
                 groups = await self._scalar_groups(q, [], first=True, row_limit=1, sort_desc=True)
-                val = groups[0][1] if groups else 0.0
-                values_by_query[str(q.get("name") or f"query{i + 1}")] = val
-                if not formulas:
-                    columns.append(number_column(_query_column_name(q), [val]))
-            for f in formulas:
-                ref = str(f.get("formula") or "")
-                columns.append(number_column(str(f.get("alias") or ref), [values_by_query.get(ref, 0.0)]))
-            return columns
+                values.append([groups[0][1] if groups else 0.0])
+            return _scalar_response_columns(queries, formulas, group_defs, [()], values)
 
         row_limit = min((gd["limit"] for gd in group_defs if isinstance(gd.get("limit"), int)), default=50)
         sort_desc = group_defs[0]["sort_order"] == "desc"
@@ -427,19 +415,6 @@ class ClickHouseSpanBackend:
         order = [key for key, _ in first]
         per_query_values: List[List[float]] = [[value for _, value in first]]
         for q in queries[1:]:
-            values = dict(await self._scalar_groups(q, group_fields, first=False, row_limit=0, sort_desc=sort_desc))
-            per_query_values.append([values.get(key, 0.0) for key in order])
-
-        for i, gd in enumerate(group_defs):
-            columns.append({"name": gd["name"], "type": "group", "meta": None, "values": [[k[i]] for k in order]})
-        if formulas:
-            name_to_idx = {str(q.get("name") or f"query{i + 1}"): i for i, q in enumerate(queries)}
-            for f in formulas:
-                ref = str(f.get("formula") or "")
-                idx = name_to_idx.get(ref)
-                vals = per_query_values[idx] if idx is not None else [0.0 for _ in order]
-                columns.append(number_column(str(f.get("alias") or ref), vals))
-        else:
-            for qi, q in enumerate(queries):
-                columns.append(number_column(_query_column_name(q), per_query_values[qi]))
-        return columns
+            by_key = dict(await self._scalar_groups(q, group_fields, first=False, row_limit=0, sort_desc=sort_desc))
+            per_query_values.append([by_key.get(key, 0.0) for key in order])
+        return _scalar_response_columns(queries, formulas, group_defs, order, per_query_values)

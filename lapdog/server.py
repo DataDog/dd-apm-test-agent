@@ -81,6 +81,10 @@ def extend_app(app: web.Application) -> web.Application:
 
     # Traces stay in memory here, and can also go to a Self-hosted lapdog server.
     forwarding = Forwarding(load_forwarding_config())
+    forwarding.local_keys = lambda: (
+        (str(span.get("trace_id", "")), str(span.get("span_id", "")))
+        for span in llmobs_event_platform_api._memory.get_llmobs_spans()
+    )
     agent.llmobs_payload_listener = forwarding.on_llmobs_payload
     claude_hooks_api.forwarding = forwarding
     app["lapdog_forwarding"] = forwarding

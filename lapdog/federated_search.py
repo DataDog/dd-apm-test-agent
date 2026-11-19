@@ -47,7 +47,9 @@ from ddapm_test_agent.cors import with_cors
 from .forwarding import Forwarding
 from .llmobs_event_platform import InMemorySpanBackend
 from .llmobs_event_platform import LLMObsEventPlatformAPI
+from .llmobs_event_platform import VALUE_COUNT_AGGREGATION
 from .llmobs_event_platform import build_event_platform_list_response
+from .llmobs_event_platform import _list_compute_sort_order
 from .llmobs_event_platform import _query_column_name
 from .llmobs_event_platform import _query_compute_spec
 from .llmobs_event_platform import _query_group_by_fields
@@ -238,7 +240,10 @@ def _scalar_plan(attributes: Any) -> Tuple[Dict[str, Any], Dict[str, _ScalarColu
             elif metric and aggregation not in ("earliest", "latest"):
                 search = str((query.get("search") or {}).get("query", ""))
                 exists = f"_exists_:@{str(metric).lstrip('@')}"
-                counted["search"] = {**(query.get("search") or {}), "query": f"({search}) AND {exists}" if search.strip() else exists}
+                counted["search"] = {
+                    **(query.get("search") or {}),
+                    "query": f"({search}) AND {exists}" if search.strip() else exists,
+                }
             hidden_queries.append(counted)
         if aggregation in ("earliest", "latest"):
             time = f"{_HIDDEN}t_{name}"
@@ -355,19 +360,104 @@ def _top_scalar_rows(columns: List[Dict[str, Any]], descending: bool, limit: int
     return [{**c, "values": [c["values"][i] for i in order]} for c in columns]
 
 
+class _AggregatePlan(NamedTuple):
+    aggregations: Dict[str, Any]  # output -> aggregation
+    value_counts: Dict[str, str]  # avg output -> hidden output with its value count
+    lists: Dict[str, Tuple[bool, Optional[int]]]  # list output -> (descending, limit)
+
+
+def _aggregate_plan(agg: Dict[str, Any]) -> Tuple[Dict[str, Any], _AggregatePlan]:
+    """Return the aggregate request with hidden helpers added, and how to merge each output.
+
+    An average needs each side's value count to be weighted. A list of rows needs each row's time, so the
+    two sides' rows can be put back in the requested order.
+    """
+    augmented = copy.deepcopy(agg)
+    aggregations: Dict[str, Any] = {}
+    value_counts: Dict[str, str] = {}
+    lists: Dict[str, Tuple[bool, Optional[int]]] = {}
+    hidden: List[Dict[str, Any]] = []
+    for item in augmented.get("compute") or []:
+        if not isinstance(item, dict):
+            continue
+        if isinstance(item.get("total"), dict):
+            total = item["total"]
+            output = str(total.get("output", ""))
+            aggregations[output] = total.get("aggregation")
+            if total.get("aggregation") == "avg":
+                value_counts[output] = f"{_HIDDEN}n_{output}"
+                hidden.append(
+                    {
+                        "total": {
+                            "aggregation": VALUE_COUNT_AGGREGATION,
+                            "metric": total.get("metric"),
+                            "output": value_counts[output],
+                        }
+                    }
+                )
+        elif isinstance(item.get("list"), dict):
+            cfg = item["list"]
+            cfg["columns"] = list(cfg.get("columns") or []) + ["@timestamp"]
+            limit = cfg.get("limit")
+            lists[str(cfg.get("output", ""))] = (
+                _list_compute_sort_order(cfg) != "asc",
+                int(limit) if isinstance(limit, int) else None,
+            )
+    augmented["compute"] = list(augmented.get("compute") or []) + hidden
+    return augmented, _AggregatePlan(aggregations, value_counts, lists)
+
+
+def _row_time(row: Any) -> float:
+    try:
+        return float(row[-1])
+    except (TypeError, ValueError, IndexError):
+        return 0.0
+
+
+def _public_aggregate_value(value: Dict[str, Any], plan: _AggregatePlan) -> Dict[str, Any]:
+    """Drop the hidden helpers ``_aggregate_plan`` added from one merged group."""
+    metrics = {}
+    for name, metric in value.get("metrics", {}).items():
+        if name.startswith(_HIDDEN):
+            continue
+        if name in plan.lists and isinstance(metric, list):
+            metric = [row[:-1] for row in metric]
+        metrics[name] = metric
+    return {**value, "metrics": metrics}
+
+
 def _merge_aggregate_values(
-    merged: Dict[str, Dict[str, Any]], values: List[Dict[str, Any]], aggregations: Dict[str, Any], descending: bool
+    merged: Dict[str, Dict[str, Any]], values: List[Dict[str, Any]], plan: _AggregatePlan, descending: bool
 ) -> None:
     """Fold one side's aggregate groups into ``merged``, keyed by group."""
+    aggregations = plan.aggregations
     for value in values:
         key = json.dumps(value.get("by"), sort_keys=True)
         if key not in merged:
             merged[key] = copy.deepcopy(value)
             continue
         into = merged[key]
-        for name, metric in value.get("metrics", {}).items():
+        mine, theirs = into.get("metrics", {}), value.get("metrics", {})
+        for name, metric in theirs.items():
             aggregation = aggregations.get(name)
-            if aggregation == "earliest" and "_earliest_ns" in value and "_earliest_ns" in into:
+            count_name = plan.value_counts.get(name)
+            if name.startswith(_HIDDEN):
+                continue
+            if name in plan.lists and isinstance(metric, list) and isinstance(mine.get(name), list):
+                list_descending, limit = plan.lists[name]
+                rows = sorted(mine[name] + metric, key=_row_time, reverse=list_descending)
+                mine[name] = rows[:limit] if limit is not None else rows
+            elif (
+                count_name
+                and isinstance(mine.get(count_name), (int, float))
+                and isinstance(theirs.get(count_name), (int, float))
+            ):
+                n_mine, n_theirs = mine[count_name], theirs[count_name]
+                if n_theirs and n_mine:
+                    mine[name] = (mine.get(name, 0) * n_mine + metric * n_theirs) / (n_mine + n_theirs)
+                elif n_theirs:
+                    mine[name] = metric
+            elif aggregation == "earliest" and "_earliest_ns" in value and "_earliest_ns" in into:
                 if value["_earliest_ns"] < into["_earliest_ns"]:
                     into["metrics"][name] = metric
             elif aggregation == "latest" and "_latest_ns" in value and "_latest_ns" in into:
@@ -375,6 +465,9 @@ def _merge_aggregate_values(
                     into["metrics"][name] = metric
             else:
                 into["metrics"][name] = _merge_metric(aggregation, into["metrics"].get(name), metric)
+        for count_name in plan.value_counts.values():
+            if isinstance(theirs.get(count_name), (int, float)):
+                mine[count_name] = (mine.get(count_name) or 0) + theirs[count_name]
         if "_order_ns" in value:
             pick = max if descending else min
             into["_order_ns"] = pick(into.get("_order_ns", value["_order_ns"]), value["_order_ns"])
@@ -653,19 +746,17 @@ class FederatedSearch:
         raise _SelfHostedUnavailable  # not a federated result; let the local handler answer
 
     async def _aggregate(self, request: web.Request) -> web.Response:
-        body = await request.json()
-        agg = body.get("aggregate", {}) if isinstance(body, dict) else {}
-        local = await self._local(self.local_api.handle_aggregate, request) or {}
-        remote = await self._remote(request) or {}
+        original = await request.json()
+        agg, plan = _aggregate_plan(original.get("aggregate", {}) if isinstance(original, dict) else {})
+        body = {**original, "aggregate": agg} if isinstance(original, dict) else original
+        local = await self._local(self.local_api.handle_aggregate, _with_body(request, body)) or {}
+        remote = await self._remote(request, json.dumps(body).encode()) or {}
 
         field = ((agg.get("groupBy") or [{}])[0] or {}).get("field", {}) or {}
         field_id = str(field.get("id", ""))
         output = field.get("output", field_id)
         limit = int(field.get("limit", 50)) if agg.get("groupBy") else 1
         descending = ((field.get("sort") or {}).get("metric") or {}).get("order", "desc") != "asc"
-        aggregations = {
-            c["total"].get("output"): c["total"].get("aggregation") for c in agg.get("compute", []) if "total" in c
-        }
 
         def order(values: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
             return sorted(values.values(), key=lambda v: int(v.get("_order_ns", 0)), reverse=descending)
@@ -673,7 +764,7 @@ class FederatedSearch:
         sides = [(remote, False), (local, True)]
         merged: Dict[str, Dict[str, Any]] = {}
         for side, _ in sides:
-            _merge_aggregate_values(merged, side.get("result", {}).get("values", []), aggregations, descending)
+            _merge_aggregate_values(merged, side.get("result", {}).get("values", []), plan, descending)
         ordered = order(merged)
         page = ordered[:limit]
 
@@ -704,12 +795,12 @@ class FederatedSearch:
                     for v in extra.get("result", {}).get("values", [])
                     if json.dumps(v.get("by"), sort_keys=True) in page_keys
                 ]
-                _merge_aggregate_values(merged, values, aggregations, descending)
+                _merge_aggregate_values(merged, values, plan, descending)
             ordered = order(merged)
             page_keys = {json.dumps(v.get("by"), sort_keys=True) for v in page}
             page = [v for v in ordered if json.dumps(v.get("by"), sort_keys=True) in page_keys]
 
-        result: Dict[str, Any] = {"values": page}
+        result: Dict[str, Any] = {"values": [_public_aggregate_value(v, plan) for v in page]}
         side_has_more = bool(local.get("result", {}).get("paging") or remote.get("result", {}).get("paging"))
         if output and (len(ordered) > limit or side_has_more):
             seen = list(((agg.get("paging") or {}).get("after") or {}).get(output, []))

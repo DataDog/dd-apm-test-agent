@@ -8,6 +8,7 @@ import msgpack
 import pytest
 
 from lapdog.cli import forward as forward_cli
+from lapdog.forwarding import Forwarding
 from lapdog.forwarding import ForwardingConfig
 from lapdog.forwarding import load_forwarding_config
 from lapdog.forwarding import normalize_server_url
@@ -345,3 +346,19 @@ async def test_spans_from_v04_meta_struct_are_forwarded(monkeypatch):
     source.url.origin.return_value = "http://localhost:8126"
     agent._store_synthetic_llmobs_requests(source, [])
     assert received == [("/evp_proxy/v4/api/v2/llmobs", json.dumps([envelope]).encode(), "application/json")]
+
+
+def test_forwarded_keys_are_kept_while_their_span_is_in_memory():
+    forwarding = Forwarding(ForwardingConfig())
+    local = {("t", "1"), ("t", "2"), ("t", "3")}
+    forwarding.local_keys = lambda: local
+    forwarding._prune_at = 2
+    forwarding._remember([("t", "1"), ("t", "2"), ("t", "3")])
+    # Over the limit, but every span is still in memory: none may be forgotten, or it'd be counted twice.
+    assert all(forwarding.is_forwarded({"trace_id": "t", "span_id": i}) for i in "123")
+
+    local.discard(("t", "1"))
+    forwarding._prune_at = 2
+    forwarding._remember([("t", "4")])
+    assert not forwarding.is_forwarded({"trace_id": "t", "span_id": "1"})
+    assert all(forwarding.is_forwarded({"trace_id": "t", "span_id": i}) for i in "234")

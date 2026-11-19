@@ -54,7 +54,9 @@ async def federated(lapdog_agent, self_hosted_server):
     assert resp.status == 200
     await _post_to_laptop(lapdog_agent, _span("fwd-1", now - 4_000, ml_app="mine"), _span("fwd-2", now - 1_000))
     mate = {"ml_app": "team", "spans": [_span("mate-1", now - 2_000, ml_app="team")]}
-    resp = await self_hosted_server.post("/api/v2/llmobs", data=json.dumps(mate), headers={"Content-Type": "application/json"})
+    resp = await self_hosted_server.post(
+        "/api/v2/llmobs", data=json.dumps(mate), headers={"Content-Type": "application/json"}
+    )
     assert resp.status == 200
 
     async def stored_on_server():
@@ -177,7 +179,9 @@ async def test_list_is_labelled_without_self_hosted(lapdog_agent):
 
 async def _post_to_server(self_hosted_server, *spans):
     body = {"ml_app": "team", "spans": list(spans)}
-    resp = await self_hosted_server.post("/api/v2/llmobs", data=json.dumps(body), headers={"Content-Type": "application/json"})
+    resp = await self_hosted_server.post(
+        "/api/v2/llmobs", data=json.dumps(body), headers={"Content-Type": "application/json"}
+    )
     assert resp.status == 200
 
 
@@ -406,3 +410,32 @@ def test_candidates_cover_the_requested_limit():
 
     assert _candidates(1) == 21
     assert _candidates(2000) == 2000
+
+
+def test_aggregate_averages_are_weighted_by_value_counts():
+    from lapdog.federated_search import _aggregate_plan
+    from lapdog.federated_search import _merge_aggregate_values
+    from lapdog.federated_search import _public_aggregate_value
+
+    agg, plan = _aggregate_plan({"compute": [{"total": {"aggregation": "avg", "metric": "@m", "output": "a"}}]})
+    hidden = agg["compute"][-1]["total"]["output"]
+    merged = {}
+    _merge_aggregate_values(merged, [{"by": {"g": "x"}, "metrics": {"a": 0, hidden: 1}}], plan, True)
+    _merge_aggregate_values(merged, [{"by": {"g": "x"}, "metrics": {"a": 100, hidden: 99}}], plan, True)
+    (value,) = merged.values()
+    assert _public_aggregate_value(value, plan)["metrics"] == {"a": 99}
+
+
+def test_aggregate_lists_merge_in_the_requested_order():
+    from lapdog.federated_search import _aggregate_plan
+    from lapdog.federated_search import _merge_aggregate_values
+    from lapdog.federated_search import _public_aggregate_value
+
+    compute = [{"list": {"output": "rows", "columns": ["@name"], "sort": {"time": {"order": "desc"}}, "limit": 2}}]
+    agg, plan = _aggregate_plan({"compute": compute})
+    assert agg["compute"][0]["list"]["columns"] == ["@name", "@timestamp"]
+    merged = {}
+    _merge_aggregate_values(merged, [{"by": {}, "metrics": {"rows": [["a", "100"], ["c", "1"]]}}], plan, True)
+    _merge_aggregate_values(merged, [{"by": {}, "metrics": {"rows": [["b", "50"]]}}], plan, True)
+    (value,) = merged.values()
+    assert _public_aggregate_value(value, plan)["metrics"]["rows"] == [["a"], ["b"]]
