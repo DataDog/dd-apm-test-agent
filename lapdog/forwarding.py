@@ -193,7 +193,9 @@ class Forwarding:
         self._health_task: Optional["asyncio.Task[None]"] = None
         self._last_health_check = 0.0
         self._health_checking = False
-        self._change_lock = asyncio.Lock()
+        # Made on first use: before Python 3.10 a lock binds to the loop it's created on,
+        # and Forwarding is built before the server's loop starts.
+        self._change_lock: Optional[asyncio.Lock] = None
         self.configure_self_hosted(config.self_hosted, config.self_hosted_coding_agents)
 
     # -- configuration -----------------------------------------------------
@@ -356,6 +358,8 @@ class Forwarding:
                 return web.json_response({"error": "expected a JSON object"}, status=400)
             if "self_hosted" in body or "self_hosted_coding_agents" in body:
                 # One change at a time: a change waiting on its probe must not undo a later one.
+                if self._change_lock is None:
+                    self._change_lock = asyncio.Lock()
                 async with self._change_lock:
                     problem = await self._apply_change(body)
                 if problem is not None:
