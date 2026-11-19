@@ -177,6 +177,7 @@ def _merge_metric(aggregation: Optional[str], a: Any, b: Any) -> Any:
 
 
 _HIDDEN = "__lapdog_"
+_RANK = f"{_HIDDEN}rank"
 # Statistics that can't be combined from the two sides' values alone.
 _NEEDS_COUNT = {"min", "max", "avg", "median", "pc75", "pc90", "pc95", "pc99", "earliest", "latest"}
 
@@ -206,7 +207,14 @@ def _scalar_plan(attributes: Any) -> Tuple[Dict[str, Any], Dict[str, _ScalarColu
         count = time = None
         if aggregation in _NEEDS_COUNT:
             count = f"{_HIDDEN}n_{name}"
-            hidden_queries.append({**copy.deepcopy(query), "name": count, "compute": {"aggregation": "count"}})
+            # Count only spans that have the metric: those are the values the statistic is computed from.
+            counted = {**copy.deepcopy(query), "name": count, "compute": {"aggregation": "count"}}
+            metric = _query_compute_spec(query)["metric"]
+            if metric:
+                search = str((query.get("search") or {}).get("query", ""))
+                exists = f"_exists_:@{str(metric).lstrip('@')}"
+                counted["search"] = {**(query.get("search") or {}), "query": f"({search}) AND {exists}" if search.strip() else exists}
+            hidden_queries.append(counted)
         if aggregation in ("earliest", "latest"):
             time = f"{_HIDDEN}t_{name}"
             stat = "min" if aggregation == "earliest" else "max"
@@ -215,6 +223,11 @@ def _scalar_plan(attributes: Any) -> Tuple[Dict[str, Any], Dict[str, _ScalarColu
             )
         by_query[name] = _ScalarColumn(aggregation, count, time)
     columns: Dict[str, _ScalarColumn] = {}
+    if formulas and queries:
+        # Backends rank groups by the first query, which the formulas may not show first (or at all).
+        first = str(queries[0].get("name") or "query1")
+        hidden_queries.append({**copy.deepcopy(queries[0]), "name": _RANK})
+        columns[_RANK] = by_query[first]
     if formulas:
         for formula in formulas:
             ref = str(formula.get("formula") or "")
@@ -243,7 +256,7 @@ def _scalar_rows(columns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
 
 def _merge_scalar_row(into: Dict[str, Any], row: Dict[str, Any], plan: Dict[str, _ScalarColumn]) -> None:
     for name, value in row.items():
-        if name.startswith(_HIDDEN):
+        if name.startswith(_HIDDEN) and name not in plan:
             continue
         if name not in into:
             into[name] = value
@@ -297,12 +310,22 @@ def _merge_scalar_columns(
     return merged
 
 
+def _candidates(limit: int) -> int:
+    """How many top values to ask each side for, so a value ranked lower on both sides can still win overall.
+
+    Ranking by counts across two sides is exact only if every value is fetched; this keeps it exact unless
+    a value is outside both sides' candidates.
+    """
+    return min(max(limit * 4, limit + 20), 1000)
+
+
 def _top_scalar_rows(columns: List[Dict[str, Any]], descending: bool, limit: int) -> List[Dict[str, Any]]:
     """Keep the ``limit`` rows with the largest (or smallest) first value, as each backend does."""
     numbers = [c for c in columns if c.get("type") != "group" and not str(c["name"]).startswith(_HIDDEN)]
     if not numbers:
         return columns
-    primary = numbers[0]["values"]
+    ranked = [c for c in columns if c["name"] == _RANK] or numbers
+    primary = ranked[0]["values"]
     order = sorted(range(len(primary)), key=lambda i: primary[i] or 0, reverse=descending)[:limit]
     return [{**c, "values": [c["values"][i] for i in order]} for c in columns]
 
@@ -340,6 +363,8 @@ def _groups_query(query: str, field_id: str, keys: List[str]) -> Optional[str]:
     """``query`` narrowed to the given groups, or None if a key can't be written as a query value."""
     if not field_id or any(not key or '"' in key or "\\" in key for key in keys):
         return None
+    # Group and facet values are read as attributes, so filter by the attribute, not a tag of that name.
+    field_id = "@" + field_id.lstrip("@")
     groups = " OR ".join(f'{field_id}:"{key}"' for key in keys)
     return f"({query}) AND ({groups})" if query.strip() else f"({groups})"
 
@@ -465,10 +490,11 @@ class FederatedSearch:
             return await self._memory_list(request)
         cursor, mode = _decode_cursor(params.paging)
         # Inclusive paging starts at the last event listed overall, not at each side's last one.
+        # Reopen both sides there, even one that was used up: the boundary event may be its last one.
         local_start, remote_start = cursor.local, cursor.remote
         if mode == "from" and cursor.position:
-            local_start = cursor.position if cursor.local != _END else _END
-            remote_start = cursor.position if cursor.remote != _END else _END
+            local_start = remote_start = cursor.position
+            cursor = _Cursor(local_start, remote_start, cursor.position)
 
         def side_paging(side_cursor: Optional[str]) -> Optional[Dict[str, str]]:
             return {mode: side_cursor} if side_cursor else None
@@ -548,7 +574,11 @@ class FederatedSearch:
                 # The server stores one copy of each span, so a span's key alone marks the position.
                 next_remote = _span_cursor(_event_key(taken_remote[-1])) if taken_remote else cursor.remote
 
-        position = _span_cursor(_event_key(taken[-1][0])) if taken else cursor.position
+        position = cursor.position
+        if taken:
+            # Memory's cursor counts repeated copies of a span, so use it when the last event is memory's.
+            last_is_local = taken[-1][1] == "local"
+            position = next_local if last_is_local and next_local != _END else _span_cursor(_event_key(taken[-1][0]))
         next_cursor = _Cursor(next_local, next_remote, position)
         request_id = str(uuid.uuid4())
         result: Dict[str, Any] = {"events": [e for e, _ in taken], "count": len(taken)}
@@ -661,9 +691,12 @@ class FederatedSearch:
         body = await request.json()
         facet = (body.get("facet_info") or {}) if isinstance(body, dict) else {}
         limit = int(facet.get("limit", 10))
+        wide_body = copy.deepcopy(body)
+        if isinstance(wide_body, dict) and isinstance(wide_body.get("facet_info"), dict):
+            wide_body["facet_info"]["limit"] = _candidates(limit)
         sides = [
-            (await self._remote(request) or {}, False),
-            (await self._local(self.local_api.handle_facet_info, request) or {}, True),
+            (await self._remote(request, json.dumps(wide_body).encode()) or {}, False),
+            (await self._local(self.local_api.handle_facet_info, _with_body(request, wide_body)) or {}, True),
         ]
 
         def counts_of(response: Dict[str, Any]) -> Dict[str, int]:
@@ -681,7 +714,7 @@ class FederatedSearch:
             missing = [v for v in top if v not in have]
             search = str((facet.get("search") or {}).get("query", ""))
             query = _groups_query(search, str(facet.get("path", "")), missing)
-            if len(have) < limit or not missing or query is None:
+            if len(have) < _candidates(limit) or not missing or query is None:
                 continue
             extra_body = copy.deepcopy(body)
             extra_body["facet_info"].setdefault("search", {})["query"] = query
@@ -714,11 +747,22 @@ class FederatedSearch:
         requests = (body.get("data") if isinstance(body, dict) else None) or []
         augmented_body = copy.deepcopy(body) if isinstance(body, dict) else {}
         plans: List[Dict[str, _ScalarColumn]] = []
+        limits: List[Optional[int]] = []
         for i, item in enumerate(requests):
             attributes, plan = _scalar_plan(item.get("attributes") if isinstance(item, dict) else None)
+            limit = None
+            queries = [q for q in attributes.get("queries") or [] if isinstance(q, dict)] if attributes else []
+            group_defs = _query_group_by_fields(queries[0]) if queries else []
+            if len(group_defs) == 1:
+                limit = group_defs[0]["limit"] if isinstance(group_defs[0].get("limit"), int) else 50
+                for query in queries:
+                    for group_by in query.get("group_by") or []:
+                        if isinstance(group_by, dict):
+                            group_by["limit"] = _candidates(limit)
             if attributes:
                 augmented_body["data"][i]["attributes"] = attributes
             plans.append(plan)
+            limits.append(limit)
         local = await self._local(self.local_api.handle_query_scalar, _with_body(request, augmented_body)) or {}
         remote = await self._remote(request, json.dumps(augmented_body).encode()) or {}
         local_data, remote_data = local.get("data", []), remote.get("data", [])
@@ -727,7 +771,8 @@ class FederatedSearch:
             a = remote_data[i]["attributes"]["columns"] if i < len(remote_data) else []
             b = local_data[i]["attributes"]["columns"] if i < len(local_data) else []
             item = augmented_body["data"][i] if i < len(requests) else None
-            columns = await self._merge_scalar_sides(request, item, a, b, plans[i] if i < len(plans) else {})
+            limit = limits[i] if i < len(limits) else None
+            columns = await self._merge_scalar_sides(request, item, a, b, plans[i] if i < len(plans) else {}, limit)
             data.append({"type": "scalar_response", "attributes": {"columns": columns}})
         return web.json_response({"data": data})
 
@@ -738,15 +783,16 @@ class FederatedSearch:
         remote: List[Dict[str, Any]],
         local: List[Dict[str, Any]],
         plan: Dict[str, _ScalarColumn],
+        limit: Optional[int],
     ) -> List[Dict[str, Any]]:
         """Merge one scalar request's columns, completing top groups that a side's row limit cut off."""
         attributes = (item or {}).get("attributes") or {}
         queries = [q for q in attributes.get("queries") or [] if isinstance(q, dict)]
         group_defs = _query_group_by_fields(queries[0]) if queries else []
-        if len(group_defs) != 1:
-            return _merge_scalar_columns(remote, local, plan)
+        if len(group_defs) != 1 or limit is None:
+            merged = _merge_scalar_columns(remote, local, plan, keep_hidden=True)
+            return [c for c in merged if c.get("type") == "group" or not str(c["name"]).startswith(_HIDDEN)]
         group = group_defs[0]
-        limit = group["limit"] if isinstance(group.get("limit"), int) else 50
         descending = group["sort_order"] == "desc"
         top = _top_scalar_rows(_merge_scalar_columns(remote, local, plan, keep_hidden=True), descending, limit)
         top_keys = list(_scalar_rows(top))
@@ -755,7 +801,7 @@ class FederatedSearch:
             have = _scalar_rows(sides[index])
             missing_keys = [k for k in top_keys if k not in have]
             values = [str((json.loads(k) or [[""]])[0][0]) for k in missing_keys]
-            if len(have) < limit or not missing_keys:
+            if len(have) < _candidates(limit) or not missing_keys:
                 continue
             extra_attributes = copy.deepcopy(attributes)
             narrowed = True

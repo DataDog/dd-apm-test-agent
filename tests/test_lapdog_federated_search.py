@@ -327,3 +327,53 @@ async def test_facets_and_grouped_scalars_complete_values_cut_off_on_one_side(fe
     resp = await federated.post("/api/ui/query/scalar", json={"data": [{"attributes": {"queries": [query]}}]})
     columns = (await resp.json())["data"][0]["attributes"]["columns"]
     assert [(c["name"], c["values"]) for c in columns] == [("@ml_app", [["mine"]]), ("query1", [3])]
+
+
+async def test_inclusive_paging_reopens_a_used_up_side(federated):
+    asc = {"time": {"order": "asc"}}
+    first = await _list(federated, limit=3, sort=asc)
+    assert _ids(first) == ["local-1", "fwd-1", "local-2"]
+    again = await _list(federated, limit=3, sort=asc, paging={"from": first["result"]["paging"]["after"]})
+    assert _ids(again) == ["local-2", "mate-1", "fwd-2"]
+
+
+async def test_inclusive_paging_keeps_repeated_copies(lapdog_agent, self_hosted_server):
+    now = time.time_ns()
+    for _ in range(3):
+        await _post_to_laptop(lapdog_agent, _span("dup", now - 3_000))
+    url = str(self_hosted_server.make_url("")).rstrip("/")
+    assert (await lapdog_agent.post("/lapdog/forwarding", json={"self_hosted": url})).status == 200
+    await _post_to_laptop(lapdog_agent, _span("new", now - 1_000))
+    await _server_has(self_hosted_server, 1)
+    first = await _list(lapdog_agent, limit=2)
+    assert _ids(first) == ["new", "dup"]
+    again = await _list(lapdog_agent, limit=3, paging={"from": first["result"]["paging"]["after"]})
+    assert _ids(again) == ["dup", "dup", "dup"]
+
+
+def test_scalar_helpers_count_metric_values_rank_by_first_query_and_filter_attributes():
+    from lapdog.federated_search import _groups_query
+    from lapdog.federated_search import _scalar_plan
+    from lapdog.federated_search import _top_scalar_rows
+
+    attributes = {
+        "queries": [
+            {"name": "q1", "search": {"query": "@ml_app:x"}, "compute": {"aggregation": "count"}},
+            {"name": "q2", "compute": {"aggregation": "avg", "metric": "@metrics.input_tokens"}},
+        ],
+        "formulas": [{"formula": "q2"}, {"formula": "q1"}],
+    }
+    augmented, _ = _scalar_plan(attributes)
+    hidden = {q["name"]: q for q in augmented["queries"]}
+    # The average is computed from spans that have the metric, so only those are counted.
+    assert hidden["__lapdog_n_q2"]["search"]["query"] == "_exists_:@metrics.input_tokens"
+    assert hidden["__lapdog_rank"]["compute"] == {"aggregation": "count"}
+
+    columns = [
+        {"name": "g", "type": "group", "values": [["a"], ["b"]]},
+        {"name": "q2", "type": "number", "values": [1, 100]},
+        {"name": "__lapdog_rank", "type": "number", "values": [10, 9]},
+    ]
+    assert _top_scalar_rows(columns, True, 1)[0]["values"] == [["a"]]
+
+    assert _groups_query("", "env", ["prod"]) == '(@env:"prod")'
