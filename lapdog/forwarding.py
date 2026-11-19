@@ -193,6 +193,7 @@ class Forwarding:
         self._health_task: Optional["asyncio.Task[None]"] = None
         self._last_health_check = 0.0
         self._health_checking = False
+        self._change_lock = asyncio.Lock()
         self.configure_self_hosted(config.self_hosted, config.self_hosted_coding_agents)
 
     # -- configuration -----------------------------------------------------
@@ -354,20 +355,29 @@ class Forwarding:
             except ValueError:
                 return web.json_response({"error": "expected a JSON object"}, status=400)
             if "self_hosted" in body or "self_hosted_coding_agents" in body:
-                raw = body.get("self_hosted", self.self_hosted)
-                server = normalize_server_url(raw) if raw else None
-                if raw and server is None:
-                    return web.json_response({"error": f"not an http(s) URL: {raw}"}, status=400)
-                days: Optional[int] = None
-                if server is not None and server != self.self_hosted:
-                    # Only accept a new server that answers as one, so a typo can't silently drop traces.
-                    problem, days = await self._probe(server)
-                    if problem is not None:
-                        return web.json_response({"error": problem}, status=400)
-                coding_agents = bool(body.get("self_hosted_coding_agents", self.self_hosted_coding_agents))
-                changed = server != self.self_hosted
-                self.configure_self_hosted(server, coding_agents)
-                if server is not None and changed:
-                    self._record_health(True, days)
-                save_forwarding_config(ForwardingConfig(server, coding_agents))
+                # One change at a time: a change waiting on its probe must not undo a later one.
+                async with self._change_lock:
+                    problem = await self._apply_change(body)
+                if problem is not None:
+                    return web.json_response({"error": problem}, status=400)
         return web.json_response(self.info()["forwarding"])
+
+    async def _apply_change(self, body: Dict[str, Any]) -> Optional[str]:
+        """Apply and save a forwarding change, or return why it was refused."""
+        raw = body.get("self_hosted", self.self_hosted)
+        server = normalize_server_url(raw) if raw else None
+        if raw and server is None:
+            return f"not an http(s) URL: {raw}"
+        days: Optional[int] = None
+        changed = server != self.self_hosted
+        if server is not None and changed:
+            # Only accept a new server that answers as one, so a typo can't silently drop traces.
+            problem, days = await self._probe(server)
+            if problem is not None:
+                return problem
+        coding_agents = bool(body.get("self_hosted_coding_agents", self.self_hosted_coding_agents))
+        self.configure_self_hosted(server, coding_agents)
+        if server is not None and changed:
+            self._record_health(True, days)
+        save_forwarding_config(ForwardingConfig(server, coding_agents))
+        return None

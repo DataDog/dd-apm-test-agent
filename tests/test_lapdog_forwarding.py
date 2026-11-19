@@ -209,6 +209,29 @@ async def test_a_url_that_isnt_a_lapdog_server_is_refused(lapdog_agent, self_hos
     assert state["self_hosted"]["url"] == self_hosted_stub.url
 
 
+async def test_turning_forwarding_off_wins_over_an_earlier_pending_connect(lapdog_agent, aiohttp_server):
+    release = asyncio.Event()
+
+    async def slow_info(request):
+        await release.wait()
+        return web.json_response({"mode": "server"})
+
+    app = web.Application()
+    app.router.add_get("/info", slow_info)
+    slow = await aiohttp_server(app)
+    slow_url = str(slow.make_url("")).rstrip("/")
+
+    connect = asyncio.ensure_future(lapdog_agent.post("/lapdog/forwarding", json={"self_hosted": slow_url}))
+    await asyncio.sleep(0.05)
+    off = asyncio.ensure_future(lapdog_agent.post("/lapdog/forwarding", json={"self_hosted": None}))
+    await asyncio.sleep(0.05)
+    release.set()
+    assert (await connect).status == 200
+    assert (await off).status == 200
+    state = await (await lapdog_agent.get("/lapdog/forwarding")).json()
+    assert state["self_hosted"]["enabled"] is False
+
+
 async def test_self_hosted_health_and_retention_in_info(lapdog_agent, self_hosted_stub):
     await _forwarding(lapdog_agent, self_hosted=self_hosted_stub.url)
     forwarding = lapdog_agent.app["lapdog_forwarding"]
