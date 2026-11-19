@@ -454,6 +454,16 @@ def _drain_file(
                     state.matches_cwd = _is_under(record_cwd, cwd)
 
             if session_id and session_ownership is not None:
+                if (
+                    state.matches_cwd is True
+                    and not session_ownership.root_session_id
+                    and record.get("payload", {}).get("thread_source") == "guardian_review"
+                    and record.get("payload", {}).get("parent_thread_id")
+                ):
+                    # A resumed session may create its reviewer before writing
+                    # new parent records. Retry ownership after the parent is claimed.
+                    state.scan_offset = line_end - len(line_bytes)
+                    return posted_session_id
                 if state.matches_cwd is not True or not session_ownership.accepts(record):
                     state.ignored = True
                     state.buffer.clear()
@@ -920,7 +930,12 @@ def watch_codex_sessions(
                 session_names=names,
             )
             session_id = posted_session_id or state.session_id
-            if session_id and not state.ignored and state.matches_cwd is not False:
+            if (
+                session_id
+                and not state.ignored
+                and state.matches_cwd is not False
+                and (session_ownership is None or session_id in session_ownership.session_ids)
+            ):
                 shutdown_sessions[session_id] = path
         except (KeyboardInterrupt, SystemExit):
             raise
