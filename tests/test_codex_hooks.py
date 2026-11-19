@@ -169,28 +169,41 @@ def test_early_proxy_binding_consumes_buffered_output_and_reasoning(response_par
 
 
 @pytest.mark.parametrize("after_subagent_end", [False, True])
-def test_late_structured_completion_preserves_subagent_parent(response_parser, after_subagent_end):
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("completion_first", [False, True])
+def test_late_structured_completion_preserves_subagent_parent(
+    response_parser, after_subagent_end, wrapped, completion_first
+):
     hooks, parser = response_parser
     records = [
         _response_item("function_call", name="spawn_agent", call_id="spawn", arguments='{"prompt":"inspect"}'),
         _response_usage(1, 3.1),
         _event("collab_agent_spawn_begin", timestamp="2026-05-11T17:00:03.200Z", call_id="spawn"),
         _response_item(
-            "function_call",
+            "custom_tool_call" if wrapped else "function_call",
             timestamp="2026-05-11T17:00:04.000Z",
-            name="exec_command",
-            call_id="exec-1",
+            name="exec" if wrapped else "exec_command",
+            call_id="batch" if wrapped else "exec-1",
             arguments='{"cmd":"pwd"}',
+            input='text(await tools.exec_command({cmd:"pwd"}));',
         ),
         _response_usage(2, 4.1),
-        _response_item("function_call_output", timestamp="2026-05-11T17:00:05.000Z", call_id="exec-1", output="/repo"),
     ]
     for record in records:
         parser._dispatch("session", record)
-    original = _by_kind(hooks._assembled_spans, "tool")[0]
-    original_id = original["span_id"]
-    parent_id = original["parent_id"]
-    assert parent_id in [span["span_id"] for span in _by_kind(hooks._assembled_spans, "agent")]
+    output = _response_item(
+        "custom_tool_call_output" if wrapped else "function_call_output",
+        timestamp="2026-05-11T17:00:05.000Z",
+        call_id="batch" if wrapped else "exec-1",
+        output="/repo",
+    )
+    original_id = None
+    parent_id = next(
+        span["span_id"] for span in _by_kind(hooks._assembled_spans, "agent") if span["parent_id"] != "undefined"
+    )
+    if not completion_first:
+        parser._dispatch("session", output)
+        original_id = _by_kind(hooks._assembled_spans, "tool")[0]["span_id"]
     if after_subagent_end:
         parser._dispatch(
             "session", _event("collab_agent_spawn_end", timestamp="2026-05-11T17:00:05.100Z", call_id="spawn")
@@ -216,11 +229,17 @@ def test_late_structured_completion_preserves_subagent_parent(response_parser, a
             },
         ),
     )
+    if completion_first:
+        original_id = _by_kind(hooks._assembled_spans, "tool")[0]["span_id"]
+        parser._dispatch("session", output)
     tools = _by_kind(hooks._assembled_spans, "tool")
     assert len(tools) == 1
     assert tools[0]["span_id"] == original_id
     assert tools[0]["parent_id"] == parent_id
     assert tools[0]["meta"]["output"]["value"] == "/actual"
+    producing_step = _by_kind(hooks._assembled_spans, "step")[1]
+    assert tools[0]["meta"]["metadata"]["step_span_id"] == producing_step["span_id"]
+    assert producing_step["start_ns"] + producing_step["duration"] >= tools[0]["start_ns"] + tools[0]["duration"]
 
 
 def test_legacy_proxy_request_start_keeps_new_tool_out_of_previous_response(response_parser):

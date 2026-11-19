@@ -2217,6 +2217,8 @@ class CodexHooksAPI:
     def _tool_inference_step_id(self, turn: CodexTurn, span: Dict[str, Any]) -> str:
         # Subagent ancestry and the response that issued a tool are independent.
         metadata = span.get("meta", {}).get("metadata", {})
+        if metadata.get("step_span_id") in turn.step_span_refs:
+            return str(metadata["step_span_id"])
         tool_id = metadata.get("exec_call_id") or metadata.get("tool_id")
         for step in turn.step_span_refs.values():
             if tool_id in step["meta"]["metadata"].get("tool_use_ids", []):
@@ -2248,12 +2250,29 @@ class CodexHooksAPI:
         # A command may finish after a later response. Its execution start
         # selects the producing step, not the time the completion was read.
         parent_id = self._tool_parent_id(session, turn)
+        step_id = self._inference_step_id(turn, parent_id)
         if session.has_response_usage:
             steps = [step for step in turn.step_span_refs.values() if step["start_ns"] <= start_ns]
             if steps:
                 step_id = str(max(steps, key=lambda step: step["start_ns"])["span_id"])
-                if self._inference_step_id(turn, parent_id) != step_id:
+                if not parent_id or parent_id in turn.step_span_refs:
                     parent_id = step_id
+            # A pending call retains its subagent parent even when that agent
+            # started in another step or has since finished.
+            tool_ids = turn.step_span_refs.get(step_id, {}).get("meta", {}).get("metadata", {}).get("tool_use_ids", [])
+            parents = set()
+            for tool_id, pending_call in session.pending_tools.items():
+                if tool_id not in tool_ids or pending_call.start_ns > start_ns:
+                    continue
+                calls = (
+                    extract_exec_calls(pending_call.tool_input)
+                    if pending_call.tool_name in _EXEC_WRAPPER_NAMES and isinstance(pending_call.tool_input, str)
+                    else [{"name": pending_call.tool_name, "arguments": pending_call.tool_input}]
+                )
+                if any(matches_call(completion, call["name"], call["arguments"]) for call in calls):
+                    parents.add(pending_call.parent_id)
+            if len(parents) == 1:
+                parent_id = parents.pop()
         candidates = [
             entry
             for entry in session.fallback_tools
@@ -2272,11 +2291,7 @@ class CodexHooksAPI:
             else []
         )
         if session.has_response_usage:
-            candidates = [
-                entry
-                for entry in candidates
-                if self._tool_inference_step_id(turn, entry["span"]) == self._inference_step_id(turn, parent_id)
-            ]
+            candidates = [entry for entry in candidates if self._tool_inference_step_id(turn, entry["span"]) == step_id]
         target = identified[0] if len(identified) == 1 else candidates[0] if len(candidates) == 1 else None
         value = completion["value"]
         output = value if isinstance(value, str) else _to_json_str(value)
@@ -2291,6 +2306,7 @@ class CodexHooksAPI:
             "result_matched": True,
             "raw_tool_name": completion["name"],
             "item_id": item["id"],
+            "step_span_id": step_id,
         }
         if target is not None:
             span = target["span"]
@@ -2334,7 +2350,7 @@ class CodexHooksAPI:
         completion.update(span=span, end_ns=end_ns, claimed=target is not None)
         session.structured_tools.append(completion)
         session.tools_used.add(span["name"])
-        self._update_step_end(turn, span["parent_id"], end_ns)
+        self._update_step_end(turn, step_id or span["parent_id"], end_ns)
         self._update_agent_manifest(session)
 
     def _handle_function_call_output(self, session: CodexSession, record: Dict[str, Any]) -> None:
