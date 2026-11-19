@@ -70,6 +70,22 @@ def normalize_server_url(raw: str) -> Optional[str]:
     return f"{parts.scheme}://{parts.netloc}{parts.path}".rstrip("/")
 
 
+async def _probe_server(session: ClientSession, server: str) -> Tuple[Optional[str], Optional[int]]:
+    """Ask ``server`` for its ``/info``: return what's wrong (None if it's a lapdog server) and its retention days."""
+    try:
+        async with session.get(f"{server}/info", timeout=ClientTimeout(total=_HEALTH_TIMEOUT)) as resp:
+            info = await resp.json(content_type=None)
+            status = resp.status
+    except (ClientError, asyncio.TimeoutError, OSError):
+        return f"Can't reach {server}", None
+    except ValueError:
+        return f"{server} isn't a lapdog server", None
+    if status != 200 or not isinstance(info, dict) or info.get("mode") != "server":
+        return f"{server} isn't a lapdog server", None
+    days = info.get("retention_days")
+    return None, days if isinstance(days, int) else None
+
+
 def forwarding_config_path() -> str:
     return os.environ.get("LAPDOG_FORWARDING_CONFIG", FORWARDING_CONFIG_FILE)
 
@@ -294,19 +310,23 @@ class Forwarding:
         self._health_checking = True
         self._last_health_check = time.monotonic()
         try:
-            async with session.get(f"{server}/info", timeout=ClientTimeout(total=_HEALTH_TIMEOUT)) as resp:
-                info = await resp.json(content_type=None)
-            reachable = resp.status == 200 and isinstance(info, dict) and info.get("mode") == "server"
-            days = info.get("retention_days") if isinstance(info, dict) else None
-        except (ClientError, asyncio.TimeoutError, OSError, ValueError):
-            reachable, days = False, None
+            problem, days = await _probe_server(session, server)
         finally:
             self._health_checking = False
         if server == self.self_hosted:
-            self.self_hosted_reachable = reachable
-            self.self_hosted_retention_days = days if isinstance(days, int) else None
-            if reachable:
-                self.self_hosted_stats.clear_unreachable_error()
+            self._record_health(problem is None, days)
+
+    def _record_health(self, reachable: bool, days: Optional[int]) -> None:
+        self.self_hosted_reachable = reachable
+        self.self_hosted_retention_days = days
+        if reachable:
+            self.self_hosted_stats.clear_unreachable_error()
+
+    async def _probe(self, server: str) -> Tuple[Optional[str], Optional[int]]:
+        if self._session is not None:
+            return await _probe_server(self._session, server)
+        async with ClientSession() as session:
+            return await _probe_server(session, server)
 
     async def _health_loop(self) -> None:
         while True:
@@ -338,7 +358,16 @@ class Forwarding:
                 server = normalize_server_url(raw) if raw else None
                 if raw and server is None:
                     return web.json_response({"error": f"not an http(s) URL: {raw}"}, status=400)
+                days: Optional[int] = None
+                if server is not None and server != self.self_hosted:
+                    # Only accept a new server that answers as one, so a typo can't silently drop traces.
+                    problem, days = await self._probe(server)
+                    if problem is not None:
+                        return web.json_response({"error": problem}, status=400)
                 coding_agents = bool(body.get("self_hosted_coding_agents", self.self_hosted_coding_agents))
+                changed = server != self.self_hosted
                 self.configure_self_hosted(server, coding_agents)
+                if server is not None and changed:
+                    self._record_health(True, days)
                 save_forwarding_config(ForwardingConfig(server, coding_agents))
         return web.json_response(self.info()["forwarding"])

@@ -187,6 +187,28 @@ async def test_forwarding_api_guards(lapdog_agent):
     assert allowed.headers["Access-Control-Allow-Origin"] == "https://lapdog.datadoghq.com"
 
 
+async def test_a_url_that_isnt_a_lapdog_server_is_refused(lapdog_agent, self_hosted_stub, aiohttp_server):
+    async def not_lapdog(request):
+        return web.json_response({"version": "7.50.0"})
+
+    app = web.Application()
+    app.router.add_get("/info", not_lapdog)
+    other = await aiohttp_server(app)
+    other_url = str(other.make_url("")).rstrip("/")
+    unused = await aiohttp_server(web.Application())
+    down_url = str(unused.make_url("")).rstrip("/")
+    await unused.close()
+
+    await _forwarding(lapdog_agent, self_hosted=self_hosted_stub.url)
+    for url, error in [(other_url, f"{other_url} isn't a lapdog server"), (down_url, f"Can't reach {down_url}")]:
+        resp = await lapdog_agent.post("/lapdog/forwarding", json={"self_hosted": url})
+        assert resp.status == 400
+        assert (await resp.json())["error"] == error
+    # The working server stays configured.
+    state = await (await lapdog_agent.get("/lapdog/forwarding")).json()
+    assert state["self_hosted"]["url"] == self_hosted_stub.url
+
+
 async def test_self_hosted_health_and_retention_in_info(lapdog_agent, self_hosted_stub):
     await _forwarding(lapdog_agent, self_hosted=self_hosted_stub.url)
     forwarding = lapdog_agent.app["lapdog_forwarding"]
@@ -220,11 +242,11 @@ async def test_polling_info_notices_a_server_going_down_quickly(lapdog_agent, se
 
 
 async def test_a_reachable_server_clears_a_failed_send(lapdog_agent, self_hosted_stub):
-    await _forwarding(lapdog_agent, self_hosted="http://127.0.0.1:9")
+    forwarding = lapdog_agent.app["lapdog_forwarding"]
+    forwarding.configure_self_hosted("http://127.0.0.1:9", False)
     await lapdog_agent.post(
         "/evp_proxy/v2/api/v2/llmobs", headers={"Content-Type": "application/msgpack"}, data=_payload(_span("lost"))
     )
-    forwarding = lapdog_agent.app["lapdog_forwarding"]
     await _wait_for(lambda: forwarding.self_hosted_stats.last_error is not None)
 
     # The server is back (here: the same lapdog now pointed at a working one), with nothing sent since.

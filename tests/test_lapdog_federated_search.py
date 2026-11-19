@@ -143,8 +143,8 @@ async def test_traces_come_from_whichever_side_has_them(federated):
 
 
 async def test_unreachable_self_hosted_falls_back_to_memory(federated):
-    resp = await federated.post("/lapdog/forwarding", json={"self_hosted": "http://127.0.0.1:9"})
-    assert resp.status == 200
+    # The server goes away (the API refuses a dead URL, so point at one directly).
+    federated.app["lapdog_forwarding"].configure_self_hosted("http://127.0.0.1:9", False)
     response = await _list(federated)
     # Memory still has everything this lapdog received, including what it forwarded.
     assert sorted(_ids(response)) == ["fwd-1", "fwd-2", "local-1", "local-2"]
@@ -270,8 +270,8 @@ async def test_trace_split_across_both_sides_is_combined(federated, self_hosted_
 async def test_paging_continues_from_memory_when_self_hosted_goes_away(federated):
     first = await _list(federated, limit=2)
     assert _ids(first) == ["fwd-2", "mate-1"]
-    resp = await federated.post("/lapdog/forwarding", json={"self_hosted": "http://127.0.0.1:9"})
-    assert resp.status == 200
+    # The server goes away (the API refuses a dead URL, so point at one directly).
+    federated.app["lapdog_forwarding"].configure_self_hosted("http://127.0.0.1:9", False)
     second = await _list(federated, limit=2, paging=first["result"]["paging"])
     assert _ids(second) == ["local-2", "fwd-1"]
     # Memory's own cursor keeps working while forwarding is still configured.
