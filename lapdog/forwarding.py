@@ -41,6 +41,9 @@ log = logging.getLogger(__name__)
 
 _WINDOW_SECONDS = 3600
 _HEALTH_INTERVAL = 30.0
+# While the UI polls /info, check the server this often, so a server going down shows within seconds.
+_FRESH_HEALTH = 3.0
+_HEALTH_TIMEOUT = 3.0
 _SPANS_PATH = "/evp_proxy/v2/api/v2/llmobs"
 _MAX_SPANS_PER_REQUEST = 20
 # Spans remembered as stored on the Self-hosted server, so searches don't count them twice.
@@ -125,8 +128,9 @@ class DestinationStats:
         self.failed_requests = 0
         self.last_error: Optional[str] = None
         self.last_sent_at: Optional[float] = None
+        self._error_was_unreachable = False
 
-    def record(self, spans: int, ok: bool, error: str = "") -> None:
+    def record(self, spans: int, ok: bool, error: str = "", unreachable: bool = False) -> None:
         now = time.time()
         if ok:
             self._sent.append((now, spans))
@@ -135,7 +139,14 @@ class DestinationStats:
         else:
             self.failed_requests += 1
             self.last_error = error[:300] or "request failed"
+            self._error_was_unreachable = unreachable
         self._trim(now)
+
+    def clear_unreachable_error(self) -> None:
+        """Forget an error from not reaching the destination, which answers again."""
+        if self._error_was_unreachable:
+            self.last_error = None
+            self._error_was_unreachable = False
 
     def _trim(self, now: float) -> None:
         while self._sent and self._sent[0][0] < now - _WINDOW_SECONDS:
@@ -164,6 +175,8 @@ class Forwarding:
         # Span posts still in flight; an update waits for them so it never reaches the server before its span.
         self._span_posts: Set["asyncio.Future[None]"] = set()
         self._health_task: Optional["asyncio.Task[None]"] = None
+        self._last_health_check = 0.0
+        self._health_checking = False
         self.configure_self_hosted(config.self_hosted, config.self_hosted_coding_agents)
 
     # -- configuration -----------------------------------------------------
@@ -185,6 +198,10 @@ class Forwarding:
 
     def info(self) -> Dict[str, Any]:
         """``/info``'s ``forwarding`` block, which the lapdog UI draws as the forwarding flow."""
+        # Someone is looking: refresh reachability in the background, for their next poll.
+        stale = time.monotonic() - self._last_health_check >= _FRESH_HEALTH
+        if self.self_hosted and self._session is not None and stale and not self._health_checking:
+            self._spawn(self._check_self_hosted())
         self_hosted: Dict[str, Any] = {
             "enabled": bool(self.self_hosted),
             "url": self.self_hosted,
@@ -263,7 +280,7 @@ class Forwarding:
         except (ClientError, asyncio.TimeoutError, OSError) as e:
             ok, error, reachable = False, f"can't reach {server}: {e.__class__.__name__}", False
         if server == self.self_hosted:
-            self.self_hosted_stats.record(spans, ok, error)
+            self.self_hosted_stats.record(spans, ok, error, unreachable=reachable is False)
             self.self_hosted_reachable = reachable
             if ok:
                 _remember(self._forwarded, keys)
@@ -274,16 +291,22 @@ class Forwarding:
         server, session = self.self_hosted, self._session
         if not server or session is None:
             return
+        self._health_checking = True
+        self._last_health_check = time.monotonic()
         try:
-            async with session.get(f"{server}/info", timeout=ClientTimeout(total=5)) as resp:
+            async with session.get(f"{server}/info", timeout=ClientTimeout(total=_HEALTH_TIMEOUT)) as resp:
                 info = await resp.json(content_type=None)
             reachable = resp.status == 200 and isinstance(info, dict) and info.get("mode") == "server"
             days = info.get("retention_days") if isinstance(info, dict) else None
         except (ClientError, asyncio.TimeoutError, OSError, ValueError):
             reachable, days = False, None
+        finally:
+            self._health_checking = False
         if server == self.self_hosted:
             self.self_hosted_reachable = reachable
             self.self_hosted_retention_days = days if isinstance(days, int) else None
+            if reachable:
+                self.self_hosted_stats.clear_unreachable_error()
 
     async def _health_loop(self) -> None:
         while True:

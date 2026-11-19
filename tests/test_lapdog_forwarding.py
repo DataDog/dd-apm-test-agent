@@ -47,6 +47,8 @@ async def self_hosted_stub(aiohttp_server):
         return web.json_response({}, status=state["status"])
 
     async def info(request):
+        if state.get("down"):
+            return web.json_response({}, status=503)
         return web.json_response({"mode": "server", "retention_days": 7})
 
     app = web.Application()
@@ -192,6 +194,56 @@ async def test_self_hosted_health_and_retention_in_info(lapdog_agent, self_hoste
     self_hosted = (await (await lapdog_agent.get("/info")).json())["forwarding"]["self_hosted"]
     assert self_hosted["reachable"] is True
     assert self_hosted["retention_days"] == 7
+
+
+async def test_polling_info_notices_a_server_going_down_quickly(lapdog_agent, self_hosted_stub, monkeypatch):
+    from lapdog import forwarding as forwarding_module
+
+    monkeypatch.setattr(forwarding_module, "_FRESH_HEALTH", 0.05)
+    await _forwarding(lapdog_agent, self_hosted=self_hosted_stub.url)
+    forwarding = lapdog_agent.app["lapdog_forwarding"]
+    await _wait_for(lambda: forwarding.self_hosted_reachable is True)
+
+    async def reachable_after_polls():
+        # The UI polls /info every few seconds; each poll refreshes reachability for the next one.
+        for _ in range(20):
+            info = await (await lapdog_agent.get("/info")).json()
+            if info["forwarding"]["self_hosted"]["reachable"] is (not self_hosted_stub.state.get("down")):
+                return True
+            await asyncio.sleep(0.05)
+        return False
+
+    self_hosted_stub.state["down"] = True
+    assert await reachable_after_polls(), "never noticed the server going down"
+    self_hosted_stub.state["down"] = False
+    assert await reachable_after_polls(), "never noticed the server coming back"
+
+
+async def test_a_reachable_server_clears_a_failed_send(lapdog_agent, self_hosted_stub):
+    await _forwarding(lapdog_agent, self_hosted="http://127.0.0.1:9")
+    await lapdog_agent.post(
+        "/evp_proxy/v2/api/v2/llmobs", headers={"Content-Type": "application/msgpack"}, data=_payload(_span("lost"))
+    )
+    forwarding = lapdog_agent.app["lapdog_forwarding"]
+    await _wait_for(lambda: forwarding.self_hosted_stats.last_error is not None)
+
+    # The server is back (here: the same lapdog now pointed at a working one), with nothing sent since.
+    forwarding.self_hosted = self_hosted_stub.url
+    await forwarding._check_self_hosted()
+    assert forwarding.self_hosted_reachable is True
+    assert forwarding.self_hosted_stats.last_error is None
+
+
+async def test_a_rejected_send_stays_an_error_while_reachable(lapdog_agent, self_hosted_stub):
+    await _forwarding(lapdog_agent, self_hosted=self_hosted_stub.url)
+    self_hosted_stub.state["status"] = 400
+    await lapdog_agent.post(
+        "/evp_proxy/v2/api/v2/llmobs", headers={"Content-Type": "application/msgpack"}, data=_payload(_span("bad"))
+    )
+    forwarding = lapdog_agent.app["lapdog_forwarding"]
+    await _wait_for(lambda: forwarding.self_hosted_stats.last_error is not None)
+    await forwarding._check_self_hosted()
+    assert forwarding.self_hosted_stats.last_error.startswith("HTTP 400")
 
 
 async def test_spans_reach_a_real_self_hosted_server(lapdog_agent, self_hosted_server):
