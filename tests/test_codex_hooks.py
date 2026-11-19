@@ -129,6 +129,144 @@ def _response_usage(index, second):
     }
 
 
+@pytest.fixture
+def response_parser():
+    hooks = ClaudeHooksAPI()
+    parser = CodexHooksAPI(hooks)
+    parser._dispatch("session", _session_meta("session"))
+    parser._dispatch("session", _turn_context())
+    return hooks, parser
+
+
+def test_early_proxy_binding_consumes_buffered_output_and_reasoning(response_parser):
+    hooks, parser = response_parser
+    proxy = CodexProxyAPI(parser)
+    span = proxy._create_llm_span(
+        {"model": "gpt-5.5", "input": "inspect"},
+        {"id": "resp-1", "output": [{"type": "message", "role": "assistant", "content": "first"}]},
+        1778518802000000000,
+        1_000_000_000,
+    )
+    parser.register_proxy_llm_span("session", span, span["start_ns"], span["start_ns"] + span["duration"])
+    parser._dispatch(
+        "session", _response_item("reasoning", summary=[{"type": "summary_text", "text": "first reasoning"}])
+    )
+    parser._dispatch("session", _response_item("message", role="assistant", content="first"))
+    parser._dispatch("session", _response_usage(1, 3.1))
+    assert len(_by_kind(hooks._assembled_spans, "step")) == 1
+    parser._dispatch(
+        "session", _response_item("message", timestamp="2026-05-11T17:00:04.000Z", role="assistant", content="second")
+    )
+    parser._dispatch("session", _response_usage(2, 4.1))
+    llms = _by_kind(hooks._assembled_spans, "llm")
+    assert len(llms) == len(_by_kind(hooks._assembled_spans, "step")) == 2
+    assert [[message["content"] for message in llm["meta"]["output"]["messages"]] for llm in llms] == [
+        ["first"],
+        ["second"],
+    ]
+    assert llms[0]["meta"]["metadata"]["reasoning"][0]["text"] == "first reasoning"
+    assert "reasoning" not in llms[1]["meta"]["metadata"]
+
+
+@pytest.mark.parametrize("after_subagent_end", [False, True])
+def test_late_structured_completion_preserves_subagent_parent(response_parser, after_subagent_end):
+    hooks, parser = response_parser
+    records = [
+        _response_item("function_call", name="spawn_agent", call_id="spawn", arguments='{"prompt":"inspect"}'),
+        _response_usage(1, 3.1),
+        _event("collab_agent_spawn_begin", timestamp="2026-05-11T17:00:03.200Z", call_id="spawn"),
+        _response_item(
+            "function_call",
+            timestamp="2026-05-11T17:00:04.000Z",
+            name="exec_command",
+            call_id="exec-1",
+            arguments='{"cmd":"pwd"}',
+        ),
+        _response_usage(2, 4.1),
+        _response_item("function_call_output", timestamp="2026-05-11T17:00:05.000Z", call_id="exec-1", output="/repo"),
+    ]
+    for record in records:
+        parser._dispatch("session", record)
+    original = _by_kind(hooks._assembled_spans, "tool")[0]
+    original_id = original["span_id"]
+    parent_id = original["parent_id"]
+    assert parent_id in [span["span_id"] for span in _by_kind(hooks._assembled_spans, "agent")]
+    if after_subagent_end:
+        parser._dispatch(
+            "session", _event("collab_agent_spawn_end", timestamp="2026-05-11T17:00:05.100Z", call_id="spawn")
+        )
+        parser._dispatch(
+            "session", _response_item("message", timestamp="2026-05-11T17:00:06.000Z", role="assistant", content="next")
+        )
+        parser._dispatch("session", _response_usage(3, 6.1))
+    parser._dispatch(
+        "session",
+        _event(
+            "item_completed",
+            timestamp="2026-05-11T17:00:07.000Z",
+            started_at_ms=1778518804200,
+            completed_at_ms=1778518804800,
+            item={
+                "type": "CommandExecution",
+                "id": "exec-1",
+                "command": ["/bin/sh", "-lc", "pwd"],
+                "aggregated_output": "/actual",
+                "status": "completed",
+                "exit_code": 0,
+            },
+        ),
+    )
+    tools = _by_kind(hooks._assembled_spans, "tool")
+    assert len(tools) == 1
+    assert tools[0]["span_id"] == original_id
+    assert tools[0]["parent_id"] == parent_id
+    assert tools[0]["meta"]["output"]["value"] == "/actual"
+
+
+def test_legacy_proxy_request_start_keeps_new_tool_out_of_previous_response(response_parser):
+    hooks, parser = response_parser
+    proxy = CodexProxyAPI(parser)
+    for index in (1, 2):
+        start_ns = 1778518800000000000 + index * 2_000_000_000
+        parser.begin_proxy_llm_call("session", start_ns)
+        call = _response_item(
+            "function_call",
+            name="exec_command",
+            call_id=f"call-{index}",
+            arguments=json.dumps({"cmd": f"echo {index}"}),
+        )
+        if index == 2:
+            parser._dispatch("session", call)
+        span = proxy._create_llm_span(
+            {"model": "gpt-5.5", "input": "inspect"},
+            {"id": f"resp-{index}", "output": [call["payload"]]},
+            start_ns,
+            1_000_000_000,
+        )
+        parser.register_proxy_llm_span("session", span, start_ns, start_ns + span["duration"])
+    llms = _by_kind(hooks._assembled_spans, "llm")
+    assert len(llms) == 2
+    assert [
+        [call["id"] for message in llm["meta"]["output"]["messages"] for call in message.get("tool_calls", [])]
+        for llm in llms
+    ] == [["call-1"], ["call-2"]]
+
+
+def test_response_usage_keeps_jsonl_request_start_markers(response_parser):
+    hooks, parser = response_parser
+    parser._dispatch("session", _response_item("message", role="assistant", content="first"))
+    parser._dispatch("session", _response_usage(1, 3.1))
+    parser._dispatch("session", _event("token_count", timestamp="2026-05-11T17:00:04.000Z", info=None))
+    parser._dispatch(
+        "session", _response_item("message", timestamp="2026-05-11T17:00:14.000Z", role="assistant", content="second")
+    )
+    parser._dispatch("session", _response_usage(2, 14.1))
+    llms = _by_kind(hooks._assembled_spans, "llm")
+    assert len(llms) == 2
+    assert llms[1]["start_ns"] == 1778518804000000000
+    assert llms[1]["duration"] == 10_100_000_000
+
+
 @pytest.mark.parametrize(
     "proxy_timing", ["before_jsonl", "after_usage", "after_next_response", "after_close", "absent"]
 )
