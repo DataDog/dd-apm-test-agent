@@ -1,0 +1,1029 @@
+"""Answer the lapdog UI's searches from this lapdog's memory *and* the Self-hosted server.
+
+With Self-hosted forwarding on, a span lives in one place for search purposes:
+spans this lapdog forwarded successfully are read from the Self-hosted server
+(which also has everyone else's), and everything else (traces from before
+forwarding was on, coding-agent sessions that stay local) is read from memory.
+The two sets don't overlap, so results are merged without double counting:
+
+- lists are merged in time order, with a cursor that tracks both sides;
+- aggregate groups, facet counts, and scalar rows are combined by key
+  (sums and counts add up, averages are weighted by each side's value count,
+  and distinct counts and percentiles are recomputed from both sides' values);
+- a trace or span is read from whichever side has it.
+
+Each listed span is labelled with where it was read from (``@lapdog.source``:
+``laptop`` or ``self-hosted``), so the UI can show where each trace lives.
+Lists answered from memory alone are labelled too.
+
+If the Self-hosted server can't be reached, answers come from memory alone
+(including forwarded spans), as if forwarding were off.
+"""
+
+import asyncio
+import base64
+import binascii
+import copy
+import json
+import logging
+from typing import Any
+from typing import Awaitable
+from typing import Callable
+from typing import Dict
+from typing import List
+from typing import NamedTuple
+from typing import Optional
+from typing import Tuple
+from typing import cast
+import uuid
+
+from aiohttp import ClientError
+from aiohttp import ClientTimeout
+from aiohttp import web
+
+from ddapm_test_agent.cors import cors_headers
+from ddapm_test_agent.cors import with_cors
+
+from .forwarding import Forwarding
+from .llmobs_event_platform import DISTINCT_VALUES_AGGREGATION
+from .llmobs_event_platform import InMemorySpanBackend
+from .llmobs_event_platform import LLMObsEventPlatformAPI
+from .llmobs_event_platform import NUMERIC_VALUES_AGGREGATION
+from .llmobs_event_platform import VALUE_COUNT_AGGREGATION
+from .llmobs_event_platform import _list_compute_sort_order
+from .llmobs_event_platform import _query_column_name
+from .llmobs_event_platform import _query_compute_spec
+from .llmobs_event_platform import _query_group_by_fields
+from .llmobs_event_platform import build_event_platform_list_response
+from .llmobs_event_platform import parse_list_params
+from .llmobs_event_platform import quantile_of
+
+log = logging.getLogger(__name__)
+
+_Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
+_CURSOR_PREFIX = "fed."
+_END = "end"
+_MAX_STORED_RESULTS = 200
+
+
+class _SelfHostedUnavailable(Exception):
+    pass
+
+
+class LocalOnlyBackend(InMemorySpanBackend):
+    """This lapdog's in-memory spans, minus the ones the Self-hosted server already has."""
+
+    def __init__(self, inner: InMemorySpanBackend, is_forwarded: Callable[[Dict[str, Any]], bool]) -> None:
+        super().__init__(inner.agent)
+        self._inner = inner
+        self._is_forwarded = is_forwarded
+        self._locally_priced_spans = inner._locally_priced_spans
+
+    def get_llmobs_spans(self, token: Optional[str] = None) -> List[Dict[str, Any]]:
+        return [s for s in self._inner.get_llmobs_spans(token) if not self._is_forwarded(s)]
+
+
+class _Cursor(NamedTuple):
+    local: Optional[str]
+    remote: Optional[str]
+    # Right after the last event listed so far, for continuing from memory alone if Self-hosted goes away.
+    position: Optional[str] = None
+
+
+def _decode_cursor(paging: Any) -> Tuple[_Cursor, str]:
+    """Return the cursor and its mode: ``after`` (exclusive) or ``from`` (inclusive), as both backends accept."""
+    after = paging.get("after") if isinstance(paging, dict) else None
+    from_cursor = paging.get("from") if isinstance(paging, dict) else None
+    if after and from_cursor:
+        raise ValueError("List paging accepts either after or from")
+    raw, mode = (after, "after") if after else (from_cursor, "from")
+    if not raw:
+        return _Cursor(None, None), "after"
+    if not isinstance(raw, str) or not raw.startswith(_CURSOR_PREFIX):
+        raise ValueError("Invalid list paging cursor")
+    try:
+        data = json.loads(base64.urlsafe_b64decode(raw[len(_CURSOR_PREFIX) :].encode()).decode())
+        return _Cursor(data.get("l"), data.get("r"), data.get("p")), mode
+    except (ValueError, UnicodeError, binascii.Error, AttributeError) as exc:
+        raise ValueError("Invalid list paging cursor") from exc
+
+
+def _encode_cursor(cursor: _Cursor) -> str:
+    raw = json.dumps({"l": cursor.local, "r": cursor.remote, "p": cursor.position}, separators=(",", ":")).encode()
+    return _CURSOR_PREFIX + base64.urlsafe_b64encode(raw).decode()
+
+
+class _WithBody:
+    """``request`` asking a different JSON question, for handing a changed request to a local handler."""
+
+    def __init__(self, request: web.Request, body: Any) -> None:
+        self._request = request
+        self._body = body
+
+    async def json(self) -> Any:
+        return copy.deepcopy(self._body)
+
+    async def read(self) -> bytes:
+        return json.dumps(self._body).encode()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._request, name)
+
+
+def _with_body(request: web.Request, body: Any) -> web.Request:
+    return cast(web.Request, _WithBody(request, body))
+
+
+def _event_key(event: Dict[str, Any]) -> Tuple[int, str, str]:
+    custom = event.get("event", {}).get("custom", {})
+    return int(custom.get("start_ns", 0) or 0), str(custom.get("trace_id", "")), str(custom.get("span_id", ""))
+
+
+def _span_cursor(key: Tuple[int, str, str], occurrence: int = 0) -> str:
+    """Return a cursor that continues after ``key``, in the format both backends' list paging accepts."""
+    return base64.urlsafe_b64encode(json.dumps([*key, occurrence], separators=(",", ":")).encode()).decode()
+
+
+def _last_copy_occurrence(taken: List[Dict[str, Any]], start: Optional[str], mode: str, descending: bool) -> int:
+    """Return the occurrence memory paging gives the last of ``taken``, when that was memory's last span.
+
+    Memory numbers identical copies of a span 0, 1, 2… in the order it stored them, and pages over
+    (time, trace, span, occurrence). Descending, its last span is copy 0; ascending, it's the last copy,
+    counted from where this page started.
+    """
+    if descending or not taken:
+        return 0
+    key = _event_key(taken[-1])
+    copies = sum(1 for event in taken if _event_key(event) == key)
+    offset = 0
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode((start or "").encode()).decode()) if start else None
+    except (ValueError, UnicodeError, binascii.Error):
+        decoded = None
+    if isinstance(decoded, list) and len(decoded) == 4 and (int(decoded[0]), str(decoded[1]), str(decoded[2])) == key:
+        offset = int(decoded[3]) + (1 if mode == "after" else 0)
+    return offset + copies - 1
+
+
+def _merge_traces(trace_id: str, local: Dict[str, Any], remote: Dict[str, Any]) -> Dict[str, Any]:
+    """Combine one trace's spans read from memory and from the Self-hosted server."""
+    local_attrs = local.get("data", {}).get("attributes", {})
+    # Like memory, the server answers an unknown trace with its newest span; that one isn't part of this trace.
+    remote_spans = {
+        span_id: span
+        for span_id, span in (remote.get("data", {}).get("attributes", {}).get("spans", {}) or {}).items()
+        if str(span.get("trace_id", "")) == trace_id
+    }
+    spans = {**copy.deepcopy(remote_spans), **local_attrs.get("spans", {})}
+    for span_id, span in spans.items():
+        children = list(span.get("children_ids") or []) + list(remote_spans.get(span_id, {}).get("children_ids") or [])
+        children += [cid for cid, child in spans.items() if child.get("parent_id") == span_id]
+        span["children_ids"] = list(dict.fromkeys(children))
+    roots = [sid for sid, span in spans.items() if span.get("parent_id") in (None, "", "undefined", "0")]
+    merged = copy.deepcopy(local)
+    attributes = merged["data"]["attributes"]
+    attributes["spans"] = spans
+    attributes["root_id"] = roots[0] if roots else local_attrs.get("root_id")
+    return merged
+
+
+def _merge_metric(aggregation: Optional[str], a: Any, b: Any) -> Any:
+    """Combine one statistic from both sides. ``earliest``/``latest`` need timestamps, so callers pick those."""
+    if isinstance(a, list) and isinstance(b, list):
+        return a + b
+    if aggregation in ("earliest", "latest") or not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+        return a if a not in ("", None) else b
+    if aggregation == "min":
+        return min(a, b)
+    if aggregation == "max":
+        return max(a, b)
+    if aggregation == "avg":
+        return (a + b) / 2
+    return a + b
+
+
+_HIDDEN = "__lapdog_"
+_RANK = f"{_HIDDEN}rank"
+# Statistics that can't be combined from the two sides' values alone.
+_NEEDS_COUNT = {"min", "max", "avg", "median", "pc75", "pc90", "pc95", "pc99", "earliest", "latest"}
+
+
+_VALUES = f"{_HIDDEN}v_"
+
+
+class _ScalarColumn(NamedTuple):
+    aggregation: str
+    count_column: Optional[str]  # hidden column with this column's span count on each row
+    time_column: Optional[str]  # hidden column with its earliest (or latest) span time, for earliest/latest
+    values_column: Optional[str] = None  # hidden column with the values a distinct count or percentile is from
+
+
+def _is_quantile(aggregation: str) -> bool:
+    return aggregation == "median" or aggregation.startswith("pc")
+
+
+def _combine_values(aggregation: str, a: List[Any], b: List[Any]) -> List[Any]:
+    """Pool both sides' values for a column: distinct values are unioned, numeric values concatenated."""
+    return sorted(set(a) | set(b)) if aggregation == "cardinality" else a + b
+
+
+def _statistic_of(aggregation: str, values: List[Any]) -> float:
+    return float(len(values)) if aggregation == "cardinality" else quantile_of(values, aggregation)
+
+
+def _scalar_plan(attributes: Any) -> Tuple[Dict[str, Any], Dict[str, _ScalarColumn]]:
+    """Return the scalar request with hidden helper queries added, and how to merge each column.
+
+    Combining a minimum, average, or latest value from both sides needs to know how many spans each
+    side's value covers (a side with none returns a placeholder 0) and, for earliest/latest, when.
+    A distinct count or percentile can't be combined from the two results at all, so each side also
+    returns the values it was computed from.
+    """
+    if not isinstance(attributes, dict):
+        return {}, {}
+    augmented = copy.deepcopy(attributes)
+    queries = [q for q in augmented.get("queries") or [] if isinstance(q, dict)]
+    formulas = [f for f in augmented.get("formulas") or [] if isinstance(f, dict)]
+    by_query: Dict[str, _ScalarColumn] = {}
+    hidden_queries: List[Dict[str, Any]] = []
+    for i, query in enumerate(queries):
+        name = str(query.get("name") or f"query{i + 1}")
+        aggregation = str(_query_compute_spec(query)["aggregation"])
+        count = time = None
+        if aggregation in _NEEDS_COUNT:
+            count = f"{_HIDDEN}n_{name}"
+            # Count only spans that have the metric: those are the values the statistic is computed from.
+            counted = {**copy.deepcopy(query), "name": count, "compute": {"aggregation": "count"}}
+            metric = _query_compute_spec(query)["metric"]
+            # Earliest/latest pick the boundary span even if it lacks the metric, so they count every span.
+            if metric and str(metric).lstrip("@").startswith("trace."):
+                # Trace rollups are one value per trace, computed while aggregating: count the traces.
+                counted["compute"] = {"aggregation": "cardinality", "metric": "@trace_id"}
+            elif metric and aggregation not in ("earliest", "latest"):
+                search = str((query.get("search") or {}).get("query", ""))
+                exists = f"_exists_:@{str(metric).lstrip('@')}"
+                counted["search"] = {
+                    **(query.get("search") or {}),
+                    "query": f"({search}) AND {exists}" if search.strip() else exists,
+                }
+            hidden_queries.append(counted)
+        if aggregation in ("earliest", "latest"):
+            time = f"{_HIDDEN}t_{name}"
+            stat = "min" if aggregation == "earliest" else "max"
+            hidden_queries.append(
+                {**copy.deepcopy(query), "name": time, "compute": {"aggregation": stat, "metric": "@timestamp"}}
+            )
+        values = None
+        if aggregation == "cardinality" or _is_quantile(aggregation):
+            values = f"{_VALUES}{name}"
+            pooled = DISTINCT_VALUES_AGGREGATION if aggregation == "cardinality" else NUMERIC_VALUES_AGGREGATION
+            hidden_queries.append(
+                {
+                    **copy.deepcopy(query),
+                    "name": values,
+                    "compute": {"aggregation": pooled, "metric": _query_compute_spec(query)["metric"]},
+                }
+            )
+        by_query[name] = _ScalarColumn(aggregation, count, time, values)
+    columns: Dict[str, _ScalarColumn] = {}
+    if formulas and queries:
+        # Backends rank groups by the first query, which the formulas may not show first (or at all).
+        first = str(queries[0].get("name") or "query1")
+        hidden_queries.append({**copy.deepcopy(queries[0]), "name": _RANK})
+        columns[_RANK] = by_query[first]
+    if formulas:
+        for formula in formulas:
+            ref = str(formula.get("formula") or "")
+            if ref in by_query:
+                columns[str(formula.get("alias") or ref)] = by_query[ref]
+        formulas += [{"formula": q["name"], "alias": q["name"]} for q in hidden_queries]
+        augmented["formulas"] = formulas
+    else:
+        for i, query in enumerate(queries):
+            columns[_query_column_name(query)] = by_query[str(query.get("name") or f"query{i + 1}")]
+    augmented["queries"] = queries + hidden_queries
+    return augmented, columns
+
+
+def _has_values(response: Dict[str, Any]) -> bool:
+    """Return whether a scalar response has any values for a distinct count or percentile."""
+    for item in response.get("data") or []:
+        for column in (item.get("attributes") or {}).get("columns") or []:
+            if str(column.get("name", "")).startswith(_VALUES) and any(v for v in column.get("values") or []):
+                return True
+    return False
+
+
+def _without_values(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``body`` without the hidden values queries, for when memory has no values to pool."""
+    stripped = copy.deepcopy(body)
+    for item in stripped.get("data") or []:
+        attributes = (item or {}).get("attributes") or {}
+        for key, ref in (("queries", "name"), ("formulas", "formula")):
+            if isinstance(attributes.get(key), list):
+                attributes[key] = [
+                    q for q in attributes[key] if not (isinstance(q, dict) and str(q.get(ref, "")).startswith(_VALUES))
+                ]
+    return stripped
+
+
+def _scalar_rows(columns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Index a scalar response's rows by their group values."""
+    groups = [c for c in columns if c.get("type") == "group"]
+    numbers = [c for c in columns if c.get("type") != "group"]
+    count = len(numbers[0]["values"]) if numbers else (len(groups[0]["values"]) if groups else 0)
+    rows: Dict[str, Dict[str, Any]] = {}
+    for i in range(count):
+        key = json.dumps([g["values"][i] for g in groups])
+        rows[key] = {c["name"]: c["values"][i] if i < len(c["values"]) else 0 for c in numbers}
+    return rows
+
+
+def _merge_scalar_row(into: Dict[str, Any], row: Dict[str, Any], plan: Dict[str, _ScalarColumn]) -> None:
+    for name, value in row.items():
+        if name.startswith(_HIDDEN) and name not in plan:
+            continue
+        if name not in into:
+            into[name] = value
+            continue
+        column = plan.get(name)
+        if column is not None and column.values_column is not None:
+            mine_values, their_values = into.get(column.values_column), row.get(column.values_column)
+            if isinstance(mine_values, list) and isinstance(their_values, list) and mine_values and their_values:
+                pooled = _combine_values(column.aggregation, mine_values, their_values)
+                into[name] = _statistic_of(column.aggregation, pooled)
+                continue
+        if column is None or column.count_column is None:
+            into[name] = _merge_metric(column.aggregation if column else None, into[name], value)
+            continue
+        mine, theirs = into.get(column.count_column) or 0, row.get(column.count_column) or 0
+        if not theirs:
+            continue
+        if not mine:
+            into[name] = value
+        elif column.aggregation == "avg":
+            into[name] = (into[name] * mine + value * theirs) / (mine + theirs)
+        elif column.time_column is not None:
+            earlier = (row.get(column.time_column) or 0) < (into.get(column.time_column) or 0)
+            if earlier == (column.aggregation == "earliest"):
+                into[name] = value
+        else:
+            into[name] = _merge_metric(column.aggregation, into[name], value)
+    for column in set(plan.values()):
+        values_name = column.values_column
+        if values_name is not None and isinstance(row.get(values_name), list):
+            mine_values = into.get(values_name)
+            their_values = cast(List[Any], row[values_name])
+            if isinstance(mine_values, list):
+                into[values_name] = _combine_values(column.aggregation, mine_values, their_values)
+            else:
+                into[values_name] = their_values
+        count_name, time_name = column.count_column, column.time_column
+        if count_name is None:
+            continue
+        mine, theirs = into.get(count_name) or 0, row.get(count_name) or 0
+        if time_name is not None and theirs:
+            pick = min if column.aggregation == "earliest" else max
+            into[time_name] = pick(into[time_name], row[time_name]) if mine else row[time_name]
+        into[count_name] = mine + theirs
+
+
+def _merge_scalar_columns(
+    a: List[Dict[str, Any]], b: List[Dict[str, Any]], plan: Dict[str, _ScalarColumn], keep_hidden: bool = False
+) -> List[Dict[str, Any]]:
+    """Combine two scalar responses' columns; rows with the same group values merge per column statistic."""
+    template = a or b
+    rows: Dict[str, Dict[str, Any]] = {}
+    for columns in (a, b):
+        for key, row in _scalar_rows(columns).items():
+            if key in rows:
+                _merge_scalar_row(rows[key], row, plan)
+            else:
+                rows[key] = dict(row)
+    merged = []
+    for g_index, column in enumerate(c for c in template if c.get("type") == "group"):
+        merged.append({**column, "values": [json.loads(k)[g_index] for k in rows]})
+    for column in template:
+        if column.get("type") != "group" and (keep_hidden or not str(column["name"]).startswith(_HIDDEN)):
+            merged.append({**column, "values": [row.get(column["name"], 0) for row in rows.values()]})
+    return merged
+
+
+def _candidates(limit: int) -> int:
+    """Return the initial group window to expand before ranking merged groups."""
+    return max(limit, min(max(limit * 4, limit + 20), 1000))
+
+
+def _top_scalar_rows(columns: List[Dict[str, Any]], descending: bool, limit: int) -> List[Dict[str, Any]]:
+    """Keep the ``limit`` rows with the largest (or smallest) first value, as each backend does."""
+    numbers = [c for c in columns if c.get("type") != "group" and not str(c["name"]).startswith(_HIDDEN)]
+    if not numbers:
+        return columns
+    ranked = [c for c in columns if c["name"] == _RANK] or numbers
+    primary = ranked[0]["values"]
+    order = sorted(range(len(primary)), key=lambda i: primary[i] or 0, reverse=descending)[:limit]
+    return [{**c, "values": [c["values"][i] for i in order]} for c in columns]
+
+
+class _AggregatePlan(NamedTuple):
+    aggregations: Dict[str, Any]  # output -> aggregation
+    value_counts: Dict[str, str]  # avg output -> hidden output with its value count
+    lists: Dict[str, Tuple[bool, Optional[int]]]  # list output -> (descending, limit)
+
+
+def _aggregate_plan(agg: Dict[str, Any]) -> Tuple[Dict[str, Any], _AggregatePlan]:
+    """Return the aggregate request with hidden helpers added, and how to merge each output.
+
+    An average needs each side's value count to be weighted. A list of rows needs each row's time, so the
+    two sides' rows can be put back in the requested order.
+    """
+    augmented = copy.deepcopy(agg)
+    aggregations: Dict[str, Any] = {}
+    value_counts: Dict[str, str] = {}
+    lists: Dict[str, Tuple[bool, Optional[int]]] = {}
+    hidden: List[Dict[str, Any]] = []
+    for item in augmented.get("compute") or []:
+        if not isinstance(item, dict):
+            continue
+        if isinstance(item.get("total"), dict):
+            total = item["total"]
+            output = str(total.get("output", ""))
+            aggregations[output] = total.get("aggregation")
+            if total.get("aggregation") == "avg":
+                value_counts[output] = f"{_HIDDEN}n_{output}"
+                hidden.append(
+                    {
+                        "total": {
+                            "aggregation": VALUE_COUNT_AGGREGATION,
+                            "metric": total.get("metric"),
+                            "output": value_counts[output],
+                        }
+                    }
+                )
+        elif isinstance(item.get("list"), dict):
+            cfg = item["list"]
+            cfg["columns"] = list(cfg.get("columns") or []) + ["@timestamp"]
+            limit = cfg.get("limit")
+            lists[str(cfg.get("output", ""))] = (
+                _list_compute_sort_order(cfg) != "asc",
+                int(limit) if isinstance(limit, int) else None,
+            )
+    augmented["compute"] = list(augmented.get("compute") or []) + hidden
+    return augmented, _AggregatePlan(aggregations, value_counts, lists)
+
+
+def _row_time(row: Any) -> float:
+    try:
+        return float(row[-1])
+    except (TypeError, ValueError, IndexError):
+        return 0.0
+
+
+def _public_aggregate_value(value: Dict[str, Any], plan: _AggregatePlan) -> Dict[str, Any]:
+    """Drop the hidden helpers ``_aggregate_plan`` added from one merged group."""
+    metrics = {}
+    for name, metric in value.get("metrics", {}).items():
+        if name.startswith(_HIDDEN):
+            continue
+        if name in plan.lists and isinstance(metric, list):
+            metric = [row[:-1] for row in metric]
+        metrics[name] = metric
+    return {**value, "metrics": metrics}
+
+
+def _merge_aggregate_values(
+    merged: Dict[str, Dict[str, Any]], values: List[Dict[str, Any]], plan: _AggregatePlan, descending: bool
+) -> None:
+    """Fold one side's aggregate groups into ``merged``, keyed by group."""
+    aggregations = plan.aggregations
+    for value in values:
+        key = json.dumps(value.get("by"), sort_keys=True)
+        if key not in merged:
+            merged[key] = copy.deepcopy(value)
+            continue
+        into = merged[key]
+        mine, theirs = into.get("metrics", {}), value.get("metrics", {})
+        for name, metric in theirs.items():
+            aggregation = aggregations.get(name)
+            count_name = plan.value_counts.get(name)
+            if name.startswith(_HIDDEN):
+                continue
+            if name in plan.lists and isinstance(metric, list) and isinstance(mine.get(name), list):
+                list_descending, limit = plan.lists[name]
+                rows = sorted(mine[name] + metric, key=_row_time, reverse=list_descending)
+                mine[name] = rows[:limit] if limit is not None else rows
+            elif (
+                count_name
+                and isinstance(mine.get(count_name), (int, float))
+                and isinstance(theirs.get(count_name), (int, float))
+            ):
+                n_mine, n_theirs = mine[count_name], theirs[count_name]
+                if n_theirs and n_mine:
+                    mine[name] = (mine.get(name, 0) * n_mine + metric * n_theirs) / (n_mine + n_theirs)
+                elif n_theirs:
+                    mine[name] = metric
+            elif aggregation == "earliest" and "_earliest_ns" in value and "_earliest_ns" in into:
+                if value["_earliest_ns"] < into["_earliest_ns"]:
+                    into["metrics"][name] = metric
+            elif aggregation == "latest" and "_latest_ns" in value and "_latest_ns" in into:
+                if value["_latest_ns"] > into["_latest_ns"]:
+                    into["metrics"][name] = metric
+            else:
+                into["metrics"][name] = _merge_metric(aggregation, into["metrics"].get(name), metric)
+        for count_name in plan.value_counts.values():
+            if isinstance(theirs.get(count_name), (int, float)):
+                mine[count_name] = (mine.get(count_name) or 0) + theirs[count_name]
+        if "_order_ns" in value:
+            pick = max if descending else min
+            into["_order_ns"] = pick(into.get("_order_ns", value["_order_ns"]), value["_order_ns"])
+        if "_earliest_ns" in value:
+            into["_earliest_ns"] = min(into.get("_earliest_ns", value["_earliest_ns"]), value["_earliest_ns"])
+        if "_latest_ns" in value:
+            into["_latest_ns"] = max(into.get("_latest_ns", value["_latest_ns"]), value["_latest_ns"])
+
+
+def _groups_query(query: str, field_id: str, keys: List[str]) -> Optional[str]:
+    """``query`` narrowed to the given groups, or None if a key can't be written as a query value."""
+    if not field_id or any(not key or '"' in key or "\\" in key for key in keys):
+        return None
+    # Group and facet values are read as attributes, so filter by the attribute, not a tag of that name.
+    field_id = "@" + field_id.lstrip("@")
+    groups = " OR ".join(f'{field_id}:"{key}"' for key in keys)
+    return f"({query}) AND ({groups})" if query.strip() else f"({groups})"
+
+
+class FederatedSearch:
+    def __init__(self, full_api: LLMObsEventPlatformAPI, forwarding: Forwarding) -> None:
+        self.full_api = full_api
+        self.forwarding = forwarding
+        self.local_api = LLMObsEventPlatformAPI(backend=LocalOnlyBackend(full_api._memory, forwarding.is_forwarded))
+        self._results: Dict[str, Dict[str, Any]] = {}
+        self._memory_list: Optional[_Handler] = None
+
+    def get_routes(self) -> List[web.RouteDef]:
+        """Return the query routes, searching memory and the Self-hosted server while forwarding there is on."""
+        kinds = {
+            "list": self._list,
+            "aggregate": self._aggregate,
+            "facet_info": self._facet_info,
+            "facet_range_info": self._facet_range,
+            "scalar": self._scalar,
+            "fetch_one": self._fetch_one,
+        }
+        routes = []
+        for route in self.full_api.get_routes():
+            path = route.path
+            last = path.rstrip("/").split("/")[-1]
+            # Lists answered from memory alone still get their rows labelled.
+            if last in ("list", "{request_id}"):
+                local_handler = self._labelled_local(route.handler)
+                if last == "list":
+                    self._memory_list = local_handler
+            else:
+                local_handler = route.handler
+            if path.startswith("/api/ui/llm-obs/v1/trace/"):
+                federated: Optional[_Handler] = self._trace
+            elif path.endswith("/{request_id}"):
+                federated = self._stored_list
+            else:
+                federated = kinds.get(last)
+            handler = local_handler if federated is None else self._wrap(local_handler, federated)
+            routes.append(web.route(route.method, path, handler, **route.kwargs))
+        return routes
+
+    def _labelled_local(self, local_handler: _Handler) -> _Handler:
+        """Answer a list from memory, labelling each row as this laptop's."""
+
+        async def handler(request: web.Request) -> web.StreamResponse:
+            response = await local_handler(request)
+            if not isinstance(response, web.Response) or response.status != 200 or response.text is None:
+                return response
+            try:
+                data = json.loads(response.text)
+            except ValueError:
+                return response
+            for event in (data.get("result") or {}).get("events", []) if isinstance(data, dict) else []:
+                self._label(event, "laptop")
+            response.text = json.dumps(data)
+            return response
+
+        return handler
+
+    def _wrap(self, local_handler: _Handler, federated: _Handler) -> _Handler:
+        federated_with_cors = with_cors(federated)
+
+        async def handler(request: web.Request) -> web.StreamResponse:
+            if not self.forwarding.self_hosted or request.method == "OPTIONS":
+                return await local_handler(request)
+            try:
+                return await federated_with_cors(request)
+            except _SelfHostedUnavailable:
+                return await local_handler(request)
+            except ValueError as exc:
+                return web.json_response({"error": str(exc)}, status=400, headers=cors_headers(request))
+
+        return handler
+
+    # -- talking to both sides -----------------------------------------------
+
+    async def _remote(self, request: web.Request, body: Optional[bytes] = None, lookup: bool = False) -> Any:
+        """Ask the Self-hosted server the same question; for a ``lookup`` (one trace or span), 404 means "not here"."""
+        session, server = self.forwarding._session, self.forwarding.self_hosted
+        if session is None or not server:
+            raise _SelfHostedUnavailable
+        headers = {"Content-Type": request.headers.get("Content-Type", "application/json")}
+        data = body if body is not None else await request.read()
+        try:
+            async with session.request(
+                request.method,
+                f"{server}{request.path_qs}",
+                data=data or None,
+                headers=headers,
+                timeout=ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 404 and lookup:
+                    return None
+                if resp.status >= 400:
+                    raise _SelfHostedUnavailable
+                return await resp.json(content_type=None)
+        except (ClientError, OSError, ValueError, asyncio.TimeoutError) as e:
+            log.warning("Searching the Self-hosted server failed, using this lapdog's memory only: %s", e)
+            raise _SelfHostedUnavailable from e
+
+    @staticmethod
+    async def _local(handler: _Handler, request: web.Request) -> Any:
+        response = await handler(request)
+        if not isinstance(response, web.Response) or response.status == 404 or response.text is None:
+            return None
+        data = json.loads(response.text)
+        if response.status >= 400:
+            raise ValueError(data.get("error", "invalid request"))
+        return data
+
+    # -- endpoints -----------------------------------------------------------
+
+    async def _list(self, request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        params = parse_list_params(body)
+        paging = params.paging if isinstance(params.paging, dict) else {}
+        raw_cursor = paging.get("after") or paging.get("from")
+        if isinstance(raw_cursor, str) and not raw_cursor.startswith(_CURSOR_PREFIX) and self._memory_list:
+            # Memory's own cursor, from a page answered by memory alone after Self-hosted went away:
+            # keep paging memory so this listing stays consistent.
+            return await self._memory_list(request)
+        cursor, mode = _decode_cursor(params.paging)
+        # Inclusive paging starts at the last event listed overall, not at each side's last one.
+        # Reopen both sides there, even one that was used up: the boundary event may be its last one.
+        local_start, remote_start = cursor.local, cursor.remote
+        if mode == "from" and cursor.position:
+            local_start = remote_start = cursor.position
+            cursor = _Cursor(local_start, remote_start, cursor.position)
+
+        def side_paging(side_cursor: Optional[str]) -> Optional[Dict[str, str]]:
+            return {mode: side_cursor} if side_cursor else None
+
+        local_events: List[Dict[str, Any]] = []
+        local_next: Optional[str] = None
+        local_hits = 0
+        if cursor.local != _END:
+            page = await self.local_api.backend.list_spans(
+                params.query, params.limit, side_paging(local_start), params.sort_order, time_window=params.time_window
+            )
+            built = build_event_platform_list_response(
+                page.spans,
+                "",
+                params.limit,
+                paging=page.next_paging,
+                hit_count=page.hit_count,
+                children_by_trace=page.children_by_trace,
+                trace_aggregates=page.trace_aggregates,
+            )
+            local_events = built["result"]["events"]
+            local_next = (page.next_paging or {}).get("after")
+            local_hits = page.hit_count
+
+        remote_events: List[Dict[str, Any]] = []
+        remote_next: Optional[str] = None
+        remote_hits = 0
+        if cursor.remote != _END:
+            remote_body = copy.deepcopy(body)
+            list_params = remote_body.setdefault("list", {})
+            if remote_start:
+                list_params["paging"] = {mode: remote_start}
+            else:
+                list_params.pop("paging", None)
+            try:
+                remote = await self._remote(request, json.dumps(remote_body).encode()) or {}
+            except _SelfHostedUnavailable:
+                if cursor == _Cursor(None, None):
+                    raise
+                return await self._continue_from_memory(request, body, cursor)
+            remote_events = remote.get("result", {}).get("events", [])
+            remote_next = (remote.get("result", {}).get("paging") or {}).get("after")
+            remote_hits = int(remote.get("hitCount", len(remote_events)))
+
+        for events, source in ((remote_events, "self-hosted"), (local_events, "laptop")):
+            for event in events:
+                self._label(event, source)
+
+        descending = params.sort_order != "asc"
+        tagged = [(e, "remote") for e in remote_events] + [(e, "local") for e in local_events]
+        tagged.sort(key=lambda item: _event_key(item[0]), reverse=descending)
+        taken = tagged[: params.limit]
+        taken_remote = [e for e, side in taken if side == "remote"]
+        taken_local = [e for e, side in taken if side == "local"]
+
+        next_local: Optional[str] = _END
+        if cursor.local != _END:
+            next_local = local_next or _END
+            if len(taken_local) < len(local_events):
+                # Only part of memory's page made the merged page. Ask memory for exactly that part, so its
+                # cursor counts repeated copies of a span the way memory paging does.
+                if taken_local:
+                    part = await self.local_api.backend.list_spans(
+                        params.query,
+                        len(taken_local),
+                        side_paging(local_start),
+                        params.sort_order,
+                        time_window=params.time_window,
+                    )
+                    next_local = (part.next_paging or {}).get("after") or _END
+                else:
+                    next_local = cursor.local
+        next_remote: Optional[str] = _END
+        if cursor.remote != _END:
+            next_remote = remote_next or _END
+            if len(taken_remote) < len(remote_events):
+                # The server stores one copy of each span, so a span's key alone marks the position.
+                next_remote = _span_cursor(_event_key(taken_remote[-1])) if taken_remote else cursor.remote
+
+        position = cursor.position
+        if taken:
+            # Memory's cursor counts repeated copies of a span, so use it when the last event is memory's.
+            last_is_local = taken[-1][1] == "local"
+            if last_is_local and next_local != _END:
+                position = next_local
+            elif last_is_local:
+                occurrence = _last_copy_occurrence(taken_local, local_start, mode, descending)
+                position = _span_cursor(_event_key(taken[-1][0]), occurrence)
+            else:
+                position = _span_cursor(_event_key(taken[-1][0]))
+        next_cursor = _Cursor(next_local, next_remote, position)
+        request_id = str(uuid.uuid4())
+        result: Dict[str, Any] = {"events": [e for e, _ in taken], "count": len(taken)}
+        if (next_cursor.local, next_cursor.remote) != (_END, _END):
+            result["paging"] = {"after": _encode_cursor(next_cursor)}
+        response = {
+            "elapsed": 23,
+            "hitCount": local_hits + remote_hits,
+            "requestId": request_id,
+            "result": result,
+            "status": "done",
+            "type": "status",
+        }
+        self._results[request_id] = response
+        while len(self._results) > _MAX_STORED_RESULTS:
+            self._results.pop(next(iter(self._results)))
+        return web.json_response(response)
+
+    async def _continue_from_memory(self, request: web.Request, body: Any, cursor: _Cursor) -> web.StreamResponse:
+        """Self-hosted went away mid-paging: carry on from memory alone, after the last event listed."""
+        if self._memory_list is None:
+            raise _SelfHostedUnavailable
+        memory_body = copy.deepcopy(body)
+        list_params = memory_body.setdefault("list", {})
+        if cursor.position:
+            list_params["paging"] = {"after": cursor.position}
+        else:
+            list_params.pop("paging", None)
+        return await self._memory_list(_with_body(request, memory_body))
+
+    def _label(self, event: Dict[str, Any], source: str) -> None:
+        custom = event.get("event", {}).get("custom")
+        if not isinstance(custom, dict):
+            return
+        custom["lapdog"] = {"source": source}
+
+    async def _stored_list(self, request: web.Request) -> web.Response:
+        request_id = request.match_info.get("request_id", "")
+        if request_id in self._results:
+            return web.json_response(self._results[request_id])
+        raise _SelfHostedUnavailable  # not a federated result; let the local handler answer
+
+    async def _aggregate(self, request: web.Request) -> web.Response:
+        original = await request.json()
+        agg, plan = _aggregate_plan(original.get("aggregate", {}) if isinstance(original, dict) else {})
+        body = {**original, "aggregate": agg} if isinstance(original, dict) else original
+        local = await self._local(self.local_api.handle_aggregate, _with_body(request, body)) or {}
+        remote = await self._remote(request, json.dumps(body).encode()) or {}
+
+        field = ((agg.get("groupBy") or [{}])[0] or {}).get("field", {}) or {}
+        field_id = str(field.get("id", ""))
+        output = field.get("output", field_id)
+        limit = int(field.get("limit", 50)) if agg.get("groupBy") else 1
+        descending = ((field.get("sort") or {}).get("metric") or {}).get("order", "desc") != "asc"
+
+        def order(values: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+            return sorted(values.values(), key=lambda v: int(v.get("_order_ns", 0)), reverse=descending)
+
+        sides = [(remote, False), (local, True)]
+        merged: Dict[str, Dict[str, Any]] = {}
+        for side, _ in sides:
+            _merge_aggregate_values(merged, side.get("result", {}).get("values", []), plan, descending)
+        ordered = order(merged)
+        page = ordered[:limit]
+
+        # Each side returned only its own top groups, so a group on this page may have more spans on a side
+        # that stopped before reaching it. Ask that side for just those groups to complete their numbers.
+        if output and field_id:
+            for side, is_local in sides:
+                if not side.get("result", {}).get("paging"):
+                    continue
+                have = {json.dumps(v.get("by"), sort_keys=True) for v in side.get("result", {}).get("values", [])}
+                missing = [v for v in page if json.dumps(v.get("by"), sort_keys=True) not in have]
+                keys = [str((v.get("by") or {}).get(output, "")) for v in missing]
+                query = _groups_query(str((agg.get("search") or {}).get("query", "")), field_id, keys)
+                if not missing or query is None:
+                    continue
+                extra_body = copy.deepcopy(body)
+                extra_agg = extra_body["aggregate"]
+                extra_agg.setdefault("search", {})["query"] = query
+                extra_agg.pop("paging", None)
+                extra_agg["groupBy"][0]["field"]["limit"] = len(missing)
+                if is_local:
+                    extra = await self._local(self.local_api.handle_aggregate, _with_body(request, extra_body)) or {}
+                else:
+                    extra = await self._remote(request, json.dumps(extra_body).encode()) or {}
+                page_keys = {json.dumps(v.get("by"), sort_keys=True) for v in missing}
+                values = [
+                    v
+                    for v in extra.get("result", {}).get("values", [])
+                    if json.dumps(v.get("by"), sort_keys=True) in page_keys
+                ]
+                _merge_aggregate_values(merged, values, plan, descending)
+            ordered = order(merged)
+            page_keys = {json.dumps(v.get("by"), sort_keys=True) for v in page}
+            page = [v for v in ordered if json.dumps(v.get("by"), sort_keys=True) in page_keys]
+
+        result: Dict[str, Any] = {"values": [_public_aggregate_value(v, plan) for v in page]}
+        side_has_more = bool(local.get("result", {}).get("paging") or remote.get("result", {}).get("paging"))
+        if output and (len(ordered) > limit or side_has_more):
+            seen = list(((agg.get("paging") or {}).get("after") or {}).get(output, []))
+            result["paging"] = {"after": {output: seen + [str(v.get("by", {}).get(output)) for v in page]}}
+        return web.json_response(
+            {"elapsed": 50, "requestId": "federated", "result": result, "status": "done", "type": "aggregate"}
+        )
+
+    async def _facet_info(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        facet = (body.get("facet_info") or {}) if isinstance(body, dict) else {}
+        limit = int(facet.get("limit", 10))
+        term = str((facet.get("termSearch") or {}).get("query", "")).lower()
+        local = await self._facet_counts(request, body, is_local=True)
+        remote = await self._facet_counts(request, body, is_local=False, complete_groups=bool(local) or bool(term))
+        counts: Dict[str, int] = {}
+        for side in (remote, local):
+            for value, count in side.items():
+                counts[value] = counts.get(value, 0) + count
+        matching = [(value, count) for value, count in counts.items() if term in value.lower()]
+        fields = [{"field": f, "value": c} for f, c in sorted(matching, key=lambda kv: -kv[1])[:limit]]
+        result = {"fields": fields, "status": "done"}
+        return web.json_response({"elapsed": 10, "requestId": "federated", "result": result, "status": "done"})
+
+    async def _facet_counts(
+        self, request: web.Request, body: Any, is_local: bool, complete_groups: bool = True
+    ) -> Dict[str, int]:
+        side_body = copy.deepcopy(body)
+        facet = side_body.setdefault("facet_info", {})
+        limit = _candidates(int(facet.get("limit", 10)))
+        # Backends filter terms after limiting. A short filtered response cannot prove exhaustion.
+        facet.pop("termSearch", None)
+        while True:
+            facet["limit"] = limit
+            if is_local:
+                response = await self._local(self.local_api.handle_facet_info, _with_body(request, side_body)) or {}
+            else:
+                response = await self._remote(request, json.dumps(side_body).encode()) or {}
+            fields = response.get("result", {}).get("fields", [])
+            if not complete_groups or len(fields) < limit:
+                return {str(field["field"]): int(field["value"]) for field in fields}
+            limit *= 2
+
+    async def _facet_range(self, request: web.Request) -> web.Response:
+        local = await self._local(self.local_api.handle_facet_range_info, request) or {}
+        remote = await self._remote(request) or {}
+        ranges = [
+            (r["min"], r["max"])
+            for r in (local.get("result", {}), remote.get("result", {}))
+            if "min" in r and (r["min"], r["max"]) != (0, 0)
+        ]
+        lo, hi = (min(r[0] for r in ranges), max(r[1] for r in ranges)) if ranges else (0, 0)
+        result = {"min": lo, "max": hi, "status": "done"}
+        return web.json_response({"elapsed": 10, "requestId": "federated", "result": result, "status": "done"})
+
+    async def _scalar(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        requests = (body.get("data") if isinstance(body, dict) else None) or []
+        augmented_body = copy.deepcopy(body) if isinstance(body, dict) else {}
+        plans: List[Dict[str, _ScalarColumn]] = []
+        limits: List[Optional[int]] = []
+        for i, item in enumerate(requests):
+            attributes, plan = _scalar_plan(item.get("attributes") if isinstance(item, dict) else None)
+            limit = None
+            queries = [q for q in attributes.get("queries") or [] if isinstance(q, dict)] if attributes else []
+            group_defs = _query_group_by_fields(queries[0]) if queries else []
+            if group_defs:
+                limit = min((g["limit"] for g in group_defs if isinstance(g.get("limit"), int)), default=50)
+                for query in queries:
+                    for group_by in query.get("group_by") or []:
+                        if isinstance(group_by, dict):
+                            group_by["limit"] = _candidates(limit)
+            if attributes:
+                augmented_body["data"][i]["attributes"] = attributes
+            plans.append(plan)
+            limits.append(limit)
+        local = await self._scalar_side(request, augmented_body, is_local=True)
+        # Sending the server's values is only worth it when there are values in memory to pool them with.
+        pool_values = _has_values(local)
+        remote_body = augmented_body if pool_values else _without_values(augmented_body)
+        has_local_groups = any(
+            column.get("type") == "group" and column.get("values")
+            for item in local.get("data") or []
+            for column in item.get("attributes", {}).get("columns", [])
+        )
+        remote = await self._scalar_side(request, remote_body, is_local=False, complete_groups=has_local_groups)
+        local_data, remote_data = local.get("data", []), remote.get("data", [])
+        data = []
+        for i in range(max(len(local_data), len(remote_data))):
+            a = remote_data[i]["attributes"]["columns"] if i < len(remote_data) else []
+            b = local_data[i]["attributes"]["columns"] if i < len(local_data) else []
+            limit = limits[i] if i < len(limits) else None
+            plan = plans[i] if i < len(plans) else {}
+            columns = _merge_scalar_columns(a, b, plan, keep_hidden=True)
+            if limit is not None:
+                query = augmented_body["data"][i]["attributes"]["queries"][0]
+                descending = _query_group_by_fields(query)[0]["sort_order"] == "desc"
+                columns = _top_scalar_rows(columns, descending, limit)
+            columns = [c for c in columns if c.get("type") == "group" or not str(c["name"]).startswith(_HIDDEN)]
+            data.append({"type": "scalar_response", "attributes": {"columns": columns}})
+        return web.json_response({"data": data})
+
+    async def _scalar_side(
+        self, request: web.Request, body: Dict[str, Any], is_local: bool, complete_groups: bool = True
+    ) -> Dict[str, Any]:
+        side_body = copy.deepcopy(body)
+        while True:
+            if is_local:
+                response = await self._local(self.local_api.handle_query_scalar, _with_body(request, side_body)) or {}
+            else:
+                response = await self._remote(request, json.dumps(side_body).encode()) or {}
+            if not complete_groups:
+                return cast(Dict[str, Any], response)
+            expanded = False
+            for item, result in zip(side_body.get("data") or [], response.get("data") or []):
+                if not isinstance(item, dict):
+                    continue
+                attributes = (item or {}).get("attributes") or {}
+                queries = attributes.get("queries") or []
+                groups = _query_group_by_fields(queries[0]) if queries else []
+                if not groups:
+                    continue
+                limit = min(g["limit"] for g in groups)
+                columns = result.get("attributes", {}).get("columns", [])
+                rows = next((len(c["values"]) for c in columns if c.get("type") == "group"), 0)
+                if rows < limit:
+                    continue
+                for query in queries:
+                    for group in query.get("group_by") or []:
+                        if isinstance(group, dict):
+                            group["limit"] = limit * 2
+                expanded = True
+            if not expanded:
+                return cast(Dict[str, Any], response)
+
+    def _local_has(self, predicate: Callable[[Dict[str, Any]], bool]) -> bool:
+        return any(predicate(span) for span in self.local_api.backend.get_llmobs_spans())  # type: ignore[attr-defined]
+
+    async def _trace(self, request: web.Request) -> web.Response:
+        trace_id = request.match_info.get("trace_id", "")
+        local = None
+        if self._local_has(lambda s: str(s.get("trace_id", "")) == trace_id):
+            local = await self._local(self.local_api.handle_trace, request)
+        # A trace can be split: spans from before forwarding was on, or a payload that failed to forward,
+        # stay in memory while the rest are on the server.
+        remote = await self._remote(request, lookup=True)
+        if local is not None and remote is not None:
+            return web.json_response(_merge_traces(trace_id, local, remote))
+        if local is None and remote is None:
+            raise _SelfHostedUnavailable
+        return web.json_response(local if local is not None else remote)
+
+    async def _fetch_one(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        event_id = str((body.get("eventId", "") or body.get("fetch_one", {}).get("id", "")) if body else "")
+        if event_id and self._local_has(lambda s: event_id.endswith(str(s.get("span_id", "")) or "\0")):
+            return await self.local_api.handle_fetch_one(request)
+        remote = await self._remote(request, lookup=True)
+        if remote is None:
+            raise _SelfHostedUnavailable
+        return web.json_response(remote)

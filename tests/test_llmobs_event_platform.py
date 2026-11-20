@@ -7,6 +7,7 @@ import pytest
 
 from lapdog import model_pricing
 from lapdog.llmobs_event_platform import _resolve_span_kind
+from lapdog.llmobs_event_platform import parse_time_window
 
 
 @pytest.fixture
@@ -609,6 +610,25 @@ async def test_lapdog_estimates_generic_llm_spans_and_updates(agent, llmobs_payl
     external = {"spans": [{"span_id": "span-child", "metrics": {"estimated_total_cost": 123}}]}
     assert api.update_spans(json.dumps(external).encode(), "application/json") == 1
     assert llm["metrics"]["estimated_total_cost"] == 123
+
+
+async def test_partial_span_update_keeps_unset_fields(agent, llmobs_payload):
+    llmobs_payload["spans"][0]["session_id"] = "sess-1"
+    llmobs_payload["spans"][0]["tags"] = ["user:alice"]
+    await _submit_llmobs_payload(agent, llmobs_payload)
+    api = agent.app["llmobs_event_platform_api"]
+    root = next(span for span in api.get_llmobs_spans() if span["span_id"] == "span-root")
+
+    update = {"spans": [{"span_id": "span-root", "metrics": {"output_tokens": 99}}]}
+    assert api.update_spans(json.dumps(update).encode(), "application/json") == 1
+
+    assert root["metrics"]["output_tokens"] == 99
+    assert root["ml_app"] == "test-app"
+    assert root["service"] == "test-service"
+    assert root["env"] == "test"
+    assert root["session_id"] == "sess-1"
+    assert "user:alice" in root["tags"]
+    assert root["meta"]["span"]["kind"] == "agent"
 
 
 async def test_lapdog_estimates_synthetic_v04_llm_span(agent, monkeypatch, tmp_path):
@@ -1333,3 +1353,75 @@ async def test_facet_range_info_with_filter_query(agent):
     # Should only include app-1 spans (1s and 2s)
     assert data["result"]["min"] == 1000000000
     assert data["result"]["max"] == 2000000000
+
+
+# Time window tests
+
+
+def test_parse_time_window():
+    now = 1_700_000_000_000
+    assert parse_time_window(None, now) is None
+    assert parse_time_window({"from": 1000, "to": 2000}, now) == (1000 * 10**6, 2000 * 10**6 + 999_999)
+    assert parse_time_window({"from": "now-900s", "to": "now"}, now) == (
+        (now - 900_000) * 10**6,
+        now * 10**6 + 999_999,
+    )
+    assert parse_time_window({"from": "now-2d/d"}, now)[0] == (now - 2 * 86_400_000) * 10**6
+    assert parse_time_window({"from": "garbage"}, now) is None
+
+
+async def _spans_at_ages(agent, ages_minutes):
+    now_ns = time.time_ns()
+    spans = []
+    for i, age in enumerate(ages_minutes):
+        span = _create_span_for_facet_test(i + 1, 900 + i, ml_app=f"app-{age}m")
+        span["start_ns"] = now_ns - age * 60 * 10**9
+        spans.append(span)
+    await _submit_spans_for_facet_test(agent, spans)
+
+
+async def test_list_honours_time_window(agent):
+    await _spans_at_ages(agent, [1, 30, 120])
+    for time_cfg, expected in [
+        ({"from": "now-900s", "to": "now"}, {"app-1m"}),
+        ({"from": int(time.time() * 1000) - 60 * 60_000, "to": int(time.time() * 1000)}, {"app-1m", "app-30m"}),
+        (None, {"app-1m", "app-30m", "app-120m"}),
+    ]:
+        body = {"list": {"limit": 100, "search": {"query": ""}}}
+        if time_cfg is not None:
+            body["list"]["time"] = time_cfg
+        resp = await agent.post("/api/unstable/llm-obs-query-rewriter/list?type=llmobs", json=body)
+        assert resp.status == 200, await resp.text()
+        events = (await resp.json())["result"]["events"]
+        assert {e["event"]["custom"]["ml_app"] for e in events} == expected, time_cfg
+
+
+async def test_aggregate_and_facets_honour_time_window(agent):
+    await _spans_at_ages(agent, [1, 120])
+    window = {"from": "now-3600s", "to": "now"}
+    resp = await agent.post(
+        "/api/v1/logs-analytics/aggregate?type=llmobs",
+        json={
+            "aggregate": {
+                "time": window,
+                "search": {"query": ""},
+                "groupBy": [{"field": {"id": "@ml_app", "output": "ml_app", "limit": 10}}],
+                "compute": [{"total": {"aggregation": "count", "output": "c"}}],
+            }
+        },
+    )
+    assert resp.status == 200, await resp.text()
+    assert [v["by"]["ml_app"] for v in (await resp.json())["result"]["values"]] == ["app-1m"]
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/facet_info",
+        json={"facet_info": {"path": "@ml_app", "limit": 10, "time": window, "search": {"query": ""}}},
+    )
+    assert {f["field"] for f in (await resp.json())["result"]["fields"]} == {"app-1m"}
+
+    resp = await agent.post(
+        "/api/unstable/llm-obs-query-rewriter/facet_range_info",
+        json={"facet_range_info": {"path": "@duration", "time": {"from": "now-300s"}, "search": {"query": ""}}},
+    )
+    result = (await resp.json())["result"]
+    assert (result["min"], result["max"]) == (1_000_000_000, 1_000_000_000)

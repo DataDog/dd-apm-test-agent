@@ -1,0 +1,21 @@
+---
+features:
+  - |
+    Add ``lapdog server``, a Self-hosted LLM Observability server. It ingests ddtrace LLMObs spans,
+    stores them in a ClickHouse server that lapdog downloads and supervises, and serves the query API to the
+    lapdog UI. It has no auth yet, so run it behind your own auth proxy or firewall. ``--retention`` and
+    ``--max-disk`` (also ``lapdog server config set``) bound how long spans are kept and how much disk they use.
+  - |
+    lapdog: list, aggregate, and facet queries now honour the request's time window (epoch milliseconds or
+    ``now-<N>s``), for both ``lapdog server`` and the local in-memory lapdog. ``lapdog server`` also reports its
+    retention in ``/info`` and at ``/api/unstable/llm-obs/v1/retentions``.
+  - |
+    lapdog: ``lapdog forward <server-url>`` also sends the traces lapdog receives to a Self-hosted ``lapdog server``
+    (coding-agent sessions only with ``--include-coding-agents``). ``/info`` reports a ``forwarding`` block with
+    the server's state and spans sent in the last hour.
+    While forwarding to Self-hosted, lapdog's searches merge its memory with the Self-hosted server's results.
+    Listed spans carry ``@lapdog.source`` (``laptop`` or ``self-hosted``).
+fixes:
+  - |
+    lapdog: a partial span update (``/llmobs/update``) no longer resets the span's ``ml_app``, tags, service,
+    env, session ID, hostname, and kind.

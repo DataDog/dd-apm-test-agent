@@ -1,0 +1,48 @@
+name: lapdog server
+# The ClickHouse-backed `lapdog server` tests, in one job. They need a ~200 MB ClickHouse
+# download, so they run here instead of in every CI matrix job, where they're skipped.
+# This workflow isn't a required check, so a failure here doesn't block other changes.
+on:
+  pull_request:
+    paths:
+      - "lapdog/**"
+      - "ddapm_test_agent/**"
+      - "tests/**"
+      - "setup.py"
+      - "test_deps.txt"
+      - ".github/workflows/lapdog-server.yml"
+  push:
+    branches:
+      - master
+jobs:
+  clickhouse-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            setup.py
+            test_deps.txt
+      - name: install deps
+        run: pip install 'setuptools<78' && pip install .[testing]
+      - name: Cache ClickHouse
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.lapdog/bin
+          key: clickhouse-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lapdog/self_host/clickhouse.py') }}
+      - name: Download ClickHouse
+        run: echo "LAPDOG_TEST_CLICKHOUSE_BINARY=$(python -c 'from lapdog.self_host.clickhouse import ensure_binary; print(ensure_binary(progress=False))')" >> "$GITHUB_ENV"
+      - name: Run tests
+        # LAPDOG_TEST_REQUIRE_CLICKHOUSE makes these tests fail, not skip, if ClickHouse is missing.
+        env:
+          LAPDOG_TEST_REQUIRE_CLICKHOUSE: "1"
+        run: >-
+          python -m pytest -v -n auto
+          tests/test_self_host.py
+          tests/test_self_host_conformance.py
+          tests/test_self_host_queries.py
+          tests/test_lapdog_federated_search.py
+          tests/test_lapdog_forwarding.py

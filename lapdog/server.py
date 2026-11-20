@@ -9,12 +9,16 @@ from aiohttp import web
 import msgpack
 
 from ddapm_test_agent import agent as test_agent
+from ddapm_test_agent.cors import with_cors
 
 from .claude_hooks import ClaudeHooksAPI
 from .claude_link_tracker import ClaudeLinkTracker
 from .claude_proxy import ClaudeProxyAPI
 from .codex_hooks import CodexHooksAPI
 from .codex_proxy import CodexProxyAPI
+from .federated_search import FederatedSearch
+from .forwarding import Forwarding
+from .forwarding import load_forwarding_config
 from .llmobs_event_platform import LLMObsEventPlatformAPI
 from .pi_hooks import PiHooksAPI
 from .span_store import max_memory_from_env
@@ -65,7 +69,6 @@ def extend_app(app: web.Application) -> web.Application:
     codex_hooks_api = CodexHooksAPI(hooks_api=claude_hooks_api)
     codex_proxy_api = CodexProxyAPI(hooks_api=codex_hooks_api)
 
-    app.add_routes(llmobs_event_platform_api.get_routes())
     app.add_routes(claude_hooks_api.get_routes())
     app.add_routes(claude_proxy_api.get_routes())
     app.add_routes(pi_hooks_api.get_routes())
@@ -75,6 +78,22 @@ def extend_app(app: web.Application) -> web.Application:
     app["llmobs_event_platform_api"] = llmobs_event_platform_api
     agent.llmobs_payload_transform = _inject_lapdog_forwarded
     agent.llmobs_span_update_listener = llmobs_event_platform_api.update_spans
+
+    # Traces stay in memory here, and can also go to a Self-hosted lapdog server.
+    forwarding = Forwarding(load_forwarding_config())
+    forwarding.local_keys = lambda: (
+        (str(span.get("trace_id", "")), str(span.get("span_id", "")))
+        for span in llmobs_event_platform_api._memory.get_llmobs_spans()
+    )
+    agent.llmobs_payload_listener = forwarding.on_llmobs_payload
+    claude_hooks_api.forwarding = forwarding
+    app["lapdog_forwarding"] = forwarding
+    app["info_extra"] = forwarding.info
+    app.add_routes([web.route("*", "/lapdog/forwarding", with_cors(forwarding.handle_forwarding))])
+    app.on_startup.append(forwarding.start)
+    app.on_cleanup.append(forwarding.stop)
+    # Searches read memory and, while Self-hosted forwarding is on, the Self-hosted server too.
+    app.add_routes(FederatedSearch(llmobs_event_platform_api, forwarding).get_routes())
 
     async def cleanup_proxies(cleanup_app: web.Application) -> None:
         await claude_proxy_api.close()

@@ -454,6 +454,9 @@ class Agent:
         self.vcr_cassette_prefix: Optional[str] = None
         self.llmobs_payload_transform: Callable[[bytes, str], bytes] = _identity_llmobs_payload
         self.llmobs_span_update_listener: Optional[Callable[[bytes, str], None]] = None
+        # Called with (path, body, content type) for every LLMObs span or update payload received,
+        # whether or not it's forwarded to Datadog. ``body`` is already decompressed.
+        self.llmobs_payload_listener: Optional[Callable[[str, bytes, str], None]] = None
 
     async def traces(self) -> TraceMap:
         """Return the traces stored by the agent in the order in which they
@@ -894,6 +897,8 @@ class Agent:
             session_token=token,
         )
         self._append_request(cast(Request, synthetic))
+        # These spans never pass through the EVP handlers, so tell the listener here.
+        self._call_llmobs_payload_listener(str(url.path), body, "application/json")
 
     def _store_dogstatsd_datagram(self, data: bytes) -> None:
         """Store a DogStatsD datagram like a request without a session token.
@@ -1084,7 +1089,20 @@ class Agent:
             log.error(msg)
             raise web.HTTPBadRequest(text=msg)
 
+    async def _notify_llmobs_payload(self, request: Request) -> None:
+        if self.llmobs_payload_listener is not None:
+            self._call_llmobs_payload_listener(request.path, await request.read(), request.content_type or "")
+
+    def _call_llmobs_payload_listener(self, path: str, body: bytes, content_type: str) -> None:
+        if self.llmobs_payload_listener is None:
+            return
+        try:
+            self.llmobs_payload_listener(path, body, content_type)
+        except Exception:
+            log.exception("LLMObs payload listener failed")
+
     async def handle_evp_proxy_v2_api_v2_llmobs(self, request: Request) -> web.Response:
+        await self._notify_llmobs_payload(request)
         if request.app["disable_llmobs_data_forwarding"]:
             return web.HTTPOk()
 
@@ -1124,6 +1142,7 @@ class Agent:
         """Forward span updates to DD backend, then update local stored spans."""
         data = await request.read()
         content_type = request.content_type or ""
+        await self._notify_llmobs_payload(request)
 
         # Forward to DD backend (same logic as handle_evp_proxy_v2_api_v2_llmobs)
         if not request.app["disable_llmobs_data_forwarding"]:
@@ -1172,6 +1191,7 @@ class Agent:
         return web.HTTPOk()
 
     async def handle_evp_proxy_v4_api_v2_llmobs(self, request: Request) -> web.Response:
+        await self._notify_llmobs_payload(request)
         if request.app["disable_llmobs_data_forwarding"]:
             return web.HTTPOk()
 
@@ -1211,6 +1231,7 @@ class Agent:
         """Forward span updates to DD backend, then update local stored spans."""
         data = await request.read()
         content_type = request.content_type or ""
+        await self._notify_llmobs_payload(request)
 
         if not request.app["disable_llmobs_data_forwarding"]:
             dd_site = request.app["dd_site"]
@@ -1393,6 +1414,9 @@ class Agent:
         org_prop_marker = request.app.get("org_prop_marker", "")
         if org_prop_marker:
             info["org_prop_marker"] = org_prop_marker
+        info_extra = request.app.get("info_extra")
+        if info_extra is not None:
+            info.update(info_extra())
         return web.json_response(info, headers=headers)
 
     async def _handle_traces(self, request: Request, version: Literal["v0.4", "v0.5", "v0.7", "v1"]) -> web.Response:

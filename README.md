@@ -114,6 +114,25 @@ The test agent can receive [Claude Code hook](https://docs.claude.com/en/docs/cl
 See [`.claude/setup-hooks.md`](.claude/setup-hooks.md) for full setup instructions (also usable as a Claude Code prompt to automate the setup).
 
 
+### Self-hosted lapdog server
+
+`lapdog server` runs a Self-hosted, network-reachable LLM Observability server.
+
+```bash
+lapdog server start --host 0.0.0.0 --retention 30d --max-disk 20GB
+lapdog server status
+lapdog server config set retention 14d   # applied live
+lapdog server stop
+```
+
+- **No auth**: anyone who can reach the server can read and send spans. On a network, put it behind your own auth proxy or firewall.
+- **Forwarding from a laptop**: `lapdog forward <server-url> [--include-coding-agents]` makes the local lapdog also send what it receives to the server (apps keep sending to `localhost:8126` with no extra config). Coding-agent sessions stay local unless opted in. `lapdog forward` shows the state, `lapdog forward off` stops it, and the lapdog UI shows the same flow and switches. While forwarding there, the local lapdog's searches cover both its memory and the Self-hosted server: spans it forwarded are read from the server, everything else from memory, so nothing is counted twice.
+- **Sending spans**: apps send to the local lapdog as usual, and it forwards them to the server (see above). With Python, `DD_LLMOBS_ENABLED=1` is all an app needs.
+- **Retention**: spans live in daily partitions. Days older than `--retention` are dropped; while stored data exceeds `--max-disk` (or the disk is nearly full) the oldest days are dropped, and if only today is left, intake answers 503 until there's room again.
+- **Docker**: run the published test agent image with `docker run -d -p 8126:8126 -v lapdog-data:/data -e LAPDOG_SERVER_HOST=0.0.0.0 -e LAPDOG_SERVER_DATA_DIR=/data ghcr.io/datadog/dd-apm-test-agent/ddapm-test-agent lapdog server start --foreground`. Every flag has a `LAPDOG_SERVER_*` environment variable; set them with `-e` rather than as flags, so `docker exec <container> lapdog server status` (and `stop`, `config`) find the server.
+- Opening the hosted UI straight against a remote server (`?backendUrl=`) needs HTTPS, so put a TLS proxy in front of it. Through a forwarding laptop lapdog it isn't needed. macOS and Linux only.
+
+
 ### Snapshot testing
 
 The test agent provides a form of [characterization testing](https://en.wikipedia.org/wiki/Characterization_test) which

@@ -1,0 +1,476 @@
+"""Searches through a local lapdog that forwards to a real Self-hosted server cover both, without duplicates."""
+
+import asyncio
+import json
+import time
+
+import msgpack
+import pytest
+
+LIST = "/api/unstable/llm-obs-query-rewriter/list?type=llmobs"
+
+
+def _span(span_id, start_ns, trace_id=None, ml_app="app"):
+    return {
+        "span_id": span_id,
+        "trace_id": trace_id or f"trace-{span_id}",
+        "parent_id": "undefined",
+        "name": span_id,
+        "start_ns": start_ns,
+        "duration": 1_000,
+        "meta": {"span": {"kind": "llm"}},
+        "metrics": {"input_tokens": 10},
+        "tags": [f"ml_app:{ml_app}"],
+    }
+
+
+async def _post_to_laptop(lapdog_agent, *spans):
+    body = msgpack.packb({"_dd.stage": "raw", "event_type": "span", "spans": list(spans)})
+    resp = await lapdog_agent.post(
+        "/evp_proxy/v2/api/v2/llmobs", headers={"Content-Type": "application/msgpack"}, data=body
+    )
+    assert resp.status == 200
+
+
+async def _wait_for(predicate, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while not await predicate():
+        assert time.monotonic() < deadline, "timed out waiting"
+        await asyncio.sleep(0.05)
+
+
+@pytest.fixture
+async def federated(lapdog_agent, self_hosted_server):
+    """Return a local lapdog with spans in three places.
+
+    - ``local-*``: received before Self-hosted forwarding was on, so only in memory;
+    - ``fwd-*``: received after, so forwarded (and read from the Self-hosted server);
+    - ``mate-*``: sent straight to the Self-hosted server by a teammate.
+    """
+    now = time.time_ns()
+    await _post_to_laptop(lapdog_agent, _span("local-1", now - 5_000, ml_app="mine"), _span("local-2", now - 3_000))
+    url = str(self_hosted_server.make_url("")).rstrip("/")
+    resp = await lapdog_agent.post("/lapdog/forwarding", json={"self_hosted": url})
+    assert resp.status == 200
+    await _post_to_laptop(lapdog_agent, _span("fwd-1", now - 4_000, ml_app="mine"), _span("fwd-2", now - 1_000))
+    mate = {"ml_app": "team", "spans": [_span("mate-1", now - 2_000, ml_app="team")]}
+    resp = await self_hosted_server.post(
+        "/api/v2/llmobs", data=json.dumps(mate), headers={"Content-Type": "application/json"}
+    )
+    assert resp.status == 200
+
+    async def stored_on_server():
+        resp = await self_hosted_server.post(LIST, json={"list": {"limit": 10}})
+        return len((await resp.json())["result"]["events"]) == 3
+
+    await _wait_for(stored_on_server)
+    return lapdog_agent
+
+
+async def _list(client, **list_params):
+    resp = await client.post(LIST, json={"list": {"limit": 50, **list_params}})
+    assert resp.status == 200, await resp.text()
+    return await resp.json()
+
+
+def _ids(response):
+    return [e["event"]["custom"]["span_id"] for e in response["result"]["events"]]
+
+
+async def test_list_merges_memory_and_self_hosted(federated):
+    response = await _list(federated)
+    assert _ids(response) == ["fwd-2", "mate-1", "local-2", "fwd-1", "local-1"]
+    assert response["hitCount"] == 5
+
+
+async def test_list_pages_across_both_sides(federated):
+    seen = []
+    paging = None
+    for _ in range(10):
+        params = {"limit": 2, **({"paging": paging} if paging else {})}
+        response = await _list(federated, **params)
+        seen += _ids(response)
+        paging = response["result"].get("paging")
+        if not paging:
+            break
+    assert seen == ["fwd-2", "mate-1", "local-2", "fwd-1", "local-1"]
+
+
+async def test_stored_list_result_can_be_fetched_again(federated):
+    response = await _list(federated)
+    again = await federated.get(f"/api/unstable/llm-obs-query-rewriter/list/{response['requestId']}")
+    assert _ids(await again.json()) == _ids(response)
+
+
+async def test_aggregate_and_facets_add_up(federated):
+    resp = await federated.post(
+        "/api/v1/logs-analytics/aggregate?type=llmobs",
+        json={
+            "aggregate": {
+                "search": {"query": ""},
+                "groupBy": [{"field": {"id": "@ml_app", "output": "ml_app", "limit": 10}}],
+                "compute": [{"total": {"aggregation": "count", "output": "c"}}],
+            }
+        },
+    )
+    values = (await resp.json())["result"]["values"]
+    assert {v["by"]["ml_app"]: v["metrics"]["c"] for v in values} == {"mine": 2, "app": 2, "team": 1}
+
+    resp = await federated.post(
+        "/api/unstable/llm-obs-query-rewriter/facet_info",
+        json={"facet_info": {"path": "@ml_app", "limit": 10, "search": {"query": ""}}},
+    )
+    fields = (await resp.json())["result"]["fields"]
+    assert {f["field"]: f["value"] for f in fields} == {"mine": 2, "app": 2, "team": 1}
+
+
+async def test_scalar_counts_add_up(federated):
+    query = {
+        "name": "query1",
+        "data_source": "llm_observability",
+        "search": {"query": ""},
+        "compute": {"aggregation": "count"},
+    }
+    resp = await federated.post("/api/ui/query/scalar", json={"data": [{"attributes": {"queries": [query]}}]})
+    columns = (await resp.json())["data"][0]["attributes"]["columns"]
+    assert columns[0]["values"] == [5]
+
+
+async def test_traces_come_from_whichever_side_has_them(federated):
+    for trace_id, span_id in (("trace-local-1", "local-1"), ("trace-mate-1", "mate-1"), ("trace-fwd-1", "fwd-1")):
+        resp = await federated.get(f"/api/ui/llm-obs/v1/trace/{trace_id}")
+        assert resp.status == 200, trace_id
+        spans = (await resp.json())["data"]["attributes"]["spans"]
+        assert [s["span_id"] for s in spans.values()] == [span_id]
+
+
+async def test_unreachable_self_hosted_falls_back_to_memory(federated):
+    # The server goes away (the API refuses a dead URL, so point at one directly).
+    federated.app["lapdog_forwarding"].configure_self_hosted("http://127.0.0.1:9", False)
+    response = await _list(federated)
+    # Memory still has everything this lapdog received, including what it forwarded.
+    assert sorted(_ids(response)) == ["fwd-1", "fwd-2", "local-1", "local-2"]
+
+
+def _sources(response):
+    return {e["event"]["custom"]["span_id"]: e["event"]["custom"]["lapdog"] for e in response["result"]["events"]}
+
+
+async def test_list_labels_where_each_span_was_read_from(federated):
+    sources = _sources(await _list(federated))
+    assert sources == {
+        "fwd-2": {"source": "self-hosted"},
+        "mate-1": {"source": "self-hosted"},
+        "local-2": {"source": "laptop"},
+        "fwd-1": {"source": "self-hosted"},
+        "local-1": {"source": "laptop"},
+    }
+
+
+async def test_list_is_labelled_without_self_hosted(lapdog_agent):
+    now = time.time_ns()
+    await _post_to_laptop(lapdog_agent, _span("a", now - 2_000), _span("b", now - 1_000))
+    first = await _list(lapdog_agent, limit=1)
+    assert _sources(first) == {"b": {"source": "laptop"}}
+    second = await _list(lapdog_agent, limit=1, paging=first["result"]["paging"])
+    assert _sources(second) == {"a": {"source": "laptop"}}
+    assert "paging" not in second["result"]
+
+
+async def _post_to_server(self_hosted_server, *spans):
+    body = {"ml_app": "team", "spans": list(spans)}
+    resp = await self_hosted_server.post(
+        "/api/v2/llmobs", data=json.dumps(body), headers={"Content-Type": "application/json"}
+    )
+    assert resp.status == 200
+
+
+async def _server_has(self_hosted_server, count):
+    async def check():
+        resp = await self_hosted_server.post(LIST, json={"list": {"limit": 50}})
+        return len((await resp.json())["result"]["events"]) == count
+
+    await _wait_for(check)
+
+
+@pytest.mark.parametrize("output", ["ml_app", None])
+async def test_aggregate_completes_groups_cut_off_on_one_side(federated, self_hosted_server, output):
+    # Self-hosted's newest group is "mine", but memory's newest is "app", so with one group per side
+    # memory's "mine" span (local-1) only counts if it's asked for separately.
+    await _post_to_server(self_hosted_server, _span("mate-2", time.time_ns() - 500, ml_app="mine"))
+    await _server_has(self_hosted_server, 4)
+    resp = await federated.post(
+        "/api/v1/logs-analytics/aggregate?type=llmobs",
+        json={
+            "aggregate": {
+                "search": {"query": ""},
+                "groupBy": [{"field": {"id": "@ml_app", "limit": 1, **({"output": output} if output else {})}}],
+                "compute": [
+                    {"total": {"aggregation": "count", "output": "c"}},
+                    {"total": {"aggregation": "earliest", "metric": "@name", "output": "first"}},
+                    {"total": {"aggregation": "latest", "metric": "@name", "output": "last"}},
+                ],
+            }
+        },
+    )
+    values = (await resp.json())["result"]["values"]
+    assert [(v["by"][output or "@ml_app"], v["metrics"]) for v in values] == [
+        ("mine", {"c": 3, "first": "local-1", "last": "mate-2"})
+    ]
+
+
+def _scalar_columns(value, count, time_ms, name="q"):
+    columns = [{"name": name, "type": "number", "meta": None, "values": [value]}]
+    columns.append({"name": f"__lapdog_n_{name}", "type": "number", "meta": None, "values": [count]})
+    if time_ms is not None:
+        columns.append({"name": f"__lapdog_t_{name}", "type": "number", "meta": None, "values": [time_ms]})
+    return columns
+
+
+@pytest.mark.parametrize(
+    "aggregation,remote,local,expected",
+    [
+        ("max", (5, 1, None), (7, 1, None), 7),
+        ("min", (0, 0, None), (10, 1, None), 10),  # no remote matches: its placeholder 0 isn't a value
+        ("avg", (2, 1, None), (8, 3, None), 6.5),
+        ("latest", (5, 1, 100), (7, 1, 300), 7),
+        ("earliest", (5, 1, 100), (7, 1, 300), 5),
+    ],
+)
+def test_scalar_merges_each_statistic(aggregation, remote, local, expected):
+    from lapdog.federated_search import _merge_scalar_columns
+    from lapdog.federated_search import _scalar_plan
+
+    attributes = {"queries": [{"name": "q", "compute": {"aggregation": aggregation, "metric": "@duration"}}]}
+    _, plan = _scalar_plan(attributes)
+    merged = _merge_scalar_columns(_scalar_columns(*remote), _scalar_columns(*local), plan)
+    assert [c["name"] for c in merged] == ["q"]
+    assert merged[0]["values"] == [expected]
+
+
+async def test_scalar_ignores_a_side_with_no_matches(federated):
+    query = {
+        "name": "query1",
+        "data_source": "llm_observability",
+        "search": {"query": "@name:local-1"},
+        "compute": {"aggregation": "avg", "metric": "@duration"},
+    }
+    resp = await federated.post("/api/ui/query/scalar", json={"data": [{"attributes": {"queries": [query]}}]})
+    columns = (await resp.json())["data"][0]["attributes"]["columns"]
+    assert [(c["name"], c["values"]) for c in columns] == [("query1", [1000])]
+
+
+@pytest.mark.parametrize(
+    "aggregation,metric,expected",
+    [
+        ("cardinality", "@ml_app", 3),  # mine and app are on both sides
+        ("cardinality", "@duration", 1),
+        ("median", "@duration", 1000),
+        ("pc95", "@duration", 1000),
+    ],
+)
+async def test_scalar_distinct_counts_and_percentiles_pool_both_sides(federated, aggregation, metric, expected):
+    query = {
+        "name": "query1",
+        "data_source": "llm_observability",
+        "search": {"query": ""},
+        "compute": {"aggregation": aggregation, "metric": metric},
+    }
+    resp = await federated.post("/api/ui/query/scalar", json={"data": [{"attributes": {"queries": [query]}}]})
+    columns = (await resp.json())["data"][0]["attributes"]["columns"]
+    assert [(c["name"], c["values"]) for c in columns] == [("query1", [expected])]
+
+
+async def test_scalar_grouped_distinct_counts_pool_both_sides(federated):
+    query = {
+        "name": "query1",
+        "data_source": "llm_observability",
+        "search": {"query": ""},
+        "compute": {"aggregation": "cardinality", "metric": "@duration"},
+        "group_by": [{"facet": "@ml_app", "limit": 10, "sort": {"order": "desc"}}],
+    }
+    resp = await federated.post("/api/ui/query/scalar", json={"data": [{"attributes": {"queries": [query]}}]})
+    columns = (await resp.json())["data"][0]["attributes"]["columns"]
+    groups, counts = columns
+    assert dict(zip((v[0] for v in groups["values"]), counts["values"])) == {"mine": 1, "app": 1, "team": 1}
+
+
+async def test_trace_split_across_both_sides_is_combined(federated, self_hosted_server):
+    child = {**_span("remote-child", time.time_ns(), trace_id="trace-local-1"), "parent_id": "local-1"}
+    await _post_to_server(self_hosted_server, child)
+    await _server_has(self_hosted_server, 4)
+    resp = await federated.get("/api/ui/llm-obs/v1/trace/trace-local-1")
+    attributes = (await resp.json())["data"]["attributes"]
+    assert sorted(attributes["spans"]) == ["local-1", "remote-child"]
+    assert attributes["spans"]["local-1"]["children_ids"] == ["remote-child"]
+    assert attributes["root_id"] == "local-1"
+
+
+async def test_paging_continues_from_memory_when_self_hosted_goes_away(federated):
+    first = await _list(federated, limit=2)
+    assert _ids(first) == ["fwd-2", "mate-1"]
+    # The server goes away (the API refuses a dead URL, so point at one directly).
+    federated.app["lapdog_forwarding"].configure_self_hosted("http://127.0.0.1:9", False)
+    second = await _list(federated, limit=2, paging=first["result"]["paging"])
+    assert _ids(second) == ["local-2", "fwd-1"]
+    # Memory's own cursor keeps working while forwarding is still configured.
+    third = await _list(federated, limit=2, paging=second["result"]["paging"])
+    assert _ids(third) == ["local-1"]
+
+
+async def test_list_accepts_an_inclusive_from_cursor(federated):
+    first = await _list(federated, limit=3)
+    assert _ids(first) == ["fwd-2", "mate-1", "local-2"]
+    again = await _list(federated, limit=3, paging={"from": first["result"]["paging"]["after"]})
+    # Starts at the last event listed overall, not at each side's last one.
+    assert _ids(again) == ["local-2", "fwd-1", "local-1"]
+
+
+async def test_paging_keeps_repeated_copies_of_a_span(lapdog_agent, self_hosted_server):
+    now = time.time_ns()
+    for _ in range(3):
+        await _post_to_laptop(lapdog_agent, _span("dup", now - 3_000))
+    url = str(self_hosted_server.make_url("")).rstrip("/")
+    assert (await lapdog_agent.post("/lapdog/forwarding", json={"self_hosted": url})).status == 200
+    await _post_to_laptop(lapdog_agent, _span("new", now - 1_000))
+    await _server_has(self_hosted_server, 1)
+
+    seen = []
+    paging = None
+    for _ in range(10):
+        response = await _list(lapdog_agent, limit=2, **({"paging": paging} if paging else {}))
+        seen += _ids(response)
+        paging = response["result"].get("paging")
+        if not paging:
+            break
+    assert seen == ["new", "dup", "dup", "dup"]
+
+
+async def test_facets_and_grouped_scalars_complete_values_cut_off_on_one_side(federated, self_hosted_server):
+    await _post_to_server(self_hosted_server, _span("mate-2", time.time_ns() - 500, ml_app="mine"))
+    await _server_has(self_hosted_server, 4)
+    resp = await federated.post(
+        "/api/unstable/llm-obs-query-rewriter/facet_info",
+        json={"facet_info": {"path": "@ml_app", "limit": 1, "search": {"query": ""}}},
+    )
+    fields = (await resp.json())["result"]["fields"]
+    assert fields == [{"field": "mine", "value": 3}]
+
+    query = {
+        "name": "query1",
+        "data_source": "llm_observability",
+        "search": {"query": ""},
+        "compute": {"aggregation": "count"},
+        "group_by": [{"facet": "@ml_app", "limit": 1}],
+    }
+    resp = await federated.post("/api/ui/query/scalar", json={"data": [{"attributes": {"queries": [query]}}]})
+    columns = (await resp.json())["data"][0]["attributes"]["columns"]
+    assert [(c["name"], c["values"]) for c in columns] == [("@ml_app", [["mine"]]), ("query1", [3])]
+
+
+async def test_inclusive_paging_reopens_a_used_up_side(federated):
+    asc = {"time": {"order": "asc"}}
+    first = await _list(federated, limit=3, sort=asc)
+    assert _ids(first) == ["local-1", "fwd-1", "local-2"]
+    again = await _list(federated, limit=3, sort=asc, paging={"from": first["result"]["paging"]["after"]})
+    assert _ids(again) == ["local-2", "mate-1", "fwd-2"]
+
+
+async def test_inclusive_paging_keeps_repeated_copies(lapdog_agent, self_hosted_server):
+    now = time.time_ns()
+    for _ in range(3):
+        await _post_to_laptop(lapdog_agent, _span("dup", now - 3_000))
+    url = str(self_hosted_server.make_url("")).rstrip("/")
+    assert (await lapdog_agent.post("/lapdog/forwarding", json={"self_hosted": url})).status == 200
+    await _post_to_laptop(lapdog_agent, _span("new", now - 1_000))
+    await _server_has(self_hosted_server, 1)
+    first = await _list(lapdog_agent, limit=2)
+    assert _ids(first) == ["new", "dup"]
+    again = await _list(lapdog_agent, limit=3, paging={"from": first["result"]["paging"]["after"]})
+    assert _ids(again) == ["dup", "dup", "dup"]
+
+
+def test_scalar_helpers_count_metric_values_rank_by_first_query_and_filter_attributes():
+    from lapdog.federated_search import _groups_query
+    from lapdog.federated_search import _scalar_plan
+    from lapdog.federated_search import _top_scalar_rows
+
+    attributes = {
+        "queries": [
+            {"name": "q1", "search": {"query": "@ml_app:x"}, "compute": {"aggregation": "count"}},
+            {"name": "q2", "compute": {"aggregation": "avg", "metric": "@metrics.input_tokens"}},
+        ],
+        "formulas": [{"formula": "q2"}, {"formula": "q1"}],
+    }
+    augmented, _ = _scalar_plan(attributes)
+    hidden = {q["name"]: q for q in augmented["queries"]}
+    # The average is computed from spans that have the metric, so only those are counted.
+    assert hidden["__lapdog_n_q2"]["search"]["query"] == "_exists_:@metrics.input_tokens"
+    latest, _ = _scalar_plan({"queries": [{"name": "q", "compute": {"aggregation": "latest", "metric": "@x"}}]})
+    rollup, _ = _scalar_plan({"queries": [{"name": "q", "compute": {"aggregation": "avg", "metric": "@trace.tokens"}}]})
+    counted = {q["name"]: q for q in rollup["queries"]}["__lapdog_n_q"]
+    assert counted["compute"] == {"aggregation": "cardinality", "metric": "@trace_id"}
+    assert "search" not in counted
+    # Latest picks the newest span even without the metric, so every span counts.
+    assert "search" not in {q["name"]: q for q in latest["queries"]}["__lapdog_n_q"]
+    assert hidden["__lapdog_rank"]["compute"] == {"aggregation": "count"}
+
+    columns = [
+        {"name": "g", "type": "group", "values": [["a"], ["b"]]},
+        {"name": "q2", "type": "number", "values": [1, 100]},
+        {"name": "__lapdog_rank", "type": "number", "values": [10, 9]},
+    ]
+    assert _top_scalar_rows(columns, True, 1)[0]["values"] == [["a"]]
+
+    assert _groups_query("", "env", ["prod"]) == '(@env:"prod")'
+
+
+async def test_inclusive_paging_keeps_repeated_copies_when_memory_runs_out(lapdog_agent, self_hosted_server):
+    now = time.time_ns()
+    for _ in range(3):
+        await _post_to_laptop(lapdog_agent, _span("dup", now - 3_000))
+    url = str(self_hosted_server.make_url("")).rstrip("/")
+    assert (await lapdog_agent.post("/lapdog/forwarding", json={"self_hosted": url})).status == 200
+    await _post_to_laptop(lapdog_agent, _span("r1", now - 2_000), _span("r2", now - 1_000))
+    await _server_has(self_hosted_server, 2)
+    asc = {"time": {"order": "asc"}}
+    first = await _list(lapdog_agent, limit=3, sort=asc)
+    assert _ids(first) == ["dup", "dup", "dup"]
+    again = await _list(lapdog_agent, limit=3, sort=asc, paging={"from": first["result"]["paging"]["after"]})
+    assert _ids(again) == ["dup", "r1", "r2"]
+
+
+def test_candidates_cover_the_requested_limit():
+    from lapdog.federated_search import _candidates
+
+    assert _candidates(1) == 21
+    assert _candidates(2000) == 2000
+
+
+def test_aggregate_averages_are_weighted_by_value_counts():
+    from lapdog.federated_search import _aggregate_plan
+    from lapdog.federated_search import _merge_aggregate_values
+    from lapdog.federated_search import _public_aggregate_value
+
+    agg, plan = _aggregate_plan({"compute": [{"total": {"aggregation": "avg", "metric": "@m", "output": "a"}}]})
+    hidden = agg["compute"][-1]["total"]["output"]
+    merged = {}
+    _merge_aggregate_values(merged, [{"by": {"g": "x"}, "metrics": {"a": 0, hidden: 1}}], plan, True)
+    _merge_aggregate_values(merged, [{"by": {"g": "x"}, "metrics": {"a": 100, hidden: 99}}], plan, True)
+    (value,) = merged.values()
+    assert _public_aggregate_value(value, plan)["metrics"] == {"a": 99}
+
+
+def test_aggregate_lists_merge_in_the_requested_order():
+    from lapdog.federated_search import _aggregate_plan
+    from lapdog.federated_search import _merge_aggregate_values
+    from lapdog.federated_search import _public_aggregate_value
+
+    compute = [{"list": {"output": "rows", "columns": ["@name"], "sort": {"time": {"order": "desc"}}, "limit": 2}}]
+    agg, plan = _aggregate_plan({"compute": compute})
+    assert agg["compute"][0]["list"]["columns"] == ["@name", "@timestamp"]
+    merged = {}
+    _merge_aggregate_values(merged, [{"by": {}, "metrics": {"rows": [["a", "100"], ["c", "1"]]}}], plan, True)
+    _merge_aggregate_values(merged, [{"by": {}, "metrics": {"rows": [["b", "50"]]}}], plan, True)
+    (value,) = merged.values()
+    assert _public_aggregate_value(value, plan)["metrics"]["rows"] == [["a"], ["b"]]

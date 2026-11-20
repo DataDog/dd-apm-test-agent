@@ -17,6 +17,7 @@ from typing import Set
 from typing import Tuple
 from typing import cast
 from urllib.parse import urlparse
+import warnings
 
 import aiohttp
 from aiohttp import web
@@ -47,7 +48,6 @@ from ddapm_test_agent.trace_snapshot import DEFAULT_SNAPSHOT_IGNORES
 from ddapm_test_agent.traces_otlp import TRACES_ENDPOINT
 from lapdog import model_pricing
 from lapdog.server import make_app as make_lapdog_app
-
 
 # Fix the service name to make tests consistently pass local and in CI.
 config.service = ""
@@ -208,6 +208,14 @@ def disable_llmobs_data_forwarding() -> Generator[bool, None, None]:
 def dd_api_key_validation_response() -> Tuple[int, Dict[str, Any]]:
     # What api.datadoghq.com/api/v1/validate returns for the fake default dd_api_key.
     return 403, {"errors": ["Forbidden"]}
+
+
+@pytest.fixture(autouse=True)
+def isolated_forwarding_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Keep tests from reading or writing the real ~/.lapdog/forwarding.json (and forwarding to its server)."""
+    path = tmp_path / "forwarding.json"
+    monkeypatch.setenv("LAPDOG_FORWARDING_CONFIG", str(path))
+    return path
 
 
 @pytest.fixture(autouse=True)
@@ -1096,3 +1104,55 @@ async def grpc_client_with_failure_type(agent_app, available_port, aiohttp_serve
 
     await channel.close()
     await grpc_server.stop(grace=0)
+
+
+@pytest.fixture(scope="session")
+def clickhouse_process(tmp_path_factory):
+    """One ClickHouse server for the test session; skipped when no clickhouse binary is available."""
+    from lapdog.self_host.clickhouse import ClickHouseError
+    from lapdog.self_host.clickhouse import ClickHouseProcess
+    from lapdog.self_host.clickhouse import resolve_binary
+
+    binary = os.environ.get("LAPDOG_TEST_CLICKHOUSE_BINARY") or resolve_binary()
+    if not binary:
+        message = "no clickhouse binary (set LAPDOG_TEST_CLICKHOUSE_BINARY or put clickhouse on PATH)"
+        # The lapdog server workflow sets this so a missing binary fails there instead of skipping everything.
+        if os.environ.get("LAPDOG_TEST_REQUIRE_CLICKHOUSE"):
+            pytest.fail(message)
+        pytest.skip(message)
+    proc = ClickHouseProcess(binary, str(tmp_path_factory.mktemp("clickhouse")), 2 * 1024**3)
+    try:
+        proc.start()
+    except ClickHouseError as exc:
+        # macOS CI runners have SIGKILLed ClickHouse mid-start; retry once, as the server's supervisor would.
+        warnings.warn(f"ClickHouse failed to start, retrying once: {exc}")
+        proc.start()
+    yield proc
+    proc.stop()
+
+
+@pytest.fixture
+def self_hosted_server_config(tmp_path):
+    from lapdog.self_host.config import ServerConfig
+
+    return ServerConfig(
+        data_dir=str(tmp_path / "server"),
+        # The longest retention, so tests with fixed old timestamps keep their spans.
+        retention_days=3650,
+        max_disk_bytes=100 * 1024**3,
+        database=f"test_{random.getrandbits(48):012x}",
+    )
+
+
+@pytest.fixture
+async def self_hosted_server(clickhouse_process, self_hosted_server_config, aiohttp_client, loop):
+    """Serve a ``lapdog server`` app on a fresh ClickHouse database."""
+    from lapdog.self_host.app import make_server_app
+    from lapdog.self_host.clickhouse import ClickHouseClient
+
+    client = ClickHouseClient(clickhouse_process.url, password=clickhouse_process.password)
+    app = make_server_app(self_hosted_server_config, client, enforce_interval=0)
+    yield await aiohttp_client(app)
+    cleanup = ClickHouseClient(clickhouse_process.url, password=clickhouse_process.password)
+    await cleanup.command(f"DROP DATABASE IF EXISTS {self_hosted_server_config.database}")
+    await cleanup.close()
