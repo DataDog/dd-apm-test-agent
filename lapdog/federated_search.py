@@ -410,11 +410,7 @@ def _merge_scalar_columns(
 
 
 def _candidates(limit: int) -> int:
-    """How many top values to ask each side for, so a value ranked lower on both sides can still win overall.
-
-    Ranking by counts across two sides is exact only if every value is fetched; this keeps it exact unless
-    a value is outside both sides' candidates.
-    """
+    """Return the initial group window to expand before ranking merged groups."""
     return max(limit, min(max(limit * 4, limit + 20), 1000))
 
 
@@ -882,45 +878,36 @@ class FederatedSearch:
         body = await request.json()
         facet = (body.get("facet_info") or {}) if isinstance(body, dict) else {}
         limit = int(facet.get("limit", 10))
-        wide_body = copy.deepcopy(body)
-        if isinstance(wide_body, dict) and isinstance(wide_body.get("facet_info"), dict):
-            wide_body["facet_info"]["limit"] = _candidates(limit)
-        sides = [
-            (await self._remote(request, json.dumps(wide_body).encode()) or {}, False),
-            (await self._local(self.local_api.handle_facet_info, _with_body(request, wide_body)) or {}, True),
-        ]
-
-        def counts_of(response: Dict[str, Any]) -> Dict[str, int]:
-            return {str(i.get("field")): int(i.get("value", 0)) for i in response.get("result", {}).get("fields", [])}
-
-        side_counts = [counts_of(side) for side, _ in sides]
+        term = str((facet.get("termSearch") or {}).get("query", "")).lower()
+        local = await self._facet_counts(request, body, is_local=True)
+        remote = await self._facet_counts(request, body, is_local=False, complete_groups=bool(local) or bool(term))
         counts: Dict[str, int] = {}
-        for side in side_counts:
+        for side in (remote, local):
             for value, count in side.items():
                 counts[value] = counts.get(value, 0) + count
-        top = [v for v, _ in sorted(counts.items(), key=lambda kv: -kv[1])[:limit]]
-        # Each side returned only its own top values; count the rest of a top value's spans on a side that
-        # stopped before reaching it.
-        for (side, is_local), have in zip(sides, side_counts):
-            missing = [v for v in top if v not in have]
-            search = str((facet.get("search") or {}).get("query", ""))
-            query = _groups_query(search, str(facet.get("path", "")), missing)
-            # A side's short answer doesn't mean it has no more: facet term search filters after the limit.
-            if not missing or query is None:
-                continue
-            extra_body = copy.deepcopy(body)
-            extra_body["facet_info"].setdefault("search", {})["query"] = query
-            extra_body["facet_info"]["limit"] = len(missing)
-            if is_local:
-                extra = await self._local(self.local_api.handle_facet_info, _with_body(request, extra_body)) or {}
-            else:
-                extra = await self._remote(request, json.dumps(extra_body).encode()) or {}
-            for value, count in counts_of(extra).items():
-                if value in missing:
-                    counts[value] = counts.get(value, 0) + count
-        fields = [{"field": f, "value": c} for f, c in sorted(counts.items(), key=lambda kv: -kv[1])[:limit]]
+        matching = [(value, count) for value, count in counts.items() if term in value.lower()]
+        fields = [{"field": f, "value": c} for f, c in sorted(matching, key=lambda kv: -kv[1])[:limit]]
         result = {"fields": fields, "status": "done"}
         return web.json_response({"elapsed": 10, "requestId": "federated", "result": result, "status": "done"})
+
+    async def _facet_counts(
+        self, request: web.Request, body: Any, is_local: bool, complete_groups: bool = True
+    ) -> Dict[str, int]:
+        side_body = copy.deepcopy(body)
+        facet = side_body.setdefault("facet_info", {})
+        limit = _candidates(int(facet.get("limit", 10)))
+        # Backends filter terms after limiting. A short filtered response cannot prove exhaustion.
+        facet.pop("termSearch", None)
+        while True:
+            facet["limit"] = limit
+            if is_local:
+                response = await self._local(self.local_api.handle_facet_info, _with_body(request, side_body)) or {}
+            else:
+                response = await self._remote(request, json.dumps(side_body).encode()) or {}
+            fields = response.get("result", {}).get("fields", [])
+            if not complete_groups or len(fields) < limit:
+                return {str(field["field"]): int(field["value"]) for field in fields}
+            limit *= 2
 
     async def _facet_range(self, request: web.Request) -> web.Response:
         local = await self._local(self.local_api.handle_facet_range_info, request) or {}
@@ -945,8 +932,8 @@ class FederatedSearch:
             limit = None
             queries = [q for q in attributes.get("queries") or [] if isinstance(q, dict)] if attributes else []
             group_defs = _query_group_by_fields(queries[0]) if queries else []
-            if len(group_defs) == 1:
-                limit = group_defs[0]["limit"] if isinstance(group_defs[0].get("limit"), int) else 50
+            if group_defs:
+                limit = min((g["limit"] for g in group_defs if isinstance(g.get("limit"), int)), default=50)
                 for query in queries:
                     for group_by in query.get("group_by") or []:
                         if isinstance(group_by, dict):
@@ -955,76 +942,64 @@ class FederatedSearch:
                 augmented_body["data"][i]["attributes"] = attributes
             plans.append(plan)
             limits.append(limit)
-        local = await self._local(self.local_api.handle_query_scalar, _with_body(request, augmented_body)) or {}
+        local = await self._scalar_side(request, augmented_body, is_local=True)
         # Sending the server's values is only worth it when there are values in memory to pool them with.
         pool_values = _has_values(local)
         remote_body = augmented_body if pool_values else _without_values(augmented_body)
-        remote = await self._remote(request, json.dumps(remote_body).encode()) or {}
+        has_local_groups = any(
+            column.get("type") == "group" and column.get("values")
+            for item in local.get("data") or []
+            for column in item.get("attributes", {}).get("columns", [])
+        )
+        remote = await self._scalar_side(request, remote_body, is_local=False, complete_groups=has_local_groups)
         local_data, remote_data = local.get("data", []), remote.get("data", [])
         data = []
         for i in range(max(len(local_data), len(remote_data))):
             a = remote_data[i]["attributes"]["columns"] if i < len(remote_data) else []
             b = local_data[i]["attributes"]["columns"] if i < len(local_data) else []
-            item = augmented_body["data"][i] if i < len(requests) else None
             limit = limits[i] if i < len(limits) else None
             plan = plans[i] if i < len(plans) else {}
-            columns = await self._merge_scalar_sides(request, item, a, b, plan, limit, pool_values)
+            columns = _merge_scalar_columns(a, b, plan, keep_hidden=True)
+            if limit is not None:
+                query = augmented_body["data"][i]["attributes"]["queries"][0]
+                descending = _query_group_by_fields(query)[0]["sort_order"] == "desc"
+                columns = _top_scalar_rows(columns, descending, limit)
+            columns = [c for c in columns if c.get("type") == "group" or not str(c["name"]).startswith(_HIDDEN)]
             data.append({"type": "scalar_response", "attributes": {"columns": columns}})
         return web.json_response({"data": data})
 
-    async def _merge_scalar_sides(
-        self,
-        request: web.Request,
-        item: Optional[Dict[str, Any]],
-        remote: List[Dict[str, Any]],
-        local: List[Dict[str, Any]],
-        plan: Dict[str, _ScalarColumn],
-        limit: Optional[int],
-        pool_values: bool = True,
-    ) -> List[Dict[str, Any]]:
-        """Merge one scalar request's columns, completing top groups that a side's row limit cut off."""
-        attributes = (item or {}).get("attributes") or {}
-        queries = [q for q in attributes.get("queries") or [] if isinstance(q, dict)]
-        group_defs = _query_group_by_fields(queries[0]) if queries else []
-        if len(group_defs) != 1 or limit is None:
-            merged = _merge_scalar_columns(remote, local, plan, keep_hidden=True)
-            return [c for c in merged if c.get("type") == "group" or not str(c["name"]).startswith(_HIDDEN)]
-        group = group_defs[0]
-        descending = group["sort_order"] == "desc"
-        top = _top_scalar_rows(_merge_scalar_columns(remote, local, plan, keep_hidden=True), descending, limit)
-        top_keys = list(_scalar_rows(top))
-        sides = [remote, local]
-        for index, is_local in ((0, False), (1, True)):
-            have = _scalar_rows(sides[index])
-            missing_keys = [k for k in top_keys if k not in have]
-            values = [str((json.loads(k) or [[""]])[0][0]) for k in missing_keys]
-            if len(have) < _candidates(limit) or not missing_keys:
-                continue
-            extra_attributes = copy.deepcopy(attributes)
-            narrowed = True
-            for query in extra_attributes.get("queries") or []:
-                search = str((query.get("search") or {}).get("query", ""))
-                query_text = _groups_query(search, "@" + str(group["field"]), values)
-                if query_text is None:
-                    narrowed = False
-                    break
-                query.setdefault("search", {})["query"] = query_text
-                for group_by in query.get("group_by") or []:
-                    if isinstance(group_by, dict):
-                        group_by["limit"] = len(values)
-            if not narrowed:
-                continue
-            extra_body = {"data": [{**(item or {}), "attributes": extra_attributes}]}
+    async def _scalar_side(
+        self, request: web.Request, body: Dict[str, Any], is_local: bool, complete_groups: bool = True
+    ) -> Dict[str, Any]:
+        side_body = copy.deepcopy(body)
+        while True:
             if is_local:
-                extra = await self._local(self.local_api.handle_query_scalar, _with_body(request, extra_body)) or {}
+                response = await self._local(self.local_api.handle_query_scalar, _with_body(request, side_body)) or {}
             else:
-                remote_body = extra_body if pool_values else _without_values(extra_body)
-                extra = await self._remote(request, json.dumps(remote_body).encode()) or {}
-            extra_columns = (extra.get("data") or [{}])[0].get("attributes", {}).get("columns", [])
-            sides[index] = _merge_scalar_columns(sides[index], extra_columns, plan, keep_hidden=True)
-        merged = _merge_scalar_columns(sides[0], sides[1], plan, keep_hidden=True)
-        top = _top_scalar_rows(merged, descending, limit)
-        return [c for c in top if c.get("type") == "group" or not str(c["name"]).startswith(_HIDDEN)]
+                response = await self._remote(request, json.dumps(side_body).encode()) or {}
+            if not complete_groups:
+                return cast(Dict[str, Any], response)
+            expanded = False
+            for item, result in zip(side_body.get("data") or [], response.get("data") or []):
+                if not isinstance(item, dict):
+                    continue
+                attributes = (item or {}).get("attributes") or {}
+                queries = attributes.get("queries") or []
+                groups = _query_group_by_fields(queries[0]) if queries else []
+                if not groups:
+                    continue
+                limit = min(g["limit"] for g in groups)
+                columns = result.get("attributes", {}).get("columns", [])
+                rows = next((len(c["values"]) for c in columns if c.get("type") == "group"), 0)
+                if rows < limit:
+                    continue
+                for query in queries:
+                    for group in query.get("group_by") or []:
+                        if isinstance(group, dict):
+                            group["limit"] = limit * 2
+                expanded = True
+            if not expanded:
+                return cast(Dict[str, Any], response)
 
     def _local_has(self, predicate: Callable[[Dict[str, Any]], bool]) -> bool:
         return any(predicate(span) for span in self.local_api.backend.get_llmobs_spans())  # type: ignore[attr-defined]
