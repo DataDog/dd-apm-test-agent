@@ -10,6 +10,8 @@ import pytest
 from lapdog.claude_hooks import ClaudeHooksAPI
 from lapdog.codex_exec import display_tool_name
 from lapdog.codex_exec import extract_exec_calls
+from lapdog.codex_hooks import CodexHooksAPI
+from lapdog.codex_proxy import CodexProxyAPI
 
 
 @pytest.fixture
@@ -113,6 +115,329 @@ def _response_item(item_type, timestamp="2026-05-11T17:00:03.000Z", **kwargs):
             **kwargs,
         },
     }
+
+
+def _response_usage(index, second):
+    return {
+        "type": "token_usage_record",
+        "timestamp": f"2026-05-11T17:00:{second:06.3f}Z",
+        "payload": {
+            "turn_id": "turn-1",
+            "response_id": f"resp-{index}",
+            "usage": {"input_tokens": index * 100, "output_tokens": index * 10, "total_tokens": index * 110},
+        },
+    }
+
+
+@pytest.fixture
+def response_parser():
+    hooks = ClaudeHooksAPI()
+    parser = CodexHooksAPI(hooks)
+    parser._dispatch("session", _session_meta("session"))
+    parser._dispatch("session", _turn_context())
+    return hooks, parser
+
+
+def test_early_proxy_binding_consumes_buffered_output_and_reasoning(response_parser):
+    hooks, parser = response_parser
+    proxy = CodexProxyAPI(parser)
+    span = proxy._create_llm_span(
+        {"model": "gpt-5.5", "input": "inspect"},
+        {"id": "resp-1", "output": [{"type": "message", "role": "assistant", "content": "first"}]},
+        1778518802000000000,
+        1_000_000_000,
+    )
+    parser.register_proxy_llm_span("session", span, span["start_ns"], span["start_ns"] + span["duration"])
+    parser._dispatch(
+        "session", _response_item("reasoning", summary=[{"type": "summary_text", "text": "first reasoning"}])
+    )
+    parser._dispatch("session", _response_item("message", role="assistant", content="first"))
+    parser._dispatch("session", _response_usage(1, 3.1))
+    assert len(_by_kind(hooks._assembled_spans, "step")) == 1
+    parser._dispatch(
+        "session", _response_item("message", timestamp="2026-05-11T17:00:04.000Z", role="assistant", content="second")
+    )
+    parser._dispatch("session", _response_usage(2, 4.1))
+    llms = _by_kind(hooks._assembled_spans, "llm")
+    assert len(llms) == len(_by_kind(hooks._assembled_spans, "step")) == 2
+    assert [[message["content"] for message in llm["meta"]["output"]["messages"]] for llm in llms] == [
+        ["first"],
+        ["second"],
+    ]
+    assert llms[0]["meta"]["metadata"]["reasoning"][0]["text"] == "first reasoning"
+    assert "reasoning" not in llms[1]["meta"]["metadata"]
+
+
+@pytest.mark.parametrize("after_subagent_end", [False, True])
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("completion_first", [False, True])
+def test_late_structured_completion_preserves_subagent_parent(
+    response_parser, after_subagent_end, wrapped, completion_first
+):
+    hooks, parser = response_parser
+    records = [
+        _response_item("function_call", name="spawn_agent", call_id="spawn", arguments='{"prompt":"inspect"}'),
+        _response_usage(1, 3.1),
+        _event("collab_agent_spawn_begin", timestamp="2026-05-11T17:00:03.200Z", call_id="spawn"),
+        _response_item(
+            "custom_tool_call" if wrapped else "function_call",
+            timestamp="2026-05-11T17:00:04.000Z",
+            name="exec" if wrapped else "exec_command",
+            call_id="batch" if wrapped else "exec-1",
+            arguments='{"cmd":"pwd"}',
+            input='text(await tools.exec_command({cmd:"pwd"}));',
+        ),
+        _response_usage(2, 4.1),
+    ]
+    for record in records:
+        parser._dispatch("session", record)
+    output = _response_item(
+        "custom_tool_call_output" if wrapped else "function_call_output",
+        timestamp="2026-05-11T17:00:05.000Z",
+        call_id="batch" if wrapped else "exec-1",
+        output="/repo",
+    )
+    original_id = None
+    parent_id = next(
+        span["span_id"] for span in _by_kind(hooks._assembled_spans, "agent") if span["parent_id"] != "undefined"
+    )
+    if not completion_first:
+        parser._dispatch("session", output)
+        original_id = _by_kind(hooks._assembled_spans, "tool")[0]["span_id"]
+    if after_subagent_end:
+        parser._dispatch(
+            "session", _event("collab_agent_spawn_end", timestamp="2026-05-11T17:00:05.100Z", call_id="spawn")
+        )
+        parser._dispatch(
+            "session", _response_item("message", timestamp="2026-05-11T17:00:06.000Z", role="assistant", content="next")
+        )
+        parser._dispatch("session", _response_usage(3, 6.1))
+    parser._dispatch(
+        "session",
+        _event(
+            "item_completed",
+            timestamp="2026-05-11T17:00:07.000Z",
+            started_at_ms=1778518804200,
+            completed_at_ms=1778518804800,
+            item={
+                "type": "CommandExecution",
+                "id": "exec-1",
+                "command": ["/bin/sh", "-lc", "pwd"],
+                "aggregated_output": "/actual",
+                "status": "completed",
+                "exit_code": 0,
+            },
+        ),
+    )
+    if completion_first:
+        original_id = _by_kind(hooks._assembled_spans, "tool")[0]["span_id"]
+        parser._dispatch("session", output)
+    tools = _by_kind(hooks._assembled_spans, "tool")
+    assert len(tools) == 1
+    assert tools[0]["span_id"] == original_id
+    assert tools[0]["parent_id"] == parent_id
+    assert tools[0]["meta"]["output"]["value"] == "/actual"
+    producing_step = _by_kind(hooks._assembled_spans, "step")[1]
+    assert tools[0]["meta"]["metadata"]["step_span_id"] == producing_step["span_id"]
+    assert producing_step["start_ns"] + producing_step["duration"] >= tools[0]["start_ns"] + tools[0]["duration"]
+
+
+def test_legacy_proxy_request_start_keeps_new_tool_out_of_previous_response(response_parser):
+    hooks, parser = response_parser
+    proxy = CodexProxyAPI(parser)
+    for index in (1, 2):
+        start_ns = 1778518800000000000 + index * 2_000_000_000
+        parser.begin_proxy_llm_call("session", start_ns)
+        call = _response_item(
+            "function_call",
+            name="exec_command",
+            call_id=f"call-{index}",
+            arguments=json.dumps({"cmd": f"echo {index}"}),
+        )
+        if index == 2:
+            parser._dispatch("session", call)
+        span = proxy._create_llm_span(
+            {"model": "gpt-5.5", "input": "inspect"},
+            {"id": f"resp-{index}", "output": [call["payload"]]},
+            start_ns,
+            1_000_000_000,
+        )
+        parser.register_proxy_llm_span("session", span, start_ns, start_ns + span["duration"])
+    llms = _by_kind(hooks._assembled_spans, "llm")
+    assert len(llms) == 2
+    assert [
+        [call["id"] for message in llm["meta"]["output"]["messages"] for call in message.get("tool_calls", [])]
+        for llm in llms
+    ] == [["call-1"], ["call-2"]]
+
+
+def test_response_usage_keeps_jsonl_request_start_markers(response_parser):
+    hooks, parser = response_parser
+    parser._dispatch("session", _response_item("message", role="assistant", content="first"))
+    parser._dispatch("session", _response_usage(1, 3.1))
+    parser._dispatch("session", _event("token_count", timestamp="2026-05-11T17:00:04.000Z", info=None))
+    parser._dispatch(
+        "session", _response_item("message", timestamp="2026-05-11T17:00:14.000Z", role="assistant", content="second")
+    )
+    parser._dispatch("session", _response_usage(2, 14.1))
+    llms = _by_kind(hooks._assembled_spans, "llm")
+    assert len(llms) == 2
+    assert llms[1]["start_ns"] == 1778518804000000000
+    assert llms[1]["duration"] == 10_100_000_000
+
+
+@pytest.mark.parametrize(
+    "proxy_timing", ["before_jsonl", "after_usage", "after_next_response", "after_close", "absent"]
+)
+def test_response_ids_keep_repeated_commands_and_delayed_completions_in_their_steps(proxy_timing):
+    hooks = ClaudeHooksAPI()
+    parser = CodexHooksAPI(hooks)
+    proxy = CodexProxyAPI(parser)
+    sid = "response-steps"
+    for record in [_session_meta(sid), _turn_context(), _event("user_message", message="inspect files")]:
+        parser._dispatch(sid, record)
+
+    def call(index):
+        return _response_item(
+            "custom_tool_call",
+            timestamp=f"2026-05-11T17:00:0{index * 2 + 1}.000Z",
+            name="exec",
+            call_id=f"call-{index}",
+            input='text(await tools.exec_command({cmd:"pwd"}));',
+        )
+
+    def attach(index):
+        start_ns = 1778518800000000000 + index * 2_000_000_000
+        span = proxy._create_llm_span(
+            {"model": "gpt-5.5", "input": "inspect files"},
+            {"id": f"resp-{index}", "output": [call(index)["payload"]], "usage": {"input_tokens": index * 100}},
+            start_ns,
+            1_000_000_000,
+        )
+        assert span is not None
+        parser.register_proxy_llm_span(sid, span, start_ns, start_ns + span["duration"])
+
+    for index in (1, 2):
+        parser.begin_proxy_llm_call(sid, 1778518800000000000 + index * 2_000_000_000)
+        if proxy_timing == "before_jsonl":
+            attach(index)
+        parser._dispatch(sid, call(index))
+        parser._dispatch(sid, _response_usage(index, index * 2 + 1.1))
+        if index == 1:
+            original_llm = _by_kind(hooks._assembled_spans, "llm")[0]
+            original_id = original_llm["span_id"]
+        if proxy_timing == "after_usage":
+            attach(index)
+        parser._dispatch(
+            sid,
+            _response_item(
+                "custom_tool_call_output",
+                timestamp=f"2026-05-11T17:00:0{index * 2 + 2}.000Z",
+                call_id=f"call-{index}",
+                output="done",
+            ),
+        )
+        parser._dispatch(
+            sid,
+            _event(
+                "token_count",
+                timestamp=f"2026-05-11T17:00:0{index * 2 + 2}.100Z",
+                info={"last_token_usage": {"input_tokens": 999}},
+            ),
+        )
+
+    if proxy_timing == "after_next_response":
+        attach(1)
+        attach(2)
+    # Both completions arrive after the second response. The commands are
+    # identical, but their recorded execution starts belong to different steps.
+    for index in (1, 2):
+        parser._dispatch(
+            sid,
+            _event(
+                "item_completed",
+                timestamp="2026-05-11T17:00:06.500Z",
+                started_at_ms=1778518800000 + (index * 2 + 1) * 1000 + 200,
+                completed_at_ms=1778518800000 + (index * 2 + 2) * 1000,
+                item={
+                    "type": "CommandExecution",
+                    "id": f"exec-{index}",
+                    "command": ["/bin/sh", "-lc", "pwd"],
+                    "status": "completed",
+                    "exit_code": 0,
+                    "aggregated_output": f"/repo-{index}",
+                },
+            ),
+        )
+    parser._dispatch(sid, _response_usage(1, 6.6))
+    parser._dispatch(sid, _event("task_complete", timestamp="2026-05-11T17:00:07.000Z"))
+    if proxy_timing == "after_close":
+        parser._dispatch(sid, _turn_context("turn-2"))
+        attach(1)
+        attach(2)
+
+    steps = _by_kind(hooks._assembled_spans, "step")
+    llms = _by_kind(hooks._assembled_spans, "llm")
+    tools = _by_kind(hooks._assembled_spans, "tool")
+    assert len(steps) == len(llms) == len(tools) == 2
+    assert llms[0]["span_id"] == original_id
+    for index, (step, llm, tool) in enumerate(zip(steps, llms, tools), 1):
+        assert llm["parent_id"] == tool["parent_id"] == step["span_id"]
+        assert llm["meta"]["metadata"]["response_id"] == f"resp-{index}"
+        assert llm["metrics"]["input_tokens"] == index * 100
+        assert tool["meta"]["output"]["value"] == f"/repo-{index}"
+        assert tool["meta"]["metadata"]["exec_call_id"] == f"call-{index}"
+        assert step["start_ns"] <= llm["start_ns"] <= tool["start_ns"]
+        assert step["start_ns"] + step["duration"] >= tool["start_ns"] + tool["duration"]
+
+
+@pytest.mark.parametrize("completed", [True, False])
+def test_subagent_after_next_response_keeps_producing_step(completed):
+    hooks = ClaudeHooksAPI()
+    parser = CodexHooksAPI(hooks)
+    sid = "subagent-response"
+    for record in [
+        _session_meta(sid),
+        _turn_context(),
+        _response_item("function_call", name="spawn_agent", call_id="spawn", arguments='{"prompt":"inspect"}'),
+        _response_usage(1, 3.1),
+        _response_item(
+            "message", timestamp="2026-05-11T17:00:04.000Z", role="assistant", content="Working on another task"
+        ),
+        _response_usage(2, 4.1),
+        _event("collab_agent_spawn_begin", timestamp="2026-05-11T17:00:05.000Z", call_id="spawn", prompt="inspect"),
+    ]:
+        parser._dispatch(sid, record)
+    if completed:
+        parser._dispatch(
+            sid, _event("collab_agent_spawn_end", timestamp="2026-05-11T17:00:06.000Z", call_id="spawn", status="ok")
+        )
+    parser._dispatch(sid, _event("task_complete", timestamp="2026-05-11T17:00:07.000Z"))
+    steps = _by_kind(hooks._assembled_spans, "step")
+    assert len(steps) == 2
+    subagent = next(span for span in _by_kind(hooks._assembled_spans, "agent") if span["parent_id"] != "undefined")
+    assert subagent["parent_id"] == steps[0]["span_id"]
+    assert subagent["status"] == ("ok" if completed else "error")
+    assert steps[0]["start_ns"] + steps[0]["duration"] >= subagent["start_ns"] + subagent["duration"]
+
+
+def test_repeated_assistant_text_in_distinct_responses_keeps_both_steps():
+    hooks = ClaudeHooksAPI()
+    parser = CodexHooksAPI(hooks)
+    sid = "repeated-output"
+    parser._dispatch(sid, _session_meta(sid))
+    parser._dispatch(sid, _turn_context())
+    for index in (1, 2):
+        parser._dispatch(
+            sid,
+            _response_item(
+                "message", timestamp=f"2026-05-11T17:00:0{index + 2}.000Z", role="assistant", content="Checking"
+            ),
+        )
+        parser._dispatch(sid, _response_usage(index, index + 2.1))
+    llms = _by_kind(hooks._assembled_spans, "llm")
+    assert [span["meta"]["metadata"]["response_id"] for span in llms] == ["resp-1", "resp-2"]
+    assert len({span["parent_id"] for span in llms}) == 2
 
 
 async def test_codex_turn_llm_and_tool_spans(agent, pricing_catalog):
@@ -1590,6 +1915,97 @@ async def test_codex_guardian_reviews_annotate_only_parent_tools(agent, pricing_
         assert "auto_reviews" not in step["meta"]["metadata"].get("_dd", {})
 
 
+@pytest.mark.parametrize("review_first", [True, False])
+@pytest.mark.parametrize("structured", [True, False])
+@pytest.mark.parametrize("ambiguous", [True, False])
+@pytest.mark.parametrize("limit", [None, 80])
+async def test_codex_batch_review_matches_inner_command(agent, monkeypatch, review_first, structured, ambiguous, limit):
+    monkeypatch.setattr("lapdog.codex_hooks.MAX_TOOL_VALUE_CHARS", limit)
+    parent_sid, review_sid = "batch-parent", "batch-review"
+    command = 'echo "reviewed"'
+    commands = [command if ambiguous else "echo unrelated", command]
+    await _post(agent, parent_sid, _session_meta(parent_sid))
+    await _post(agent, parent_sid, _turn_context("batch-turn"))
+    await _post(
+        agent,
+        parent_sid,
+        _response_item(
+            "custom_tool_call",
+            timestamp="2026-05-11T17:00:03.000Z",
+            name="exec",
+            call_id="batch",
+            input="await Promise.all(["
+            + ",".join(
+                "tools.exec_command(" + json.dumps({"cmd": c, "justification": "May I run this command? " * 10}) + ")"
+                for c in commands
+            )
+            + "]);",
+        ),
+    )
+    meta = _session_meta(review_sid)
+    meta["payload"].update(thread_source="guardian_review", parent_thread_id=parent_sid)
+    review_records = [
+        meta,
+        _event("task_started", timestamp="2026-05-11T17:00:03.100Z"),
+        _response_item(
+            "message",
+            timestamp="2026-05-11T17:00:03.200Z",
+            role="user",
+            content=[
+                {
+                    "type": "input_text",
+                    "text": "Planned action JSON:\n" + json.dumps({"command": ["/bin/sh", "-lc", command]}),
+                }
+            ],
+        ),
+        _response_item(
+            "message",
+            timestamp="2026-05-11T17:00:04.000Z",
+            role="assistant",
+            content=[{"type": "output_text", "text": '{"outcome":"allow"}'}],
+        ),
+        _event("task_complete", timestamp="2026-05-11T17:00:04.000Z"),
+    ]
+    completions = []
+    if structured:
+        for index, cmd in enumerate(commands):
+            completions.append(
+                _event(
+                    "item_completed",
+                    timestamp="2026-05-11T17:00:05.000Z",
+                    item={
+                        "type": "CommandExecution",
+                        "id": f"item-{index}",
+                        "command": ["/bin/sh", "-lc", cmd],
+                        "status": "completed",
+                        "aggregated_output": "ok",
+                        # Execution starts after the approval decision.
+                        "duration": {"secs": 0, "nanos": 800_000_000},
+                    },
+                )
+            )
+    completions.append(
+        _response_item("custom_tool_call_output", timestamp="2026-05-11T17:00:05.000Z", call_id="batch", output="ok")
+    )
+    for records, sid in (
+        ((review_records, review_sid), (completions, parent_sid))
+        if review_first
+        else ((completions, parent_sid), (review_records, review_sid))
+    ):
+        for record in records:
+            await _post(agent, sid, record)
+    spans = _spans(await (await agent.get("/claude/hooks/spans")).json())
+    tools = _by_kind(spans, "tool")
+    assert len(tools) == 2
+    annotated = [tool for tool in tools if tool["meta"]["metadata"].get("_dd", {}).get("auto_reviews")]
+    if ambiguous:
+        assert annotated == []
+    else:
+        assert len(annotated) == 1
+        assert annotated[0]["meta"]["metadata"]["tool_id"] == "batch:1"
+        assert annotated[0]["meta"]["metadata"]["_dd"]["auto_reviews"][0]["outcome"] == "allow"
+
+
 async def test_codex_guardian_review_arriving_after_tool_output(agent):
     parent_sid = "codex-parent-late-review"
     review_sid = "codex-late-guardian"
@@ -2507,20 +2923,34 @@ async def test_codex_subagent_call_id_reused_within_turn_yields_distinct_spans(a
 
 
 @pytest.mark.parametrize("late", [False, True])
-async def test_structured_command_replaces_wrapper_output(agent, late):
+@pytest.mark.parametrize("limit", [None, 80])
+@pytest.mark.parametrize("duration_ns", [1_000_000_000, 8541, 0])
+async def test_structured_command_replaces_wrapper_output(agent, monkeypatch, late, limit, duration_ns):
+    monkeypatch.setattr("lapdog.codex_hooks.MAX_TOOL_VALUE_CHARS", limit)
     sid = "structured-command"
+    arguments = {
+        "cmd": "pwd",
+        "sandbox_permissions": "require_escalated",
+        "justification": "May I check the working directory outside the sandbox?",
+        "max_output_tokens": 2000,
+    }
     await _post(agent, sid, _session_meta(sid))
     await _post(agent, sid, _turn_context())
     await _post(
         agent,
         sid,
         _response_item(
-            "custom_tool_call", name="exec", call_id="batch", input='text(await tools.exec_command({cmd:"pwd"}));'
+            "custom_tool_call",
+            name="exec",
+            call_id="batch",
+            input="text(await tools.exec_command(" + json.dumps(arguments) + "));",
         ),
     )
     completion = _event(
         "item_completed",
-        timestamp="2026-05-11T17:00:04.000Z",
+        timestamp="2026-05-11T17:00:04.500Z",
+        started_at_ms=1778518804000 - duration_ns // 1_000_000,
+        completed_at_ms=1778518804000,
         item={
             "type": "CommandExecution",
             "id": "exec-1",
@@ -2529,11 +2959,12 @@ async def test_structured_command_replaces_wrapper_output(agent, late):
             "aggregated_output": "/repo\n",
             "exit_code": 0,
             "status": "completed",
-            "duration": {"secs": 1, "nanos": 0},
+            "duration": {"secs": duration_ns // 1_000_000_000, "nanos": duration_ns % 1_000_000_000},
         },
     )
     output = _response_item(
         "custom_tool_call_output",
+        timestamp="2026-05-11T17:00:04.200Z",
         call_id="batch",
         output=[
             {"type": "input_text", "text": "Script completed\nOutput:\n"},
@@ -2546,12 +2977,23 @@ async def test_structured_command_replaces_wrapper_output(agent, late):
     await _post(agent, sid, _event("task_complete"))
     tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
     assert len(tools) == 1
+    assert tools[0]["start_ns"] == 1778518804000000000 - duration_ns
+    assert tools[0]["duration"] == duration_ns
+    assert "timing" not in tools[0]["meta"]["metadata"]
     assert tools[0]["meta"]["output"]["value"] == "/repo\n"
     assert tools[0]["meta"]["metadata"]["exit_code"] == 0
     assert tools[0]["meta"]["metadata"]["result_source"] == "item_completed"
+    assert tools[0]["meta"]["metadata"]["input_format"] == "json"
+    if limit is None:
+        assert json.loads(tools[0]["meta"]["input"]["value"]) == arguments
+    else:
+        assert tools[0]["meta"]["input"]["value"].startswith(json.dumps(arguments)[:limit])
+        assert tools[0]["meta"]["metadata"]["_dd"]["truncated_input"] is True
+        assert tools[0]["meta"]["metadata"]["_dd"]["max_value_chars"] == limit
 
 
-async def test_structured_mcp_and_patch_without_printed_results(agent):
+@pytest.mark.parametrize("late", [False, True])
+async def test_structured_mcp_and_patch_without_printed_results(agent, late):
     sid = "structured-tools"
     await _post(agent, sid, _session_meta(sid))
     await _post(agent, sid, _turn_context())
@@ -2568,6 +3010,9 @@ async def test_structured_mcp_and_patch_without_printed_results(agent):
             ),
         ),
     )
+    output = _response_item("custom_tool_call_output", call_id="batch", output="done")
+    if late:
+        await _post(agent, sid, output)
     result = {"content": [{"type": "text", "text": "resource result"}], "isError": False}
     for item in [
         {
@@ -2588,10 +3033,23 @@ async def test_structured_mcp_and_patch_without_printed_results(agent):
             "status": "completed",
         },
     ]:
-        await _post(agent, sid, _event("item_completed", timestamp="2026-05-11T17:00:04.000Z", item=item))
-    await _post(agent, sid, _response_item("custom_tool_call_output", call_id="batch", output="done"))
+        await _post(
+            agent,
+            sid,
+            _event(
+                "item_completed",
+                timestamp="2026-05-11T17:00:04.000Z",
+                item=item,
+                started_at_ms=1778518803250,
+                completed_at_ms=1778518803310,
+            ),
+        )
+    if not late:
+        await _post(agent, sid, output)
     await _post(agent, sid, _event("task_complete"))
     tools = _by_kind(_spans(await (await agent.get("/claude/hooks/spans")).json()), "tool")
+    assert all(tool["start_ns"] == 1778518803250000000 for tool in tools)
+    assert all(tool["duration"] == 60_000_000 for tool in tools)
     assert len(tools) == 2
     assert json.loads(tools[0]["meta"]["output"]["value"]) == result
     assert tools[1]["meta"]["output"]["value"] == "Success"

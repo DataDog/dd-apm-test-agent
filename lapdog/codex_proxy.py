@@ -162,7 +162,7 @@ def _format_input_messages(body: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "content": _content_to_text(item.get("content", "")),
                 }
             )
-        elif item_type == "function_call_output":
+        elif item_type in ("function_call_output", "custom_tool_call_output"):
             messages.append(
                 {
                     "role": "tool",
@@ -195,10 +195,12 @@ def _format_output_messages(response: Dict[str, Any]) -> List[Dict[str, Any]]:
             reasoning = _extract_reasoning_metadata(item)
             if reasoning:
                 reasoning_items.append(reasoning)
-        elif item_type == "function_call":
-            arguments = item.get("arguments", "")
+        elif item_type in ("function_call", "custom_tool_call"):
+            arguments = item.get("input", "") if item_type == "custom_tool_call" else item.get("arguments", "")
             try:
-                parsed_arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
+                parsed_arguments = (
+                    json.loads(arguments) if item_type == "function_call" and isinstance(arguments, str) else arguments
+                )
             except (TypeError, ValueError):
                 parsed_arguments = arguments
             tool_call = {

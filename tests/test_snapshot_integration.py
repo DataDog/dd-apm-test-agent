@@ -7,6 +7,8 @@ import asyncio
 import os
 import platform
 import subprocess
+import sys
+import time
 from typing import Callable
 from typing import Dict
 from typing import Generator
@@ -14,7 +16,6 @@ from typing import Generator
 import aiohttp
 from ddtrace._trace.sampler import DatadogSampler
 from ddtrace._trace.sampling_rule import SamplingRule
-from ddtrace.profiling import Profiler
 from ddtrace.propagation.http import HTTPPropagator
 from ddtrace.trace import Tracer
 import pytest
@@ -194,6 +195,19 @@ async def test_trace_missing_received(testagent_url, testagent, tracer):
     assert resp.status == 400
 
 
+async def _wait_for_fresh_stats_bucket(tracer: Tracer, margin_ns: int = 2_000_000_000) -> None:
+    # Stats buckets are aligned on span end time, so traces generated just before
+    # a bucket boundary get split across two buckets and won't match the snapshot.
+    for processor in tracer._span_processors:
+        if processor.__class__.__name__ == "SpanStatsProcessorV06":
+            bucket_size_ns = processor._bucket_size_ns
+            remaining_ns = bucket_size_ns - time.time_ns() % bucket_size_ns
+            if remaining_ns < margin_ns:
+                # Pad past the boundary; asyncio may wake early by up to the
+                # clock resolution (~16ms on Windows).
+                await asyncio.sleep(remaining_ns / 1e9 + 0.1)
+
+
 def _tracestats_traces(tracer: Tracer) -> None:
     for i in range(5):
         with tracer.trace("http.request", resource="/users/view") as span:
@@ -243,6 +257,7 @@ async def test_tracestats(
     fail: bool,
 ) -> None:
     await testagent.get(f"{testagent_url}/test/session/start?test_session_token=test_trace_stats")
+    await _wait_for_fresh_stats_bucket(stats_tracer)
     do_traces(stats_tracer)
     stats_tracer.shutdown()  # force out the stats
     resp = await testagent.get(f"{testagent_url}/test/session/snapshot?test_session_token=test_trace_stats")
@@ -284,7 +299,11 @@ async def test_cmd(testagent_url: str, testagent: aiohttp.ClientSession, tracer:
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="Profiling broken on windows")
+# ddtrace 3.x profiling patches asyncio.events.BaseDefaultEventLoopPolicy, which Python 3.14 removed
+@pytest.mark.skipif(sys.version_info >= (3, 14), reason="ddtrace 3.x profiling is broken on Python 3.14")
 async def test_profiling_endpoint(testagent_url: str, testagent: aiohttp.ClientSession, tracer: Tracer) -> None:
+    from ddtrace.profiling import Profiler
+
     p = Profiler(tracer=tracer)
     p.start()
     p.stop(flush=True)

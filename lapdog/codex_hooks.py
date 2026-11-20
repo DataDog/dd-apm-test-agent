@@ -374,6 +374,7 @@ class CodexSession:
         self.pending_subagents: Dict[str, Dict[str, Any]] = {}
         self.task_id = ""
         self.proxy_session_keys: Set[str] = set()
+        self.has_response_usage = False
 
 
 class CodexConfig:
@@ -480,8 +481,23 @@ class CodexHooksAPI:
                 self._attach_pending_auto_reviews(parent)
             state["review"] = None
 
+    @staticmethod
+    def _matches_review_command(command: str, tool_input: Any) -> bool:
+        if not command:
+            return True
+        if isinstance(tool_input, str):
+            try:
+                tool_input = json.loads(tool_input)
+            except ValueError:
+                return False
+        return isinstance(tool_input, dict) and tool_input.get("cmd") == command
+
     def _attach_pending_auto_reviews(self, session: CodexSession) -> None:
         turn = session.active_turn
+        # Match against recorded arguments, which may exceed the display limit.
+        tool_inputs = {
+            entry["span"]["span_id"]: entry["arguments"] for entry in session.structured_tools + session.fallback_tools
+        }
         remaining = []
         for review in session.pending_auto_reviews:
             action = review.get("planned_action", {})
@@ -493,13 +509,17 @@ class CodexHooksAPI:
                     (tool_id, pending)
                     for tool_id, pending in session.pending_tools.items()
                     if pending.start_ns <= review["start_ns"]
+                    and pending.tool_name not in _EXEC_WRAPPER_NAMES
                     and tool_id not in session.auto_reviews_by_tool_id
-                    and (not command_text or command_text in str(pending.tool_input))
+                    and self._matches_review_command(command_text, pending.tool_input)
                 ]
             pending = None
             tool_span = None
+            if len(candidates) > 1:
+                remaining.append(review)
+                continue
             if candidates:
-                tool_id, pending = max(candidates, key=lambda item: item[1].start_ns)
+                tool_id, pending = candidates[0]
                 parent_id = pending.parent_id
             else:
                 completed = [
@@ -507,17 +527,22 @@ class CodexHooksAPI:
                     for span in self._hooks_api._assembled_spans
                     if span.get("session_id") == session.session_id
                     and span.get("meta", {}).get("span", {}).get("kind") == "tool"
-                    and span.get("start_ns", 0) <= review["start_ns"]
-                    and span.get("start_ns", 0) + span.get("duration", 0) >= review["end_ns"]
+                    and span.get("meta", {}).get("metadata", {}).get("exec_start_ns", span.get("start_ns", 0))
+                    <= review["start_ns"]
+                    and span.get("meta", {})
+                    .get("metadata", {})
+                    .get("exec_end_ns", span.get("start_ns", 0) + span.get("duration", 0))
+                    >= review["end_ns"]
                     and not span.get("meta", {}).get("metadata", {}).get("_dd", {}).get("auto_reviews")
-                    and (
-                        not command_text or command_text in str(span.get("meta", {}).get("input", {}).get("value", ""))
+                    and self._matches_review_command(
+                        command_text,
+                        tool_inputs.get(span["span_id"], span.get("meta", {}).get("input", {}).get("value", "")),
                     )
                 ]
-                if not completed:
+                if len(completed) != 1:
                     remaining.append(review)
                     continue
-                tool_span = max(completed, key=lambda span: span["start_ns"])
+                tool_span = completed[0]
                 tool_id = str(tool_span["meta"]["metadata"]["tool_id"])
                 parent_id = str(tool_span["parent_id"])
             step = next((span for span in self._hooks_api._assembled_spans if span.get("span_id") == parent_id), None)
@@ -747,7 +772,10 @@ class CodexHooksAPI:
             turn.active_llm_input_messages = self._llm_input_messages(session, turn)
 
     def _begin_llm_in_step(self, session: CodexSession, turn: CodexTurn, start_ns: int) -> None:
-        if turn.step_span_ref is not None and turn.current_step_has_llm:
+        # Proxy output can arrive before the transcript for the same response.
+        metadata = (turn.last_llm_span_ref or {}).get("meta", {}).get("metadata", {})
+        awaiting_response_usage = metadata.get("response_id") and not metadata.get("turn_id")
+        if turn.step_span_ref is not None and turn.current_step_has_llm and not awaiting_response_usage:
             self._close_current_step(turn)
         self._ensure_step(session, turn, start_ns)
         self._mark_llm_start(session, turn, start_ns)
@@ -831,12 +859,14 @@ class CodexHooksAPI:
                 continue
             if tool_call.get("id") == tool_use_id:
                 return True
+            if tool_call.get("id"):
+                continue
             if tool_name and tool_call.get("name") and tool_call.get("name") != tool_name:
                 continue
             if _canonical_json_value(tool_call.get("arguments", "")) == expected_arguments:
                 return True
         content = message.get("content", "")
-        return bool(content) and _canonical_json_value(content) == expected_arguments
+        return not tool_calls and bool(content) and _canonical_json_value(content) == expected_arguments
 
     def _find_llm_step_for_tool_call(
         self,
@@ -1154,6 +1184,7 @@ class CodexHooksAPI:
                 span["duration"] = max(end_ns - int(span.get("start_ns", end_ns)), 0)
                 span["status"] = "error"
                 span["meta"].setdefault("metadata", {}).setdefault("subagent", {})["status"] = "unterminated"
+                self._update_step_end(turn, span["parent_id"], end_ns)
         session.agent_span_stack.clear()
         session.pending_subagents.clear()
         self._close_current_step(turn, end_ns=turn.current_step_last_ns or end_ns)
@@ -1372,7 +1403,12 @@ class CodexHooksAPI:
             turn = self._active_turn(session, record)
             ns = _timestamp_to_ns(record.get("timestamp", ""))
             message = _content_text(payload.get("content"))
-            if turn.current_step_has_llm and _llm_has_text_output(turn.last_llm_span_ref, message):
+            response_bound = bool(turn.step_span_ref and turn.step_span_ref["meta"]["metadata"].get("response_id"))
+            if (
+                turn.current_step_has_llm
+                and not response_bound
+                and _llm_has_text_output(turn.last_llm_span_ref, message)
+            ):
                 if turn.root_span_ref:
                     turn.root_span_ref["meta"]["output"]["value"] = message
                 self._set_step_output(turn, message)
@@ -1480,7 +1516,89 @@ class CodexHooksAPI:
         turn.pending_llm_usage = None
         turn.pending_llm_end_ns = None
 
+    def _response_llm_span(self, response_id: str, bound: bool = False) -> Optional[Dict[str, Any]]:
+        if not response_id:
+            return None
+        for span in reversed(self._hooks_api._assembled_spans):
+            metadata = span.get("meta", {}).get("metadata", {})
+            if (
+                span.get("meta", {}).get("span", {}).get("kind") == "llm"
+                and metadata.get("response_id") == response_id
+                and (not bound or metadata.get("turn_id"))
+            ):
+                return span
+        return None
+
+    def _merge_response_span(self, target: Dict[str, Any], proxy: Dict[str, Any]) -> None:
+        # Keep the span identity and transcript tool IDs, including any status
+        # updates. The proxy supplies the full input, model timing and usage.
+        for key in ("start_ns", "duration", "name", "metrics"):
+            target[key] = proxy[key]
+        for key in ("input", "model_name", "model_provider"):
+            if key in proxy["meta"]:
+                target["meta"][key] = proxy["meta"][key]
+        target["meta"]["metadata"] = {**proxy["meta"].get("metadata", {}), **target["meta"]["metadata"]}
+        target["tags"] = ["source:codex-proxy" if tag == "source:codex-jsonl" else tag for tag in target["tags"]]
+        for step in self._hooks_api._assembled_spans:
+            if step["span_id"] == target["parent_id"]:
+                end_ns = max(step["start_ns"] + step["duration"], target["start_ns"] + target["duration"])
+                step["start_ns"] = min(step["start_ns"], target["start_ns"])
+                step["duration"] = end_ns - step["start_ns"]
+                break
+
+    def _handle_response_usage(self, session: CodexSession, record: Dict[str, Any]) -> None:
+        payload = record.get("payload", {})
+        response_id = str(payload.get("response_id") or "")
+        if not response_id or not payload.get("usage"):
+            return
+        session.has_response_usage = True
+        if self._response_llm_span(response_id, bound=True) is not None:
+            return
+        turn = session.active_turn
+        if turn is None or turn.closed or (payload.get("turn_id") and payload["turn_id"] != turn.turn_id):
+            return
+        proxy = self._response_llm_span(response_id)
+        span: Optional[Dict[str, Any]]
+        if proxy is not None and proxy.get("parent_id") in turn.step_span_refs:
+            span = proxy
+            step_id = str(span["parent_id"])
+            for message in turn.llm_output_messages:
+                messages = span["meta"]["output"].setdefault("messages", [])
+                if message.get("tool_calls"):
+                    _append_or_update_tool_call_message(messages, message)
+                else:
+                    _append_unique_message(messages, message)
+            if turn.reasoning_items:
+                span["meta"]["metadata"]["reasoning"] = _copy_reasoning_items(turn.reasoning_items)
+            self._close_current_step(turn)
+            turn.step_span_id = step_id
+            turn.step_span_ref = turn.step_span_refs[step_id]
+            turn.current_step_start_ns = span["start_ns"]
+            turn.current_step_last_ns = span["start_ns"] + span["duration"]
+            turn.current_step_has_llm = True
+            turn.last_llm_span_ref = span
+        else:
+            end_ns = self._update_last_ns(session, record)
+            turn.pending_llm_usage = dict(payload["usage"])
+            turn.pending_llm_end_ns = end_ns
+            self._emit_pending_llm_span(session, turn)
+            span = turn.last_llm_span_ref
+            if span is None or span.get("parent_id") != turn.step_span_id:
+                return
+            if proxy is not None:
+                self._merge_response_span(span, proxy)
+                self._hooks_api._assembled_spans.remove_where(lambda candidate: candidate is proxy)
+                self._orphan_proxy_llm_spans = [
+                    entry for entry in self._orphan_proxy_llm_spans if entry[1] is not proxy
+                ]
+        span["meta"]["metadata"].update(response_id=response_id, turn_id=turn.turn_id)
+        turn.step_span_refs[span["parent_id"]]["meta"]["metadata"]["response_id"] = response_id
+
     def _handle_token_count(self, session: CodexSession, record: Dict[str, Any]) -> None:
+        # New JSONL records identify each response before tool execution. The
+        # legacy counter arrives after tools and repeats that same usage.
+        if session.has_response_usage and record.get("payload", {}).get("info"):
+            return
         turn = self._active_turn(session, record)
         event = record.get("payload", {})
         info = event.get("info") or {}
@@ -1534,7 +1652,7 @@ class CodexHooksAPI:
         if session is None or session.active_turn is None or session.active_turn.closed:
             return maybe_session_id
         turn = session.active_turn
-        if turn.step_span_ref is not None and turn.current_step_has_llm:
+        if not session.has_response_usage and turn.step_span_ref is not None and turn.current_step_has_llm:
             self._close_current_step(turn)
         turn.proxy_llm_calls_started += 1
         turn.last_ns = max(turn.last_ns, start_ns)
@@ -1556,7 +1674,17 @@ class CodexHooksAPI:
         end_ns: int,
     ) -> None:
         """Attach a proxied LLM span to the active Codex turn, or buffer it."""
+        response_id = str(span.get("meta", {}).get("metadata", {}).get("response_id") or "")
+        existing = self._response_llm_span(response_id, bound=True)
+        if existing is not None:
+            self._merge_response_span(existing, span)
+            return
         session = self._active_proxy_session(maybe_session_id)
+        if session is not None and session.has_response_usage and response_id:
+            span["parent_id"] = "undefined"
+            self._orphan_proxy_llm_spans.append((maybe_session_id, span))
+            self._append_span(span)
+            return
         if session is None or session.active_turn is None or session.active_turn.closed:
             session = self._matching_proxy_span_session(maybe_session_id, span)
         if session is None or session.active_turn is None or session.active_turn.closed:
@@ -1656,7 +1784,7 @@ class CodexHooksAPI:
                 span["parent_id"] = turn.step_span_id
 
     def _adopt_orphan_proxy_llm_spans(self, session: CodexSession, turn: CodexTurn) -> None:
-        if not self._orphan_proxy_llm_spans:
+        if not self._orphan_proxy_llm_spans or session.has_response_usage:
             return
         remaining: List[OrphanProxySpan] = []
         for maybe_session_id, span in self._orphan_proxy_llm_spans:
@@ -1710,12 +1838,15 @@ class CodexHooksAPI:
     ) -> None:
         turn = self._active_turn(session, record)
         start_ns = _timestamp_to_ns(record.get("timestamp", ""))
-        self._ensure_step(session, turn, start_ns)
         call_id = str(event.get("call_id", "")) or _format_span_id()
+        unique_id = session.tool_use_id_map.get(call_id, call_id)
+        pending = session.pending_tools.get(unique_id)
+        if pending is None:
+            self._ensure_step(session, turn, start_ns)
         prompt = event.get("prompt", "")
         sender_thread_id = event.get("sender_thread_id", "")
         agent_name = event.get("new_agent_nickname") or event.get("agent_nickname") or "subagent"
-        parent_id = self._tool_parent_id(session, turn)
+        parent_id = pending.parent_id if pending is not None else self._tool_parent_id(session, turn)
         span_id = _format_span_id()
         span: Dict[str, Any] = {
             "span_id": span_id,
@@ -1789,6 +1920,8 @@ class CodexHooksAPI:
         span = entry.get("_span_ref")
         if isinstance(span, dict):
             span["duration"] = max(end_ns - int(span.get("start_ns", end_ns)), 0)
+            if session.active_turn is not None:
+                self._update_step_end(session.active_turn, span["parent_id"], end_ns)
             status = str(event.get("status", "")) or "ok"
             span["status"] = "ok" if status in ("ok", "success", "") else "error"
             metadata = span["meta"].setdefault("metadata", {}).setdefault("subagent", {})
@@ -1868,6 +2001,8 @@ class CodexHooksAPI:
             if matched_llm_span is not None:
                 turn.last_llm_span_ref = matched_llm_span
         else:
+            if session.has_response_usage and turn.current_step_has_llm:
+                self._close_current_step(turn)
             self._ensure_step(session, turn, start_ns)
 
         appending_to_existing_llm = (
@@ -2065,8 +2200,34 @@ class CodexHooksAPI:
             self._update_step_end(turn, str(span["parent_id"]), end_ns)
         return True
 
+    def _inference_step_id(self, turn: CodexTurn, parent_id: str) -> str:
+        parents = {
+            span["span_id"]: span.get("parent_id", "")
+            for span in self._hooks_api._assembled_spans
+            if span.get("trace_id") == turn.trace_id
+        }
+        visited: Set[str] = set()
+        while parent_id and parent_id not in visited:
+            if parent_id in turn.step_span_refs:
+                return parent_id
+            visited.add(parent_id)
+            parent_id = parents.get(parent_id, "")
+        return ""
+
+    def _tool_inference_step_id(self, turn: CodexTurn, span: Dict[str, Any]) -> str:
+        # Subagent ancestry and the response that issued a tool are independent.
+        metadata = span.get("meta", {}).get("metadata", {})
+        if metadata.get("step_span_id") in turn.step_span_refs:
+            return str(metadata["step_span_id"])
+        tool_id = metadata.get("exec_call_id") or metadata.get("tool_id")
+        for step in turn.step_span_refs.values():
+            if tool_id in step["meta"]["metadata"].get("tool_use_ids", []):
+                return str(step["span_id"])
+        return self._inference_step_id(turn, str(span["parent_id"]))
+
     def _handle_tool_completion(self, session: CodexSession, record: Dict[str, Any]) -> None:
-        item = record.get("payload", {}).get("item", {})
+        event = record.get("payload", {})
+        item = event.get("item", {})
         completion = tool_completion(item)
         if completion is None or not item.get("id"):
             return
@@ -2074,6 +2235,44 @@ class CodexHooksAPI:
             return
         end_ns = self._update_last_ns(session, record)
         turn = self._active_turn(session, record)
+        if isinstance(event.get("completed_at_ms"), (int, float)):
+            end_ns = int(event["completed_at_ms"] * 1_000_000)
+        duration = item.get("duration") or {}
+        has_start = isinstance(event.get("started_at_ms"), (int, float))
+        start_ns = end_ns
+        # Explicit durations retain sub-millisecond precision. FileChange and
+        # some MCP records instead supply only the event's timing interval.
+        if duration:
+            duration_ns = int(duration.get("secs", 0)) * 1_000_000_000 + int(duration.get("nanos", 0))
+            start_ns = end_ns - duration_ns
+        elif has_start:
+            start_ns = int(event["started_at_ms"] * 1_000_000)
+        # A command may finish after a later response. Its execution start
+        # selects the producing step, not the time the completion was read.
+        parent_id = self._tool_parent_id(session, turn)
+        step_id = self._inference_step_id(turn, parent_id)
+        if session.has_response_usage:
+            steps = [step for step in turn.step_span_refs.values() if step["start_ns"] <= start_ns]
+            if steps:
+                step_id = str(max(steps, key=lambda step: step["start_ns"])["span_id"])
+                if not parent_id or parent_id in turn.step_span_refs:
+                    parent_id = step_id
+            # A pending call retains its subagent parent even when that agent
+            # started in another step or has since finished.
+            tool_ids = turn.step_span_refs.get(step_id, {}).get("meta", {}).get("metadata", {}).get("tool_use_ids", [])
+            parents = set()
+            for tool_id, pending_call in session.pending_tools.items():
+                if tool_id not in tool_ids or pending_call.start_ns > start_ns:
+                    continue
+                calls = (
+                    extract_exec_calls(pending_call.tool_input)
+                    if pending_call.tool_name in _EXEC_WRAPPER_NAMES and isinstance(pending_call.tool_input, str)
+                    else [{"name": pending_call.tool_name, "arguments": pending_call.tool_input}]
+                )
+                if any(matches_call(completion, call["name"], call["arguments"]) for call in calls):
+                    parents.add(pending_call.parent_id)
+            if len(parents) == 1:
+                parent_id = parents.pop()
         candidates = [
             entry
             for entry in session.fallback_tools
@@ -2091,6 +2290,8 @@ class CodexHooksAPI:
             if process_id
             else []
         )
+        if session.has_response_usage:
+            candidates = [entry for entry in candidates if self._tool_inference_step_id(turn, entry["span"]) == step_id]
         target = identified[0] if len(identified) == 1 else candidates[0] if len(candidates) == 1 else None
         value = completion["value"]
         output = value if isinstance(value, str) else _to_json_str(value)
@@ -2105,6 +2306,7 @@ class CodexHooksAPI:
             "result_matched": True,
             "raw_tool_name": completion["name"],
             "item_id": item["id"],
+            "step_span_id": step_id,
         }
         if target is not None:
             span = target["span"]
@@ -2124,26 +2326,31 @@ class CodexHooksAPI:
             direct_id = session.tool_use_id_map.get(str(item["id"]), str(item["id"]))
             pending = session.pending_tools.get(direct_id)
             if pending is None:
-                self._ensure_step(session, turn, end_ns)
-                duration = item.get("duration") or {}
-                duration_ns = int(duration.get("secs", 0)) * 1_000_000_000 + int(duration.get("nanos", 0))
+                if not parent_id:
+                    self._ensure_step(session, turn, start_ns)
+                    parent_id = self._tool_parent_id(session, turn)
                 pending = PendingToolSpan(
                     span_id=_format_span_id(),
                     tool_name=display_tool_name(completion["name"], completion["arguments"]),
                     tool_input=completion["arguments"],
-                    parent_id=self._tool_parent_id(session, turn),
-                    start_ns=end_ns - duration_ns,
+                    parent_id=parent_id,
+                    start_ns=start_ns,
                 )
                 session.pending_tool_ids_by_span_id[pending.span_id] = str(item["id"])
             span = self._emit_tool_span(session, pending, end_ns, output, is_error, extra_metadata=details)
             if span is None:
                 return
+        if duration or has_start:
+            # Replace wrapper timing even when the completion arrives later.
+            span["start_ns"] = start_ns
+            span["duration"] = max(end_ns - start_ns, 0)
+            span["meta"]["metadata"].pop("timing", None)
         if process_id is not None:
             session.shell_sessions[str(process_id)] = {"span": span, "completed": True}
         completion.update(span=span, end_ns=end_ns, claimed=target is not None)
         session.structured_tools.append(completion)
         session.tools_used.add(span["name"])
-        self._update_step_end(turn, span["parent_id"], end_ns)
+        self._update_step_end(turn, step_id or span["parent_id"], end_ns)
         self._update_agent_manifest(session)
 
     def _handle_function_call_output(self, session: CodexSession, record: Dict[str, Any]) -> None:
@@ -2155,11 +2362,15 @@ class CodexHooksAPI:
             return
         output = payload.get("output", "")
         output_value = output if isinstance(output, str) else _to_json_str(output)
-        if pending.tool_name == "wait" and isinstance(output, list) and all(
-            isinstance(block, dict)
-            and block.get("type") in ("input_text", "output_text")
-            and isinstance(block.get("text"), str)
-            for block in output
+        if (
+            pending.tool_name == "wait"
+            and isinstance(output, list)
+            and all(
+                isinstance(block, dict)
+                and block.get("type") in ("input_text", "output_text")
+                and isinstance(block.get("text"), str)
+                for block in output
+            )
         ):
             output_value = "\n".join(block["text"] for block in output)
         final_status = _canonical_tool_status(payload.get("status", "")) or "completed"
@@ -2212,7 +2423,6 @@ class CodexHooksAPI:
         """Replace a JavaScript exec wrapper with its directly invoked tools."""
         session.pending_tool_ids_by_span_id.pop(pending.span_id, None)
         session.pending_tool_statuses.pop(outer_id, None)
-        reviews = session.auto_reviews_by_tool_id.pop(outer_id, [])
         reasoning = session.pending_tool_reasoning.pop(outer_id, [])
         results = extract_exec_results(output, len(calls), calls=calls)
         invocation_start = session.exec_start_times.pop(outer_id, pending.start_ns)
@@ -2240,15 +2450,37 @@ class CodexHooksAPI:
                 if covered and sum(c["name"] == raw_name for c in calls) == 1:
                     for entry in covered:
                         entry["claimed"] = True
-                        entry["span"]["meta"]["metadata"]["exec_call_id"] = outer_id
+                        entry["span"]["meta"]["metadata"].update(
+                            exec_call_id=outer_id, exec_start_ns=invocation_start, exec_end_ns=end_ns
+                        )
                     continue
             if matching:
                 entry = matching[0]
                 entry["claimed"] = True
+                # Completions carry results but can omit request arguments,
+                # including the approval justification.
+                input_value, input_truncated = _truncate_text(_to_json_str(call["arguments"]), MAX_TOOL_VALUE_CHARS)
+                entry["span"]["meta"]["input"]["value"] = input_value
                 metadata = entry["span"]["meta"]["metadata"]
-                metadata.update(exec_call_id=outer_id, tool_id=f"{outer_id}:{index}")
-                if index == 0 and reviews:
-                    set_hidden_metadata(entry["span"], auto_reviews=reviews)
+                metadata["input_format"] = "text" if isinstance(call["arguments"], str) else "json"
+                hidden = metadata.get("_dd", {})
+                set_hidden_metadata(
+                    entry["span"],
+                    display={
+                        **hidden.get("display", {}),
+                        "input": "text" if isinstance(call["arguments"], str) else "code",
+                    },
+                )
+                if input_truncated or "truncated_input" in hidden:
+                    set_hidden_metadata(
+                        entry["span"], truncated_input=input_truncated, max_value_chars=MAX_TOOL_VALUE_CHARS
+                    )
+                metadata.update(
+                    exec_call_id=outer_id,
+                    tool_id=f"{outer_id}:{index}",
+                    exec_start_ns=invocation_start,
+                    exec_end_ns=end_ns,
+                )
                 if index == 0 and reasoning:
                     metadata["reasoning"] = _copy_reasoning_items(reasoning)
                 continue
@@ -2284,8 +2516,6 @@ class CodexHooksAPI:
             is_error = _tool_status_is_error(outer_status) or result_error
             session.pending_tool_statuses[child_id] = "failed" if is_error else "completed"
             if index == 0:
-                if reviews:
-                    session.auto_reviews_by_tool_id[child_id] = reviews
                 if reasoning:
                     session.pending_tool_reasoning[child_id] = reasoning
             span = self._emit_tool_span(
@@ -2297,6 +2527,8 @@ class CodexHooksAPI:
                 extra_metadata={
                     "raw_tool_name": raw_name,
                     "exec_call_id": outer_id,
+                    "exec_start_ns": invocation_start,
+                    "exec_end_ns": end_ns,
                     "result_matched": result is not None,
                     "timing": "exec_envelope",
                 },
@@ -2310,6 +2542,8 @@ class CodexHooksAPI:
                 if shell_session_id is not None:
                     session.shell_sessions[str(shell_session_id)] = {"span": span, "result": value}
                     span["meta"]["metadata"]["shell_session_id"] = shell_session_id
+        # Reviews belong to the emitted inner tools, not the exec wrapper.
+        self._attach_pending_auto_reviews(session)
         self._update_agent_manifest(session)
 
     def _handle_custom_tool_call(self, session: CodexSession, record: Dict[str, Any]) -> None:
@@ -2487,6 +2721,8 @@ class CodexHooksAPI:
             return self._handle_event_msg(session, record)
         elif record_type == "response_item":
             return self._handle_response_item(session, record)
+        elif record_type == "token_usage_record":
+            self._handle_response_usage(session, record)
         elif record_type == "compacted":
             self._update_last_ns(session, record)
             self._handle_compaction(session, record, trigger="compacted")

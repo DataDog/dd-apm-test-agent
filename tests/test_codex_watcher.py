@@ -712,6 +712,72 @@ def test_resume_watcher_captures_new_records_without_replaying_old_turns(monkeyp
     assert messages == ["new"]
 
 
+@pytest.mark.parametrize("selected_id", [None, "sess-resumed"])
+@pytest.mark.parametrize("parent_grows", [True, False])
+def test_resume_watcher_keeps_review_created_before_parent_grows(monkeypatch, tmp_path, selected_id, parent_grows):
+    posts = []
+    monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))
+    parent = tmp_path / "rollout-parent.jsonl"
+    _append(parent, {"type": "session_meta", "payload": {"id": "sess-resumed", "cwd": str(tmp_path)}})
+    _append(parent, {"type": "event_msg", "payload": {"type": "user_message", "message": "old"}})
+    polls = 0
+
+    def fake_process_exists(pid, expected_start=None):
+        nonlocal polls
+        polls += 1
+        if polls == 1:
+            for sid, parent_id in (("review", "sess-resumed"), ("unrelated-review", "other-session")):
+                path = tmp_path / (sid + ".jsonl")
+                _append(
+                    path,
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": sid,
+                            "cwd": str(tmp_path),
+                            "thread_source": "guardian_review",
+                            "parent_thread_id": parent_id,
+                        },
+                    },
+                )
+                _append(path, {"type": "event_msg", "payload": {"type": "task_complete"}})
+        if polls == 2:
+            assert posts == []
+            if parent_grows:
+                _append(parent, {"type": "event_msg", "payload": {"type": "thread_settings_applied"}})
+                _append(parent, {"type": "event_msg", "payload": {"type": "user_message", "message": "new"}})
+        return polls < 4
+
+    monkeypatch.setattr("lapdog.codex_watcher._process_exists", fake_process_exists)
+    watch_codex_sessions(
+        lapdog_url="http://localhost:8126",
+        cwd=str(tmp_path),
+        parent_pid=12345,
+        session_dir=tmp_path,
+        poll_interval=0.01,
+        flush_seconds=0.01,
+        proxy_session_key="proxy-key",
+        cursor_path=None,
+        discovery_interval=0,
+        resume_mode=True,
+        resume_session_id=selected_id,
+    )
+    if not parent_grows:
+        assert posts == []
+        return
+    assert {post["session_id"] for post in posts} == {"sess-resumed", "review"}
+    assert [
+        post["record"]["payload"].get("type", post["record"]["type"])
+        for post in posts
+        if post["session_id"] == "review"
+    ] == ["session_meta", "task_complete", "shutdown_complete"]
+    assert [
+        post["record"]["payload"]["message"]
+        for post in posts
+        if post["record"]["payload"].get("type") == "user_message"
+    ] == ["new"]
+
+
 def test_resume_watcher_skips_other_old_file_even_if_it_changes_first(monkeypatch, tmp_path):
     posts = []
     monkeypatch.setattr("lapdog.codex_watcher._session.post", lambda *args, **kwargs: posts.append(kwargs["json"]))

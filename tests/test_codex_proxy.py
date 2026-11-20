@@ -282,7 +282,8 @@ async def test_codex_subagent_spawn_parents_to_active_step(agent):
     assert subagents[0]["parent_id"] == steps[0]["span_id"]
 
 
-def test_codex_proxy_caps_messages_and_links_reasoning_to_tool_calls(monkeypatch):
+@pytest.mark.parametrize("call_type", ["function_call", "custom_tool_call"])
+def test_codex_proxy_caps_messages_and_links_reasoning_to_tool_calls(monkeypatch, call_type):
     monkeypatch.setattr("lapdog.codex_hooks.MAX_LLM_MESSAGE_CHARS", 8192)
 
     class FakeConfig:
@@ -305,10 +306,10 @@ def test_codex_proxy_caps_messages_and_links_reasoning_to_tool_calls(monkeypatch
             "summary": [{"type": "summary_text", "text": "Need to inspect files"}],
         },
         {
-            "type": "function_call",
+            "type": call_type,
             "call_id": "call-1",
             "name": "exec_command",
-            "arguments": json.dumps({"cmd": large_value}),
+            ("input" if call_type == "custom_tool_call" else "arguments"): json.dumps({"cmd": large_value}),
             "status": "in_progress",
         },
     ]
@@ -316,7 +317,7 @@ def test_codex_proxy_caps_messages_and_links_reasoning_to_tool_calls(monkeypatch
         "model": "gpt-5.5",
         "input": [
             {
-                "type": "function_call_output",
+                "type": call_type + "_output",
                 "call_id": "call-0",
                 "output": large_value,
             }
