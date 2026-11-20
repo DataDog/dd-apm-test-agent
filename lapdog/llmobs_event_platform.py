@@ -581,17 +581,49 @@ def _coerce_float(value: Any) -> Optional[float]:
         return None
 
 
+# A metric's distinct values, and its numeric values, in a group: what a distinct count and a percentile are computed
+# from. Lapdog's merged search asks for them alongside those statistics, to compute them over the values from memory
+# and from the Self-hosted server together.
+DISTINCT_VALUES_AGGREGATION = "__lapdog_distinct_values"
+NUMERIC_VALUES_AGGREGATION = "__lapdog_numeric_values"
+
+
+def distinct_text(value: Any) -> str:
+    """Spell a distinct value as the Self-hosted server does, so values from both sides compare equal."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def quantile_of(values: List[float], aggregation: str) -> float:
+    """Return the ``median`` or ``pcNN`` (nearest rank) of ``values``, as both span backends compute it."""
+    if not values:
+        return 0.0
+    if aggregation == "median":
+        return float(statistics.median(values))
+    try:
+        pct = int(aggregation[2:])
+    except ValueError:
+        return 0.0
+    vs = sorted(values)
+    # Nearest-rank percentile — simple and good enough for tests.
+    idx = max(0, min(len(vs) - 1, int(round((pct / 100.0) * (len(vs) - 1)))))
+    return vs[idx]
+
+
 def _scalar_compute(
     spans: List[Dict[str, Any]],
     aggregation: str,
     metric_field: Optional[str],
     trace_aggregates: Optional[Dict[str, Dict[str, Any]]] = None,
-) -> float:
+) -> Any:
     """Compute a single scalar value for a list of spans.
 
     Supported aggregations: ``count``, ``cardinality``, ``sum``, ``avg``,
     ``min``, ``max``, ``median``, ``pc75``/``pc90``/``pc95``/``pc99``,
-    ``latest``, ``earliest``. Unknown aggregations return ``0.0``.
+    ``latest``, ``earliest``. Unknown aggregations return ``0.0``. The
+    hidden ``DISTINCT_VALUES_AGGREGATION`` and ``NUMERIC_VALUES_AGGREGATION``
+    return a list of values instead.
 
     When ``metric_field`` is a ``@trace.*`` path, spans are deduplicated by
     ``trace_id`` before aggregation so trace-rollup metrics aren't
@@ -620,12 +652,14 @@ def _scalar_compute(
             deduped.append(s)
         source_spans = deduped
 
-    if agg == "cardinality":
+    if agg in ("cardinality", DISTINCT_VALUES_AGGREGATION):
         seen = set()
         for s in source_spans:
             v = _resolve_field_value(s, field, trace_aggregates)
             if v is not None:
                 seen.add(v)
+        if agg == DISTINCT_VALUES_AGGREGATION:
+            return sorted({distinct_text(v) for v in seen})
         return float(len(seen))
 
     if agg in ("latest", "earliest"):
@@ -641,6 +675,8 @@ def _scalar_compute(
         if fv is not None:
             values.append(fv)
 
+    if agg == NUMERIC_VALUES_AGGREGATION:
+        return values
     if not values:
         return 0.0
     if agg == "sum":
@@ -651,19 +687,8 @@ def _scalar_compute(
         return min(values)
     if agg == "max":
         return max(values)
-    if agg == "median":
-        return float(statistics.median(values))
-    if agg.startswith("pc"):
-        try:
-            pct = int(agg[2:])
-        except ValueError:
-            return 0.0
-        if len(values) == 1:
-            return values[0]
-        vs = sorted(values)
-        # Nearest-rank percentile — simple and good enough for tests.
-        idx = max(0, min(len(vs) - 1, int(round((pct / 100.0) * (len(vs) - 1)))))
-        return vs[idx]
+    if agg == "median" or agg.startswith("pc"):
+        return quantile_of(values, agg)
     return 0.0
 
 
@@ -724,7 +749,7 @@ def _scalar_response_columns(
     formulas: List[Dict[str, Any]],
     group_defs: List[Dict[str, Any]],
     group_keys: List[Tuple[str, ...]],
-    per_query_values: List[List[float]],
+    per_query_values: List[List[Any]],
 ) -> List[Dict[str, Any]]:
     """Lay out a scalar_response's ``columns`` from computed values.
 
@@ -787,7 +812,7 @@ def _build_scalar_columns(
         else:
             supported_spans_by_query.append([])
 
-    def _compute(spans_: List[Dict[str, Any]], spec: Dict[str, Any]) -> float:
+    def _compute(spans_: List[Dict[str, Any]], spec: Dict[str, Any]) -> Any:
         return _scalar_compute(spans_, spec["aggregation"], spec["metric"], trace_aggregates)
 
     # Group-by based on the first query's dimensions.
@@ -826,7 +851,7 @@ def _build_scalar_columns(
 
     # For non-first queries, re-bucket their (independently-filtered) spans by
     # the same group key so the rows line up.
-    per_query_values: List[List[float]] = []
+    per_query_values: List[List[Any]] = []
     for qi, q in enumerate(queries):
         spec = _query_compute_spec(q)
         if qi == 0:

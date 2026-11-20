@@ -8,8 +8,8 @@ The two sets don't overlap, so results are merged without double counting:
 
 - lists are merged in time order, with a cursor that tracks both sides;
 - aggregate groups, facet counts, and scalar rows are combined by key
-  (sums and counts add up exactly; averages and percentiles across both
-  sides are approximate);
+  (sums and counts add up, averages are weighted by each side's value count,
+  and distinct counts and percentiles are recomputed from both sides' values);
 - a trace or span is read from whichever side has it.
 
 Each listed span is labelled with where it was read from (``@lapdog.source``:
@@ -45,15 +45,18 @@ from ddapm_test_agent.cors import cors_headers
 from ddapm_test_agent.cors import with_cors
 
 from .forwarding import Forwarding
+from .llmobs_event_platform import DISTINCT_VALUES_AGGREGATION
 from .llmobs_event_platform import InMemorySpanBackend
 from .llmobs_event_platform import LLMObsEventPlatformAPI
+from .llmobs_event_platform import NUMERIC_VALUES_AGGREGATION
 from .llmobs_event_platform import VALUE_COUNT_AGGREGATION
-from .llmobs_event_platform import build_event_platform_list_response
 from .llmobs_event_platform import _list_compute_sort_order
 from .llmobs_event_platform import _query_column_name
 from .llmobs_event_platform import _query_compute_spec
 from .llmobs_event_platform import _query_group_by_fields
+from .llmobs_event_platform import build_event_platform_list_response
 from .llmobs_event_platform import parse_list_params
+from .llmobs_event_platform import quantile_of
 
 log = logging.getLogger(__name__)
 
@@ -205,10 +208,27 @@ _RANK = f"{_HIDDEN}rank"
 _NEEDS_COUNT = {"min", "max", "avg", "median", "pc75", "pc90", "pc95", "pc99", "earliest", "latest"}
 
 
+_VALUES = f"{_HIDDEN}v_"
+
+
 class _ScalarColumn(NamedTuple):
     aggregation: str
     count_column: Optional[str]  # hidden column with this column's span count on each row
     time_column: Optional[str]  # hidden column with its earliest (or latest) span time, for earliest/latest
+    values_column: Optional[str] = None  # hidden column with the values a distinct count or percentile is from
+
+
+def _is_quantile(aggregation: str) -> bool:
+    return aggregation == "median" or aggregation.startswith("pc")
+
+
+def _combine_values(aggregation: str, a: List[Any], b: List[Any]) -> List[Any]:
+    """Pool both sides' values for a column: distinct values are unioned, numeric values concatenated."""
+    return sorted(set(a) | set(b)) if aggregation == "cardinality" else a + b
+
+
+def _statistic_of(aggregation: str, values: List[Any]) -> float:
+    return float(len(values)) if aggregation == "cardinality" else quantile_of(values, aggregation)
 
 
 def _scalar_plan(attributes: Any) -> Tuple[Dict[str, Any], Dict[str, _ScalarColumn]]:
@@ -216,6 +236,8 @@ def _scalar_plan(attributes: Any) -> Tuple[Dict[str, Any], Dict[str, _ScalarColu
 
     Combining a minimum, average, or latest value from both sides needs to know how many spans each
     side's value covers (a side with none returns a placeholder 0) and, for earliest/latest, when.
+    A distinct count or percentile can't be combined from the two results at all, so each side also
+    returns the values it was computed from.
     """
     if not isinstance(attributes, dict):
         return {}, {}
@@ -251,7 +273,18 @@ def _scalar_plan(attributes: Any) -> Tuple[Dict[str, Any], Dict[str, _ScalarColu
             hidden_queries.append(
                 {**copy.deepcopy(query), "name": time, "compute": {"aggregation": stat, "metric": "@timestamp"}}
             )
-        by_query[name] = _ScalarColumn(aggregation, count, time)
+        values = None
+        if aggregation == "cardinality" or _is_quantile(aggregation):
+            values = f"{_VALUES}{name}"
+            pooled = DISTINCT_VALUES_AGGREGATION if aggregation == "cardinality" else NUMERIC_VALUES_AGGREGATION
+            hidden_queries.append(
+                {
+                    **copy.deepcopy(query),
+                    "name": values,
+                    "compute": {"aggregation": pooled, "metric": _query_compute_spec(query)["metric"]},
+                }
+            )
+        by_query[name] = _ScalarColumn(aggregation, count, time, values)
     columns: Dict[str, _ScalarColumn] = {}
     if formulas and queries:
         # Backends rank groups by the first query, which the formulas may not show first (or at all).
@@ -270,6 +303,28 @@ def _scalar_plan(attributes: Any) -> Tuple[Dict[str, Any], Dict[str, _ScalarColu
             columns[_query_column_name(query)] = by_query[str(query.get("name") or f"query{i + 1}")]
     augmented["queries"] = queries + hidden_queries
     return augmented, columns
+
+
+def _has_values(response: Dict[str, Any]) -> bool:
+    """Return whether a scalar response has any values for a distinct count or percentile."""
+    for item in response.get("data") or []:
+        for column in (item.get("attributes") or {}).get("columns") or []:
+            if str(column.get("name", "")).startswith(_VALUES) and any(v for v in column.get("values") or []):
+                return True
+    return False
+
+
+def _without_values(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``body`` without the hidden values queries, for when memory has no values to pool."""
+    stripped = copy.deepcopy(body)
+    for item in stripped.get("data") or []:
+        attributes = (item or {}).get("attributes") or {}
+        for key, ref in (("queries", "name"), ("formulas", "formula")):
+            if isinstance(attributes.get(key), list):
+                attributes[key] = [
+                    q for q in attributes[key] if not (isinstance(q, dict) and str(q.get(ref, "")).startswith(_VALUES))
+                ]
+    return stripped
 
 
 def _scalar_rows(columns: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -292,6 +347,12 @@ def _merge_scalar_row(into: Dict[str, Any], row: Dict[str, Any], plan: Dict[str,
             into[name] = value
             continue
         column = plan.get(name)
+        if column is not None and column.values_column is not None:
+            mine_values, their_values = into.get(column.values_column), row.get(column.values_column)
+            if isinstance(mine_values, list) and isinstance(their_values, list) and mine_values and their_values:
+                pooled = _combine_values(column.aggregation, mine_values, their_values)
+                into[name] = _statistic_of(column.aggregation, pooled)
+                continue
         if column is None or column.count_column is None:
             into[name] = _merge_metric(column.aggregation if column else None, into[name], value)
             continue
@@ -309,6 +370,14 @@ def _merge_scalar_row(into: Dict[str, Any], row: Dict[str, Any], plan: Dict[str,
         else:
             into[name] = _merge_metric(column.aggregation, into[name], value)
     for column in set(plan.values()):
+        values_name = column.values_column
+        if values_name is not None and isinstance(row.get(values_name), list):
+            mine_values = into.get(values_name)
+            their_values = cast(List[Any], row[values_name])
+            if isinstance(mine_values, list):
+                into[values_name] = _combine_values(column.aggregation, mine_values, their_values)
+            else:
+                into[values_name] = their_values
         count_name, time_name = column.count_column, column.time_column
         if count_name is None:
             continue
@@ -887,7 +956,10 @@ class FederatedSearch:
             plans.append(plan)
             limits.append(limit)
         local = await self._local(self.local_api.handle_query_scalar, _with_body(request, augmented_body)) or {}
-        remote = await self._remote(request, json.dumps(augmented_body).encode()) or {}
+        # Sending the server's values is only worth it when there are values in memory to pool them with.
+        pool_values = _has_values(local)
+        remote_body = augmented_body if pool_values else _without_values(augmented_body)
+        remote = await self._remote(request, json.dumps(remote_body).encode()) or {}
         local_data, remote_data = local.get("data", []), remote.get("data", [])
         data = []
         for i in range(max(len(local_data), len(remote_data))):
@@ -895,7 +967,8 @@ class FederatedSearch:
             b = local_data[i]["attributes"]["columns"] if i < len(local_data) else []
             item = augmented_body["data"][i] if i < len(requests) else None
             limit = limits[i] if i < len(limits) else None
-            columns = await self._merge_scalar_sides(request, item, a, b, plans[i] if i < len(plans) else {}, limit)
+            plan = plans[i] if i < len(plans) else {}
+            columns = await self._merge_scalar_sides(request, item, a, b, plan, limit, pool_values)
             data.append({"type": "scalar_response", "attributes": {"columns": columns}})
         return web.json_response({"data": data})
 
@@ -907,6 +980,7 @@ class FederatedSearch:
         local: List[Dict[str, Any]],
         plan: Dict[str, _ScalarColumn],
         limit: Optional[int],
+        pool_values: bool = True,
     ) -> List[Dict[str, Any]]:
         """Merge one scalar request's columns, completing top groups that a side's row limit cut off."""
         attributes = (item or {}).get("attributes") or {}
@@ -944,7 +1018,8 @@ class FederatedSearch:
             if is_local:
                 extra = await self._local(self.local_api.handle_query_scalar, _with_body(request, extra_body)) or {}
             else:
-                extra = await self._remote(request, json.dumps(extra_body).encode()) or {}
+                remote_body = extra_body if pool_values else _without_values(extra_body)
+                extra = await self._remote(request, json.dumps(remote_body).encode()) or {}
             extra_columns = (extra.get("data") or [{}])[0].get("attributes", {}).get("columns", [])
             sides[index] = _merge_scalar_columns(sides[index], extra_columns, plan, keep_hidden=True)
         merged = _merge_scalar_columns(sides[0], sides[1], plan, keep_hidden=True)

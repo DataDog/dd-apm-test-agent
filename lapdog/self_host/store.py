@@ -25,7 +25,9 @@ from typing import Tuple
 
 from ..llmobs_event_platform import AggregateRequest
 from ..llmobs_event_platform import AggregateResult
+from ..llmobs_event_platform import DISTINCT_VALUES_AGGREGATION
 from ..llmobs_event_platform import ListResult
+from ..llmobs_event_platform import NUMERIC_VALUES_AGGREGATION
 from ..llmobs_event_platform import TimeWindow
 from ..llmobs_event_platform import VALUE_COUNT_AGGREGATION
 from ..llmobs_event_platform import _LLMOBS_SCALAR_DATA_SOURCES
@@ -62,6 +64,11 @@ def _in_list(values: Sequence[Any]) -> str:
 def _encode_cursor(row: Dict[str, Any]) -> str:
     key = [int(row["start_ns"]), str(row["trace_id"]), str(row["span_id"]), 0]
     return base64.urlsafe_b64encode(json.dumps(key, separators=(",", ":")).encode()).decode()
+
+
+def _scalar_value(value: Any) -> Any:
+    """Return a scalar query's value for one group: a number, or the list a values aggregation returns."""
+    return value if isinstance(value, list) else float(value)
 
 
 def _price_new_span(span: Dict[str, Any]) -> None:
@@ -316,6 +323,10 @@ class ClickHouseSpanBackend:
             return "toFloat64(count())"
         if agg == "cardinality":
             return f"toFloat64(uniqExact({text}))"
+        if agg == DISTINCT_VALUES_AGGREGATION:
+            return f"arraySort(groupUniqArray({text}))"
+        if agg == NUMERIC_VALUES_AGGREGATION:
+            return f"groupArray({number})"
         if agg == "latest":
             return f"ifNull(argMax(tuple({number}), {ts}).1, 0)"
         if agg == "earliest":
@@ -341,7 +352,7 @@ class ClickHouseSpanBackend:
 
     async def _scalar_groups(
         self, query: Dict[str, Any], group_fields: List[str], first: bool, row_limit: int, sort_desc: bool
-    ) -> List[Tuple[Tuple[str, ...], float]]:
+    ) -> List[Tuple[Tuple[str, ...], Any]]:
         spec = _query_compute_spec(query)
         aggregation = str(spec["aggregation"] or "count").lower()
         metric = spec["metric"]
@@ -388,8 +399,8 @@ class ClickHouseSpanBackend:
 
         rows = await self.client.query(sql)
         if not key_names:
-            return [((), float(rows[0]["v"]) if rows else 0.0)]
-        return [(tuple(str(row[k]) for k in key_names), float(row["v"])) for row in rows]
+            return [((), _scalar_value(rows[0]["v"]) if rows else 0.0)]
+        return [(tuple(str(row[k]) for k in key_names), _scalar_value(row["v"])) for row in rows]
 
     async def scalar_columns(
         self, queries: List[Dict[str, Any]], formulas: List[Dict[str, Any]]
@@ -401,7 +412,7 @@ class ClickHouseSpanBackend:
         group_fields = [gd["field"] for gd in group_defs]
 
         if not group_defs:
-            values: List[List[float]] = []
+            values: List[List[Any]] = []
             for q in queries:
                 groups = await self._scalar_groups(q, [], first=True, row_limit=1, sort_desc=True)
                 values.append([groups[0][1] if groups else 0.0])
@@ -413,7 +424,7 @@ class ClickHouseSpanBackend:
             queries[0], group_fields, first=True, row_limit=row_limit, sort_desc=sort_desc
         )
         order = [key for key, _ in first]
-        per_query_values: List[List[float]] = [[value for _, value in first]]
+        per_query_values: List[List[Any]] = [[value for _, value in first]]
         for q in queries[1:]:
             by_key = dict(await self._scalar_groups(q, group_fields, first=False, row_limit=0, sort_desc=sort_desc))
             per_query_values.append([by_key.get(key, 0.0) for key in order])

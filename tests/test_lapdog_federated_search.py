@@ -260,6 +260,41 @@ async def test_scalar_ignores_a_side_with_no_matches(federated):
     assert [(c["name"], c["values"]) for c in columns] == [("query1", [1000])]
 
 
+@pytest.mark.parametrize(
+    "aggregation,metric,expected",
+    [
+        ("cardinality", "@ml_app", 3),  # mine and app are on both sides
+        ("cardinality", "@duration", 1),
+        ("median", "@duration", 1000),
+        ("pc95", "@duration", 1000),
+    ],
+)
+async def test_scalar_distinct_counts_and_percentiles_pool_both_sides(federated, aggregation, metric, expected):
+    query = {
+        "name": "query1",
+        "data_source": "llm_observability",
+        "search": {"query": ""},
+        "compute": {"aggregation": aggregation, "metric": metric},
+    }
+    resp = await federated.post("/api/ui/query/scalar", json={"data": [{"attributes": {"queries": [query]}}]})
+    columns = (await resp.json())["data"][0]["attributes"]["columns"]
+    assert [(c["name"], c["values"]) for c in columns] == [("query1", [expected])]
+
+
+async def test_scalar_grouped_distinct_counts_pool_both_sides(federated):
+    query = {
+        "name": "query1",
+        "data_source": "llm_observability",
+        "search": {"query": ""},
+        "compute": {"aggregation": "cardinality", "metric": "@duration"},
+        "group_by": [{"facet": "@ml_app", "limit": 10, "sort": {"order": "desc"}}],
+    }
+    resp = await federated.post("/api/ui/query/scalar", json={"data": [{"attributes": {"queries": [query]}}]})
+    columns = (await resp.json())["data"][0]["attributes"]["columns"]
+    groups, counts = columns
+    assert dict(zip((v[0] for v in groups["values"]), counts["values"])) == {"mine": 1, "app": 1, "team": 1}
+
+
 async def test_trace_split_across_both_sides_is_combined(federated, self_hosted_server):
     child = {**_span("remote-child", time.time_ns(), trace_id="trace-local-1"), "parent_id": "local-1"}
     await _post_to_server(self_hosted_server, child)
